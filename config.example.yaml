@@ -1,0 +1,68 @@
+# Foreman configuration. Copy to config.yaml and edit.
+# Secrets (API keys, VAPID private key) go in .env, NOT here.
+
+server:
+  host: 127.0.0.1        # keep localhost; expose externally only via a tunnel (see docs/SECURITY.md)
+  port: 8787
+  # public_base_url is the HTTPS URL the phone uses (Tailscale / Cloudflare Tunnel / frp).
+  public_base_url: ""    # e.g. https://your-pc.tailnet-name.ts.net
+
+llm:
+  # Your own API. Two providers supported: "openai" (chat/completions) or "anthropic" (messages).
+  provider: openai
+  base_url: https://api.openai.com/v1   # or your proxy / self-hosted endpoint
+  model: gpt-4o                          # model used by PM Brain / Reviewer / Briefing
+  # api_key comes from .env (FOREMAN_LLM_API_KEY)
+  request_timeout_s: 60
+  max_tokens: 2048
+
+store:
+  db_path: foreman.db
+
+# Workspaces the agents are allowed to write in (allowlist; defense in depth).
+workspaces:
+  - path: E:/code/my-project
+    name: my-project
+
+# Which agent CLIs are available and how to invoke them.
+agents:
+  claude-code:
+    enabled: true
+    command: claude            # resolved on PATH (claude.cmd on Windows)
+    mode: headless             # headless | pty
+  codex:
+    enabled: true
+    command: codex
+    mode: headless
+
+# Monitoring sources.
+monitor:
+  hooks_enabled: true          # accept Claude Code hook POSTs on /hooks
+  git_watch: true
+  idle_seconds: 120            # no output for this long => consider session "idle/blocked"
+
+# Permission gates. Actions matching these patterns require approval before running.
+gates:
+  requires_approval:
+    - "git push"
+    - "git push --force"
+    - "rm -rf"
+    - "drop table"
+    - "deploy"
+    - "publish"
+    - "secrets"
+  needs_strategy:
+    - "add dependency"
+    - "refactor"
+  approval_timeout_s: 0        # 0 = wait indefinitely; >0 = auto-fallback (reject) after N seconds
+
+# Scheduler / briefings.
+schedule:
+  assess_every_s: 60           # PM Brain sweeps active sessions on this cadence
+  daily_briefing: "09:00"      # local time; empty to disable
+
+push:
+  enabled: true
+  # VAPID public key is fine to expose to the browser; private key is in .env.
+  vapid_public_key: ""         # fill after running scripts/gen_vapid.py
+  vapid_subject: "mailto:you@example.com"

@@ -1,0 +1,47 @@
+{
+  "_comment": "Example Claude Code hooks. Merge into your Claude Code settings (.claude/settings.json) or a project .claude/settings.json. Each hook POSTs the event JSON (provided by Claude Code on stdin) to Foreman's local /hooks endpoint. On Windows, prefer curl.exe. See docs/ARCHITECTURE.md.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl.exe -s -X POST http://127.0.0.1:8787/hooks -H \"Content-Type: application/json\" -H \"X-Hook: PreToolUse\" --data-binary @-"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl.exe -s -X POST http://127.0.0.1:8787/hooks -H \"Content-Type: application/json\" -H \"X-Hook: PostToolUse\" --data-binary @-"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl.exe -s -X POST http://127.0.0.1:8787/hooks -H \"Content-Type: application/json\" -H \"X-Hook: Stop\" --data-binary @-"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl.exe -s -X POST http://127.0.0.1:8787/hooks -H \"Content-Type: application/json\" -H \"X-Hook: Notification\" --data-binary @-"
+          }
+        ]
+      }
+    ]
+  }
+}

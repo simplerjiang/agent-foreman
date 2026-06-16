@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0e14" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <title>Foreman</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header>
+    <h1>🦺 Foreman</h1>
+    <span id="status" class="pill">connecting…</span>
+  </header>
+
+  <main>
+    <section id="sessions" aria-label="Sessions">
+      <h2>Sessions</h2>
+      <div id="session-list" class="empty">No active sessions yet.</div>
+    </section>
+
+    <section id="approvals" aria-label="Approvals">
+      <h2>Approvals</h2>
+      <div id="approval-list" class="empty">Nothing waiting on you.</div>
+    </section>
+
+    <section id="timeline" aria-label="Timeline">
+      <h2>Timeline</h2>
+      <ol id="event-list" class="empty"></ol>
+    </section>
+
+    <section id="dispatch" aria-label="Dispatch a task">
+      <h2>Dispatch</h2>
+      <form id="dispatch-form">
+        <input id="task-input" placeholder="e.g. 重构 auth 模块，push 前问我" autocomplete="off" />
+        <button type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <button id="enable-push" class="floating">Enable notifications</button>
+
+  <!-- P0 placeholder UI. P3/P4 wires this to /ws, /api/*, and Web Push. -->
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

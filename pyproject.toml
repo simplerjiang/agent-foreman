@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-foreman"
+version = "0.1.0"
+description = "A self-hosted PM agent that supervises local coding agents (Claude Code / Codex) and reports to your phone."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "simplerjiang" }]
+keywords = ["agent", "claude-code", "codex", "pm", "automation", "webpush", "pwa"]
+
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlmodel>=0.0.16",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "watchfiles>=0.21",
+    "pywebpush>=2.0",
+    "py-vapid>=1.9",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+# Interactive (PTY) driving of agents; headless mode does not require these.
+pty = ["pywinpty>=2.0; sys_platform == 'win32'", "ptyprocess>=0.7; sys_platform != 'win32'"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.9"]
+
+[project.scripts]
+foreman = "foreman.__main__:app"
+
+[project.urls]
+Homepage = "https://github.com/simplerjiang/agent-foreman"
+Design = "https://github.com/simplerjiang/agent-foreman/blob/main/docs/DESIGN.zh-CN.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
