@@ -1,0 +1,20 @@
+[Unit]
+Description=Foreman (server-side: PWA + /health; relay placeholder)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=foreman
+Group=foreman
+WorkingDirectory=/opt/foreman/app
+# Reads config.yaml + .env from WorkingDirectory. Binds 0.0.0.0:8787 (open in ufw).
+ExecStart=/opt/foreman/app/.venv/bin/foreman serve --config /opt/foreman/app/config.yaml --host 0.0.0.0 --port 8787
+Restart=on-failure
+RestartSec=3
+# Hardening (does not touch the LLM gateway / port 80 / other services)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

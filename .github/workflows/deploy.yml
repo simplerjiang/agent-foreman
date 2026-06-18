@@ -1,0 +1,42 @@
+name: Deploy to server
+
+# Auto-deploy the server-side component (PWA + /health now; relay later) on push to main.
+# Connects as the unprivileged `foreman` user and runs the on-server deploy script.
+# NO secrets live in this file — they come from GitHub Actions repository secrets:
+#   DEPLOY_HOST     e.g. 165.232.161.99
+#   DEPLOY_USER     foreman
+#   DEPLOY_SSH_KEY  the PRIVATE half of the CI deploy keypair (the public half is on the server)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KEY:-}" ] || [ -z "${HOST:-}" ] || [ -z "${USER:-}" ]; then
+            echo "::error::Missing DEPLOY_SSH_KEY / DEPLOY_HOST / DEPLOY_USER secrets."
+            exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$USER@$HOST" \
+            'bash -lc "/opt/foreman/app/deploy/remote_deploy.sh"'
