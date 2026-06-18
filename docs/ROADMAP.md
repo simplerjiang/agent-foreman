@@ -74,9 +74,11 @@ Same codebase, two deployment modes (personal direct vs team relay — see DESIG
 - **Admin console**: create users + invites (no self-signup). Roles: admin | member.
 - **Access keys**: one per machine, many per account, hashed at rest, individually revocable.
 - **Multi-tenant isolation**: every record scoped to `account_id`.
-- **Hybrid data**: secret sauce (definitions) + LLM keys stay on each local process; the server keeps
-  only a display cache (session summaries, cards) so the PWA still shows recent state when a local
-  process is offline. Full diffs / raw output are pulled from the local process on demand.
+- **Hybrid data**: secret sauce (definitions) stays on each local process and is never on the server.
+  **LLM config (base_url/model/key) is per-account**: each user sets it in the PWA and it's stored
+  **encrypted, per-account** on the server, then pushed down to that account's local processes (or set
+  locally in `.env` instead). The server also keeps a display cache (session summaries, cards) so the
+  PWA shows recent state when a local process is offline; full diffs / raw output are pulled on demand.
 
 **Done when:** 3 teammates each run their own local process, share one server, and never see each
 other's workflows or data.

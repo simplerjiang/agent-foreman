@@ -242,8 +242,10 @@ class AgentAdapter(Protocol):
 ### 4.4 LLM Client（用你自己的 API）
 
 - Provider 无关：支持 **OpenAI 兼容**（`/v1/chat/completions`）与 **Anthropic 兼容**（`/v1/messages`）。
-- 配置 `base_url` + `api_key` + `model`，由你提供。
-- 用于 **PM Brain / Reviewer / Briefing**。
+- 配置 `base_url` + `api_key` + `model`，由你提供。**配置来源两条路**（本地进程按此优先级取）：
+  1. **个人模式**：本地 `.env` / `config.yaml`；
+  2. **团队模式**：账号在 PWA 里设、服务器加密存的 `account_llm_config`，连接后下发（见 §8.3）。
+- 用于 **PM Brain / Operator / Auditor / Reviewer / Briefing** 等 Foreman 自身的 LLM 调用。
 - 注意区分：**Foreman 的「大脑」用你的 API；被驱动的 claude/codex CLI 用它们各自的登录/额度**。
   两者解耦，互不影响。
 
@@ -440,13 +442,16 @@ access_keys(id, account_id→accounts, key_hash, label, last_seen_at, status, ex
             # 一机一张；只存哈希；可单独吊销/设有效期
 process_registry(id, account_id→accounts, access_key_id, name, online, last_heartbeat, created_at)
             # 当前在线的本地进程（出站长连接注册在此）
+account_llm_config(account_id→accounts, provider, base_url, model, key_ciphertext, max_tokens, updated_at)
+            # 各账号自己设的 LLM 配置；key 加密存储、按账号隔离；连接后下发给该账号的本地进程
 cache_sessions(account_id, session_id, summary_json, updated_at)      # 展示缓存（只读副本，供本地离线时查看）
 cache_cards(account_id, card_id, payload_json, status, updated_at)    # 决策卡缓存，供离线查看/推送
 invites(id, code_hash, account_id, expires_at, used_at)               # 管理员邀请码（哈希存储）
 schema_version(version, applied_at)
 ```
 
-- 🔒 服务器库**绝不**含 `definitions`（秘方）/ LLM key / 完整 diff / 原始返回——这些只在**本地进程库**，按需经总机实时拉取（见 §8.3）。
+- 🔒 服务器库**仍不含** `definitions`（你的工作流「秘方」）/ 完整 diff / 原始返回——这些只在**本地进程库**，按需经总机实时拉取（见 §8.3）。
+- 🔑 **例外：LLM key 可由各账号在 PWA 里自行设置、存在服务器**（`account_llm_config`，**加密存储、按账号隔离**），连接后下发给该账号的本地进程使用。好处：一个人多台机器只需设一次。也可不用、改在本地 `.env` 设（见 §8.3/§8.4）。
 
 - `status(session) ∈ {planning, running, idle, blocked, waiting_approval, done, failed, paused}`
 - `events.type` 枚举：`agent_output | tool_pre | tool_post | stop | git_diff | git_commit | review | action_proposed | audit | card_decided | checkpoint | undo | approval_req | approval_decided | briefing | error | dispatch`
@@ -491,21 +496,26 @@ schema_version(version, applied_at)
 - **access key = 给本地进程插的"SIM 卡"**：认一个账号；**一台机器一张，一个账号可发多张**，丢了 / 换机可**单独吊销**，不影响别的机器。
 - 区分两种凭据：**用户登录**（人用 PWA）vs **access key**（本地进程认账号）。
 
-### 8.3 数据放哪：秘方本地 + 展示缓存（你选的混合方案）
+### 8.3 数据放哪：秘方本地 + LLM key 按账号 + 展示缓存（你选的混合方案）
 
 - **秘方（工作流 / 技能 / 代码规范 / QA 标准）只在各自本地进程**——共用服务器**绝不**存，3 人的秘方互不相见。
+- **LLM key 各自设置、可存服务器**：每个账号在 PWA 里设自己的 `base_url / model / key`，**加密、按账号隔离**地存在服务器，连接后下发给该账号的本地进程。一个人多台机器只设一次。（也可改在本地 `.env` 设，二选一。）
 - **会话摘要 / 事件 / 决策卡**在服务器**缓存一份**，这样本地进程离线时，PWA 仍能看到最近状态（只读）；本地一上线就以本地为准同步。
 - 缓存可只存"展示必需"的精简内容；原始返回 / 完整 diff（§6.3 详情页）按需向本地进程实时拉取。
+
+> 💬 **边界一句话**：服务器**可以**握你的 LLM key（你自己设、加密存、只给你的机器用），但**握不到你的工作流秘方**——秘方永远只在本地。
 
 ### 8.4 安全要点
 
 - **远程访问 / HTTPS**：Web Push 必须 HTTPS。团队模式服务器直接用公网域名 + TLS；个人模式可用 Tailscale / Cloudflare Tunnel / frp。
-- **总机只转发、不持有秘密**：服务器存账号、access key 哈希、路由与展示缓存；**不存** LLM key、不存秘方。
+- **总机持有的"秘密"仅限各账号自设的 LLM 配置**：服务器存账号、access key 哈希、路由、展示缓存、以及 `account_llm_config`；**不存**工作流秘方、不存完整 diff/原始返回。
+- **LLM key 加密存储**：`key_ciphertext` 用服务器侧主密钥加密（主密钥放服务器 `.env` / KMS，不与数据库同处）；传输走 TLS；下发给本地进程时按账号隔离。
+  - ⚖️ **取舍**：这换来了"一处设置、多机通用"的便利，代价是服务器被攻破时该账号 LLM key 可能泄露。鉴于你的 LLM 网关就在同一台服务器、key 仅对应本机服务，影响面有限；仍建议加密 + 可随时在 PWA 里轮换。
 - **access key**：服务器只存哈希；明文仅生成时显示一次；可逐个吊销 / 设有效期。
-- **多租户隔离**：每条记录绑 `account_id`，用户只看自己的；管理员看系统健康，看不到他人内容。
+- **多租户隔离**：每条记录绑 `account_id`，用户只看自己的；管理员看系统健康，看不到他人内容（含他人 LLM key 明文）。
 - **审批动作签名**：审批请求带一次性 nonce，防重放。
 - **工作区白名单 + 危险命令网关**：纵深防御，即使被越权也卡在 Gate。
-- **Secrets**：LLM API key、VAPID 私钥放各自本地 `.env`（不入库、不进 git、不上服务器）。
+- **其余 Secrets**：VAPID 私钥、服务器主密钥放服务器 `.env`；本地进程的 `.env` 仍可独立设 LLM key（不走服务器那条）。所有 `.env` 不入库、不进 git。
 
 > 💬 **人话：几个安全词**
 > - **access key 只存哈希**：服务器存的是 key 的"指纹"不是原文，库被翻了也还原不出你的 key。
