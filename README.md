@@ -51,8 +51,13 @@ Full diagram & component contracts: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 ## Status
 
 🚧 **Design + scaffold (P0).** This repo currently contains the design docs and a project skeleton.
-Implementation follows the [roadmap](docs/ROADMAP.md): P1 single-machine driving → P2 review →
-P3 phone+approvals → P4 two-way control.
+Implementation follows the [roadmap](docs/ROADMAP.md): P1 single-machine driving → P2 review +
+checkpoints → P3 phone+approvals → P4 decision loop (operator + auditor + decision cards) → P5
+definition engine (open-core "secret sauce") → P6 UI editor → P7 team/relay mode.
+
+Runs **personal** (local process serves its own PWA) or **team** (one shared server acts as a relay
+for multiple users' local processes, each connecting with an access key). Same codebase. See
+[DESIGN.zh-CN.md §8](docs/DESIGN.zh-CN.md).
 
 ## Stack
 

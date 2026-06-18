@@ -67,7 +67,21 @@ in the repo.
 
 **Done when:** you build and tweak your whole workflow library from your phone, code untouched.
 
-## P7 — Enhancements (post-MVP)
+## P7 — Team / relay mode (one shared server, multiple people)
+Same codebase, two deployment modes (personal direct vs team relay — see DESIGN.zh-CN.md §8).
+- **Relay hub** on the server: local processes connect *outbound* (persistent WebSocket) with an
+  access key; the server routes each user's PWA traffic to their own local process(es).
+- **Admin console**: create users + invites (no self-signup). Roles: admin | member.
+- **Access keys**: one per machine, many per account, hashed at rest, individually revocable.
+- **Multi-tenant isolation**: every record scoped to `account_id`.
+- **Hybrid data**: secret sauce (definitions) + LLM keys stay on each local process; the server keeps
+  only a display cache (session summaries, cards) so the PWA still shows recent state when a local
+  process is offline. Full diffs / raw output are pulled from the local process on demand.
+
+**Done when:** 3 teammates each run their own local process, share one server, and never see each
+other's workflows or data.
+
+## P8 — Enhancements (post-MVP)
 - Multi-machine routing (capability/trust per machine).
 - MCP integration; more agent adapters (Gemini CLI, Aider, …).
 - Policy learning (remember your approval decisions to reduce future prompts).
