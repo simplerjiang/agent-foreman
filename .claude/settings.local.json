@@ -1,0 +1,7 @@
+﻿{
+  "permissions": {
+    "allow": [
+      "Bash(python C:/Users/jiang/AppData/Local/Temp/foreman_deploy/ssh_run.py:*)"
+    ]
+  }
+}

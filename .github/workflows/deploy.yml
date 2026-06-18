@@ -29,7 +29,7 @@ jobs:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if [ -z "${SSH_KEY:-}" ] || [ -z "${HOST:-}" ] || [ -z "${USER:-}" ]; then
             echo "::error::Missing DEPLOY_SSH_KEY / DEPLOY_HOST / DEPLOY_USER secrets."
             exit 1
@@ -37,6 +37,17 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$USER@$HOST" \
+          echo "::group::reachability (port 22)"
+          timeout 15 bash -c "cat < /dev/null > /dev/tcp/$HOST/22" && echo "port 22 reachable" || echo "port 22 NOT reachable (rc=$?)"
+          echo "::endgroup::"
+          echo "::group::ssh-keyscan"
+          ssh-keyscan -T 15 "$HOST" >> ~/.ssh/known_hosts || echo "keyscan rc=$?"
+          echo "::endgroup::"
+          echo "::group::deploy over ssh"
+          ssh -v -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "$USER@$HOST" \
             'bash -lc "/opt/foreman/app/deploy/remote_deploy.sh"'
+          rc=$?
+          echo "::endgroup::"
+          echo "ssh exit code: $rc"
+          exit $rc
