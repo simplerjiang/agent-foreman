@@ -7,9 +7,10 @@ name: Deploy to server
 #   DEPLOY_USER     foreman
 #   DEPLOY_SSH_KEY  the PRIVATE half of the CI deploy keypair (the public half is on the server)
 
+# NOTE: GitHub-hosted runners cannot reach this server's SSH port (the cloud firewall
+# restricts port 22 to the owner's IP). Auto-deploy is therefore done server-side (pull-based);
+# this workflow is manual-only and kept for reference. See deploy/README.md.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
