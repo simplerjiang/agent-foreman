@@ -67,6 +67,9 @@ GET  /health
 POST /api/tasks                  # dispatch a task (also used by phone)
 GET  /api/sessions               # list sessions
 GET  /api/sessions/{id}/events   # timeline (paginated)
+GET  /api/cards?status=pending   # decision cards awaiting a tap
+POST /api/cards/{id}             # {chosen: approve|redirect|undo|custom, text?}
+GET  /api/actions/{id}/detail    # drill-down: ① raw agent output + ② per-file/per-line diff
 GET  /api/approvals?status=pending
 POST /api/approvals/{id}         # {decision: approve|reject, reason?}
 GET  /api/reports

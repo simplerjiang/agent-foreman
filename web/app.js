@@ -41,4 +41,33 @@ document.getElementById('enable-push')?.addEventListener('click', () => {
   console.log('enable push (P3)');
 });
 
+// Decision card -> step detail drill-down (§6.3). P4 wires GET /api/actions/{id}/detail.
+const detailSection = document.getElementById('detail');
+
+function openDetail(actionId) {
+  console.log('load detail (P4):', actionId); // fetch raw output + diff, fill #tab-raw / #tab-diff
+  detailSection?.removeAttribute('hidden');
+  detailSection?.scrollIntoView({ behavior: 'smooth' });
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.view-detail');
+  if (btn) openDetail(btn.dataset.actionId);
+});
+
+document.getElementById('detail-back')?.addEventListener('click', () => {
+  detailSection?.setAttribute('hidden', '');
+});
+
+// Detail tab switching: 原始返回 / 代码改动.
+document.querySelectorAll('#detail .tab').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('#detail .tab').forEach((t) => t.classList.remove('active'));
+    tab.classList.add('active');
+    const which = tab.dataset.tab; // 'raw' | 'diff'
+    document.getElementById('tab-raw').hidden = which !== 'raw';
+    document.getElementById('tab-diff').hidden = which !== 'diff';
+  });
+});
+
 init();

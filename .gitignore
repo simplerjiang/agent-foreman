@@ -1,8 +1,15 @@
-# Secrets & local config
+# Secrets & local config — NEVER commit these to the public repo
 .env
 config.yaml
 *.vapid
 vapid_*.pem
+ServerInfo.txt
+key.txt
+*.key
+*.pem
+secrets/
+**/*credentials*
+**/*secret*
 
 # Database
 *.db

@@ -20,6 +20,32 @@
       <div id="session-list" class="empty">No active sessions yet.</div>
     </section>
 
+    <section id="decisions" aria-label="Decision cards">
+      <h2>Decisions</h2>
+      <div id="card-list" class="empty">No decisions waiting.</div>
+      <!-- P4 renders cards from /api/cards. Structure (see DESIGN.zh-CN.md §6.3): -->
+      <template id="card-template">
+        <article class="card">
+          <p class="card-summary">💬 <span class="summary"></span></p>
+          <p class="card-audit">🕵️ <span class="audit"></span></p>
+          <p class="card-diffstat">📎 <span class="diffstat"></span>
+            <button class="link view-detail" data-action-id="">🔍 查看详情</button></p>
+          <div class="card-actions"><!-- one-tap option buttons injected here --></div>
+        </article>
+      </template>
+    </section>
+
+    <!-- Step detail: drill-down from a card's 查看详情 — raw agent return + actual diff (§6.3) -->
+    <section id="detail" aria-label="Step detail" hidden>
+      <h2><button class="link" id="detail-back">← 返回</button> 步骤详情</h2>
+      <div class="tabs">
+        <button class="tab active" data-tab="raw">原始返回</button>
+        <button class="tab" data-tab="diff">代码改动</button>
+      </div>
+      <pre id="tab-raw" class="tabpanel">（codex/claude/copilot 这一步的完整返回）</pre>
+      <pre id="tab-diff" class="tabpanel" hidden>（逐文件、逐行 diff）</pre>
+    </section>
+
     <section id="approvals" aria-label="Approvals">
       <h2>Approvals</h2>
       <div id="approval-list" class="empty">Nothing waiting on you.</div>
