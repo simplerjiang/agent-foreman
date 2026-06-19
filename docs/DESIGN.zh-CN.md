@@ -853,4 +853,19 @@ agent-foreman/
 
 ---
 
-*本设计为 v0.3（含 §6 决策回路、§8 团队/总机、§11 开放内核）。脚手架（P0）已落地、服务器侧已上线。下一步：打通 P1（单机驱动 claude/codex + 本地仪表盘看实时事件）。*
+## 15. 多语言（i18n）与输出语言
+
+> 你选的语言（中/英）不只换界面，还要让**提示词与 LLM 返回都用该语言**。
+
+**一处设置，三处生效：**
+- **设置**：`language ∈ {zh, en}`（默认 zh）。来源：`config.yaml` 的 `ui.language`（默认值）+ 运行时 `config_kv['ui.language']`（可在 UI 里切）。团队模式以后按账号存（P7）。
+- **① 界面**：前端一份 zh/en 文案字典 + header 语言切换；选择存 localStorage 并同步后端（`POST /api/settings/language`），后端 LLM 侧据此决定输出语言。
+- **② 提示词 / LLM 输出**：shared 提供 `language_directive(lang)`（如 `"请用简体中文回答。"` / `"Respond in English."`），**追加到 Foreman 每个 LLM 调用的 system prompt**（Operator / Auditor / Reviewer / Briefing）。于是它生成的**所有给你看的文字**——会话摘要、决策卡、审核理由、审阅意见、简报——都用你选的语言。
+  - 提示词骨架（你的"秘方"）保持英文 / 语言无关，**只切输出语言**——秘方稳定，你读到的本地化。
+- **边界**：只本地化 **Foreman 自己生成的文字**；被驱动的 claude/codex 的**原始输出**按原样展示（那是 agent 的话，详情页原样看，不翻译）。
+
+落地见 TASKS **P1.5**（T1.13 设置 + 输出语言指令、T1.14 UI 切换 + 浏览器验收）；Reviewer（P2）、Operator/Auditor（P4）实现时调用 `language_directive` 接入。
+
+---
+
+*本设计为 v0.3。脚手架（P0）+ 单机驱动（P1：驱动 claude/codex → 落库 → 原生窗口看时间线）已落地。新增 §15 多语言。下一步：P1.5 多语言 → P2（观测 / 审阅 / 检查点 / 看门狗）。*
