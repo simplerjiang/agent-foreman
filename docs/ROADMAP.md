@@ -14,17 +14,24 @@ Each phase is a **vertical, runnable slice** — something you can start and dem
 - `AgentAdapter` for Claude Code (headless `claude -p --output-format stream-json`).
 - `AgentAdapter` for Codex (`codex exec`).
 - Agent Runner: launch in a workspace, stream structured events into the event bus + DB.
-- Minimal **local** web dashboard (no auth yet) showing live session + timeline.
+- Minimal **local** web dashboard (no auth yet) showing live session + timeline — wrapped in a native
+  `pywebview` window on PC (same UI, `foreman app`); see DESIGN §4.6.
 
-**Done when:** you `dispatch` a task from the terminal, watch claude/codex run, and see events in the browser.
+**Done when:** you `dispatch` a task from the terminal, watch claude/codex run, and see events live in the
+app window (and/or a browser).
 
 ## P2 — Observation + Review
 - Claude Code **hooks** receiver (`PreToolUse` / `PostToolUse` / `Stop` / `Notification`).
-- Git watcher (diff/commit) + process/idle detection.
+- Git watcher (diff/commit) + process/idle detection (psutil); each signal refreshes per-agent `last_progress_at`.
+- **Supervisor / Watchdog**: agents pool with health state (alive/idle/waiting_input/stalled/errored/dead);
+  cheap deterministic poll (10–30s, no tokens) that escalates to the LLM only on a suspicious signal;
+  recovery playbook (nudge → interrupt+resume → restart-from-checkpoint → backoff-retry → escalate card →
+  failover to the other CLI). Codex needs this most (no hooks; stalls on long runs — see memory).
 - **Reviewer**: on checkpoint, send diff+goal to your LLM → structured verdict.
-- **Checkpoint Manager**: auto git snapshot before each step (per-step granularity) → enables undo.
+- **Checkpoint Manager**: auto git snapshot before each step (per-step = per-decision-card) → enables undo.
 
-**Done when:** finishing a task auto-produces an LLM review with risks/suggestions, and any step is one-click revertible.
+**Done when:** finishing a task auto-produces an LLM review with risks/suggestions, any step is one-click
+revertible, and a stalled/crashed agent is auto-detected and recovered (or escalated to you).
 
 ## P3 — Phone surface + Approvals
 - PWA (`manifest` + service worker), installable, Web Push (VAPID).
@@ -69,16 +76,18 @@ in the repo.
 
 ## P7 — Team / relay mode (one shared server, multiple people)
 Same codebase, two deployment modes (personal direct vs team relay — see DESIGN.zh-CN.md §8).
-- **Relay hub** on the server: local processes connect *outbound* (persistent WebSocket) with an
-  access key; the server routes each user's PWA traffic to their own local process(es).
+- **Relay hub** on the server: local processes connect *outbound* over **WebSocket-over-TLS (`wss://`,
+  443)** with an access key (handshake sends the key, ping/pong heartbeat, exp-backoff reconnect — see
+  DESIGN §8.5); the server routes each user's PWA traffic to their own local process(es) by account.
 - **Admin console**: create users + invites (no self-signup). Roles: admin | member.
 - **Access keys**: one per machine, many per account, hashed at rest, individually revocable.
 - **Multi-tenant isolation**: every record scoped to `account_id`.
 - **Hybrid data**: secret sauce (definitions) stays on each local process and is never on the server.
-  **LLM config (base_url/model/key) is per-account**: each user sets it in the PWA and it's stored
-  **encrypted, per-account** on the server, then pushed down to that account's local processes (or set
-  locally in `.env` instead). The server also keeps a display cache (session summaries, cards) so the
-  PWA shows recent state when a local process is offline; full diffs / raw output are pulled on demand.
+  **LLM keys stay local**: each user sets base_url/model/key in their own local process's `.env` — the
+  server never stores per-user keys. The server holds just **one site-wide LLM key** (in its `.env`) for
+  its own server-side calls (on this box, the loopback gateway). The server also keeps a display cache
+  (session summaries, cards) so the PWA shows recent state when a local process is offline; full diffs /
+  raw output are pulled on demand.
 
 **Done when:** 3 teammates each run their own local process, share one server, and never see each
 other's workflows or data.

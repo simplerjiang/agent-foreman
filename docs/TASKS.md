@@ -1,0 +1,93 @@
+# Foreman 任务拆分（实现步骤）
+
+> 把 [DESIGN.zh-CN.md](DESIGN.zh-CN.md) 的设计边界拆成**可执行、可验收**的步骤。
+> 阶段对应 [ROADMAP.md](ROADMAP.md) 的 P0–P7；代码边界见 DESIGN §14：
+> **shared**（两端共用）/ **client**（PC 应用 + agents）/ **server**（后端 + PWA）。
+>
+> 约定：每步尽量是"能独立跑、能验收"的纵向小切片；`[ ]`→`[x]` 表示完成；新发现的子任务就近补进对应阶段。
+
+---
+
+## P0.5 — 仓库重排（动手前的地基）
+把现有扁平的 `src/foreman/{core,agents,...}` 重排成 client / server / shared 三块。
+
+- [ ] **T0.1** 建 `shared/`：迁入 `config.py`、`llm/client.py`；新增 `events.py`（AgentEvent + 事件类型）、`protocol.py`（wss 协议契约占位）。
+- [ ] **T0.2** 建 `client/`：迁入 `agents/`、`monitor/`、`core/`（operator/auditor/gate/reviewer/scheduler/supervisor/checkpoint/events）、`store/`（本地库）；新增 `computer_use/` 占位。
+- [ ] **T0.3** 建 `server/`：迁入 `server/{app,push,auth}.py`、`web/`（PWA 前端归这里）；新增 server `store/`（服务器库）占位。
+- [ ] **T0.4** 改 `__main__.py`：`foreman app`（client）/ `foreman serve`（server）/ `foreman dispatch`；`pyproject.toml` 入口 + 可选依赖分组（client / server extras）。
+- [ ] **验收**：`foreman serve` 仍能起 `/health`；`foreman.client` 与 `foreman.server` 各自独立可导入。
+
+## P1 — 单机驱动（client 为主）
+dispatch 一个任务 → 看 claude/codex 在真实工作区跑 → 窗口/浏览器看实时事件。
+
+**shared**
+- [ ] **T1.1** 定稿 `AgentEvent` 与事件类型枚举（DESIGN §7.1）；时间戳 UTC ISO8601。
+- [ ] **T1.2** LLM client 跑通最小调用（OpenAI 兼容 + Anthropic 兼容），读 base_url/model/key。
+
+**client / agents**
+- [ ] **T1.3** `ClaudeCodeAdapter.start`：spawn `claude -p "<instr>" --output-format stream-json --verbose`（Windows：`claude.cmd`、UTF-8、creationflags）。
+- [ ] **T1.4** `ClaudeCodeAdapter.stream`：逐行 `json.loads` → 映射 `AgentEvent`。
+- [ ] **T1.5** `ClaudeCodeAdapter.stop`（+ `send`/`--resume` 占位给 P4）。
+- [ ] **T1.6** `CodexAdapter.start/stream/stop`：`codex exec`，输出解析。
+- [ ] **T1.7** `Runner.launch`：选 adapter → 起 agent → 每个事件 **落库 + 上 EventBus**；两个 CLI 可并行不同会话。
+
+**client / store**
+- [ ] **T1.8** 本地 SQLite：`sessions / tasks / events` 表 + 读写；`schema_version`。
+
+**client / CLI + 本地 UI**
+- [ ] **T1.9** `foreman dispatch "<task>" --workspace <path> --agent claude-code|codex`：建 Root Session → `Runner.launch`。
+- [ ] **T1.10** 本地 API：`GET /api/sessions`、`GET /api/sessions/{id}/events`、`WS /ws`（EventBus→前端）。
+- [ ] **T1.11** 最小时间线页（`server/web/`）：列会话 + 实时事件流。
+- [ ] **T1.12** `foreman app`：pywebview 原生窗口套本地 UI + pystray 托盘（开=上线/关=下线）。
+- [ ] **验收**：`foreman dispatch ... --workspace D:\proj`，窗口/浏览器实时看到 claude 与 codex 的事件流入。
+
+## P2 — 观测 + 审阅 + 检查点 + 看门狗（client）
+- [ ] **T2.1** 工作区非仓库时 `git init`。
+- [ ] **T2.2** Checkpoint Manager：临时索引 `add -A`→`commit-tree`→影子 ref `refs/foreman/ckpt/*`（§6.5）；记 `checkpoints`。
+- [ ] **T2.3** 一键回退：恢复到某检查点（含删后建文件）+ 先给当前打点（redo）。
+- [ ] **T2.4** Hook 接收端 `POST /hooks`（PreToolUse/PostToolUse/Stop/Notification）。
+- [ ] **T2.5** Git watcher（diff/commit）+ process/idle（psutil）→ 刷新 `last_progress_at`。
+- [ ] **T2.6** Supervisor 看门狗（**全局唯一**）：池健康状态机 + 廉价巡检 + 可疑时升级 LLM + 恢复 playbook（§4.1/§5.6）。
+- [ ] **T2.7** Reviewer：检查点处 diff+目标 → 结构化评审。
+- [ ] **验收**：任务完成自动产出评审；任一步可一键回退；卡死/崩溃能被发现并恢复或升级。
+
+## P3 — 手机面 + 审批 + server 起步
+- [ ] **T3.1** server 库：accounts / access_keys / process_registry（占位 invites / cache）。
+- [ ] **T3.2** `wss /relay`：出站长连 + access key 握手 + 心跳 + 重连 + 按账号路由（§8.5）。
+- [ ] **T3.3** PWA：manifest + service worker + Web Push（VAPID）。
+- [ ] **T3.4** Gate：危险动作分级 + 审批卡推送 + 批/驳闭环（§6.6）。
+- [ ] **T3.5** 鉴权：用户登录 + access key 管理。
+- [ ] **验收**：claude 想 `git push` 被拦 → 手机收推送 → 点批准 → 恢复。
+
+## P4 — 决策回路 + 两向控制 + 能力层（⭐ 核心交互）
+- [ ] **T4.1** Operator：精简输出 + 提案下一步动作。
+- [ ] **T4.2** Auditor：§6.7 提示词骨架（两轴评分、从严默认、防自偏、verdict `pass/revise/reject/escalate`）。
+- [ ] **T4.3** Decision Card + 详情页下钻（原始返回 / 逐行 diff，§6.3）。
+- [ ] **T4.4** 自治档位（0/1/2/3，默认 1）。
+- [ ] **T4.5** Operator Toolbelt（§4.7）：截屏(含鼠标渲染选项)/鼠标/键盘/管理员 shell；computer-use 会话侧执行。
+- [ ] **T4.6** 手机下发任务 + 多会话 + 简报。
+- [ ] **验收**：一步走完 Operator→Auditor→卡→你点→检查点→执行；全程手机可操作。
+
+## P5 — 定义引擎（⭐ 秘方层）
+- [ ] **T5.1** `definitions` + `definition_links` + `workflow_runs` 表。
+- [ ] **T5.2** 混合式工作流引擎（固定骨架 + 每步 LLM/skill 驱动 + 卡审批点）。
+- [ ] **T5.3** 事前注入工作区（CLAUDE.md / AGENTS.md / skill）。
+- [ ] **T5.4** QA 标准驱动审阅。
+- [ ] **T5.5** 数据库迁移（schema_version + 迁移器）。
+
+## P6 — UI 编辑器 + 扩展口
+- [ ] **T6.1** 手机/网页里增删改 工作流/技能/规范/QA。
+- [ ] **T6.2** 定义导出/备份 + 可选 body 加密。
+- [ ] **T6.3** `Notifier` 接口（飞书/Telegram/Bark/邮件）+ 插件 entry points。
+- [ ] **T6.4** 仓库内置脱敏示例定义。
+
+## P7 — 团队 / 总机模式
+- [ ] **T7.1** Relay 总机：多本地进程出站接入 + 按账号路由。
+- [ ] **T7.2** 管理员控制台：建用户 + 邀请（无自助注册）。
+- [ ] **T7.3** access key：一机一张、可多张、哈希存、可吊销。
+- [ ] **T7.4** 多租户隔离（每条记录绑 `account_id`）。
+- [ ] **T7.5** 展示缓存（cache_sessions / cache_cards）供本地离线只读。
+- [ ] **验收**：3 人各跑各的本地进程、共用一台服务器、互不见秘方与数据。
+
+---
+*维护：完成一步即勾选；阶段级里程碑见 [ROADMAP.md](ROADMAP.md)，设计依据见 [DESIGN.zh-CN.md](DESIGN.zh-CN.md)。*
