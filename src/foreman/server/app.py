@@ -15,17 +15,17 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from foreman.shared.config import Config
 from foreman.shared.events import EventBus
-from ..store import Store
 
 WEB_DIR = Path(__file__).resolve().parents[3] / "web"
 
 
-def create_app(cfg: Config) -> FastAPI:
+def create_app(cfg: Config, store: object | None = None, bus: EventBus | None = None) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
-    store = Store(cfg.store.db_path)
-    store.init()
-    bus = EventBus()
+    # Store + bus are INJECTED by the caller: in personal mode the client app passes its
+    # local store; the team server passes its own cache store (T0.3/P3). The server package
+    # must never import the client's store — 秘方 stays local (DESIGN §8.3, §14 boundary).
+    bus = bus or EventBus()
 
     # Stash shared singletons for routes/components to reach (P1+ will add a real DI/state layer).
     app.state.cfg = cfg

@@ -36,15 +36,18 @@ def test_agent_event_and_bus():
 
 
 def test_shared_does_not_pull_in_client_or_server():
-    """Boundary guard: importing all of shared must not drag in client/server modules."""
-    import importlib
-    import pkgutil
+    """Boundary guard: importing all of shared, in a FRESH interpreter, must not drag in
+    client/server. Uses a subprocess so other tests' imports can't pollute sys.modules."""
+    import os
+    import subprocess
     import sys
 
-    import foreman.shared as shared
-
-    for mod in pkgutil.walk_packages(shared.__path__, prefix="foreman.shared."):
-        importlib.import_module(mod.name)
-
-    leaked = [n for n in sys.modules if n.startswith(("foreman.client", "foreman.server"))]
-    assert not leaked, f"shared leaked imports into: {leaked}"
+    script = (
+        "import importlib, pkgutil, sys, foreman.shared as s\n"
+        "[importlib.import_module(m.name) for m in pkgutil.walk_packages(s.__path__, 'foreman.shared.')]\n"
+        "leak=[n for n in sys.modules if n.startswith(('foreman.client','foreman.server'))]\n"
+        "sys.exit('shared leaked: %s' % leak if leak else 0)\n"
+    )
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
