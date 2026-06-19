@@ -70,15 +70,23 @@ class EventBus:
     def __init__(self) -> None:
         self._subscribers: set[asyncio.Queue[AgentEvent]] = set()
 
+    def subscribe_queue(self) -> asyncio.Queue[AgentEvent]:
+        """Register a subscriber queue synchronously (robust for WS — no first-iteration race)."""
+        q: asyncio.Queue[AgentEvent] = asyncio.Queue()
+        self._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue[AgentEvent]) -> None:
+        self._subscribers.discard(q)
+
     async def publish(self, event: AgentEvent) -> None:
         for q in list(self._subscribers):
             await q.put(event)
 
     async def subscribe(self) -> AsyncIterator[AgentEvent]:
-        q: asyncio.Queue[AgentEvent] = asyncio.Queue()
-        self._subscribers.add(q)
+        q = self.subscribe_queue()
         try:
             while True:
                 yield await q.get()
         finally:
-            self._subscribers.discard(q)
+            self.unsubscribe(q)
