@@ -1,38 +1,19 @@
-"""Codex CLI adapter.
+"""Codex CLI adapter — non-interactive `codex exec "<instruction>"`.
 
-Non-interactive:  codex exec "<instruction>"
-Codex has no hook mechanism today, so observation leans on output parsing + the git watcher.
-Interactive follow-ups use a PTY (pywinpty on Windows). See docs/DESIGN.zh-CN.md §4.2/§4.3.
+Codex has no hook mechanism today, so observation leans on output parsing + the git watcher
+(DESIGN §4.2/§4.3). Its output isn't stream-json by default; the base maps JSON lines when present
+and falls back to raw agent_output text otherwise.
+
+Lifecycle (spawn / stream / stop) lives in SubprocessCliAdapter; only the launch command differs.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from pathlib import Path
-
-from foreman.shared.config import AgentCfg
-from foreman.shared.events import AgentEvent
-from .base import AgentHandle
+from ._subprocess import SubprocessCliAdapter
 
 
-class CodexAdapter:
+class CodexAdapter(SubprocessCliAdapter):
     name = "codex"
 
-    def __init__(self, cfg: AgentCfg) -> None:
-        self.cfg = cfg
-
-    async def start(self, instruction: str, workspace: Path, session_id: str) -> AgentHandle:
-        raise NotImplementedError("CodexAdapter.start — roadmap P1")
-
-    async def send(self, handle: AgentHandle, text: str) -> None:
-        raise NotImplementedError("CodexAdapter.send — roadmap P1/P4")
-
-    async def stream(self, handle: AgentHandle) -> AsyncIterator[AgentEvent]:
-        raise NotImplementedError("CodexAdapter.stream — roadmap P1")
-        yield  # pragma: no cover
-
-    async def interrupt(self, handle: AgentHandle) -> None:
-        raise NotImplementedError("CodexAdapter.interrupt — roadmap P3")
-
-    async def stop(self, handle: AgentHandle) -> None:
-        raise NotImplementedError("CodexAdapter.stop — roadmap P1")
+    def _build_cmd(self, instruction: str) -> list[str]:
+        return [self.cfg.command, "exec", instruction]
