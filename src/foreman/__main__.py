@@ -57,10 +57,19 @@ def dispatch(
     workspace: str = typer.Option(..., help="Workspace path the agent runs in"),
     config: str = typer.Option("config.yaml", help="Path to config.yaml"),
 ) -> None:
-    """Create a session and dispatch a task to an agent (P1+)."""
-    rprint("[yellow]dispatch is not implemented yet (roadmap P1).[/] "
-           "It will create a Root Session and launch the agent in the workspace.")
-    raise typer.Exit(code=1)
+    """Create a session and run a task on an agent to completion (events persisted locally)."""
+    import asyncio
+
+    from foreman.client.dispatch import run_dispatch  # lazy: keeps `foreman serve` client-free
+
+    cfg = load_config(config)
+    try:
+        session_id, n_events = asyncio.run(run_dispatch(cfg, task, workspace, agent))
+    except ValueError as e:
+        rprint(f"[red]{e}[/]")
+        raise typer.Exit(code=1) from e
+    rprint(f"[green]session {session_id}[/] — {n_events} events captured "
+           f"([cyan]{agent}[/] in {workspace})")
 
 
 @app.command()
