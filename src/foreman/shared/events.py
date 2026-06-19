@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 # The event-type vocabulary (DESIGN §7.1). Kept as a frozenset of plain strings (not an
 # Enum) so payloads stay JSON-friendly across the wire; use it for cheap validation.
@@ -29,7 +30,33 @@ class AgentEvent:
     session_id: str
     task_id: str | None = None
     payload: dict = field(default_factory=dict)
-    ts: str = ""       # UTC ISO8601; set by the publisher
+    ts: str = ""       # UTC ISO8601; set by the publisher (use utc_now_iso / make_event)
+
+
+def utc_now_iso() -> str:
+    """Canonical event timestamp: timezone-aware UTC, ISO 8601 (e.g. 2026-06-19T12:34:56.789+00:00)."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def make_event(
+    type: str,
+    source: str,
+    session_id: str,
+    *,
+    task_id: str | None = None,
+    payload: dict | None = None,
+) -> AgentEvent:
+    """Build a timestamped AgentEvent, validating `type` against EVENT_TYPES (fail fast on typos)."""
+    if type not in EVENT_TYPES:
+        raise ValueError(f"unknown event type: {type!r} (not in EVENT_TYPES)")
+    return AgentEvent(
+        type=type,
+        source=source,
+        session_id=session_id,
+        task_id=task_id,
+        payload=payload or {},
+        ts=utc_now_iso(),
+    )
 
 
 class EventBus:

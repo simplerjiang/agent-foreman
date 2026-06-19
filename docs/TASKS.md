@@ -21,7 +21,7 @@
 dispatch 一个任务 → 看 claude/codex 在真实工作区跑 → 窗口/浏览器看实时事件。
 
 **shared**
-- [ ] **T1.1** 定稿 `AgentEvent` 与事件类型枚举（DESIGN §7.1）；时间戳 UTC ISO8601。
+- [x] **T1.1** 定稿 `AgentEvent` 与事件类型枚举（DESIGN §7.1）；时间戳 UTC ISO8601。✅ `make_event()`（校验 type）+ `utc_now_iso()`；三关通过；16 tests。
 - [ ] **T1.2** LLM client 跑通最小调用（OpenAI 兼容 + Anthropic 兼容），读 base_url/model/key。
 
 **client / agents**
