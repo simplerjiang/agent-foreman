@@ -56,18 +56,28 @@ class ClaudeCodeAdapter:
         return handle
 
     async def send(self, handle: AgentHandle, text: str) -> None:
-        # T1.5/P4: re-invoke with --resume handle.native_session_id (headless).
-        raise NotImplementedError("ClaudeCodeAdapter.send — roadmap T1.5/P4")
+        # P4: re-invoke headless with `--resume handle.native_session_id` (captured during stream).
+        raise NotImplementedError("ClaudeCodeAdapter.send — roadmap P4 (native_session_id is wired)")
 
     async def stream(self, handle: AgentHandle) -> AsyncIterator[AgentEvent]:
-        """Yield one AgentEvent per stdout line (claude --output-format stream-json)."""
+        """Yield one AgentEvent per stdout line (claude --output-format stream-json).
+
+        Side effect: captures claude's own session id (first line carrying "session_id") onto
+        handle.native_session_id so a later send() can `--resume` it (P4).
+        """
         proc = self._procs.get(handle.id)
         if proc is None or proc.stdout is None:
             return
         async for raw in proc.stdout:
             line = raw.decode("utf-8", "replace").strip()
-            if line:
-                yield self._line_to_event(line, handle.session_id)
+            if not line:
+                continue
+            event = self._line_to_event(line, handle.session_id)
+            if not handle.native_session_id:
+                sid = event.payload.get("session_id")
+                if sid:
+                    handle.native_session_id = sid
+            yield event
 
     def _line_to_event(self, line: str, session_id: str) -> AgentEvent:
         """Map one stream-json line to an AgentEvent; non-JSON / non-object → raw agent_output.

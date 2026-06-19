@@ -116,3 +116,15 @@ async def test_stream_parses_stream_json(tmp_path):
     assert events[2].payload == {"text": "not json at all"}  # non-JSON fallback
     assert events[3].payload == {"text": "42"}               # non-object JSON fallback
     assert events[4].payload["result"] == "done"
+
+
+async def test_stream_captures_native_session_id(tmp_path):
+    lines = [
+        b'{"type":"system","subtype":"init","session_id":"claude-abc"}\n',
+        b'{"type":"result","result":"done"}\n',
+    ]
+    a = FakeClaudeAdapter(_cfg(), FakeProc(stdout_lines=lines))
+    h = await a.start("x", tmp_path, "s")
+    assert h.native_session_id is None
+    _ = [e async for e in a.stream(h)]
+    assert h.native_session_id == "claude-abc"
