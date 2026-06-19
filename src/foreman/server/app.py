@@ -16,7 +16,7 @@ from .. import __version__
 from foreman.shared.config import Config
 from foreman.shared.events import EventBus
 
-WEB_DIR = Path(__file__).resolve().parents[3] / "web"
+WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
 def create_app(cfg: Config, store: object | None = None, bus: EventBus | None = None) -> FastAPI:
