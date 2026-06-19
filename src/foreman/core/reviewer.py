@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..llm import LLMClient, Message
+from foreman.shared.llm import LLMClient, Message
 
 REVIEW_SYSTEM = (
     "You are a senior engineer reviewing an AI coding agent's work. "

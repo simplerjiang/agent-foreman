@@ -11,7 +11,7 @@
 ## P0.5 — 仓库重排（动手前的地基）
 把现有扁平的 `src/foreman/{core,agents,...}` 重排成 client / server / shared 三块。
 
-- [ ] **T0.1** 建 `shared/`：迁入 `config.py`、`llm/client.py`；新增 `events.py`（AgentEvent + 事件类型）、`protocol.py`（wss 协议契约占位）。
+- [x] **T0.1** 建 `shared/`：迁入 `config.py`、`llm/client.py`；新增 `events.py`（AgentEvent + 事件类型 + EventBus）、`protocol.py`（wss 协议契约占位）。✅ ruff/import/4 tests 通过。
 - [ ] **T0.2** 建 `client/`：迁入 `agents/`、`monitor/`、`core/`（operator/auditor/gate/reviewer/scheduler/supervisor/checkpoint/events）、`store/`（本地库）；新增 `computer_use/` 占位。
 - [ ] **T0.3** 建 `server/`：迁入 `server/{app,push,auth}.py`、`web/`（PWA 前端归这里）；新增 server `store/`（服务器库）占位。
 - [ ] **T0.4** 改 `__main__.py`：`foreman app`（client）/ `foreman serve`（server）/ `foreman dispatch`；`pyproject.toml` 入口 + 可选依赖分组（client / server extras）。

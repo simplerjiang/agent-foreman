@@ -6,7 +6,7 @@ Wired to Claude Code's PreToolUse hook so dangerous tool calls can be blocked pe
 
 from __future__ import annotations
 
-from ..config import GatesCfg
+from foreman.shared.config import GatesCfg
 
 
 class Gate:

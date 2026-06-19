@@ -13,8 +13,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from ..config import AgentCfg
-from ..core.events import AgentEvent
+from foreman.shared.config import AgentCfg
+from foreman.shared.events import AgentEvent
 from .base import AgentHandle
 
 

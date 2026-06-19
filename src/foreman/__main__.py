@@ -12,7 +12,7 @@ import typer
 from rich import print as rprint
 
 from . import __version__
-from .config import load_config
+from foreman.shared.config import load_config
 
 app = typer.Typer(add_completion=False, help="Foreman — a PM agent for your local coding agents.")
 

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..config import Config
-from ..core.events import EventBus
+from foreman.shared.config import Config
+from foreman.shared.events import EventBus
 from .base import AgentAdapter, AgentHandle
 from .claude_code import ClaudeCodeAdapter
 from .codex import CodexAdapter

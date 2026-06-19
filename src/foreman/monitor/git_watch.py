@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..core.events import EventBus
+from foreman.shared.events import EventBus
 
 
 class GitWatcher:

@@ -7,7 +7,7 @@ This keeps token cost down and behavior stable. See docs/DESIGN.zh-CN.md §4.1.
 
 from __future__ import annotations
 
-from ..llm import LLMClient
+from foreman.shared.llm import LLMClient
 
 
 class PMBrain:

@@ -10,7 +10,7 @@ See docs/ARCHITECTURE.md and docs/DESIGN.zh-CN.md §10.
 
 from __future__ import annotations
 
-from ..core.events import AgentEvent
+from foreman.shared.events import AgentEvent
 
 
 def hook_to_event(hook_name: str, payload: dict, session_id: str) -> AgentEvent:

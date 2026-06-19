@@ -1,14 +1,16 @@
 """Foreman — a self-hosted PM agent supervising local coding agents.
 
-See docs/DESIGN.zh-CN.md for the architecture. Package layout:
+See docs/DESIGN.zh-CN.md for the architecture. Target layout (DESIGN §14) is three
+units — `shared` (both sides), `client` (PC app + agents), `server` (backend + PWA):
 
-    config   — settings loading (YAML + .env)
-    llm      — provider-agnostic LLM client (your own API)
-    store    — SQLite models + session
-    core     — PM Brain, Reviewer, Gate, Scheduler, Event Bus
-    agents   — AgentAdapter protocol + Claude Code / Codex adapters + Runner
-    monitor  — Claude Code hook receiver, git watcher, process watcher
-    server   — FastAPI app (REST + WS), Web Push, auth
+    shared   — config, LLM client, event types + bus, wss protocol contract
+    client   — agents (Claude Code / Codex + Runner), monitor, core (operator/auditor/
+               gate/reviewer/scheduler/supervisor/checkpoint), local store, computer-use
+    server   — FastAPI relay + REST/WS, Web Push, auth, server store, PWA (web/)
+
+Reshape in progress (TASKS P0.5): `shared/` is in place; `core`/`agents`/`monitor`/`store`
+still sit at the top level pending the move under `client/` (T0.2), and the server side
+is consolidated under `server/` (T0.3).
 """
 
 __version__ = "0.1.0"

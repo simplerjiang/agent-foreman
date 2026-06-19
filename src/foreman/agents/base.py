@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from ..core.events import AgentEvent
+from foreman.shared.events import AgentEvent
 
 
 @dataclass

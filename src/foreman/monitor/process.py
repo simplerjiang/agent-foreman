@@ -8,7 +8,7 @@ See docs/DESIGN.zh-CN.md §4.3 and §12.
 
 from __future__ import annotations
 
-from ..core.events import EventBus
+from foreman.shared.events import EventBus
 
 
 class ProcessWatcher:

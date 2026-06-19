@@ -13,8 +13,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
-from ..config import Config
-from ..core.events import EventBus
+from foreman.shared.config import Config
+from foreman.shared.events import EventBus
 from ..store import Store
 
 WEB_DIR = Path(__file__).resolve().parents[3] / "web"

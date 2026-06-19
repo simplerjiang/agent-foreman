@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..llm import LLMClient, Message
+from foreman.shared.llm import LLMClient, Message
 
 AUDIT_SYSTEM = (
     "You are an independent command auditor for an AI operator. Before any command runs, decide "

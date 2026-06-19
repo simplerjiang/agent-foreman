@@ -8,7 +8,7 @@ See docs/DESIGN.zh-CN.md §4.1.
 
 from __future__ import annotations
 
-from ..config import ScheduleCfg
+from foreman.shared.config import ScheduleCfg
 from .brain import PMBrain
 
 

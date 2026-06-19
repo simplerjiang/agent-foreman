@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from ..config import Config
+from foreman.shared.config import Config
 
 
 class Pusher:
