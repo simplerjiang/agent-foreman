@@ -9,13 +9,28 @@ from foreman.client.agents.claude_code import ClaudeCodeAdapter
 from foreman.shared.config import AgentCfg
 
 
+class _FakeStdout:
+    """Async-iterable mimic of asyncio StreamReader (yields bytes lines)."""
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = list(lines)
+
+    def __aiter__(self) -> "_FakeStdout":
+        return self
+
+    async def __anext__(self) -> bytes:
+        if not self._lines:
+            raise StopAsyncIteration
+        return self._lines.pop(0)
+
+
 class FakeProc:
-    def __init__(self, pid: int = 4321) -> None:
+    def __init__(self, pid: int = 4321, stdout_lines: list[bytes] | None = None) -> None:
         self.pid = pid
         self.returncode: int | None = None
         self.terminated = False
         self.killed = False
-        self.stdout = None
+        self.stdout = _FakeStdout(stdout_lines) if stdout_lines is not None else None
 
     def terminate(self) -> None:
         self.terminated = True
@@ -80,3 +95,24 @@ async def test_stop_is_noop_when_already_exited(tmp_path):
     await a.stop(h)
     assert proc.terminated is False
     assert h.id not in a._procs
+
+
+async def test_stream_parses_stream_json(tmp_path):
+    lines = [
+        b'{"type":"system","subtype":"init","session_id":"abc"}\n',
+        b'{"type":"assistant","message":{"content":"hello"}}\n',
+        b"not json at all\n",
+        b"42\n",  # valid JSON but not an object -> raw fallback
+        b'{"type":"result","result":"done"}\n',
+    ]
+    a = FakeClaudeAdapter(_cfg(), FakeProc(stdout_lines=lines))
+    h = await a.start("x", tmp_path, "s")
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == [
+        "agent_output", "agent_output", "agent_output", "agent_output", "stop",
+    ]
+    assert all(e.source == "claude-code" and e.session_id == "s" and e.ts for e in events)
+    assert events[2].payload == {"text": "not json at all"}  # non-JSON fallback
+    assert events[3].payload == {"text": "42"}               # non-object JSON fallback
+    assert events[4].payload["result"] == "done"
