@@ -1,20 +1,79 @@
-"""Database session/engine wrapper."""
+"""Local (client) SQLite store: engine, session, and r/w helpers for the PM Core.
+
+Holds sessions / tasks / events and the 秘方 definitions (DESIGN §7.1). See models.py.
+"""
 
 from __future__ import annotations
 
-from sqlmodel import Session as DBSession
-from sqlmodel import SQLModel, create_engine
+import json
+import uuid
 
-from . import models  # noqa: F401  (import registers tables on SQLModel.metadata)
+from sqlmodel import Session as DBSession
+from sqlmodel import SQLModel, create_engine, select
+
+from foreman.shared.events import AgentEvent, utc_now_iso
+
+from .models import Event, SchemaVersion, Session, Task
+
+SCHEMA_VERSION = 1
 
 
 class Store:
     def __init__(self, db_path: str = "foreman.db") -> None:
-        self.engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+        self.engine = create_engine(
+            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+        )
 
     def init(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if absent and record the current schema version (DESIGN §11.1)."""
         SQLModel.metadata.create_all(self.engine)
+        with self.session() as s:
+            if s.get(SchemaVersion, SCHEMA_VERSION) is None:
+                s.add(SchemaVersion(version=SCHEMA_VERSION, applied_at=utc_now_iso()))
+                s.commit()
 
     def session(self) -> DBSession:
-        return DBSession(self.engine)
+        # expire_on_commit=False: returned ORM rows stay readable after the session closes.
+        return DBSession(self.engine, expire_on_commit=False)
+
+    # ── sessions / tasks ───────────────────────────────────────────────────────────────────
+    def add_session(self, session: Session) -> Session:
+        with self.session() as s:
+            s.add(session)
+            s.commit()
+        return session
+
+    def get_sessions(self) -> list[Session]:
+        with self.session() as s:
+            return list(s.exec(select(Session)).all())
+
+    def add_task(self, task: Task) -> Task:
+        with self.session() as s:
+            s.add(task)
+            s.commit()
+        return task
+
+    # ── events ─────────────────────────────────────────────────────────────────────────────
+    def add_event(self, event: AgentEvent) -> Event:
+        """Persist an AgentEvent as an Event row (payload serialized to JSON)."""
+        row = Event(
+            id=uuid.uuid4().hex,
+            session_id=event.session_id,
+            task_id=event.task_id,
+            type=event.type,
+            source=event.source,
+            payload_json=json.dumps(event.payload),
+            ts=event.ts or utc_now_iso(),
+        )
+        with self.session() as s:
+            s.add(row)
+            s.commit()
+        return row
+
+    def get_events(self, session_id: str) -> list[Event]:
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(Event).where(Event.session_id == session_id).order_by(Event.ts)
+                ).all()
+            )
