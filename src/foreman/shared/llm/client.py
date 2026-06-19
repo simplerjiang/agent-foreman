@@ -24,13 +24,14 @@ class Message:
 
 
 class LLMClient:
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.provider = cfg.llm.provider
         self.base_url = cfg.llm.base_url.rstrip("/")
         self.model = cfg.llm.model
         self.api_key = cfg.secrets.llm_api_key
         self.max_tokens = cfg.llm.max_tokens
-        self._client = httpx.AsyncClient(timeout=cfg.llm.request_timeout_s)
+        # `transport` lets tests inject httpx.MockTransport (no real network / tokens spent).
+        self._client = httpx.AsyncClient(timeout=cfg.llm.request_timeout_s, transport=transport)
 
     async def complete(self, messages: list[Message], *, json_mode: bool = False) -> str:
         """Return the assistant's text. Set json_mode=True to nudge structured JSON output."""
