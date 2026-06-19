@@ -13,7 +13,7 @@ from sqlmodel import SQLModel, create_engine, select
 
 from foreman.shared.events import AgentEvent, utc_now_iso
 
-from .models import Event, SchemaVersion, Session, Task
+from .models import ConfigKV, Event, SchemaVersion, Session, Task
 
 SCHEMA_VERSION = 1
 
@@ -77,3 +77,19 @@ class Store:
                     select(Event).where(Event.session_id == session_id).order_by(Event.ts)
                 ).all()
             )
+
+    # ── settings (config_kv) ─────────────────────────────────────────────────────────────────
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        with self.session() as s:
+            row = s.get(ConfigKV, key)
+            return row.value if row is not None else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.session() as s:
+            row = s.get(ConfigKV, key)
+            if row is None:
+                s.add(ConfigKV(key=key, value=value))
+            else:
+                row.value = value
+                s.add(row)
+            s.commit()

@@ -75,6 +75,10 @@ class PushCfg(BaseModel):
     vapid_subject: str = "mailto:you@example.com"
 
 
+class UICfg(BaseModel):
+    language: str = "zh"  # zh | en — default UI + LLM output language (DESIGN §15)
+
+
 class Config(BaseModel):
     server: ServerCfg = ServerCfg()
     llm: LLMCfg = LLMCfg()
@@ -85,6 +89,7 @@ class Config(BaseModel):
     gates: GatesCfg = GatesCfg()
     schedule: ScheduleCfg = ScheduleCfg()
     push: PushCfg = PushCfg()
+    ui: UICfg = UICfg()
 
     # Populated from .env, not from config.yaml.
     secrets: Secrets = Field(default_factory=Secrets)

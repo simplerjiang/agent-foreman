@@ -185,3 +185,10 @@ class SchemaVersion(SQLModel, table=True):
 
     version: int = Field(primary_key=True)
     applied_at: str = ""
+
+
+class ConfigKV(SQLModel, table=True):
+    """Runtime-mutable key/value settings (e.g. ui.language). DESIGN §7.1 config_kv / §15."""
+
+    key: str = Field(primary_key=True)
+    value: str = ""

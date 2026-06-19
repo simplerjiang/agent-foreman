@@ -13,11 +13,17 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from foreman.shared.config import Config
 from foreman.shared.events import AgentEvent, EventBus
+from foreman.shared.i18n import normalize as normalize_lang
 
 from .. import __version__
+
+
+class _LanguageBody(BaseModel):
+    language: str
 
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
@@ -76,6 +82,22 @@ def create_app(cfg: Config, store: object | None = None, bus: EventBus | None = 
         if store is None:
             raise HTTPException(status_code=503, detail="no local store")
         return [_row_to_dict(e) for e in store.get_events(session_id)]
+
+    @app.get("/api/settings/language")
+    async def get_language() -> dict:
+        """Effective UI/output language: config_kv override (if a store) else the config default."""
+        current = None
+        if store is not None and hasattr(store, "get_setting"):
+            current = store.get_setting("ui.language")
+        return {"language": normalize_lang(current or cfg.ui.language)}
+
+    @app.post("/api/settings/language")
+    async def set_language(body: _LanguageBody) -> dict:
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        lang = normalize_lang(body.language)
+        store.set_setting("ui.language", lang)
+        return {"language": lang}
 
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket, session_id: str | None = None) -> None:
