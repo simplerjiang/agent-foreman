@@ -14,7 +14,7 @@ git reset --hard origin/main
 echo "== install deps =="
 # shellcheck disable=SC1091
 . .venv/bin/activate
-pip install -e . --quiet
+pip install -e ".[server]" --quiet   # server deployable only (no client/desktop deps)
 
 echo "== restart service =="
 sudo systemctl restart foreman

@@ -32,7 +32,7 @@ sudo -u foreman bash -lc "
   [ -d .venv ] || python3 -m venv .venv
   . .venv/bin/activate
   pip install --upgrade pip wheel >/dev/null
-  pip install -e . >/tmp/foreman_pip.log 2>&1 || { tail -30 /tmp/foreman_pip.log; exit 1; }
+  pip install -e \".[server]\" >/tmp/foreman_pip.log 2>&1 || { tail -30 /tmp/foreman_pip.log; exit 1; }
 "
 
 echo "== 4. config.yaml + .env (server-side; LLM via loopback) =="

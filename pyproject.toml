@@ -12,24 +12,39 @@ license = { text = "MIT" }
 authors = [{ name = "simplerjiang" }]
 keywords = ["agent", "claude-code", "codex", "pm", "automation", "webpush", "pwa"]
 
+# Base = shared layer + CLI; BOTH deployables need these. Per-side deps live in extras below
+# (DESIGN §14: client = PC app, server = relay+PWA). Install: client -> .[client], server -> .[server].
 dependencies = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.29",
-    "sqlmodel>=0.0.16",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
-    "httpx>=0.27",
     "pyyaml>=6.0",
-    "watchfiles>=0.21",
-    "pywebpush>=2.0",
-    "py-vapid>=1.9",
+    "httpx>=0.27",
     "typer>=0.12",
     "rich>=13.7",
 ]
 
 [project.optional-dependencies]
+# PC app (personal mode): drives agents, local web UI, local store, monitor, watchdog, window/tray.
+client = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlmodel>=0.0.16",
+    "watchfiles>=0.21",
+    "psutil>=5.9",
+    "pywebview>=5.0",
+    "pystray>=0.19",
+]
+# Team server: relay + REST/WS + display-cache store + Web Push.
+server = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlmodel>=0.0.16",
+    "pywebpush>=2.0",
+    "py-vapid>=1.9",
+]
 # Interactive (PTY) driving of agents; headless mode does not require these.
 pty = ["pywinpty>=2.0; sys_platform == 'win32'", "ptyprocess>=0.7; sys_platform != 'win32'"]
+# Dev/test: the full suite imports both sides, so install `.[client,server,dev]`.
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.9"]
 
 [project.scripts]

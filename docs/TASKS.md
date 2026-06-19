@@ -14,8 +14,8 @@
 - [x] **T0.1** 建 `shared/`：迁入 `config.py`、`llm/client.py`；新增 `events.py`（AgentEvent + 事件类型 + EventBus）、`protocol.py`（wss 协议契约占位）。✅ ruff/import/4 tests 通过。
 - [x] **T0.2** 建 `client/`：迁入 `agents/`、`monitor/`、`core/`（operator/auditor/gate/reviewer/scheduler/supervisor/checkpoint/events）、`store/`（本地库）；新增 `computer_use/` 占位。✅ 三关通过（review/security/PM）；client⊥server 边界双向验证。
 - [x] **T0.3** 建 `server/`：迁入 `server/{app,push,auth}.py`、`web/`（PWA 前端归这里）；新增 server `store/`（服务器库）占位。✅ 三关通过；/health+web 200，server⊥client，双库无表名冲突。
-- [ ] **T0.4** 改 `__main__.py`：`foreman app`（client）/ `foreman serve`（server）/ `foreman dispatch`；`pyproject.toml` 入口 + 可选依赖分组（client / server extras）。
-- [ ] **验收**：`foreman serve` 仍能起 `/health`；`foreman.client` 与 `foreman.server` 各自独立可导入。
+- [x] **T0.4** 改 `__main__.py`：`foreman app`（client）/ `foreman serve`（server）/ `foreman dispatch`；`pyproject.toml` 入口 + 可选依赖分组（client / server extras）。✅ 三关通过；deploy 脚本改 `.[server]`。
+- [x] **验收**：`foreman serve` 仍能起 `/health`；`foreman.client` 与 `foreman.server` 各自独立可导入。✅ 本地 /health 200 + 12 tests；线上部署验证见 T0.4 提交。
 
 ## P1 — 单机驱动（client 为主）
 dispatch 一个任务 → 看 claude/codex 在真实工作区跑 → 窗口/浏览器看实时事件。

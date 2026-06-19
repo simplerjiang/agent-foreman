@@ -1,6 +1,7 @@
 """Foreman CLI entrypoint.
 
-    foreman serve              # start the PM Core + web backend (long-running)
+    foreman app                # PC app: engine + native window + tray (personal mode)
+    foreman serve              # start the server-side component (relay + PWA; long-running)
     foreman dispatch "<task>"  # create a session and hand a task to an agent
     foreman token --rotate     # rotate the phone auth token
     foreman version
@@ -15,6 +16,16 @@ from . import __version__
 from foreman.shared.config import load_config
 
 app = typer.Typer(add_completion=False, help="Foreman — a PM agent for your local coding agents.")
+
+
+@app.command("app")  # command name "app"; function renamed so it doesn't shadow the Typer instance
+def app_cmd(
+    config: str = typer.Option("config.yaml", help="Path to config.yaml"),
+) -> None:
+    """Start the PC app: engine + native window + tray + computer-use (personal mode)."""
+    rprint("[yellow]`foreman app` (PC app: engine + pywebview window + tray) is not implemented "
+           "yet (roadmap P1).[/] Use `foreman serve` for the server-side component meanwhile.")
+    raise typer.Exit(code=1)
 
 
 @app.command()
