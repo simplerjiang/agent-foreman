@@ -21,11 +21,37 @@ app = typer.Typer(add_completion=False, help="Foreman — a PM agent for your lo
 @app.command("app")  # command name "app"; function renamed so it doesn't shadow the Typer instance
 def app_cmd(
     config: str = typer.Option("config.yaml", help="Path to config.yaml"),
+    host: str = typer.Option("127.0.0.1", help="Local bind host"),
+    port: int = typer.Option(8788, help="Local bind port"),
 ) -> None:
-    """Start the PC app: engine + native window + tray + computer-use (personal mode)."""
-    rprint("[yellow]`foreman app` (PC app: engine + pywebview window + tray) is not implemented "
-           "yet (roadmap P1).[/] Use `foreman serve` for the server-side component meanwhile.")
-    raise typer.Exit(code=1)
+    """Start the PC app: engine + local UI in a native window (open=online, close=offline)."""
+    from foreman.client.local_app import start_local_app  # lazy: keeps `foreman serve` client-free
+
+    cfg = load_config(config)
+    local = start_local_app(cfg, host=host, port=port)
+    rprint(f"[bold green]Foreman[/] online — {local.url}  (close the window to go offline)")
+
+    try:
+        import webview  # pywebview, in the .[client] extra (imported lazily — desktop only)
+    except ImportError:
+        rprint("[yellow]pywebview not installed — serving headless.[/] Open "
+               f"{local.url} in a browser; Ctrl+C to stop. (pip install \".[client]\" for the window.)")
+        try:
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            local.stop()
+        return
+
+    webview.create_window("Foreman", local.url, width=1000, height=760)
+    try:
+        webview.start()  # blocks until the window is closed
+    finally:
+        local.stop()
+        rprint("[dim]Foreman offline.[/]")
 
 
 @app.command()
