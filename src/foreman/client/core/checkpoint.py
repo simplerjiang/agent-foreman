@@ -108,23 +108,109 @@ class CheckpointManager:
             ))
         return commit
 
-    def _latest_commit(self, session_id: str) -> str | None:
-        """Resolve this session's most recent checkpoint commit (highest step) to chain onto, or None."""
+    def _scan_steps(self, session_id: str) -> list[tuple[int, str]]:
+        """List this session's checkpoints as (step_index, commit_sha), highest step last."""
         res = self._git(
             "for-each-ref", "--format=%(objectname) %(refname)",
             f"{CKPT_REF_PREFIX}/{session_id}/", check=False,
         )
-        best_step, best_sha = -1, None
+        steps: list[tuple[int, str]] = []
         for line in res.stdout.splitlines():
             sha, _, refname = line.partition(" ")
             try:
                 step = int(refname.rsplit("/", 1)[-1])
             except ValueError:
                 continue
-            if step > best_step:
-                best_step, best_sha = step, sha
-        return best_sha
+            steps.append((step, sha))
+        steps.sort()
+        return steps
 
-    async def undo_to(self, vcs_ref: str) -> None:
-        """Revert the workspace to a checkpoint (git reset --hard <ref>) and reset agent state. T2.3."""
-        raise NotImplementedError("CheckpointManager.undo_to — roadmap T2.3")
+    def _latest_commit(self, session_id: str) -> str | None:
+        """Resolve this session's most recent checkpoint commit (highest step) to chain onto, or None."""
+        steps = self._scan_steps(session_id)
+        return steps[-1][1] if steps else None
+
+    def _next_step(self, session_id: str) -> int:
+        """The step index a new checkpoint should take to land at the end of this session's timeline."""
+        steps = self._scan_steps(session_id)
+        return steps[-1][0] + 1 if steps else 0
+
+    def resolve_step(self, session_id: str, step_index: int) -> str:
+        """Resolve a session's step checkpoint to its commit SHA (the shadow ref's target)."""
+        return self._git("rev-parse", f"{CKPT_REF_PREFIX}/{session_id}/{step_index}").stdout.strip()
+
+    async def undo_to(
+        self,
+        vcs_ref: str,
+        session_id: str | None = None,
+        step_index: int | None = None,
+        task_id: str | None = None,
+        redo_label: str = "before undo",
+    ) -> str | None:
+        """Revert the workspace to checkpoint ``vcs_ref``, byte-for-byte (§6.5②). Returns the redo SHA.
+
+        Order matters: **first** snapshot the current state (so the undo is itself reversible — redo,
+        "反悔的反悔") when a ``session_id`` is given, **then** restore the worktree to the target tree:
+        modified files are overwritten, files deleted since the checkpoint are recreated, and files
+        *created after* the checkpoint are deleted (§6.5② "第 N 步之后新建的文件删掉"). .gitignore'd paths
+        (node_modules, secrets) are never touched — they were never in the snapshot to begin with.
+
+        Only **workspace files** are reverted here; resetting the agent's session state to that step
+        (§6.5② step 3) is wired in at the decision-loop layer (P4), which owns the Runner/adapter.
+        Returns the redo checkpoint SHA (call ``undo_to`` on it to redo), or None if no session_id.
+        """
+        self.ensure_repo()
+        # ① Point the current state too — so this undo can itself be undone (redo). Chains onto the
+        # session timeline as the next step, so it shows up in the PC/phone history like any other.
+        redo: str | None = None
+        if session_id is not None:
+            if step_index is None:
+                step_index = self._next_step(session_id)
+            redo = await self.snapshot(session_id, step_index, label=redo_label, task_id=task_id)
+        # ② Restore the worktree to the target snapshot byte-for-byte.
+        self._restore_worktree(vcs_ref)
+        return redo
+
+    def _ls_files_now(self) -> list[str]:
+        """Paths git currently sees in the worktree (honouring .gitignore), via a throwaway index."""
+        base_env = {**os.environ, **_CKPT_IDENTITY}
+        with tempfile.TemporaryDirectory() as td:
+            env = {**base_env, "GIT_INDEX_FILE": os.path.join(td, "index")}
+            self._git("-c", "core.autocrlf=false", "add", "-A", env=env)
+            out = self._git("ls-files", "-z", env=env).stdout
+        return [f for f in out.split("\0") if f]
+
+    def _restore_worktree(self, target: str) -> None:
+        """Make the worktree match ``target``'s tree exactly: rewrite tracked files, drop new ones."""
+        base_env = {**os.environ, **_CKPT_IDENTITY}
+        # Resolve+verify the ref to a canonical commit SHA up front: normalises any ref to a commit
+        # and rejects junk/option-like input (git errors out rather than mis-parsing it as a flag).
+        target = self._git("rev-parse", "--verify", f"{target}^{{commit}}").stdout.strip()
+        current = set(self._ls_files_now())
+        tree_out = self._git("ls-tree", "-r", "--name-only", "-z", target).stdout
+        in_target = {f for f in tree_out.split("\0") if f}
+
+        # Rewrite every target file from the object store (modified → overwritten, deleted →
+        # recreated) through a temp index so the real index/branch/HEAD stay untouched.
+        with tempfile.TemporaryDirectory() as td:
+            env = {**base_env, "GIT_INDEX_FILE": os.path.join(td, "index")}
+            self._git("-c", "core.autocrlf=false", "read-tree", target, env=env)
+            self._git("-c", "core.autocrlf=false", "checkout-index", "--all", "--force", env=env)
+
+        # Delete files that exist now but not at the checkpoint (created after it). .gitignore'd
+        # paths aren't in `current`, so they survive — undo never nukes node_modules/secrets.
+        for rel in current - in_target:
+            p = self.workspace / rel
+            if p.is_file() or p.is_symlink():
+                p.unlink()
+                self._prune_empty_dirs(p.parent)
+
+    def _prune_empty_dirs(self, start: Path) -> None:
+        """Remove now-empty directories left by deletions, walking up but never past the workspace."""
+        ws = self.workspace.resolve()
+        d = Path(start).resolve()
+        while d != ws and ws in d.parents:
+            if d.name == ".git" or not d.is_dir() or any(d.iterdir()):
+                break
+            d.rmdir()
+            d = d.parent

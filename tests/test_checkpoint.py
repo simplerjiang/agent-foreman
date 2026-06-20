@@ -132,3 +132,103 @@ async def test_snapshot_records_checkpoint_row(tmp_path):
     assert row.label == "before edit"
     assert row.task_id == "t9"
     assert row.created_at
+
+
+# ── T2.3 one-click undo (§6.5②) ────────────────────────────────────────────────────────────────
+
+
+async def _mgr_at(tmp_path):
+    ws = tmp_path / "proj"
+    mgr = CheckpointManager(ws)
+    mgr.ensure_repo()
+    return ws, mgr
+
+
+async def test_undo_restores_modified_file(tmp_path):
+    ws, mgr = await _mgr_at(tmp_path)
+    _write(ws, "f.txt", "v1")
+    c0 = await mgr.snapshot("s1", 0)
+    _write(ws, "f.txt", "v2-WRONG")
+
+    await mgr.undo_to(c0)
+
+    assert (ws / "f.txt").read_text(encoding="utf-8") == "v1"
+
+
+async def test_undo_recreates_deleted_file(tmp_path):
+    ws, mgr = await _mgr_at(tmp_path)
+    _write(ws, "keep.txt", "data")
+    c0 = await mgr.snapshot("s1", 0)
+    (ws / "keep.txt").unlink()
+
+    await mgr.undo_to(c0)
+
+    assert (ws / "keep.txt").read_text(encoding="utf-8") == "data"
+
+
+async def test_undo_deletes_files_created_after_checkpoint(tmp_path):
+    ws, mgr = await _mgr_at(tmp_path)
+    _write(ws, "f.txt", "orig")
+    c0 = await mgr.snapshot("s1", 0)
+    _write(ws, "f.txt", "orig")               # unchanged
+    (ws / "sub").mkdir()
+    _write(ws, "sub/new.txt", "added later")  # created after the checkpoint, in a new dir
+
+    await mgr.undo_to(c0)
+
+    assert not (ws / "sub" / "new.txt").exists()
+    assert not (ws / "sub").exists()           # now-empty dir pruned
+    assert (ws / "f.txt").read_text(encoding="utf-8") == "orig"
+
+
+async def test_undo_preserves_gitignored_files(tmp_path):
+    ws, mgr = await _mgr_at(tmp_path)
+    _write(ws, ".gitignore", "secret.txt\n")
+    c0 = await mgr.snapshot("s1", 0)
+    _write(ws, "secret.txt", "do-not-delete")  # ignored → never in snapshot
+
+    await mgr.undo_to(c0)
+
+    assert (ws / "secret.txt").read_text(encoding="utf-8") == "do-not-delete"
+
+
+async def test_undo_snapshots_redo_point_first(tmp_path):
+    ws = tmp_path / "proj"
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    mgr = CheckpointManager(ws, store=store)
+    mgr.ensure_repo()
+    _write(ws, "f.txt", "v1")
+    c0 = await mgr.snapshot("s1", 0)
+    _write(ws, "f.txt", "v2")
+
+    redo = await mgr.undo_to(c0, session_id="s1")
+
+    # Undo landed us back at v1...
+    assert (ws / "f.txt").read_text(encoding="utf-8") == "v1"
+    # ...and the redo checkpoint (recorded as the next step) can bring v2 back.
+    assert _SHA.fullmatch(redo)
+    rows = store.get_checkpoints("s1")
+    assert [r.step_index for r in rows] == [0, 1]
+    await mgr.undo_to(redo)
+    assert (ws / "f.txt").read_text(encoding="utf-8") == "v2"
+
+
+async def test_undo_without_session_skips_redo(tmp_path):
+    ws, mgr = await _mgr_at(tmp_path)
+    _write(ws, "f.txt", "v1")
+    c0 = await mgr.snapshot("s1", 0)
+    _write(ws, "f.txt", "v2")
+
+    redo = await mgr.undo_to(c0)
+
+    assert redo is None
+    assert (ws / "f.txt").read_text(encoding="utf-8") == "v1"
+
+
+async def test_resolve_step_returns_shadow_ref_sha(tmp_path):
+    ws, mgr = await _mgr_at(tmp_path)
+    _write(ws, "f.txt", "v1")
+    c0 = await mgr.snapshot("s1", 0)
+
+    assert mgr.resolve_step("s1", 0) == c0
