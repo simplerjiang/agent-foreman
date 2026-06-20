@@ -40,6 +40,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     import uvicorn
 
     from foreman.server.app import create_app
+    from foreman.server.push import Pusher
 
     from .core.gate import Gate
     from .monitor.hooks import HookReceiver
@@ -48,8 +49,13 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     store.init()
     bus = EventBus()
     runner = Runner(cfg, bus, store)
-    hooks = HookReceiver(store, bus, Gate(cfg.gates))  # /hooks is local-only (DESIGN §4.3)
-    app = create_app(cfg, store, bus, hooks=hooks)
+    # One Gate, shared between the hook receiver (which holds dangerous tool calls) and the
+    # approval API (which closes the loop). It pushes cards via the Pusher; both /hooks and the
+    # Gate are local-only (DESIGN §4.3 / §6.6). local_app is the wiring seam that may touch both
+    # client + server — the Gate itself never imports server (it gets the Pusher injected, §14).
+    gate = Gate(cfg.gates, store=store, bus=bus, pusher=Pusher(cfg))
+    hooks = HookReceiver(store, bus, gate)
+    app = create_app(cfg, store, bus, hooks=hooks, gate=gate)
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)

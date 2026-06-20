@@ -91,14 +91,25 @@ class HookReceiver:
         if hook_name == "PreToolUse" and self.gate is not None:
             action = action_text(payload)
             if self.gate.classify(action) == "requires-approval":
+                tool = payload.get("tool_name", "")
+                # Hold the action: the Gate persists a pending approval (+nonce) and pushes a
+                # card to the phone (T3.4). A bare Gate (no store) returns None — we still record
+                # the approval_req event below so the timeline reflects the hold (DESIGN §6.6).
+                approval = None
+                if hasattr(self.gate, "request_approval"):
+                    approval = await self.gate.request_approval(
+                        sid, action, task_id=event.task_id, tool=tool
+                    )
+                req_payload = {
+                    "action": action,
+                    "tool": tool,
+                    "risk_level": "requires-approval",
+                }
+                if approval and approval.get("id"):
+                    req_payload["approval_id"] = approval["id"]
                 await self._record(
                     make_event(
-                        "approval_req", "hook", sid, task_id=event.task_id,
-                        payload={
-                            "action": action,
-                            "tool": payload.get("tool_name", ""),
-                            "risk_level": "requires-approval",
-                        },
+                        "approval_req", "hook", sid, task_id=event.task_id, payload=req_payload
                     )
                 )
                 return _deny(

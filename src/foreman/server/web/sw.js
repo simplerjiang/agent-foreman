@@ -40,6 +40,9 @@ self.addEventListener('notificationclick', (event) => {
   try {
     const raw = (event.notification.data && event.notification.data.url) || '/';
     const u = new URL(raw, self.location.origin);
+    // Carry a one-tap action (approve/reject) in the URL too, so a COLD open (no window yet)
+    // can still act on it on load — not just a postMessage to an already-open page (T3.4).
+    if (event.action === 'approve' || event.action === 'reject') u.searchParams.set('action', event.action);
     if (u.origin === self.location.origin) target = u.pathname + u.search + u.hash;
   } catch (_) {}
   event.waitUntil(

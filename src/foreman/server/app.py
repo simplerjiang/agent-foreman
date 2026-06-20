@@ -41,6 +41,14 @@ class _PushSubBody(BaseModel):
 class _PushUnsubBody(BaseModel):
     endpoint: str
 
+
+class _ApprovalDecision(BaseModel):
+    """A one-tap approve/reject from the PC/phone. `nonce` is the one-time replay guard (§6.8)."""
+
+    decision: str  # "approve" | "reject"
+    nonce: str = ""
+    reason: str = ""
+
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
@@ -74,6 +82,7 @@ def create_app(
     bus: EventBus | None = None,
     hooks: object | None = None,
     relay: object | None = None,
+    gate: object | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
@@ -87,6 +96,7 @@ def create_app(
     app.state.bus = bus
     app.state.hooks = hooks
     app.state.relay = relay
+    app.state.gate = gate
 
     @app.get("/health")
     async def health() -> dict:
@@ -157,6 +167,36 @@ def create_app(
             raise HTTPException(status_code=503, detail="no local store")
         store.delete_push_subscription(body.endpoint)
         return {"ok": True}
+
+    @app.get("/api/approvals")
+    async def list_approvals() -> list[dict]:
+        """Pending approvals waiting on the human (the phone's queue). DESIGN §6.6 / §5.4.
+
+        Delegates to the injected client-side Gate (which owns the approvals table); app.py stays
+        shared-only (DESIGN §14). No Gate (e.g. team-cache server) → empty queue."""
+        if gate is None or not hasattr(gate, "list_pending"):
+            raise HTTPException(status_code=503, detail="no gate")
+        return gate.list_pending()
+
+    @app.post("/api/approvals/{approval_id}")
+    async def decide_approval(approval_id: str, body: _ApprovalDecision) -> dict:
+        """Approve/reject a held action (one-tap close of the loop). The nonce is the one-time
+        replay guard (§6.8): an old captured request carries a stale nonce and is refused."""
+        if gate is None or not hasattr(gate, "resolve"):
+            raise HTTPException(status_code=503, detail="no gate")
+        res = await gate.resolve(
+            approval_id, body.decision, nonce=body.nonce, reason=body.reason
+        )
+        if res.get("ok"):
+            return res
+        status = {
+            "bad_decision": 400,
+            "no_store": 503,
+            "not_found": 404,
+            "bad_nonce": 403,
+            "not_pending": 409,
+        }.get(res.get("error", ""), 400)
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
 
     @app.post("/hooks")
     async def receive_hooks(request: Request) -> dict:

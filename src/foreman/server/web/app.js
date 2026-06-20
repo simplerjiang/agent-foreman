@@ -15,6 +15,40 @@ async function init() {
   await initLang();
   probeHealth();
   loadSessions();
+  await loadApprovals();
+  maybeActOnDeepLink();  // a cold one-tap (notification → openWindow with ?approval=&action=)
+}
+
+// A notification opened the app cold with ?approval=<id>&action=approve|reject — act on it once.
+function maybeActOnDeepLink() {
+  const params = new URLSearchParams(location.search);
+  const id = params.get('approval');
+  const action = params.get('action');
+  if (id && (action === 'approve' || action === 'reject')) {
+    const a = pendingApprovals.find((x) => x.id === id);
+    if (a) decideApproval(a.id, action, a.nonce);
+  }
+  // Drop the one-shot params so a refresh doesn't re-fire (and stale ids don't linger in the URL).
+  if (id || action) history.replaceState(null, '', location.pathname);
+}
+
+// The service worker forwards a notification tap (approve/reject one-tap, or just a focus) here.
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  const m = e.data || {};
+  if (m.type !== 'notificationclick') return;
+  loadApprovals().then(() => {
+    // If the SW relayed a one-tap action, pre-trigger it for the deep-linked approval.
+    const id = approvalIdFromUrl(m.url);
+    if (id && (m.action === 'approve' || m.action === 'reject')) {
+      const a = pendingApprovals.find((x) => x.id === id);
+      if (a) decideApproval(a.id, m.action, a.nonce);
+    }
+  });
+});
+
+function approvalIdFromUrl(url) {
+  try { return new URL(url, location.origin).searchParams.get('approval'); }
+  catch (e) { return null; }
 }
 
 async function probeHealth() {
@@ -172,16 +206,84 @@ function renderEvent(e) {
   eventListEl.appendChild(li);
 }
 
+// ── Approvals: the phone's approve/reject queue (T3.4, §6.6) ─────────────────────────────────
+const approvalListEl = document.getElementById('approval-list');
+let pendingApprovals = [];
+
+async function loadApprovals() {
+  if (!approvalListEl) return;
+  try {
+    const r = await fetch('/api/approvals');
+    if (!r.ok) { pendingApprovals = []; renderApprovals(); return; }
+    pendingApprovals = await r.json();
+    renderApprovals();
+  } catch (e) {
+    pendingApprovals = [];
+    renderApprovals();
+  }
+}
+
+// Build rows with textContent only — the held action is untrusted agent input, never innerHTML it.
+function renderApprovals() {
+  const dict = I18N[currentLang];
+  if (!pendingApprovals.length) {
+    approvalListEl.classList.add('empty');
+    approvalListEl.textContent = dict.noApprovals;
+    return;
+  }
+  approvalListEl.classList.remove('empty');
+  approvalListEl.replaceChildren();
+  for (const a of pendingApprovals) {
+    const card = document.createElement('article');
+    card.className = 'card approval';
+    const risk = document.createElement('p');
+    risk.className = 'card-summary';
+    risk.textContent = `⛔ ${a.risk_level || 'requires-approval'}`;
+    const action = document.createElement('p');
+    action.className = 'card-audit';
+    action.textContent = a.action || a.diff_summary || '';
+    const btns = document.createElement('div');
+    btns.className = 'card-actions';
+    btns.appendChild(makeDecisionBtn(a, 'approve', `✅ ${dict.approve}`));
+    btns.appendChild(makeDecisionBtn(a, 'reject', `⛔ ${dict.reject}`));
+    card.append(risk, action, btns);
+    approvalListEl.appendChild(card);
+  }
+}
+
+function makeDecisionBtn(approval, decision, label) {
+  const b = document.createElement('button');
+  b.className = 'option';
+  b.textContent = label;
+  b.addEventListener('click', () => decideApproval(approval.id, decision, approval.nonce));
+  return b;
+}
+
+async function decideApproval(id, decision, nonce) {
+  try {
+    const r = await fetch(`/api/approvals/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, nonce: nonce || '' }),
+    });
+    if (!r.ok) console.warn('decide failed', r.status);
+  } catch (e) {
+    console.warn('decide error', e);
+  }
+  loadApprovals();  // refresh the queue (decided ones drop off)
+}
+
 // ── i18n: UI language (zh/en) + sync to backend so LLM output language follows (§15) ─────────
 const I18N = {
   zh: { sessions: '会话', decisions: '决策', approvals: '审批', timeline: '时间线', dispatch: '下发任务',
         send: '发送', enablePush: '开启通知', stepDetail: '步骤详情', rawReturn: '原始返回',
         codeDiff: '代码改动', noSessions: '暂无活动会话。', noDecisions: '暂无待决策。',
-        noApprovals: '没有待你处理的。', langToggle: 'EN' },
+        noApprovals: '没有待你处理的。', approve: '批准', reject: '驳回', langToggle: 'EN' },
   en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
         dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
         rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
-        noDecisions: 'No decisions waiting.', noApprovals: 'Nothing waiting on you.', langToggle: '中' },
+        noDecisions: 'No decisions waiting.', noApprovals: 'Nothing waiting on you.',
+        approve: 'Approve', reject: 'Reject', langToggle: '中' },
 };
 let currentLang = 'zh';
 
@@ -213,6 +315,7 @@ async function setLang(lang) {
   applyI18n(lang);
   localStorage.setItem('foreman.lang', currentLang);
   loadSessions();  // re-render the (dynamic) session list so its empty text follows the language
+  renderApprovals();  // re-label approve/reject + empty text in the new language
   try {
     await fetch('/api/settings/language', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

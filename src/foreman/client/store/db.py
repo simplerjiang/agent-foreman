@@ -14,6 +14,7 @@ from sqlmodel import SQLModel, col, create_engine, select
 from foreman.shared.events import AgentEvent, utc_now_iso
 
 from .models import (
+    Approval,
     Checkpoint,
     ConfigKV,
     Event,
@@ -104,6 +105,47 @@ class Store:
                     .order_by(col(Checkpoint.step_index))
                 ).all()
             )
+
+    # ── approvals (Gate, DESIGN §6.6 / §7.1) ─────────────────────────────────────────────────
+    def add_approval(self, approval: Approval) -> Approval:
+        """Record a pending approval the Gate is holding a dangerous action on (§6.6)."""
+        with self.session() as s:
+            s.add(approval)
+            s.commit()
+        return approval
+
+    def get_approval(self, approval_id: str) -> Approval | None:
+        with self.session() as s:
+            return s.get(Approval, approval_id)
+
+    def get_pending_approvals(self) -> list[Approval]:
+        """Approvals still waiting on the human (oldest first) — the phone's approval queue."""
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(Approval)
+                    .where(Approval.status == "pending")
+                    .order_by(col(Approval.requested_at))
+                ).all()
+            )
+
+    def decide_approval(
+        self, approval_id: str, *, status: str, reason: str, decided_at: str
+    ) -> Approval | None:
+        """Apply an approve/reject decision IFF the approval is still pending (one-shot).
+
+        Returns the updated row, or None when the id is unknown OR already decided — the
+        caller treats "already decided" as a replay and refuses it (DESIGN §6.8 nonce/replay)."""
+        with self.session() as s:
+            row = s.get(Approval, approval_id)
+            if row is None or row.status != "pending":
+                return None
+            row.status = status
+            row.reason = reason
+            row.decided_at = decided_at
+            s.add(row)
+            s.commit()
+        return row
 
     # ── push subscriptions (Web Push, DESIGN §4.6 / §7.1) ────────────────────────────────────
     def add_push_subscription(
