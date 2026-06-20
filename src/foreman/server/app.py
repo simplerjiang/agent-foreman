@@ -49,6 +49,17 @@ class _ApprovalDecision(BaseModel):
     nonce: str = ""
     reason: str = ""
 
+
+class _LoginBody(BaseModel):
+    """PWA user login (DESIGN §8.2). Distinct from a local process's access key."""
+
+    username: str
+    password: str
+
+
+class _AccessKeyBody(BaseModel):
+    label: str = ""
+
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
@@ -76,6 +87,13 @@ def _event_to_dict(ev: AgentEvent) -> dict:
     }
 
 
+def _bearer_token(request: Request) -> str:
+    """Extract the bearer token from the Authorization header ('' if absent/malformed)."""
+    header = request.headers.get("authorization", "")
+    scheme, _, token = header.partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
 def create_app(
     cfg: Config,
     store: object | None = None,
@@ -83,6 +101,7 @@ def create_app(
     hooks: object | None = None,
     relay: object | None = None,
     gate: object | None = None,
+    auth: object | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
@@ -97,6 +116,20 @@ def create_app(
     app.state.hooks = hooks
     app.state.relay = relay
     app.state.gate = gate
+    app.state.auth = auth
+
+    def require_account(request: Request):
+        """Resolve the Authorization bearer token to an active account, or raise 401/503.
+
+        Team-mode auth (DESIGN §8.2): the injected AuthManager validates the PWA login token.
+        Personal mode injects no auth manager, so these endpoints return 503 (there are no
+        accounts — the PC self-hosts its own UI; single-user remote access is the tunnel's job)."""
+        if auth is None:
+            raise HTTPException(status_code=503, detail="auth not configured")
+        account = auth.resolve_token(_bearer_token(request))
+        if account is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return account
 
     @app.get("/health")
     async def health() -> dict:
@@ -197,6 +230,56 @@ def create_app(
             "not_pending": 409,
         }.get(res.get("error", ""), 400)
         raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    @app.post("/api/auth/login")
+    async def auth_login(body: _LoginBody) -> dict:
+        """PWA user login → bearer token (DESIGN §8.2). 401 on bad credentials (generic, no
+        leak of which field was wrong); 503 if no auth manager (personal mode)."""
+        if auth is None:
+            raise HTTPException(status_code=503, detail="auth not configured")
+        res = auth.login(body.username, body.password)
+        if not res.get("ok"):
+            raise HTTPException(status_code=401, detail="invalid credentials")
+        return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
+
+    @app.post("/api/auth/logout")
+    async def auth_logout(request: Request) -> dict:
+        """Invalidate the caller's bearer token. Idempotent — always returns ok."""
+        if auth is not None:
+            auth.logout(_bearer_token(request))
+        return {"ok": True}
+
+    @app.get("/api/auth/me")
+    async def auth_me(request: Request) -> dict:
+        """Who am I (validates the token; the PWA uses this to confirm a stored login)."""
+        account = require_account(request)
+        return {
+            "account_id": account.id, "username": account.username,
+            "role": account.role, "display_name": account.display_name,
+        }
+
+    @app.get("/api/keys")
+    async def list_keys(request: Request) -> list[dict]:
+        """The caller's access keys (metadata only — never the hash/plaintext). DESIGN §8.2."""
+        account = require_account(request)
+        return auth.list_access_keys(account.id)
+
+    @app.post("/api/keys")
+    async def create_key(body: _AccessKeyBody, request: Request) -> dict:
+        """Mint a new access key for the caller. The plaintext is returned exactly ONCE here —
+        the user pastes it into their local process; only its hash is stored (§8.4)."""
+        account = require_account(request)
+        res = auth.create_access_key(account.id, label=body.label)
+        return {"id": res["id"], "key": res["key"], "label": res["label"]}
+
+    @app.delete("/api/keys/{key_id}")
+    async def revoke_key(key_id: str, request: Request) -> dict:
+        """Revoke one of the caller's keys (ownership-checked; 404 if not yours — §8.4)."""
+        account = require_account(request)
+        res = auth.revoke_access_key(account.id, key_id)
+        if not res.get("ok"):
+            raise HTTPException(status_code=404, detail="key not found")
+        return {"ok": True}
 
     @app.post("/hooks")
     async def receive_hooks(request: Request) -> dict:

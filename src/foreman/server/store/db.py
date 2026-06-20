@@ -19,9 +19,10 @@ from sqlmodel import SQLModel, col, create_engine, select
 from foreman.shared.events import utc_now_iso
 
 from . import models  # noqa: F401  (registers server tables on SQLModel.metadata)
-from .models import Account, AccessKey, ProcessRegistry, ServerSchemaVersion
+from .models import Account, AccessKey, AuthSession, ProcessRegistry, ServerSchemaVersion
 
-SERVER_SCHEMA_VERSION = 1
+# v2 adds Account.password_hash + the auth_sessions table (T3.5 user login / access-key mgmt).
+SERVER_SCHEMA_VERSION = 2
 
 
 class ServerStore:
@@ -76,6 +77,17 @@ class ServerStore:
                 s.add(row)
                 s.commit()
 
+    def set_account_password(self, account_id: str, password_hash: str) -> None:
+        """Store a pbkdf2 password hash for an account (admin set / user change). No-op if the
+        account is missing. The caller hashes the plaintext (auth.hash_password) — only the hash
+        is ever persisted (DESIGN §8.2)."""
+        with self.session() as s:
+            row = s.get(Account, account_id)
+            if row is not None:
+                row.password_hash = password_hash
+                s.add(row)
+                s.commit()
+
     # ── access keys (one machine per key; hash only — DESIGN §7.2 / §8.3) ────────────────────
     def add_access_key(self, key: AccessKey) -> AccessKey:
         """Register an access key. ONLY the hash is persisted (caller hashes the plaintext,
@@ -97,6 +109,11 @@ class ServerStore:
                     .order_by(col(AccessKey.created_at).desc())
                 ).all()
             )
+
+    def get_access_key(self, key_id: str) -> AccessKey | None:
+        """Look up one key by id (the ownership-checked revoke path — DESIGN §8.2)."""
+        with self.session() as s:
+            return s.get(AccessKey, key_id)
 
     def get_access_key_by_hash(self, key_hash: str) -> AccessKey | None:
         """Look up a key by its hash (the relay handshake path — DESIGN §8.5). Returns the row
@@ -120,6 +137,33 @@ class ServerStore:
             if row is not None:
                 row.last_seen_at = when or utc_now_iso()
                 s.add(row)
+                s.commit()
+
+    # ── auth sessions (PWA user login — DESIGN §8.2) ─────────────────────────────────────────
+    def add_auth_session(self, sess: AuthSession) -> AuthSession:
+        """Persist a logged-in session. ONLY the token hash is stored (caller hashes the
+        plaintext, shown to the browser once). Stamps created_at if unset."""
+        if not sess.created_at:
+            sess.created_at = utc_now_iso()
+        with self.session() as s:
+            s.add(sess)
+            s.commit()
+        return sess
+
+    def get_auth_session_by_hash(self, token_hash: str) -> AuthSession | None:
+        """Resolve a bearer token (by its hash) to its session row. Returns regardless of
+        expiry; the caller checks expires_at so expired tokens can be reported/pruned."""
+        with self.session() as s:
+            return s.exec(select(AuthSession).where(AuthSession.token_hash == token_hash)).first()
+
+    def delete_auth_session(self, token_hash: str) -> None:
+        """Log out: drop the session for this token hash (no-op if already gone)."""
+        with self.session() as s:
+            row = s.exec(
+                select(AuthSession).where(AuthSession.token_hash == token_hash)
+            ).first()
+            if row is not None:
+                s.delete(row)
                 s.commit()
 
     # ── process registry (online local processes — DESIGN §7.2 / §8.5) ───────────────────────

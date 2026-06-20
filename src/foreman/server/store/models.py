@@ -22,6 +22,7 @@ class Account(SQLModel, table=True):
     display_name: str = ""
     role: str = "member"          # admin | member
     status: str = "active"        # active | disabled
+    password_hash: str = ""       # pbkdf2_sha256 of the login password; never the plaintext (§8.2)
     created_at: str = ""
 
 
@@ -46,6 +47,19 @@ class ProcessRegistry(SQLModel, table=True):
     online: bool = False
     last_heartbeat: str = ""
     created_at: str = ""
+
+
+class AuthSession(SQLModel, table=True):
+    """A logged-in PWA session (user login → bearer token). Only the token's hash is stored,
+    so a leaked DB can't impersonate a user; the plaintext token lives only in the browser
+    (DESIGN §8.2 — user login is distinct from a local process's access key)."""
+
+    __tablename__ = "auth_sessions"
+    id: str = Field(primary_key=True)
+    account_id: str = Field(index=True, foreign_key="accounts.id")
+    token_hash: str = Field(index=True)   # sha256 of the bearer token; plaintext shown once
+    created_at: str = ""
+    expires_at: str = ""                  # ISO8601 UTC; lexically comparable to utc_now_iso()
 
 
 class CacheSession(SQLModel, table=True):
@@ -85,5 +99,6 @@ class ServerSchemaVersion(SQLModel, table=True):
 # The tables this store owns — used to scope create_all so a shared metadata (tests) never
 # leaks client tables into the server DB.
 SERVER_TABLES = (
-    Account, AccessKey, ProcessRegistry, CacheSession, CacheCard, Invite, ServerSchemaVersion,
+    Account, AccessKey, AuthSession, ProcessRegistry,
+    CacheSession, CacheCard, Invite, ServerSchemaVersion,
 )
