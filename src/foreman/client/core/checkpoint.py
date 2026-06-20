@@ -139,6 +139,32 @@ class CheckpointManager:
         """Resolve a session's step checkpoint to its commit SHA (the shadow ref's target)."""
         return self._git("rev-parse", f"{CKPT_REF_PREFIX}/{session_id}/{step_index}").stdout.strip()
 
+    def diff(self, from_ref: str, to_ref: str | None = None) -> str:
+        """Unified diff from checkpoint ``from_ref`` to ``to_ref`` (or the current worktree if None).
+
+        This is the Reviewer's input (T2.7): the changes an agent made at a checkpoint. When
+        ``to_ref`` is None we snapshot the live worktree through a throwaway index (same trick as
+        ``snapshot``) so **new, not-yet-tracked files show up in the diff** — a plain ``git diff
+        <commit>`` would miss them. Refs are resolved+verified to commits up front so junk/option-like
+        input can't be mis-parsed as a flag. ``core.autocrlf=false`` keeps the diff byte-faithful.
+        """
+        base_env = {**os.environ, **_CKPT_IDENTITY}
+        from_tree = self._git(
+            "rev-parse", "--verify", f"{from_ref}^{{commit}}", env=base_env
+        ).stdout.strip()
+        if to_ref is None:
+            with tempfile.TemporaryDirectory() as td:
+                env = {**base_env, "GIT_INDEX_FILE": os.path.join(td, "index")}
+                self._git("-c", "core.autocrlf=false", "add", "-A", env=env)
+                to_tree = self._git("write-tree", env=env).stdout.strip()
+        else:
+            to_tree = self._git(
+                "rev-parse", "--verify", f"{to_ref}^{{commit}}", env=base_env
+            ).stdout.strip()
+        return self._git(
+            "-c", "core.autocrlf=false", "diff", from_tree, to_tree, env=base_env, check=False
+        ).stdout
+
     async def undo_to(
         self,
         vcs_ref: str,
