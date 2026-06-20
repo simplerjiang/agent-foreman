@@ -19,11 +19,12 @@ def test_version():
     assert "Foreman v" in r.output
 
 
-def test_app_command_exists_and_is_stubbed():
-    r = runner.invoke(app, ["app"])
-    # the command must EXIST (not "No such command"); the stub exits 1 pending P1
-    assert "No such command" not in r.output
-    assert r.exit_code == 1
+def test_app_command_registered():
+    # `foreman app` now launches a blocking local app (server + native window), so we must NOT
+    # invoke it in a test — just assert the command is registered (its presence in --help is
+    # checked below too).
+    names = {(c.name or c.callback.__name__) for c in app.registered_commands}
+    assert "app" in names
 
 
 def test_help_lists_core_commands():
