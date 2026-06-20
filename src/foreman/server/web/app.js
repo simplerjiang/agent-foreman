@@ -15,6 +15,7 @@ async function init() {
   await initLang();
   probeHealth();
   loadSessions();
+  loadCards();
   await loadApprovals();
   maybeActOnDeepLink();  // a cold one-tap (notification → openWindow with ?approval=&action=)
 }
@@ -122,13 +123,123 @@ async function enablePush() {
 
 document.getElementById('enable-push')?.addEventListener('click', enablePush);
 
-// Decision card -> step detail drill-down (§6.3). P4 wires GET /api/actions/{id}/detail.
+// ── Decision cards (§6.3): folded summary + audit note + one-tap options + 🔍 详情 ───────────
+const cardListEl = document.getElementById('card-list');
+const cardTemplate = document.getElementById('card-template');
+
+async function loadCards() {
+  if (!cardListEl) return;
+  try {
+    const r = await fetch('/api/cards');
+    if (!r.ok) { renderCards([]); return; }
+    renderCards(await r.json());
+  } catch (e) {
+    renderCards([]);
+  }
+}
+
+// Build cards from the template with textContent only — summaries/audit notes echo untrusted
+// agent output, so never innerHTML them (same rule as the timeline + approvals).
+function renderCards(cards) {
+  const dict = I18N[currentLang];
+  if (!cards.length) {
+    cardListEl.classList.add('empty');
+    cardListEl.textContent = dict.noDecisions;
+    return;
+  }
+  cardListEl.classList.remove('empty');
+  cardListEl.replaceChildren();
+  for (const c of cards) {
+    const node = cardTemplate.content.cloneNode(true);
+    node.querySelector('.summary').textContent = c.summary || '';
+    node.querySelector('.audit').textContent = c.audit_note || '';
+    node.querySelector('.diffstat').textContent = c.diff_stat || dict.viewDetail;
+    const detailBtn = node.querySelector('.view-detail');
+    detailBtn.dataset.actionId = c.action_id || '';
+    if (!c.action_id) detailBtn.hidden = true;
+    const actions = node.querySelector('.card-actions');
+    for (const opt of c.options || []) {
+      const b = document.createElement('button');
+      b.className = 'option';
+      b.textContent = opt.label || opt.action || '';
+      b.dataset.cardId = c.id || '';
+      b.dataset.option = opt.action || '';
+      b.addEventListener('click', () => chooseCard(c.id, opt.action));
+      actions.appendChild(b);
+    }
+    cardListEl.appendChild(node);
+  }
+}
+
+// One-tap card decision (§6.3): record the chosen option. Executing the chosen path (run / nudge /
+// undo the agent) is the two-way control layer (P4) — this closes the "you tap" half.
+async function chooseCard(cardId, option) {
+  if (!cardId || !option) return;
+  try {
+    const r = await fetch(`/api/cards/${encodeURIComponent(cardId)}/choose`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ option }),
+    });
+    if (!r.ok) console.warn('choose failed', r.status);
+  } catch (e) {
+    console.warn('choose error', e);
+  }
+  loadCards();  // refresh so the decided card reflects the choice
+}
+
+// Decision card -> step detail drill-down (§6.3): GET /api/actions/{id}/detail.
 const detailSection = document.getElementById('detail');
 
-function openDetail(actionId) {
-  console.log('load detail (P4):', actionId); // fetch raw output + diff, fill #tab-raw / #tab-diff
+async function openDetail(actionId) {
   detailSection?.removeAttribute('hidden');
   detailSection?.scrollIntoView({ behavior: 'smooth' });
+  const rawEl = document.getElementById('tab-raw');
+  const diffEl = document.getElementById('tab-diff');
+  rawEl.textContent = '…';
+  diffEl.replaceChildren();
+  try {
+    const r = await fetch(`/api/actions/${encodeURIComponent(actionId)}/detail`);
+    if (!r.ok) { rawEl.textContent = `（详情不可用 ${r.status}）`; return; }
+    const detail = await r.json();
+    renderRaw(rawEl, detail.raw || []);
+    renderDiff(diffEl, detail.diff || { files: [] });
+  } catch (e) {
+    rawEl.textContent = '（加载详情失败）';
+  }
+}
+
+// Tab ① 原始返回 — each raw event on its own line; textContent only (untrusted agent output).
+function renderRaw(el, events) {
+  if (!events.length) { el.textContent = '（这一步没有原始返回）'; return; }
+  el.textContent = events
+    .map((e) => `[${e.ts || ''}] ${e.type} (${e.source || ''})\n${JSON.stringify(e.payload)}`)
+    .join('\n\n');
+}
+
+// Tab ② 代码改动 — per-file, per-line diff with line tags/highlight; textContent only.
+function renderDiff(el, diff) {
+  const files = diff.files || [];
+  if (!files.length) {
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = diff.note || '（这一步没有代码改动）';
+    el.appendChild(p);
+    return;
+  }
+  for (const f of files) {
+    const head = document.createElement('div');
+    head.className = 'diff-file';
+    head.textContent = `${f.path}  +${f.additions} / −${f.deletions}`;
+    el.appendChild(head);
+    for (const ln of f.lines || []) {
+      const row = document.createElement('div');
+      row.className = `diff-line diff-${ln.kind}`;
+      const sign = ln.kind === 'add' ? '+' : ln.kind === 'del' ? '−' : ' ';
+      row.textContent = sign + ln.text;
+      el.appendChild(row);
+    }
+  }
 }
 
 document.addEventListener('click', (e) => {
@@ -278,12 +389,13 @@ const I18N = {
   zh: { sessions: '会话', decisions: '决策', approvals: '审批', timeline: '时间线', dispatch: '下发任务',
         send: '发送', enablePush: '开启通知', stepDetail: '步骤详情', rawReturn: '原始返回',
         codeDiff: '代码改动', noSessions: '暂无活动会话。', noDecisions: '暂无待决策。',
-        noApprovals: '没有待你处理的。', approve: '批准', reject: '驳回', langToggle: 'EN' },
+        noApprovals: '没有待你处理的。', approve: '批准', reject: '驳回', viewDetail: '查看详情',
+        langToggle: 'EN' },
   en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
         dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
         rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
         noDecisions: 'No decisions waiting.', noApprovals: 'Nothing waiting on you.',
-        approve: 'Approve', reject: 'Reject', langToggle: '中' },
+        approve: 'Approve', reject: 'Reject', viewDetail: 'View detail', langToggle: '中' },
 };
 let currentLang = 'zh';
 
@@ -315,6 +427,7 @@ async function setLang(lang) {
   applyI18n(lang);
   localStorage.setItem('foreman.lang', currentLang);
   loadSessions();  // re-render the (dynamic) session list so its empty text follows the language
+  loadCards();  // re-render decision cards in the new language
   renderApprovals();  // re-label approve/reject + empty text in the new language
   try {
     await fetch('/api/settings/language', {

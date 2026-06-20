@@ -50,6 +50,12 @@ class _ApprovalDecision(BaseModel):
     reason: str = ""
 
 
+class _CardChoiceBody(BaseModel):
+    """A one-tap decision on a card (§6.3): which option button the human pressed."""
+
+    option: str  # approve | revise | undo | manual
+
+
 class _LoginBody(BaseModel):
     """PWA user login (DESIGN §8.2). Distinct from a local process's access key."""
 
@@ -102,6 +108,7 @@ def create_app(
     relay: object | None = None,
     gate: object | None = None,
     auth: object | None = None,
+    cards: object | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
@@ -117,6 +124,7 @@ def create_app(
     app.state.relay = relay
     app.state.gate = gate
     app.state.auth = auth
+    app.state.cards = cards
 
     def require_account(request: Request):
         """Resolve the Authorization bearer token to an active account, or raise 401/503.
@@ -230,6 +238,44 @@ def create_app(
             "not_pending": 409,
         }.get(res.get("error", ""), 400)
         raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    @app.get("/api/cards")
+    async def list_cards(session_id: str | None = None) -> list[dict]:
+        """Decision cards (the folded summaries you tap on). DESIGN §6.3.
+
+        Delegates to the injected client-side CardService (which owns the decision_cards table +
+        the local diff/raw-output assembly); app.py stays shared-only (DESIGN §14). No card
+        service (e.g. team-cache server) → 503."""
+        if cards is None or not hasattr(cards, "list_cards"):
+            raise HTTPException(status_code=503, detail="no card service")
+        return cards.list_cards(session_id)
+
+    @app.post("/api/cards/{card_id}/choose")
+    async def choose_card(card_id: str, body: _CardChoiceBody) -> dict:
+        """Record the human's one-tap decision on a card (§6.3). Executing the chosen path is
+        the two-way control layer (P4); this closes the decide half and emits `card_decided`."""
+        if cards is None or not hasattr(cards, "record_choice"):
+            raise HTTPException(status_code=503, detail="no card service")
+        res = await cards.record_choice(card_id, body.option)
+        if res.get("ok"):
+            return res
+        status = {"bad_option": 400, "no_store": 503, "not_found": 404}.get(
+            res.get("error", ""), 400
+        )
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    @app.get("/api/actions/{action_id}/detail")
+    async def action_detail(action_id: str) -> dict:
+        """Step-detail drill-down for a card's [🔍 查看详情]: raw return + per-line diff (§6.3).
+
+        Assembles ① the agent's raw events for this step and ② the per-file/per-line git diff
+        from the step's checkpoint to the live worktree — both stay on the local process (§8.3)."""
+        if cards is None or not hasattr(cards, "step_detail"):
+            raise HTTPException(status_code=503, detail="no card service")
+        detail = cards.step_detail(action_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="action not found")
+        return detail
 
     @app.post("/api/auth/login")
     async def auth_login(body: _LoginBody) -> dict:

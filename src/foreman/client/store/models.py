@@ -125,6 +125,7 @@ class DecisionCard(SQLModel, table=True):
     session_id: str = Field(index=True)
     summary: str = ""
     audit_note: str = ""
+    diff_stat: str = ""            # "3 个文件 +124 / −80" — the 📎 changes line (§6.3)
     options_json: str = "[]"       # the candidate actions offered as buttons
     chosen: str = ""
     decided_at: str = ""

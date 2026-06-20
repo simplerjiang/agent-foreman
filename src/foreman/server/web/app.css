@@ -49,6 +49,15 @@ button { padding: 0.6rem 1rem; border: none; border-radius: 8px; background: var
 .tab.active { color: var(--fg); border-color: var(--accent); }
 .tabpanel { background: #0e131b; border: 1px solid #2a3647; border-radius: 8px; padding: 0.8rem; overflow-x: auto; white-space: pre-wrap; font-size: 0.85rem; color: var(--muted); }
 
+/* Step-detail tab ②: per-file, per-line diff with add/del highlight (§6.3) */
+#tab-diff { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: normal; }
+.diff-file { color: var(--fg); font-weight: 600; margin: 0.6rem 0 0.2rem; }
+.diff-line { white-space: pre-wrap; word-break: break-all; padding: 0 0.3rem; border-radius: 2px; }
+.diff-add { background: rgba(76, 195, 138, 0.16); color: #9be8c2; }
+.diff-del { background: rgba(229, 83, 75, 0.16); color: #f2a7a2; }
+.diff-context { color: var(--muted); }
+.diff-meta { color: #6b7a8d; }
+
 /* Sessions list + live timeline (T1.11) */
 .session-item { display: block; width: 100%; text-align: left; margin: 0.3rem 0; background: #1b2533; color: var(--fg); border: 1px solid #2a3647; font-weight: 500; }
 #event-list { list-style: decimal; margin: 0; padding-left: 1.4rem; }

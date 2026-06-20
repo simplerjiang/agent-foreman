@@ -14,9 +14,11 @@ from sqlmodel import SQLModel, col, create_engine, select
 from foreman.shared.events import AgentEvent, utc_now_iso
 
 from .models import (
+    Action,
     Approval,
     Checkpoint,
     ConfigKV,
+    DecisionCard,
     Event,
     PushSubscription,
     SchemaVersion,
@@ -36,10 +38,29 @@ class Store:
     def init(self) -> None:
         """Create tables if absent and record the current schema version (DESIGN §11.1)."""
         SQLModel.metadata.create_all(self.engine)
+        self._ensure_columns()
         with self.session() as s:
             if s.get(SchemaVersion, SCHEMA_VERSION) is None:
                 s.add(SchemaVersion(version=SCHEMA_VERSION, applied_at=utc_now_iso()))
                 s.commit()
+
+    def _ensure_columns(self) -> None:
+        """Add columns that postdate a table's creation (create_all only makes *missing* tables).
+
+        A tiny stop-gap until the real migrator (T5.5): SQLite can't add a column create_all won't,
+        so a dev DB whose `decisioncard` table predates `diff_stat` would error on SELECT. Idempotent.
+        """
+        from sqlalchemy import text
+
+        wanted = {"decisioncard": [("diff_stat", "TEXT NOT NULL DEFAULT ''")]}
+        with self.engine.begin() as conn:
+            for table, cols in wanted.items():
+                existing = {
+                    row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))
+                }
+                for name, decl in cols:
+                    if name not in existing:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {decl}"))
 
     def session(self) -> DBSession:
         # expire_on_commit=False: returned ORM rows stay readable after the session closes.
@@ -55,6 +76,10 @@ class Store:
     def get_sessions(self) -> list[Session]:
         with self.session() as s:
             return list(s.exec(select(Session)).all())
+
+    def get_session(self, session_id: str) -> Session | None:
+        with self.session() as s:
+            return s.get(Session, session_id)
 
     def add_task(self, task: Task) -> Task:
         with self.session() as s:
@@ -105,6 +130,55 @@ class Store:
                     .order_by(col(Checkpoint.step_index))
                 ).all()
             )
+
+    def get_checkpoint(self, checkpoint_id: str) -> Checkpoint | None:
+        with self.session() as s:
+            return s.get(Checkpoint, checkpoint_id)
+
+    # ── actions / decision cards (decision loop, §6.1/§6.3/§7.1) ──────────────────────────────
+    def add_action(self, action: Action) -> Action:
+        """Record an Operator-proposed action (its checkpoint anchors the step-detail diff, §6.3)."""
+        with self.session() as s:
+            s.add(action)
+            s.commit()
+        return action
+
+    def get_action(self, action_id: str) -> Action | None:
+        with self.session() as s:
+            return s.get(Action, action_id)
+
+    def add_decision_card(self, card: DecisionCard) -> DecisionCard:
+        """Record a decision card pushed to PC/phone for a one-tap decision (§6.3)."""
+        with self.session() as s:
+            s.add(card)
+            s.commit()
+        return card
+
+    def get_decision_card(self, card_id: str) -> DecisionCard | None:
+        with self.session() as s:
+            return s.get(DecisionCard, card_id)
+
+    def get_decision_cards(self, session_id: str | None = None) -> list[DecisionCard]:
+        """Decision cards, newest first (optionally scoped to one session) — the phone's card feed."""
+        with self.session() as s:
+            stmt = select(DecisionCard)
+            if session_id is not None:
+                stmt = stmt.where(DecisionCard.session_id == session_id)
+            return list(s.exec(stmt.order_by(col(DecisionCard.ts).desc())).all())
+
+    def set_card_choice(
+        self, card_id: str, *, chosen: str, decided_at: str
+    ) -> DecisionCard | None:
+        """Record which option the human tapped on a card (§6.3). None if the card is unknown."""
+        with self.session() as s:
+            row = s.get(DecisionCard, card_id)
+            if row is None:
+                return None
+            row.chosen = chosen
+            row.decided_at = decided_at
+            s.add(row)
+            s.commit()
+        return row
 
     # ── approvals (Gate, DESIGN §6.6 / §7.1) ─────────────────────────────────────────────────
     def add_approval(self, approval: Approval) -> Approval:

@@ -35,3 +35,15 @@ def test_i18n_wired_in_page():
     assert "lang-toggle" in html and "data-i18n" in html
     js = c.get("/app.js").text
     assert "I18N" in js and "/api/settings/language" in js
+
+
+def test_decision_card_and_detail_wired(tmp_path):
+    """The PWA fetches cards + drills into step detail, and renders the diff safely (T4.3 §6.3)."""
+    c = TestClient(create_app(load_config()))
+    html = c.get("/").text
+    assert "card-template" in html and "view-detail" in html and 'data-tab="diff"' in html
+    js = c.get("/app.js").text
+    assert "/api/cards" in js and "/api/actions/" in js and "/detail" in js
+    assert "chooseCard" in js and "/choose" in js  # one-tap card decision wired
+    # diff + raw output are untrusted → rendered via textContent, never assigned to innerHTML.
+    assert "renderDiff" in js and "textContent" in js and ".innerHTML" not in js

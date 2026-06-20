@@ -42,6 +42,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     from foreman.server.app import create_app
     from foreman.server.push import Pusher
 
+    from .core.cards import CardService
     from .core.gate import Gate
     from .monitor.hooks import HookReceiver
 
@@ -55,7 +56,11 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # client + server — the Gate itself never imports server (it gets the Pusher injected, §14).
     gate = Gate(cfg.gates, store=store, bus=bus, pusher=Pusher(cfg))
     hooks = HookReceiver(store, bus, gate)
-    app = create_app(cfg, store, bus, hooks=hooks, gate=gate)
+    # CardService owns the decision_cards table + the step-detail drill-down (raw return +
+    # per-line diff, §6.3). Injected like the Gate so app.py stays shared-only; the diff/raw
+    # output it assembles never leaves the local process (§8.3 / §14).
+    cards = CardService(store, bus=bus)
+    app = create_app(cfg, store, bus, hooks=hooks, gate=gate, cards=cards)
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
