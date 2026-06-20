@@ -22,6 +22,13 @@ def test_build_cmd():
     ]
 
 
+def test_build_resume_cmd():
+    a = ClaudeCodeAdapter(_cfg())
+    assert a._build_resume_cmd("do Y", "sess-1") == [
+        "claude", "-p", "do Y", "--resume", "sess-1", "--output-format", "stream-json", "--verbose",
+    ]
+
+
 async def test_start_registers_and_returns_handle(tmp_path):
     proc = FakeProc(pid=4321)
     a = fake_adapter(ClaudeCodeAdapter, _cfg(), proc)

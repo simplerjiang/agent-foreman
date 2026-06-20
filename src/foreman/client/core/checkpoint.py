@@ -135,6 +135,12 @@ class CheckpointManager:
         steps = self._scan_steps(session_id)
         return steps[-1][0] + 1 if steps else 0
 
+    def next_step(self, session_id: str) -> int:
+        """Public: the next checkpoint step index, derived from the git shadow refs (the single
+        source of truth). Callers that also record DB rows must use this so DB and git stay in
+        lockstep — `undo_to` chains its redo snapshot off the same git refs (§6.5)."""
+        return self._next_step(session_id)
+
     def resolve_step(self, session_id: str, step_index: int) -> str:
         """Resolve a session's step checkpoint to its commit SHA (the shadow ref's target)."""
         return self._git("rev-parse", f"{CKPT_REF_PREFIX}/{session_id}/{step_index}").stdout.strip()

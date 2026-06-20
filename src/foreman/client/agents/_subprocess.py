@@ -28,9 +28,19 @@ class SubprocessCliAdapter:
     def __init__(self, cfg: AgentCfg) -> None:
         self.cfg = cfg  # command, mode
         self._procs: dict[str, asyncio.subprocess.Process] = {}
+        # Remember each handle's workspace so a resume (`send`) re-spawns in the same cwd.
+        self._workspaces: dict[str, Path] = {}
 
     def _build_cmd(self, instruction: str) -> list[str]:
         raise NotImplementedError
+
+    def _build_resume_cmd(self, instruction: str, native_session_id: str) -> list[str]:
+        """Command that resumes a prior session with a follow-up instruction (two-way control).
+
+        Subclasses override to add their CLI's resume flag (claude `--resume`, codex `exec resume`).
+        Default: a plain re-run (no session continuity) so `send` still works on an adapter that
+        has no resume concept. See docs/DESIGN.zh-CN.md §4.2 ("会话续接用 --resume / --continue")."""
+        return self._build_cmd(instruction)
 
     async def _spawn(self, cmd: list[str], workspace: Path) -> asyncio.subprocess.Process:
         """Spawn the agent process. Overridable seam so tests can inject a fake process."""
@@ -49,6 +59,7 @@ class SubprocessCliAdapter:
         proc = await self._spawn(self._build_cmd(instruction), workspace)
         handle = AgentHandle(id=f"{session_id}:{proc.pid}", session_id=session_id, pid=proc.pid)
         self._procs[handle.id] = proc
+        self._workspaces[handle.id] = Path(workspace)
         return handle
 
     async def stream(self, handle: AgentHandle) -> AsyncIterator[AgentEvent]:
@@ -83,14 +94,39 @@ class SubprocessCliAdapter:
         return make_event(etype, self.name, session_id, payload=obj)
 
     async def send(self, handle: AgentHandle, text: str) -> None:
-        raise NotImplementedError(f"{type(self).__name__}.send — roadmap P4")
+        """Append a follow-up instruction by resuming the session (two-way control, DESIGN §4.2).
+
+        These CLIs run one-shot (`-p` / `exec`), so a follow-up means spawning a *resume* process
+        rather than writing to a long-lived stdin. We build the resume command (carrying the native
+        session id captured during the first stream, when present), spawn it, and re-register it
+        under the same handle id so the Runner can re-pump its output to store+bus.
+        """
+        if handle.native_session_id:
+            cmd = self._build_resume_cmd(text, handle.native_session_id)
+        else:
+            # No captured session id yet → fall back to a fresh run with the follow-up text.
+            cmd = self._build_cmd(text)
+        proc = await self._spawn(cmd, self._workspaces.get(handle.id, Path(".")))
+        self._procs[handle.id] = proc
+        handle.pid = proc.pid
 
     async def interrupt(self, handle: AgentHandle) -> None:
-        raise NotImplementedError(f"{type(self).__name__}.interrupt — roadmap P3")
+        """Pause/interrupt the running process (the first rung of the stall ladder, DESIGN §5.6).
+
+        Terminate the live process gracefully; resuming afterwards goes through `send` (`--resume`).
+        A process that has already exited is a no-op."""
+        proc = self._procs.get(handle.id)
+        if proc is None or proc.returncode is not None:
+            return
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass  # already gone
 
     async def stop(self, handle: AgentHandle) -> None:
         """Terminate the agent process (graceful → kill) and deregister it."""
         proc = self._procs.pop(handle.id, None)
+        self._workspaces.pop(handle.id, None)
         if proc is None or proc.returncode is not None:
             return
         try:

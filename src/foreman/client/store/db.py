@@ -16,6 +16,7 @@ from foreman.shared.events import AgentEvent, utc_now_iso
 from .models import (
     Action,
     Approval,
+    Audit,
     Checkpoint,
     ConfigKV,
     DecisionCard,
@@ -147,6 +148,50 @@ class Store:
     def get_action(self, action_id: str) -> Action | None:
         with self.session() as s:
             return s.get(Action, action_id)
+
+    def update_action(
+        self,
+        action_id: str,
+        *,
+        status: str | None = None,
+        checkpoint_id: str | None = None,
+        executed_at: str | None = None,
+    ) -> Action | None:
+        """Advance an action through the decision loop (proposed→audited→carded→executed, §6.2).
+
+        Only the passed fields are written, so callers can stamp a checkpoint at execute-time
+        without clobbering the status set earlier. None if the action id is unknown."""
+        with self.session() as s:
+            row = s.get(Action, action_id)
+            if row is None:
+                return None
+            if status is not None:
+                row.status = status
+            if checkpoint_id is not None:
+                row.checkpoint_id = checkpoint_id
+            if executed_at is not None:
+                row.executed_at = executed_at
+            s.add(row)
+            s.commit()
+        return row
+
+    def add_audit(self, audit: Audit) -> Audit:
+        """Record the Auditor's independent pre-execution verdict on an action (§6.7 / §7.1)."""
+        with self.session() as s:
+            s.add(audit)
+            s.commit()
+        return audit
+
+    def get_audits(self, action_id: str) -> list[Audit]:
+        """The audit verdict(s) recorded for an action (newest first)."""
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(Audit)
+                    .where(Audit.action_id == action_id)
+                    .order_by(col(Audit.ts).desc())
+                ).all()
+            )
 
     def add_decision_card(self, card: DecisionCard) -> DecisionCard:
         """Record a decision card pushed to PC/phone for a one-tap decision (§6.3)."""

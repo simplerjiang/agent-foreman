@@ -18,3 +18,8 @@ class ClaudeCodeAdapter(SubprocessCliAdapter):
     def _build_cmd(self, instruction: str) -> list[str]:
         return [self.cfg.command, "-p", instruction,
                 "--output-format", "stream-json", "--verbose"]
+
+    def _build_resume_cmd(self, instruction: str, native_session_id: str) -> list[str]:
+        """Resume the captured session with a follow-up (two-way control, DESIGN §4.2)."""
+        return [self.cfg.command, "-p", instruction, "--resume", native_session_id,
+                "--output-format", "stream-json", "--verbose"]

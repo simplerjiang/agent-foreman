@@ -58,8 +58,19 @@ class MonitorCfg(BaseModel):
     idle_seconds: int = 120
 
 
+# Baked-in irreversible-command denylist (DESIGN §6.6 red line). Defaults are NON-empty so the
+# Gate catches hard-dangerous actions even with no config.yaml — critical now that the decision loop
+# can auto-execute "safe" actions (P4): an empty list would classify everything "safe" → auto.
+# config.yaml may extend/replace these. Substring match, case-insensitive (see Gate.classify).
+_DEFAULT_REQUIRES_APPROVAL = [
+    "git push", "git push --force", "push --force", "rm -rf", "rmdir /s",
+    "drop table", "drop database", "truncate", "deploy", "publish",
+    "secrets", "shutdown", "reboot", "mkfs", "format ", ":(){", "sudo", "runas",
+]
+
+
 class GatesCfg(BaseModel):
-    requires_approval: list[str] = Field(default_factory=list)
+    requires_approval: list[str] = Field(default_factory=lambda: list(_DEFAULT_REQUIRES_APPROVAL))
     needs_strategy: list[str] = Field(default_factory=list)
     approval_timeout_s: int = 0
 

@@ -205,11 +205,22 @@ class CardService:
     VALID_OPTIONS: frozenset[str] = frozenset({"approve", "revise", "undo", "manual"})
 
     def __init__(
-        self, store: object, *, bus: object | None = None, checkpoint_factory=None, clock=None
+        self,
+        store: object,
+        *,
+        bus: object | None = None,
+        checkpoint_factory=None,
+        executor=None,
+        clock=None,
     ) -> None:
         self.store = store
         self.bus = bus
         self._ckpt_factory = checkpoint_factory or _default_checkpoint_factory
+        # Optional async ``executor(card_row, option) -> dict`` (the DecisionLoop, T4 acceptance):
+        # when wired, a tapped card actually runs the chosen path (checkpoint→execute / undo /
+        # revise) instead of only recording the choice. Without it the decision is recorded and
+        # execution is deferred (the P2–P4 behaviour), so app.py / tests stay backward-compatible.
+        self.executor = executor
         self._clock = clock or utc_now_iso
 
     def build_card(
@@ -245,12 +256,14 @@ class CardService:
         return [_card_to_dict(c) for c in self.store.get_decision_cards(session_id)]
 
     async def record_choice(self, card_id: str, option: str) -> dict:
-        """Record the human's one-tap decision on a card and emit a `card_decided` event (§6.3).
+        """Record the human's one-tap decision on a card, run it (if an executor is wired), and emit
+        a `card_decided` event (§6.3).
 
-        Returns {"ok": True, "id", "chosen"} or {"ok": False, "error": ...} with error ∈
-        {bad_option, no_store, not_found}. Like the Gate (T3.4), this records the decision; actually
-        *executing* the chosen path (run / nudge the agent / one-click undo) is the two-way control
-        layer (P4 — Runner.send/interrupt), so the event carries ``execution_deferred=True``.
+        Returns {"ok": True, "id", "chosen"[, "execution"]} or {"ok": False, "error": ...} with
+        error ∈ {bad_option, no_store, not_found}. When a DecisionLoop executor is injected the chosen
+        path actually runs (approve → checkpoint+execute / undo / revise) and the event carries
+        ``execution_deferred=False``; without one the decision is only recorded (the P2–P4 behaviour),
+        so the event carries ``execution_deferred=True`` (Runner two-way control was the deferred bit).
         """
         if option not in self.VALID_OPTIONS:
             return {"ok": False, "error": "bad_option"}
@@ -259,13 +272,24 @@ class CardService:
         row = self.store.set_card_choice(card_id, chosen=option, decided_at=self._clock())
         if row is None:
             return {"ok": False, "error": "not_found"}
-        await self._emit_decided(row)
-        return {"ok": True, "id": card_id, "chosen": option}
+        exec_result = None
+        if self.executor is not None:
+            try:
+                exec_result = await self.executor(row, option)
+            except Exception as exc:  # an execution failure must not lose the recorded decision.
+                exec_result = {"ok": False, "error": f"{type(exc).__name__}", "executed": False}
+        await self._emit_decided(row, exec_result)
+        out = {"ok": True, "id": card_id, "chosen": option}
+        if exec_result is not None:
+            out["execution"] = exec_result
+        return out
 
-    async def _emit_decided(self, card) -> None:
+    async def _emit_decided(self, card, exec_result: dict | None = None) -> None:
         """Record + publish the card decision (persist-first, mirrors Gate/Runner)."""
         from foreman.shared.events import make_event
 
+        # Deferred only when no executor ran the path; an executor that ran flips it to False.
+        deferred = exec_result is None
         event = make_event(
             "card_decided",
             "cards",
@@ -274,8 +298,8 @@ class CardService:
                 "card_id": card.id,
                 "action_id": card.action_id,
                 "chosen": card.chosen,
-                # executing the chosen path is the two-way control layer (P4, Runner.send/interrupt).
-                "execution_deferred": True,
+                "execution_deferred": deferred,
+                "executed": bool(exec_result and exec_result.get("executed")),
             },
         )
         if self.store is not None and hasattr(self.store, "add_event"):

@@ -20,6 +20,11 @@ def test_build_cmd():
     assert a._build_cmd("do Y") == ["codex", "exec", "do Y"]
 
 
+def test_build_resume_cmd():
+    a = CodexAdapter(_cfg())
+    assert a._build_resume_cmd("more", "sess-9") == ["codex", "exec", "resume", "sess-9", "more"]
+
+
 async def test_start_registers_and_returns_handle(tmp_path):
     proc = FakeProc(pid=999)
     a = fake_adapter(CodexAdapter, _cfg(), proc)

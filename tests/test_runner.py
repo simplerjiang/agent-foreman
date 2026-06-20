@@ -59,3 +59,57 @@ async def test_launch_unknown_agent_raises(tmp_path):
     runner = Runner(Config(), EventBus(), _store(tmp_path))
     with pytest.raises(ValueError, match="agent not enabled"):
         await runner.launch("nope", "x", tmp_path, "s")
+
+
+# ── two-way control: send (resume) + interrupt (P4 / DESIGN §4.2) ───────────────────────────────────
+def _multi_spawn_adapter(adapter_cls, cfg, procs):
+    """Adapter whose _spawn returns the next proc each call and records every spawned command."""
+    a = adapter_cls(cfg)
+    a.spawned_cmds = []
+    queue = list(procs)
+
+    async def _spawn(cmd, workspace):
+        a.spawned_cmds.append(cmd)
+        return queue.pop(0)
+
+    a._spawn = _spawn
+    return a
+
+
+async def test_send_resumes_session_and_repumps(tmp_path):
+    store = _store(tmp_path)
+    bus = EventBus()
+    runner = Runner(Config(), bus, store)
+    first = FakeProc(pid=1, stdout_lines=[
+        b'{"type":"system","session_id":"sess-abc"}\n',  # native session id captured during stream
+        b'{"type":"result","result":"done"}\n',
+    ])
+    resumed = FakeProc(pid=2, stdout_lines=[b'{"type":"result","result":"resumed"}\n'])
+    adapter = _multi_spawn_adapter(ClaudeCodeAdapter, AgentCfg(command="claude"), [first, resumed])
+    runner.adapters["claude-code"] = adapter
+
+    handle = await runner.launch("claude-code", "do x", tmp_path, "s1")
+    await runner.wait(handle)
+    assert handle.native_session_id == "sess-abc"
+    assert runner.handle_for_session("s1") is handle  # addressable by session id
+
+    await runner.send(handle, "now do y")
+    await runner.wait(handle)
+
+    # the resume command carried --resume <captured id> and the follow-up text
+    resume_cmd = adapter.spawned_cmds[1]
+    assert "--resume" in resume_cmd and "sess-abc" in resume_cmd and "now do y" in resume_cmd
+    # the resumed output streamed to the store too (re-pumped)
+    payloads = [e.payload_json for e in store.get_events("s1")]
+    assert any("resumed" in p for p in payloads)
+
+
+async def test_interrupt_terminates_the_process(tmp_path):
+    runner = Runner(Config(), EventBus(), _store(tmp_path))
+    proc = FakeProc(pid=7, stdout_lines=[b'{"type":"result","result":"x"}\n'])
+    runner.adapters["claude-code"] = fake_adapter(
+        ClaudeCodeAdapter, AgentCfg(command="claude"), proc
+    )
+    handle = await runner.launch("claude-code", "do x", tmp_path, "s1")
+    await runner.interrupt(handle)
+    assert proc.terminated is True

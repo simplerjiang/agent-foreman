@@ -45,10 +45,14 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     from foreman.server.push import Pusher
     from foreman.shared.llm import LLMClient
 
+    from .computer_use.toolbelt import Toolbelt
+    from .core.auditor import Auditor
     from .core.briefing import BriefingService
     from .core.cards import CardService
+    from .core.decision_loop import DecisionLoop
     from .core.dispatch_service import DispatchService
     from .core.gate import Gate
+    from .core.operator import Operator
     from .monitor.hooks import HookReceiver
 
     store = Store(cfg.store.db_path)
@@ -66,6 +70,26 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # per-line diff, §6.3). Injected like the Gate so app.py stays shared-only; the diff/raw
     # output it assembles never leaves the local process (§8.3 / §14).
     cards = CardService(store, bus=bus)
+    # The Decision Loop串联 (P4 acceptance, §6.2): Operator → Auditor → Gate → card → checkpoint →
+    # execute. It wires the local Store/Runner/Toolbelt/Gate so a tapped card actually runs the
+    # chosen path. Output language follows ui.language (§15). The Operator's "hands" are the
+    # Toolbelt (shell/screenshot/mouse/keyboard, §4.7); the Gate classifies its shell commands.
+    language = normalize_lang(store.get_setting("ui.language") or cfg.ui.language)
+    toolbelt = Toolbelt(gate=gate)
+    loop = DecisionLoop(
+        store=store,
+        gate=gate,
+        cards=cards,
+        operator=Operator(LLMClient(cfg), language=language),
+        auditor=Auditor(LLMClient(cfg), language=language),
+        bus=bus,
+        runner=runner,
+        toolbelt=toolbelt,
+        language=language,
+    )
+    # Close the loop: a tapped card executes the chosen path (approve→checkpoint+execute / undo /
+    # revise) instead of only recording the decision (the "你点→检查点→执行" half, §6.2).
+    cards.executor = loop.on_card_decision
     # DispatchService creates Root Sessions from the phone (§5.1); its launcher drives the real
     # Runner so a phone tap actually starts an agent (multiple sessions run concurrently, T1.7).
     async def _launcher(session_id: str, goal: str, workspace: str, agent: str) -> None:
@@ -73,8 +97,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
 
     dispatcher = DispatchService(cfg, store, bus=bus, launcher=_launcher)
     # BriefingService summarizes a session's activity with YOUR LLM → reports table + Web Push
-    # (§5.5). Output language follows the runtime ui.language setting (§15). Injected like the Gate.
-    language = normalize_lang(store.get_setting("ui.language") or cfg.ui.language)
+    # (§5.5). Output language follows the runtime ui.language setting (§15, resolved above).
     briefings = BriefingService(
         LLMClient(cfg), store, bus=bus, pusher=pusher, language=language
     )

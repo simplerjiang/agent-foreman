@@ -19,6 +19,8 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "git_diff", "git_commit", "review", "action_proposed", "audit",
         "card_decided", "checkpoint", "undo", "approval_req", "approval_decided",
         "briefing", "error", "dispatch", "health", "stall", "recover",
+        # decision-loop execution (P4 acceptance, §6.2): an action ran / was rolled back.
+        "action_executed", "action_undone",
     }
 )
 
