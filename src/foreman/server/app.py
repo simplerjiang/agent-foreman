@@ -11,7 +11,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -52,15 +52,22 @@ def _event_to_dict(ev: AgentEvent) -> dict:
     }
 
 
-def create_app(cfg: Config, store: object | None = None, bus: EventBus | None = None) -> FastAPI:
+def create_app(
+    cfg: Config,
+    store: object | None = None,
+    bus: EventBus | None = None,
+    hooks: object | None = None,
+) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
-    # Store + bus are INJECTED by the caller (personal mode: client store; team server: cache store).
-    # This module never imports the client — 秘方 stays local (DESIGN §8.3, §14 boundary).
+    # Store + bus + hooks are INJECTED by the caller (personal mode: client store + a
+    # Gate-aware HookReceiver; team server: cache store, no hooks). This module never imports
+    # the client — 秘方 stays local and /hooks stays local (DESIGN §4.3, §8.3, §14 boundary).
     bus = bus or EventBus()
     app.state.cfg = cfg
     app.state.store = store
     app.state.bus = bus
+    app.state.hooks = hooks
 
     @app.get("/health")
     async def health() -> dict:
@@ -98,6 +105,30 @@ def create_app(cfg: Config, store: object | None = None, bus: EventBus | None = 
         lang = normalize_lang(body.language)
         store.set_setting("ui.language", lang)
         return {"language": lang}
+
+    @app.post("/hooks")
+    async def receive_hooks(request: Request) -> dict:
+        """Claude Code hook sink (PreToolUse/PostToolUse/Stop/Notification). DESIGN §4.3.
+
+        The hook name comes from the X-Hook header (see hooks/claude-hooks.example.json),
+        falling back to the payload's hook_event_name. The reply is the hook *result* curl
+        pipes back to Claude Code — a deny here blocks a dangerous tool call (§6.6).
+        """
+        if hooks is None:
+            raise HTTPException(status_code=503, detail="hooks receiver not configured")
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {"raw": payload}
+        hook_name = (
+            request.headers.get("x-hook")
+            or payload.get("hook_event_name")
+            or "Unknown"
+        )
+        session_id = request.query_params.get("session_id")
+        return await hooks.handle(hook_name, payload, session_id)
 
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket, session_id: str | None = None) -> None:

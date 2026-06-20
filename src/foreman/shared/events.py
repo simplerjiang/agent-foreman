@@ -15,10 +15,10 @@ from datetime import datetime, timezone
 # Enum) so payloads stay JSON-friendly across the wire; use it for cheap validation.
 EVENT_TYPES: frozenset[str] = frozenset(
     {
-        "agent_output", "tool_pre", "tool_post", "stop", "git_diff", "git_commit",
-        "review", "action_proposed", "audit", "card_decided", "checkpoint", "undo",
-        "approval_req", "approval_decided", "briefing", "error", "dispatch",
-        "health", "stall", "recover",
+        "agent_output", "tool_pre", "tool_post", "stop", "notification",
+        "git_diff", "git_commit", "review", "action_proposed", "audit",
+        "card_decided", "checkpoint", "undo", "approval_req", "approval_decided",
+        "briefing", "error", "dispatch", "health", "stall", "recover",
     }
 )
 

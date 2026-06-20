@@ -41,11 +41,15 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
 
     from foreman.server.app import create_app
 
+    from .core.gate import Gate
+    from .monitor.hooks import HookReceiver
+
     store = Store(cfg.store.db_path)
     store.init()
     bus = EventBus()
     runner = Runner(cfg, bus, store)
-    app = create_app(cfg, store, bus)
+    hooks = HookReceiver(store, bus, Gate(cfg.gates))  # /hooks is local-only (DESIGN §4.3)
+    app = create_app(cfg, store, bus, hooks=hooks)
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
