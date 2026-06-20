@@ -390,12 +390,13 @@ const I18N = {
         send: '发送', enablePush: '开启通知', stepDetail: '步骤详情', rawReturn: '原始返回',
         codeDiff: '代码改动', noSessions: '暂无活动会话。', noDecisions: '暂无待决策。',
         noApprovals: '没有待你处理的。', approve: '批准', reject: '驳回', viewDetail: '查看详情',
-        langToggle: 'EN' },
+        autonomy: '自治', langToggle: 'EN' },
   en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
         dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
         rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
         noDecisions: 'No decisions waiting.', noApprovals: 'Nothing waiting on you.',
-        approve: 'Approve', reject: 'Reject', viewDetail: 'View detail', langToggle: '中' },
+        approve: 'Approve', reject: 'Reject', viewDetail: 'View detail',
+        autonomy: 'Autonomy', langToggle: '中' },
 };
 let currentLang = 'zh';
 
@@ -440,4 +441,36 @@ async function setLang(lang) {
 document.getElementById('lang-toggle')?.addEventListener('click',
   () => setLang(currentLang === 'zh' ? 'en' : 'zh'));
 
+// ── autonomy dial (0/1/2/3): how proactive Foreman is — capabilities stay full, only whether
+//    placing a move asks you first changes (DESIGN §6.4). Synced to the backend (config_kv). ───
+const autonomySelect = document.getElementById('autonomy-select');
+
+async function initAutonomy() {
+  if (!autonomySelect) return;
+  try {
+    const r = await fetch('/api/settings/autonomy');
+    if (r.ok) {
+      const { level, label } = await r.json();
+      autonomySelect.value = String(level);
+      if (label) autonomySelect.title = label;  // hover shows the level's meaning
+    }
+  } catch (e) { /* offline / server mode — leave default */ }
+}
+
+autonomySelect?.addEventListener('change', async () => {
+  const level = parseInt(autonomySelect.value, 10);
+  try {
+    const r = await fetch('/api/settings/autonomy', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level }),
+    });
+    if (r.ok) {
+      const data = await r.json();
+      autonomySelect.value = String(data.level);  // reflect the server's clamp
+      if (data.label) autonomySelect.title = data.label;
+    }
+  } catch (e) { /* offline — selection still reflects intent locally */ }
+});
+
 init();
+initAutonomy();

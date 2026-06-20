@@ -79,6 +79,11 @@ class UICfg(BaseModel):
     language: str = "zh"  # zh | en — default UI + LLM output language (DESIGN §15)
 
 
+class AutonomyCfg(BaseModel):
+    # Baseline autonomy dial 0..3 (DESIGN §6.4); a config_kv "autonomy.level" overrides at runtime.
+    level: int = 1
+
+
 class Config(BaseModel):
     server: ServerCfg = ServerCfg()
     llm: LLMCfg = LLMCfg()
@@ -90,6 +95,7 @@ class Config(BaseModel):
     schedule: ScheduleCfg = ScheduleCfg()
     push: PushCfg = PushCfg()
     ui: UICfg = UICfg()
+    autonomy: AutonomyCfg = AutonomyCfg()
 
     # Populated from .env, not from config.yaml.
     secrets: Secrets = Field(default_factory=Secrets)

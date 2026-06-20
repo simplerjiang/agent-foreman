@@ -37,6 +37,15 @@ def test_i18n_wired_in_page():
     assert "I18N" in js and "/api/settings/language" in js
 
 
+def test_autonomy_dial_wired_in_page():
+    """The PWA exposes the autonomy dial (0/1/2/3) and syncs it to the backend (T4.4 §6.4)."""
+    c = TestClient(create_app(load_config()))
+    html = c.get("/").text
+    assert "autonomy-select" in html and 'data-i18n="autonomy"' in html
+    js = c.get("/app.js").text
+    assert "/api/settings/autonomy" in js and "initAutonomy" in js
+
+
 def test_decision_card_and_detail_wired(tmp_path):
     """The PWA fetches cards + drills into step detail, and renders the diff safely (T4.3 §6.3)."""
     c = TestClient(create_app(load_config()))

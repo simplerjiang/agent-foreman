@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from foreman.shared.autonomy import level_label, normalize_level
 from foreman.shared.config import Config
 from foreman.shared.events import AgentEvent, EventBus
 from foreman.shared.i18n import normalize as normalize_lang
@@ -24,6 +25,12 @@ from .. import __version__
 
 class _LanguageBody(BaseModel):
     language: str
+
+
+class _AutonomyBody(BaseModel):
+    """Autonomy dial setting (DESIGN §6.4): level 0..3 (coerced/clamped server-side)."""
+
+    level: int
 
 
 class _PushKeys(BaseModel):
@@ -175,6 +182,29 @@ def create_app(
         lang = normalize_lang(body.language)
         store.set_setting("ui.language", lang)
         return {"language": lang}
+
+    def _effective_lang() -> str:
+        current = None
+        if store is not None and hasattr(store, "get_setting"):
+            current = store.get_setting("ui.language")
+        return normalize_lang(current or cfg.ui.language)
+
+    @app.get("/api/settings/autonomy")
+    async def get_autonomy() -> dict:
+        """Effective autonomy dial: config_kv override (if a store) else the config baseline (§6.4)."""
+        current = None
+        if store is not None and hasattr(store, "get_setting"):
+            current = store.get_setting("autonomy.level")
+        level = normalize_level(current if current is not None else cfg.autonomy.level)
+        return {"level": level, "label": level_label(level, _effective_lang())}
+
+    @app.post("/api/settings/autonomy")
+    async def set_autonomy(body: _AutonomyBody) -> dict:
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        level = normalize_level(body.level)
+        store.set_setting("autonomy.level", str(level))
+        return {"level": level, "label": level_label(level, _effective_lang())}
 
     @app.get("/api/push/vapid-public-key")
     async def push_public_key() -> dict:

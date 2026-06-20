@@ -22,6 +22,7 @@ from __future__ import annotations
 import secrets
 import uuid
 
+from foreman.shared.autonomy import decide_disposition
 from foreman.shared.config import GatesCfg
 from foreman.shared.events import make_event, utc_now_iso
 
@@ -56,6 +57,15 @@ class Gate:
         if any(p.lower() in low for p in self.cfg.needs_strategy):
             return "needs-strategy"
         return "safe"
+
+    def disposition(self, action_text: str, level) -> str:
+        """Combine the deterministic classification with the autonomy dial → auto|card|report.
+
+        The single call the decision loop makes per proposed action (DESIGN §6.4): classify the
+        action by rule, then let the dial decide whether to run it, ask via a card, or only report.
+        Irreversible (requires-approval) actions never resolve to ``auto`` at any level (§6.6).
+        Actually executing the ``auto``/``card`` outcome is the two-way control layer (P4)."""
+        return decide_disposition(self.classify(action_text), level)
 
     async def request_approval(
         self,
