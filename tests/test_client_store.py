@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 
 from foreman.client.store import Store
-from foreman.client.store.models import SchemaVersion, Session, Task
+from foreman.client.store.models import Checkpoint, SchemaVersion, Session, Task
 from foreman.shared.events import make_event
 
 
@@ -51,3 +51,15 @@ def test_get_events_filters_by_session(tmp_path):
     st.add_event(make_event("agent_output", "codex", "sB", payload={}))
     assert len(st.get_events("sA")) == 1
     assert len(st.get_events("sB")) == 1
+
+
+def test_checkpoint_roundtrip_ordered_by_step(tmp_path):
+    st = _store(tmp_path)
+    st.add_checkpoint(Checkpoint(id="c2", session_id="s1", step_index=1, vcs_ref="deadbeef"))
+    st.add_checkpoint(Checkpoint(id="c1", session_id="s1", step_index=0, vcs_ref="cafe"))
+    st.add_checkpoint(Checkpoint(id="cx", session_id="s2", step_index=0, vcs_ref="other"))
+
+    rows = st.get_checkpoints("s1")
+    assert [r.step_index for r in rows] == [0, 1]   # ordered by step, not insert order
+    assert [r.vcs_ref for r in rows] == ["cafe", "deadbeef"]
+    assert len(st.get_checkpoints("s2")) == 1

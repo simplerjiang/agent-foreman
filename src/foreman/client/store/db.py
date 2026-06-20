@@ -9,11 +9,11 @@ import json
 import uuid
 
 from sqlmodel import Session as DBSession
-from sqlmodel import SQLModel, create_engine, select
+from sqlmodel import SQLModel, col, create_engine, select
 
 from foreman.shared.events import AgentEvent, utc_now_iso
 
-from .models import ConfigKV, Event, SchemaVersion, Session, Task
+from .models import Checkpoint, ConfigKV, Event, SchemaVersion, Session, Task
 
 SCHEMA_VERSION = 1
 
@@ -75,6 +75,25 @@ class Store:
             return list(
                 s.exec(
                     select(Event).where(Event.session_id == session_id).order_by(Event.ts)
+                ).all()
+            )
+
+    # ── checkpoints (§6.5 / §7.1) ────────────────────────────────────────────────────────────
+    def add_checkpoint(self, checkpoint: Checkpoint) -> Checkpoint:
+        """Record a per-step git snapshot so the undo timeline can list/replay it (§6.5)."""
+        with self.session() as s:
+            s.add(checkpoint)
+            s.commit()
+        return checkpoint
+
+    def get_checkpoints(self, session_id: str) -> list[Checkpoint]:
+        """This session's checkpoints, oldest step first (the undo timeline)."""
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(Checkpoint)
+                    .where(Checkpoint.session_id == session_id)
+                    .order_by(col(Checkpoint.step_index))
                 ).all()
             )
 
