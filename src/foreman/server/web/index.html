@@ -74,6 +74,13 @@
         <input id="task-input" placeholder="e.g. 重构 auth 模块，push 前问我" autocomplete="off" />
         <button type="submit" data-i18n="send">Send</button>
       </form>
+      <p id="dispatch-status" class="hint" hidden></p>
+    </section>
+
+    <section id="briefings" aria-label="Briefings">
+      <h2 data-i18n="briefings">Briefings</h2>
+      <button id="generate-brief" class="pill" type="button" data-i18n="generateBriefing">Generate briefing</button>
+      <div id="report-list" class="empty" data-i18n="noReports">No briefings yet.</div>
     </section>
   </main>
 

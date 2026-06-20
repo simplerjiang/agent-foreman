@@ -73,6 +73,21 @@ class _LoginBody(BaseModel):
 class _AccessKeyBody(BaseModel):
     label: str = ""
 
+
+class _DispatchBody(BaseModel):
+    """A task dispatched from the phone (DESIGN §5.1). workspace/agent fall back to config."""
+
+    goal: str
+    workspace: str = ""
+    agent: str = ""
+
+
+class _BriefBody(BaseModel):
+    """Generate a briefing (DESIGN §5.5). Empty session_id → a roster of all sessions (daily)."""
+
+    session_id: str = ""
+    kind: str = "active-briefing"
+
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
@@ -116,6 +131,8 @@ def create_app(
     gate: object | None = None,
     auth: object | None = None,
     cards: object | None = None,
+    dispatcher: object | None = None,
+    briefings: object | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
@@ -132,6 +149,8 @@ def create_app(
     app.state.gate = gate
     app.state.auth = auth
     app.state.cards = cards
+    app.state.dispatcher = dispatcher
+    app.state.briefings = briefings
 
     def require_account(request: Request):
         """Resolve the Authorization bearer token to an active account, or raise 401/503.
@@ -306,6 +325,53 @@ def create_app(
         if detail is None:
             raise HTTPException(status_code=404, detail="action not found")
         return detail
+
+    @app.post("/api/tasks")
+    async def dispatch_task(body: _DispatchBody) -> dict:
+        """Dispatch a task from the phone → a new Root Session (DESIGN §5.1). Delegates to the
+        injected client-side DispatchService; app.py stays shared-only (§14). No dispatcher
+        (e.g. team-cache server) → 503."""
+        if dispatcher is None or not hasattr(dispatcher, "create"):
+            raise HTTPException(status_code=503, detail="no dispatcher")
+        res = await dispatcher.create(
+            body.goal, workspace=body.workspace or None, agent=body.agent or None
+        )
+        if res.get("ok"):
+            return res
+        status = {
+            "empty_goal": 400,
+            "unknown_agent": 400,
+            "no_workspace": 400,
+            "workspace_not_allowed": 400,
+            "no_store": 503,
+        }.get(res.get("error", ""), 400)
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    @app.get("/api/overview")
+    async def overview() -> list[dict]:
+        """Multi-session dashboard: every session + its activity counts (newest first). §5.1/§6."""
+        if dispatcher is None or not hasattr(dispatcher, "overview"):
+            raise HTTPException(status_code=503, detail="no dispatcher")
+        return dispatcher.overview()
+
+    @app.get("/api/reports")
+    async def list_reports(session_id: str | None = None) -> list[dict]:
+        """Briefings (the phone's status-report feed). DESIGN §5.5. No briefing service → 503."""
+        if briefings is None or not hasattr(briefings, "list_reports"):
+            raise HTTPException(status_code=503, detail="no briefing service")
+        return briefings.list_reports(session_id)
+
+    @app.post("/api/reports/generate")
+    async def generate_report(body: _BriefBody) -> dict:
+        """Generate a briefing now (DESIGN §5.5) and store/push it. Uses YOUR LLM via the injected
+        client-side BriefingService; app.py stays shared-only (§14)."""
+        if briefings is None or not hasattr(briefings, "generate"):
+            raise HTTPException(status_code=503, detail="no briefing service")
+        res = await briefings.generate(session_id=body.session_id or None, kind=body.kind)
+        if res.get("ok"):
+            return res
+        status = {"no_store": 503, "no_llm": 503}.get(res.get("error", ""), 400)
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
 
     @app.post("/api/auth/login")
     async def auth_login(body: _LoginBody) -> dict:

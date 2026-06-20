@@ -21,6 +21,7 @@ from .models import (
     DecisionCard,
     Event,
     PushSubscription,
+    Report,
     SchemaVersion,
     Session,
     Task,
@@ -220,6 +221,22 @@ class Store:
             s.add(row)
             s.commit()
         return row
+
+    # ── reports / briefings (DESIGN §4.1 Briefing / §5.5 / §7.1) ─────────────────────────────
+    def add_report(self, report: Report) -> Report:
+        """Persist a briefing (handoff | active-briefing | daily) for the phone (§5.5)."""
+        with self.session() as s:
+            s.add(report)
+            s.commit()
+        return report
+
+    def get_reports(self, session_id: str | None = None) -> list[Report]:
+        """Briefings newest first (optionally scoped to one session) — the phone's briefing feed."""
+        with self.session() as s:
+            stmt = select(Report)
+            if session_id is not None:
+                stmt = stmt.where(Report.session_id == session_id)
+            return list(s.exec(stmt.order_by(col(Report.ts).desc())).all())
 
     # ── push subscriptions (Web Push, DESIGN §4.6 / §7.1) ────────────────────────────────────
     def add_push_subscription(

@@ -16,6 +16,7 @@ async function init() {
   probeHealth();
   loadSessions();
   loadCards();
+  loadReports();
   await loadApprovals();
   maybeActOnDeepLink();  // a cold one-tap (notification → openWindow with ?approval=&action=)
 }
@@ -64,14 +65,37 @@ async function probeHealth() {
   }
 }
 
-// Placeholder: dispatch a task (P4 wires POST /api/tasks).
-document.getElementById('dispatch-form')?.addEventListener('submit', (e) => {
+// Dispatch a task from the phone → a new Root Session (§5.1, T4.6): POST /api/tasks.
+document.getElementById('dispatch-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = document.getElementById('task-input');
-  if (!input.value.trim()) return;
-  console.log('dispatch (P4):', input.value);
-  input.value = '';
+  const goal = input.value.trim();
+  if (!goal) return;
+  try {
+    const r = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      input.value = '';
+      showDispatchStatus(`${I18N[currentLang].dispatched} · ${data.agent || ''}`);
+      loadSessions();  // a new session appears in the multi-session list
+    } else {
+      showDispatchStatus(`${I18N[currentLang].dispatchFailed} (${data.detail || r.status})`);
+    }
+  } catch (err) {
+    showDispatchStatus(I18N[currentLang].dispatchFailed);
+  }
 });
+
+function showDispatchStatus(text) {
+  const el = document.getElementById('dispatch-status');
+  if (!el) return;
+  el.textContent = text;
+  el.hidden = false;
+}
 
 // ── Web Push (VAPID) — T3.3 ──────────────────────────────────────────────────
 // VAPID application-server keys are base64url; PushManager wants a Uint8Array.
@@ -267,18 +291,45 @@ let ws = null;
 const sessionListEl = document.getElementById('session-list');
 const eventListEl = document.getElementById('event-list');
 
+// Multi-session dashboard (T4.6): /api/overview enriches each session with activity counts so
+// several concurrent root sessions show at a glance. Falls back to /api/sessions if unavailable.
 async function loadSessions() {
   try {
-    const r = await fetch('/api/sessions');
-    if (!r.ok) { sessionListEl.textContent = 'No local store (server mode).'; return; }
-    const sessions = await r.json();
-    if (!sessions.length) { sessionListEl.textContent = I18N[currentLang].noSessions; return; }
+    let sessions = null;
+    try {
+      const ov = await fetch('/api/overview');
+      if (ov.ok) sessions = await ov.json();
+    } catch (e) { /* fall through to /api/sessions below */ }
+    if (sessions === null) {
+      const r = await fetch('/api/sessions');
+      if (!r.ok) { sessionListEl.textContent = 'No local store (server mode).'; return; }
+      sessions = await r.json();
+    }
+    if (!sessions.length) {
+      sessionListEl.classList.add('empty');
+      sessionListEl.textContent = I18N[currentLang].noSessions;
+      return;
+    }
     sessionListEl.classList.remove('empty');
     sessionListEl.replaceChildren();
     for (const s of sessions) {
       const b = document.createElement('button');
       b.className = 'session-item';
-      b.textContent = `${s.goal || s.id} · ${s.status || ''} [${s.agent_type || ''}]`;
+      // textContent only — goal echoes untrusted user/agent input (never innerHTML).
+      const head = document.createElement('span');
+      head.className = 'session-head';
+      head.textContent = `${s.goal || s.id} · ${s.status || ''} [${s.agent_type || ''}]`;
+      b.appendChild(head);
+      if (s.events !== undefined) {
+        const meta = document.createElement('span');
+        meta.className = 'session-meta';
+        const bits = [`📋 ${s.events}`];
+        if (s.open_cards) bits.push(`🗂️ ${s.open_cards}`);
+        if (s.pending_approvals) bits.push(`⛔ ${s.pending_approvals}`);
+        if (s.last_event_type) bits.push(s.last_event_type);
+        meta.textContent = bits.join(' · ');
+        b.appendChild(meta);
+      }
       b.addEventListener('click', () => openTimeline(s.id));
       sessionListEl.appendChild(b);
     }
@@ -286,6 +337,66 @@ async function loadSessions() {
     sessionListEl.textContent = 'Failed to load sessions.';
   }
 }
+
+// ── Briefings (§5.5, T4.6): the phone's status-report feed + a one-tap "generate now" ─────────
+const reportListEl = document.getElementById('report-list');
+
+async function loadReports() {
+  if (!reportListEl) return;
+  try {
+    const r = await fetch('/api/reports');
+    if (!r.ok) { renderReports([]); return; }
+    renderReports(await r.json());
+  } catch (e) {
+    renderReports([]);
+  }
+}
+
+// textContent only — briefing text comes from the LLM over untrusted agent output.
+function renderReports(reports) {
+  if (!reportListEl) return;
+  if (!reports.length) {
+    reportListEl.classList.add('empty');
+    reportListEl.textContent = I18N[currentLang].noReports;
+    return;
+  }
+  reportListEl.classList.remove('empty');
+  reportListEl.replaceChildren();
+  for (const rep of reports) {
+    const card = document.createElement('article');
+    card.className = 'card report';
+    const title = document.createElement('p');
+    title.className = 'card-summary';
+    title.textContent = `📰 ${rep.title || rep.kind || ''}`;
+    const body = document.createElement('pre');
+    body.className = 'report-body';
+    body.textContent = rep.body_md || '';
+    const meta = document.createElement('p');
+    meta.className = 'session-meta';
+    meta.textContent = `${rep.kind || ''} · ${rep.ts || ''}`;
+    card.append(title, body, meta);
+    reportListEl.appendChild(card);
+  }
+}
+
+async function generateReport() {
+  const btn = document.getElementById('generate-brief');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/reports/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'active-briefing' }),
+    });
+    if (!r.ok) console.warn('generate briefing failed', r.status);
+  } catch (e) {
+    console.warn('generate briefing error', e);
+  }
+  if (btn) btn.disabled = false;
+  loadReports();
+}
+
+document.getElementById('generate-brief')?.addEventListener('click', generateReport);
 
 function openTimeline(sessionId) {
   if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
@@ -390,13 +501,15 @@ const I18N = {
         send: '发送', enablePush: '开启通知', stepDetail: '步骤详情', rawReturn: '原始返回',
         codeDiff: '代码改动', noSessions: '暂无活动会话。', noDecisions: '暂无待决策。',
         noApprovals: '没有待你处理的。', approve: '批准', reject: '驳回', viewDetail: '查看详情',
-        autonomy: '自治', langToggle: 'EN' },
+        autonomy: '自治', langToggle: 'EN', briefings: '简报', generateBriefing: '生成简报',
+        noReports: '暂无简报。', dispatched: '已下发', dispatchFailed: '下发失败' },
   en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
         dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
         rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
         noDecisions: 'No decisions waiting.', noApprovals: 'Nothing waiting on you.',
         approve: 'Approve', reject: 'Reject', viewDetail: 'View detail',
-        autonomy: 'Autonomy', langToggle: '中' },
+        autonomy: 'Autonomy', langToggle: '中', briefings: 'Briefings', generateBriefing: 'Generate briefing',
+        noReports: 'No briefings yet.', dispatched: 'Dispatched', dispatchFailed: 'Dispatch failed' },
 };
 let currentLang = 'zh';
 
@@ -429,6 +542,7 @@ async function setLang(lang) {
   localStorage.setItem('foreman.lang', currentLang);
   loadSessions();  // re-render the (dynamic) session list so its empty text follows the language
   loadCards();  // re-render decision cards in the new language
+  loadReports();  // re-render briefings (empty text follows the language)
   renderApprovals();  // re-label approve/reject + empty text in the new language
   try {
     await fetch('/api/settings/language', {

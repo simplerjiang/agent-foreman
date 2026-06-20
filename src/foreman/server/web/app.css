@@ -67,6 +67,13 @@ button { padding: 0.6rem 1rem; border: none; border-radius: 8px; background: var
 .ev-ts { color: var(--muted); font-variant-numeric: tabular-nums; }
 .ev-payload { color: var(--fg); opacity: 0.85; word-break: break-all; }
 
+/* Multi-session meta + dispatch status + briefings (T4.6) */
+.session-item { display: flex; flex-direction: column; gap: 0.2rem; }
+.session-meta { color: var(--muted); font-size: 0.78rem; }
+.hint { color: var(--muted); font-size: 0.82rem; margin: 0.4rem 0 0; }
+#generate-brief { cursor: pointer; background: #1b2533; color: var(--fg); border: 1px solid #2a3647; }
+.report-body { background: #0e131b; border: 1px solid #2a3647; border-radius: 8px; padding: 0.6rem; white-space: pre-wrap; font-size: 0.85rem; color: var(--fg); overflow-x: auto; }
+
 /* Header right cluster + language toggle (T1.14) */
 .header-right { display: flex; gap: 0.5rem; align-items: center; }
 #lang-toggle { cursor: pointer; background: #1b2533; color: var(--fg); }
