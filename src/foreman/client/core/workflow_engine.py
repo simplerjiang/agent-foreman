@@ -169,11 +169,16 @@ class WorkflowEngine:
         *,
         cards: object | None = None,
         bus: object | None = None,
+        injector: object | None = None,
         clock=None,
     ) -> None:
         self.store = store
         self.cards = cards
         self.bus = bus
+        # injector (T5.3, optional) writes this step's skills/standards into the workspace before the
+        # agent runs (事前注入, §11.2 D). Without it the engine still produces the material via
+        # ``injected_md``; the live workspace write is just skipped.
+        self.injector = injector
         self._clock = clock or utc_now_iso
 
     # ── load + start ───────────────────────────────────────────────────────────────────────────
@@ -315,7 +320,13 @@ class WorkflowEngine:
         return self._step_view(run, spec)
 
     def begin_step(self, run_id: str) -> dict:
-        """Mark the current step ``running`` and return its material (the agent starts work here)."""
+        """Mark the current step ``running``, inject its material into the workspace, return the view.
+
+        The injection (T5.3, 事前注入 §11.2 D) writes this step's skills/standards into the session's
+        workspace (CLAUDE.md / AGENTS.md / skill files) so the agent reads them before it starts. It is
+        best-effort: a write failure or missing workspace is reported in ``injection`` but never aborts
+        the step (the material is also available in the returned step view).
+        """
         run = self.store.get_workflow_run(run_id)
         if run is None:
             return {"ok": False, "error": "no_run"}
@@ -325,7 +336,33 @@ class WorkflowEngine:
         if spec is None or run.step_index >= len(spec.steps):
             return {"ok": False, "error": "bad_workflow"}
         run = self.store.update_workflow_run(run_id, step_status=RUNNING)
-        return {"ok": True, "step": self._step_view(run, spec)}
+        step_view = self._step_view(run, spec)
+        injection = self._inject(run, step_view)
+        return {"ok": True, "step": step_view, "injection": injection}
+
+    def _inject(self, run: WorkflowRun, material: dict) -> dict | None:
+        """Write this step's material into the session's workspace (事前注入, T5.3). None if no injector."""
+        if self.injector is None:
+            return None
+        workspace = self._workspace_for(run.session_id)
+        if not workspace:
+            return {"ok": False, "error": "no_workspace"}
+        try:
+            return self.injector.inject(workspace, material, agents=self._agent_for(run.session_id))
+        except Exception as exc:  # noqa: BLE001 — injection must never crash the step.
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+    def _workspace_for(self, session_id: str) -> str:
+        if not hasattr(self.store, "get_session"):
+            return ""
+        session = self.store.get_session(session_id)
+        return getattr(session, "workspace", "") or "" if session is not None else ""
+
+    def _agent_for(self, session_id: str) -> str | None:
+        if not hasattr(self.store, "get_session"):
+            return None
+        session = self.store.get_session(session_id)
+        return getattr(session, "agent_type", None) if session is not None else None
 
     # ── advance / gate / finish ─────────────────────────────────────────────────────────────────
     async def submit_step(self, run_id: str, *, qa_passed: bool | None = None) -> dict:
@@ -362,6 +399,7 @@ class WorkflowEngine:
                 return {"ok": True, "status": QA, "qa": material["qa"], "step": self._step_view(run, spec)}
             if not qa_passed:
                 run = self.store.update_workflow_run(run_id, step_status=FAILED)
+                self._clear(run)  # run failed — revert the injected workspace scaffolding (T5.3).
                 await self._emit(run.session_id, run, "qa_failed", {"step": step.name})
                 return {"ok": True, "status": FAILED, "step": self._step_view(run, spec)}
 
@@ -418,6 +456,7 @@ class WorkflowEngine:
             return {"ok": False, "error": "bad_workflow"}
         if not approved:
             run = self.store.update_workflow_run(run_id, step_status=FAILED)
+            self._clear(run)  # gate rejected — revert the injected workspace scaffolding (T5.3).
             await self._emit(run.session_id, run, "gate_rejected", {})
             return {"ok": True, "status": FAILED, "step": self._step_view(run, spec)}
         return await self._advance(run, spec)
@@ -429,11 +468,24 @@ class WorkflowEngine:
             run = self.store.update_workflow_run(
                 run.id, step_status=PASSED, ended_at=self._clock()
             )
+            self._clear(run)  # run done — revert the injected workspace scaffolding (T5.3).
             await self._emit(run.session_id, run, "done", {"workflow": spec.name})
             return {"ok": True, "status": "done", "run": _run_to_dict(run)}
         run = self.store.update_workflow_run(run.id, step_index=nxt, step_status=PENDING)
         await self._emit(run.session_id, run, "advanced", {"to_step": nxt})
         return {"ok": True, "status": "advanced", "step": self._step_view(run, spec)}
+
+    def _clear(self, run: WorkflowRun) -> None:
+        """Best-effort revert of the injected workspace scaffolding when a run ends (T5.3)."""
+        if self.injector is None:
+            return
+        workspace = self._workspace_for(run.session_id)
+        if not workspace:
+            return
+        try:
+            self.injector.clear(workspace, agents=self._agent_for(run.session_id))
+        except Exception:  # noqa: BLE001 — cleanup is best-effort, never crash the finish.
+            pass
 
     # ── helpers ─────────────────────────────────────────────────────────────────────────────────
     def _spec_for_run(self, run: WorkflowRun) -> WorkflowSpec | None:

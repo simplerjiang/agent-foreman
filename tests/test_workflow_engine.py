@@ -330,3 +330,73 @@ async def test_resume_after_gate_requires_blocked(tmp_path):
     res = await eng.start("s1", name)
     out = await eng.resume_after_gate(res["run_id"], approved=True)
     assert out == {"ok": False, "error": "not_blocked"}  # run is at step 0, not a gate
+
+
+# ── T5.3 wiring: begin_step injects into the workspace, finish/fail clears it ───────────────────────
+def _seed_ws(st: Store, ws: str) -> str:
+    """Like _seed but the session has a real workspace path (for injection)."""
+    st.add_session(Session(id="s1", goal="add feature", workspace=ws, agent_type="claude-code"))
+    wf = st.add_definition(
+        Definition(id="wf1", kind="workflow", name="add-feature", version=1, body=WF_YAML)
+    )
+    st.set_definition_active(wf.id)
+    for kind, name, body in [
+        ("skill", "how-to-test", "# write a failing test first"),
+        ("code_standard", "test-naming", "# name tests test_<unit>_<case>"),
+        ("code_standard", "our-style", "# 100-col lines, no bare except"),
+        ("qa_rubric", "covers-happy-path", "# does it cover the happy path?"),
+    ]:
+        d = st.add_definition(Definition(id=f"{kind}:{name}", kind=kind, name=name, body=body))
+        st.set_definition_active(d.id)
+    return "add-feature"
+
+
+async def test_begin_step_injects_into_workspace(tmp_path):
+    from foreman.client.core.injector import MARKER_BEGIN, WorkspaceInjector
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    st = _store(tmp_path)
+    name = _seed_ws(st, str(ws))
+    eng = WorkflowEngine(st, injector=WorkspaceInjector(), clock=lambda: "2026-06-21T00:00:00+00:00")
+    res = await eng.start("s1", name)
+    out = eng.begin_step(res["run_id"])
+    assert out["ok"] and out["injection"]["ok"] is True
+    # CLAUDE.md (the session's agent is claude-code) carries the step's standards in a managed block,
+    # and the skill landed as its own file (事前注入, §11.2 D).
+    claude = (ws / "CLAUDE.md").read_text(encoding="utf-8")
+    assert MARKER_BEGIN in claude and "test-naming" in claude
+    assert (ws / ".foreman" / "skills" / "how-to-test.md").exists()
+
+
+async def test_run_finish_clears_injection(tmp_path):
+    from foreman.client.core.injector import WorkspaceInjector
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    st = _store(tmp_path)
+    name = _seed_ws(st, str(ws))
+    eng = WorkflowEngine(st, cards=CardService(st), injector=WorkspaceInjector(),
+                         clock=lambda: "2026-06-21T00:00:00+00:00")
+    res = await eng.start("s1", name)
+    rid = res["run_id"]
+    eng.begin_step(rid)
+    assert (ws / "CLAUDE.md").exists()
+    # walk to the end: qa pass → advance → advance → gate → approve → done
+    await eng.submit_step(rid, qa_passed=True)
+    await eng.submit_step(rid)
+    await eng.submit_step(rid)
+    done = await eng.resume_after_gate(rid, approved=True)
+    assert done["status"] == "done"
+    # the run finished → injected scaffolding reverted (T5.3 clear).
+    assert not (ws / "CLAUDE.md").exists()
+    assert not (ws / ".foreman").exists()
+
+
+async def test_begin_step_no_injector_is_noop(tmp_path):
+    st = _store(tmp_path)
+    name = _seed(st)  # session has no workspace
+    eng = _engine(st)  # no injector wired
+    res = await eng.start("s1", name)
+    out = eng.begin_step(res["run_id"])
+    assert out["ok"] and out["injection"] is None
