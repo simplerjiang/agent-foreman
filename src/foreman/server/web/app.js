@@ -12,6 +12,7 @@ async function init() {
       console.warn('SW registration failed', e);
     }
   }
+  await initLang();
   probeHealth();
   loadSessions();
 }
@@ -81,7 +82,7 @@ async function loadSessions() {
     const r = await fetch('/api/sessions');
     if (!r.ok) { sessionListEl.textContent = 'No local store (server mode).'; return; }
     const sessions = await r.json();
-    if (!sessions.length) { sessionListEl.textContent = 'No sessions yet.'; return; }
+    if (!sessions.length) { sessionListEl.textContent = I18N[currentLang].noSessions; return; }
     sessionListEl.classList.remove('empty');
     sessionListEl.replaceChildren();
     for (const s of sessions) {
@@ -125,5 +126,57 @@ function renderEvent(e) {
   }
   eventListEl.appendChild(li);
 }
+
+// ── i18n: UI language (zh/en) + sync to backend so LLM output language follows (§15) ─────────
+const I18N = {
+  zh: { sessions: '会话', decisions: '决策', approvals: '审批', timeline: '时间线', dispatch: '下发任务',
+        send: '发送', enablePush: '开启通知', stepDetail: '步骤详情', rawReturn: '原始返回',
+        codeDiff: '代码改动', noSessions: '暂无活动会话。', noDecisions: '暂无待决策。',
+        noApprovals: '没有待你处理的。', langToggle: 'EN' },
+  en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
+        dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
+        rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
+        noDecisions: 'No decisions waiting.', noApprovals: 'Nothing waiting on you.', langToggle: '中' },
+};
+let currentLang = 'zh';
+
+function applyI18n(lang) {
+  currentLang = lang === 'en' ? 'en' : 'zh';
+  const dict = I18N[currentLang];
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    const k = el.getAttribute('data-i18n');
+    if (dict[k]) el.textContent = dict[k];
+  });
+  const ti = document.getElementById('task-input');
+  if (ti) ti.placeholder = currentLang === 'zh'
+    ? 'e.g. 重构 auth 模块，push 前问我' : 'e.g. refactor auth, ask me before push';
+  const tg = document.getElementById('lang-toggle');
+  if (tg) tg.textContent = dict.langToggle;  // shows the OTHER language to switch to
+  document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
+}
+
+async function initLang() {
+  let lang = localStorage.getItem('foreman.lang');
+  if (!lang) {
+    try { const r = await fetch('/api/settings/language'); if (r.ok) lang = (await r.json()).language; }
+    catch (e) { /* fall back to default below */ }
+  }
+  applyI18n(lang || 'zh');
+}
+
+async function setLang(lang) {
+  applyI18n(lang);
+  localStorage.setItem('foreman.lang', currentLang);
+  loadSessions();  // re-render the (dynamic) session list so its empty text follows the language
+  try {
+    await fetch('/api/settings/language', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: currentLang }),
+    });
+  } catch (e) { /* offline / server mode — UI still switched locally */ }
+}
+
+document.getElementById('lang-toggle')?.addEventListener('click',
+  () => setLang(currentLang === 'zh' ? 'en' : 'zh'));
 
 init();

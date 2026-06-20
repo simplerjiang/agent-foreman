@@ -27,3 +27,11 @@ def test_app_js_wires_api_and_ws():
     assert "/ws?session_id=" in js.text
     # agent output must be rendered safely (no innerHTML of event payloads)
     assert "textContent" in js.text
+
+
+def test_i18n_wired_in_page():
+    c = TestClient(create_app(load_config()))
+    html = c.get("/").text
+    assert "lang-toggle" in html and "data-i18n" in html
+    js = c.get("/app.js").text
+    assert "I18N" in js and "/api/settings/language" in js

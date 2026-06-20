@@ -57,3 +57,7 @@ button { padding: 0.6rem 1rem; border: none; border-radius: 8px; background: var
 .ev-source { color: var(--muted); }
 .ev-ts { color: var(--muted); font-variant-numeric: tabular-nums; }
 .ev-payload { color: var(--fg); opacity: 0.85; word-break: break-all; }
+
+/* Header right cluster + language toggle (T1.14) */
+.header-right { display: flex; gap: 0.5rem; align-items: center; }
+#lang-toggle { cursor: pointer; background: #1b2533; color: var(--fg); }

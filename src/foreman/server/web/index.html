@@ -11,18 +11,21 @@
 <body>
   <header>
     <h1>🦺 Foreman</h1>
-    <span id="status" class="pill">connecting…</span>
+    <div class="header-right">
+      <span id="status" class="pill">connecting…</span>
+      <button id="lang-toggle" class="pill" type="button" title="language">EN</button>
+    </div>
   </header>
 
   <main>
     <section id="sessions" aria-label="Sessions">
-      <h2>Sessions</h2>
+      <h2 data-i18n="sessions">Sessions</h2>
       <div id="session-list" class="empty">No active sessions yet.</div>
     </section>
 
     <section id="decisions" aria-label="Decision cards">
-      <h2>Decisions</h2>
-      <div id="card-list" class="empty">No decisions waiting.</div>
+      <h2 data-i18n="decisions">Decisions</h2>
+      <div id="card-list" class="empty" data-i18n="noDecisions">No decisions waiting.</div>
       <!-- P4 renders cards from /api/cards. Structure (see DESIGN.zh-CN.md §6.3): -->
       <template id="card-template">
         <article class="card">
@@ -37,35 +40,35 @@
 
     <!-- Step detail: drill-down from a card's 查看详情 — raw agent return + actual diff (§6.3) -->
     <section id="detail" aria-label="Step detail" hidden>
-      <h2><button class="link" id="detail-back">← 返回</button> 步骤详情</h2>
+      <h2><button class="link" id="detail-back">← 返回</button> <span data-i18n="stepDetail">步骤详情</span></h2>
       <div class="tabs">
-        <button class="tab active" data-tab="raw">原始返回</button>
-        <button class="tab" data-tab="diff">代码改动</button>
+        <button class="tab active" data-tab="raw" data-i18n="rawReturn">原始返回</button>
+        <button class="tab" data-tab="diff" data-i18n="codeDiff">代码改动</button>
       </div>
       <pre id="tab-raw" class="tabpanel">（codex/claude/copilot 这一步的完整返回）</pre>
       <pre id="tab-diff" class="tabpanel" hidden>（逐文件、逐行 diff）</pre>
     </section>
 
     <section id="approvals" aria-label="Approvals">
-      <h2>Approvals</h2>
-      <div id="approval-list" class="empty">Nothing waiting on you.</div>
+      <h2 data-i18n="approvals">Approvals</h2>
+      <div id="approval-list" class="empty" data-i18n="noApprovals">Nothing waiting on you.</div>
     </section>
 
     <section id="timeline" aria-label="Timeline">
-      <h2>Timeline</h2>
+      <h2 data-i18n="timeline">Timeline</h2>
       <ol id="event-list" class="empty"></ol>
     </section>
 
     <section id="dispatch" aria-label="Dispatch a task">
-      <h2>Dispatch</h2>
+      <h2 data-i18n="dispatch">Dispatch</h2>
       <form id="dispatch-form">
         <input id="task-input" placeholder="e.g. 重构 auth 模块，push 前问我" autocomplete="off" />
-        <button type="submit">Send</button>
+        <button type="submit" data-i18n="send">Send</button>
       </form>
     </section>
   </main>
 
-  <button id="enable-push" class="floating">Enable notifications</button>
+  <button id="enable-push" class="floating" data-i18n="enablePush">Enable notifications</button>
 
   <!-- P0 placeholder UI. P3/P4 wires this to /ws, /api/*, and Web Push. -->
   <script src="/app.js" type="module"></script>
