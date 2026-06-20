@@ -7,12 +7,36 @@ irreversible side-effects (network/DB/deploy) are blocked up front by the Gate, 
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+
+
+def ensure_repo(workspace: Path) -> bool:
+    """Ensure `workspace` is inside a git work tree; `git init` it if not.
+
+    Returns True if it ran `git init` (workspace was not a repo), False if already one. Checkpoints
+    (§6.5) are built on git, so every workspace Foreman drives must be a repo. A workspace that is a
+    subdir of an existing repo is left as-is (already inside a work tree). Uses argv lists (no shell).
+    """
+    workspace = Path(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    inside = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=str(workspace), capture_output=True, text=True,
+    )
+    if inside.returncode == 0 and inside.stdout.strip() == "true":
+        return False
+    subprocess.run(["git", "init"], cwd=str(workspace), capture_output=True, text=True, check=True)
+    return True
 
 
 class CheckpointManager:
     def __init__(self, workspace: Path) -> None:
-        self.workspace = workspace
+        self.workspace = Path(workspace)
+
+    def ensure_repo(self) -> bool:
+        """Make sure the workspace is a git repo (git init if needed). See module `ensure_repo`."""
+        return ensure_repo(self.workspace)
 
     async def snapshot(self, session_id: str, step_index: int, label: str = "") -> str:
         """Create a checkpoint before a step; return a vcs_ref (git commit/stash/tag). Roadmap P2."""
