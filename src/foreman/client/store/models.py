@@ -106,7 +106,11 @@ class Audit(SQLModel, table=True):
 
     id: str = Field(primary_key=True)
     action_id: str = Field(index=True, foreign_key="action.id")
-    verdict: str                   # pass | reject
+    verdict: str                   # pass | revise | reject | escalate (DESIGN §6.7)
+    # Conservative defaults (fail-closed, DESIGN §6.7): rows are always written from a fully-parsed
+    # AuditResult, but if one is ever constructed bare it defaults to worst-case, never auto-safe.
+    risk_severity: str = "severe"  # none | mild | severe
+    goal_quality: str = "garbage"  # on-track | weak | garbage
     reasons_json: str = "[]"
     suggestions_json: str = "[]"
     model: str = ""
