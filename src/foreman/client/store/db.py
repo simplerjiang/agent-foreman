@@ -20,12 +20,15 @@ from .models import (
     Checkpoint,
     ConfigKV,
     DecisionCard,
+    Definition,
+    DefinitionLink,
     Event,
     PushSubscription,
     Report,
     SchemaVersion,
     Session,
     Task,
+    WorkflowRun,
 )
 
 SCHEMA_VERSION = 1
@@ -330,6 +333,209 @@ class Store:
             if row is not None:
                 s.delete(row)
                 s.commit()
+
+    # ── 秘方: definitions / links / workflow runs (extensibility layer, DESIGN §11.2 / §7.1) ──
+    # One table holds all four kinds (workflow|skill|code_standard|qa_rubric); a new kind needs no
+    # schema change. These live ONLY in the local store — the shared server never holds them (§8.3).
+    def add_definition(self, definition: Definition) -> Definition:
+        """Persist a definition (one of the four 秘方 kinds). Stamps created_at/updated_at if unset.
+
+        Enforces the design's "(name, version) unique" rule, scoped per kind (DESIGN §7.1): two
+        rows with the same (kind, name, version) is a duplicate edit and raises ValueError, so the
+        caller bumps the version instead of silently shadowing an existing one."""
+        if not definition.created_at:
+            definition.created_at = utc_now_iso()
+        if not definition.updated_at:
+            definition.updated_at = definition.created_at
+        with self.session() as s:
+            dup = s.exec(
+                select(Definition).where(
+                    Definition.kind == definition.kind,
+                    Definition.name == definition.name,
+                    Definition.version == definition.version,
+                )
+            ).first()
+            if dup is not None:
+                raise ValueError(
+                    f"definition {definition.kind}/{definition.name} v{definition.version} exists"
+                )
+            s.add(definition)
+            s.commit()
+        return definition
+
+    def get_definition(self, definition_id: str) -> Definition | None:
+        with self.session() as s:
+            return s.get(Definition, definition_id)
+
+    def get_definitions(
+        self,
+        *,
+        kind: str | None = None,
+        name: str | None = None,
+        active_only: bool = False,
+    ) -> list[Definition]:
+        """List definitions, optionally filtered by kind/name and to the active versions only.
+
+        Ordered by (kind, name, version) so newer versions of the same building block sort last."""
+        with self.session() as s:
+            stmt = select(Definition)
+            if kind is not None:
+                stmt = stmt.where(Definition.kind == kind)
+            if name is not None:
+                stmt = stmt.where(Definition.name == name)
+            if active_only:
+                stmt = stmt.where(col(Definition.is_active).is_(True))
+            stmt = stmt.order_by(
+                col(Definition.kind), col(Definition.name), col(Definition.version)
+            )
+            return list(s.exec(stmt).all())
+
+    def get_active_definition(self, kind: str, name: str) -> Definition | None:
+        """The currently-enabled version of a (kind, name) building block, or None (§7.1 is_active)."""
+        with self.session() as s:
+            return s.exec(
+                select(Definition).where(
+                    Definition.kind == kind,
+                    Definition.name == name,
+                    col(Definition.is_active).is_(True),
+                )
+            ).first()
+
+    def set_definition_active(self, definition_id: str) -> Definition | None:
+        """Make this version THE active one for its (kind, name): activate it (is_active + status
+        'active') and clear is_active on every sibling version, so exactly one is ever live —
+        the rollback/enable-disable knob of §11.2. None if the id is unknown."""
+        with self.session() as s:
+            row = s.get(Definition, definition_id)
+            if row is None:
+                return None
+            siblings = s.exec(
+                select(Definition).where(
+                    Definition.kind == row.kind,
+                    Definition.name == row.name,
+                )
+            ).all()
+            now = utc_now_iso()
+            for sib in siblings:
+                want = sib.id == definition_id
+                if sib.is_active != want:
+                    sib.is_active = want
+                    sib.updated_at = now
+                    s.add(sib)
+            if row.status != "active":
+                row.status = "active"
+                row.updated_at = now
+                s.add(row)
+            s.commit()
+        return row
+
+    def update_definition(
+        self,
+        definition_id: str,
+        *,
+        body: str | None = None,
+        scope_json: str | None = None,
+        metadata_json: str | None = None,
+        status: str | None = None,
+    ) -> Definition | None:
+        """Edit a definition in place (the UI editor of P6 writes here). Only the passed fields
+        change; bumps updated_at. None if the id is unknown.
+
+        Note: name/version/kind are identity, not editable here — make a new version instead."""
+        with self.session() as s:
+            row = s.get(Definition, definition_id)
+            if row is None:
+                return None
+            if body is not None:
+                row.body = body
+            if scope_json is not None:
+                row.scope_json = scope_json
+            if metadata_json is not None:
+                row.metadata_json = metadata_json
+            if status is not None:
+                row.status = status
+            row.updated_at = utc_now_iso()
+            s.add(row)
+            s.commit()
+        return row
+
+    def add_definition_link(self, link: DefinitionLink) -> DefinitionLink:
+        """Wire a workflow step to a building block it uses (uses_skill|uses_standard|judged_by)."""
+        with self.session() as s:
+            s.add(link)
+            s.commit()
+        return link
+
+    def get_definition_links(
+        self, from_id: str, *, relation: str | None = None, step_index: int | None = None
+    ) -> list[DefinitionLink]:
+        """The blocks wired to a definition (e.g. a workflow), ordered by step then relation.
+
+        Optionally narrow to one relation kind, or one workflow step (step_index)."""
+        with self.session() as s:
+            stmt = select(DefinitionLink).where(DefinitionLink.from_id == from_id)
+            if relation is not None:
+                stmt = stmt.where(DefinitionLink.relation == relation)
+            if step_index is not None:
+                stmt = stmt.where(DefinitionLink.step_index == step_index)
+            stmt = stmt.order_by(col(DefinitionLink.step_index), col(DefinitionLink.relation))
+            return list(s.exec(stmt).all())
+
+    def delete_definition_link(self, link_id: str) -> None:
+        """Remove a wiring (UI editor unlinks a block). No-op if already gone."""
+        with self.session() as s:
+            row = s.get(DefinitionLink, link_id)
+            if row is not None:
+                s.delete(row)
+                s.commit()
+
+    def add_workflow_run(self, run: WorkflowRun) -> WorkflowRun:
+        """Start tracking a session's progress through a workflow. Stamps started_at if unset."""
+        if not run.started_at:
+            run.started_at = utc_now_iso()
+        with self.session() as s:
+            s.add(run)
+            s.commit()
+        return run
+
+    def get_workflow_run(self, run_id: str) -> WorkflowRun | None:
+        with self.session() as s:
+            return s.get(WorkflowRun, run_id)
+
+    def get_workflow_runs(self, session_id: str) -> list[WorkflowRun]:
+        """A session's workflow-run rows, oldest step first (how far it's progressed, §11.2)."""
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(WorkflowRun)
+                    .where(WorkflowRun.session_id == session_id)
+                    .order_by(col(WorkflowRun.step_index))
+                ).all()
+            )
+
+    def update_workflow_run(
+        self,
+        run_id: str,
+        *,
+        step_index: int | None = None,
+        step_status: str | None = None,
+        ended_at: str | None = None,
+    ) -> WorkflowRun | None:
+        """Advance a workflow run (next step / step_status pending→running→qa→passed|failed|blocked,
+        stamp ended_at). Only the passed fields change. None if the id is unknown."""
+        with self.session() as s:
+            row = s.get(WorkflowRun, run_id)
+            if row is None:
+                return None
+            if step_index is not None:
+                row.step_index = step_index
+            if step_status is not None:
+                row.step_status = step_status
+            if ended_at is not None:
+                row.ended_at = ended_at
+            s.add(row)
+            s.commit()
+        return row
 
     # ── settings (config_kv) ─────────────────────────────────────────────────────────────────
     def get_setting(self, key: str, default: str | None = None) -> str | None:
