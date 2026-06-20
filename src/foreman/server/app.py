@@ -57,17 +57,20 @@ def create_app(
     store: object | None = None,
     bus: EventBus | None = None,
     hooks: object | None = None,
+    relay: object | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
-    # Store + bus + hooks are INJECTED by the caller (personal mode: client store + a
-    # Gate-aware HookReceiver; team server: cache store, no hooks). This module never imports
-    # the client — 秘方 stays local and /hooks stays local (DESIGN §4.3, §8.3, §14 boundary).
+    # Store + bus + hooks + relay are INJECTED by the caller (personal mode: client store + a
+    # Gate-aware HookReceiver, no relay; team server: cache store + a Relay, no hooks). This
+    # module never imports the client — 秘方 stays local and /hooks stays local (DESIGN §4.3,
+    # §8.3, §8.5, §14 boundary).
     bus = bus or EventBus()
     app.state.cfg = cfg
     app.state.store = store
     app.state.bus = bus
     app.state.hooks = hooks
+    app.state.relay = relay
 
     @app.get("/health")
     async def health() -> dict:
@@ -159,6 +162,17 @@ def create_app(
                 t.cancel()
         finally:
             bus.unsubscribe(q)
+
+    @app.websocket("/relay")
+    async def relay_endpoint(websocket: WebSocket) -> None:
+        """Outbound long-conn from a local process (team mode). Delegates to the injected Relay
+        (handshake + per-account routing + heartbeat — DESIGN §8.5). Personal mode has no relay,
+        so we accept and close politely (1008) instead of 404'ing the upgrade."""
+        if relay is None:
+            await websocket.accept()
+            await websocket.close(code=1008)
+            return
+        await relay.serve(websocket)
 
     # Serve the PWA if present (mounted last so it doesn't shadow API routes).
     if WEB_DIR.exists():

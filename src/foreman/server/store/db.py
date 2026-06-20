@@ -125,7 +125,13 @@ class ServerStore:
     # ── process registry (online local processes — DESIGN §7.2 / §8.5) ───────────────────────
     def register_process(self, process: ProcessRegistry) -> ProcessRegistry:
         """Upsert a local process by id (an outbound long-conn registers/refreshes itself).
-        Stamps created_at on first insert."""
+        Stamps created_at on first insert.
+
+        Defense-in-depth (DESIGN §8.4 multi-tenant): a process row is NEVER re-homed to a
+        different account. If an existing row with this id belongs to another account, the upsert
+        is refused (returns the existing row untouched) — so even a buggy/hostile caller can't
+        overwrite another tenant's registry entry. The relay already derives the id from the
+        access key, so this only ever triggers on a genuine collision."""
         with self.session() as s:
             existing = s.get(ProcessRegistry, process.id)
             if existing is None:
@@ -134,6 +140,8 @@ class ServerStore:
                 s.add(process)
                 s.commit()
                 return process
+            if existing.account_id != process.account_id:
+                return existing  # ownership guard: refuse cross-account re-home
             existing.account_id = process.account_id
             existing.access_key_id = process.access_key_id
             existing.name = process.name

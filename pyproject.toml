@@ -33,6 +33,7 @@ client = [
     "psutil>=5.9",
     "pywebview>=5.0",
     "pystray>=0.19",
+    "websockets>=12.0",  # outbound wss dialer to the team relay (DESIGN §8.5; lazily imported)
 ]
 # Team server: relay + REST/WS + display-cache store + Web Push.
 server = [

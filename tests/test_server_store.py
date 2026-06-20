@@ -132,6 +132,24 @@ def test_register_process_upsert(tmp_path):
     assert procs[0].created_at == created
 
 
+def test_register_process_refuses_cross_account_rehome(tmp_path):
+    """Defense-in-depth (DESIGN §8.4): a registry row is never re-homed to another account."""
+    st = _store(tmp_path)
+    st.add_account(Account(id="a1", username="alice"))
+    st.add_account(Account(id="a2", username="bob"))
+    st.add_access_key(AccessKey(id="k1", account_id="a1", key_hash="h1"))
+    st.add_access_key(AccessKey(id="k2", account_id="a2", key_hash="h2"))
+    st.register_process(ProcessRegistry(id="p1", account_id="a1", access_key_id="k1", name="alice-box"))
+
+    # a2 tries to hijack p1 -> upsert refused, row stays with a1 untouched
+    returned = st.register_process(
+        ProcessRegistry(id="p1", account_id="a2", access_key_id="k2", name="stolen", online=True)
+    )
+    assert returned.account_id == "a1" and returned.name == "alice-box"
+    assert [p.id for p in st.get_processes("a1")] == ["p1"]
+    assert st.get_processes("a2") == []  # nothing leaked to the attacker's account
+
+
 def test_set_process_online_and_online_filter(tmp_path):
     st = _store(tmp_path)
     st.add_account(Account(id="a1", username="alice"))
