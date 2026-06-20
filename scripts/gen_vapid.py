@@ -10,19 +10,28 @@ stay secret and out of git.
 
 from __future__ import annotations
 
+import base64
+
 
 def main() -> None:
     try:
+        from cryptography.hazmat.primitives import serialization
         from py_vapid import Vapid02
     except ImportError:
-        raise SystemExit("py-vapid not installed. Run: pip install -e .")
+        raise SystemExit("py-vapid not installed. Run: pip install -e \".[server]\"")
 
     vapid = Vapid02()
     vapid.generate_keys()
 
-    # Application-server keys, base64url-encoded, as the browser PushManager expects.
-    public_key = vapid.public_key_urlsafe_base64()  # type: ignore[attr-defined]
-    private_key = vapid.private_key_urlsafe_base64()  # type: ignore[attr-defined]
+    # Application-server keys, base64url (no padding) — the format the browser PushManager and
+    # pywebpush expect. The public key is the raw uncompressed EC point (65 bytes); the private
+    # key is the raw 32-byte secret scalar.
+    raw_pub = vapid._public_key.public_bytes(  # type: ignore[attr-defined]
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+    )
+    raw_priv = vapid._private_key.private_numbers().private_value.to_bytes(32, "big")  # type: ignore[attr-defined]
+    public_key = base64.urlsafe_b64encode(raw_pub).rstrip(b"=").decode()
+    private_key = base64.urlsafe_b64encode(raw_priv).rstrip(b"=").decode()
 
     print("=== VAPID keypair generated ===\n")
     print("config.yaml -> push.vapid_public_key:")

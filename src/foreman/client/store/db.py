@@ -13,7 +13,15 @@ from sqlmodel import SQLModel, col, create_engine, select
 
 from foreman.shared.events import AgentEvent, utc_now_iso
 
-from .models import Checkpoint, ConfigKV, Event, SchemaVersion, Session, Task
+from .models import (
+    Checkpoint,
+    ConfigKV,
+    Event,
+    PushSubscription,
+    SchemaVersion,
+    Session,
+    Task,
+)
 
 SCHEMA_VERSION = 1
 
@@ -96,6 +104,54 @@ class Store:
                     .order_by(col(Checkpoint.step_index))
                 ).all()
             )
+
+    # ── push subscriptions (Web Push, DESIGN §4.6 / §7.1) ────────────────────────────────────
+    def add_push_subscription(
+        self, *, endpoint: str, p256dh: str, auth: str, ua: str = ""
+    ) -> PushSubscription:
+        """Store (or refresh) a browser push subscription, keyed by its endpoint (one row per
+        browser). Re-subscribing with the same endpoint updates the keys rather than duplicating.
+
+        Takes primitives, not a model, so the server app.py (shared-only) can call it without
+        importing client models (DESIGN §14)."""
+        with self.session() as s:
+            row = s.exec(
+                select(PushSubscription).where(PushSubscription.endpoint == endpoint)
+            ).first()
+            if row is None:
+                row = PushSubscription(
+                    id=uuid.uuid4().hex,
+                    endpoint=endpoint,
+                    p256dh=p256dh,
+                    auth=auth,
+                    ua=ua,
+                    created_at=utc_now_iso(),
+                )
+            else:
+                row.p256dh = p256dh
+                row.auth = auth
+                row.ua = ua
+            s.add(row)
+            s.commit()
+        return row
+
+    def get_push_subscriptions(self) -> list[PushSubscription]:
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(PushSubscription).order_by(col(PushSubscription.created_at))
+                ).all()
+            )
+
+    def delete_push_subscription(self, endpoint: str) -> None:
+        """Drop a subscription (user unsubscribed, or the push service returned 404/410)."""
+        with self.session() as s:
+            row = s.exec(
+                select(PushSubscription).where(PushSubscription.endpoint == endpoint)
+            ).first()
+            if row is not None:
+                s.delete(row)
+                s.commit()
 
     # ── settings (config_kv) ─────────────────────────────────────────────────────────────────
     def get_setting(self, key: str, default: str | None = None) -> str | None:

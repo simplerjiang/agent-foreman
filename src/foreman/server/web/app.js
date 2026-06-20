@@ -38,10 +38,55 @@ document.getElementById('dispatch-form')?.addEventListener('submit', (e) => {
   input.value = '';
 });
 
-// Placeholder: enable Web Push (P3 wires PushManager.subscribe + POST /api/push/subscribe).
-document.getElementById('enable-push')?.addEventListener('click', () => {
-  console.log('enable push (P3)');
-});
+// ── Web Push (VAPID) — T3.3 ──────────────────────────────────────────────────
+// VAPID application-server keys are base64url; PushManager wants a Uint8Array.
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function enablePush() {
+  const btn = document.getElementById('enable-push');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    console.warn('Web Push not supported in this browser');
+    return;
+  }
+  try {
+    const r = await fetch('/api/push/vapid-public-key');
+    const { key, enabled } = await r.json();
+    if (!enabled || !key) {
+      console.warn('Web Push not configured on the server (no VAPID key)');
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      console.warn('Notification permission not granted:', perm);
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(key),
+      });
+    }
+    await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sub.toJSON ? sub.toJSON() : sub),
+    });
+    if (btn) { btn.textContent = '🔔 ✓'; btn.disabled = true; }
+  } catch (e) {
+    console.warn('enable push failed', e);
+  }
+}
+
+document.getElementById('enable-push')?.addEventListener('click', enablePush);
 
 // Decision card -> step detail drill-down (§6.3). P4 wires GET /api/actions/{id}/detail.
 const detailSection = document.getElementById('detail');

@@ -25,6 +25,22 @@ from .. import __version__
 class _LanguageBody(BaseModel):
     language: str
 
+
+class _PushKeys(BaseModel):
+    p256dh: str = ""
+    auth: str = ""
+
+
+class _PushSubBody(BaseModel):
+    """Browser PushSubscription.toJSON() shape: {endpoint, expirationTime, keys:{p256dh, auth}}."""
+
+    endpoint: str
+    keys: _PushKeys = _PushKeys()
+
+
+class _PushUnsubBody(BaseModel):
+    endpoint: str
+
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
@@ -108,6 +124,39 @@ def create_app(
         lang = normalize_lang(body.language)
         store.set_setting("ui.language", lang)
         return {"language": lang}
+
+    @app.get("/api/push/vapid-public-key")
+    async def push_public_key() -> dict:
+        """The VAPID application-server public key the PWA needs for PushManager.subscribe.
+
+        `enabled` is False when no key is configured (the front-end then skips subscribing).
+        Public by design — the VAPID public key is meant to be shared; the private key never
+        leaves the server .env (DESIGN §4.6 / deploy/README)."""
+        key = cfg.push.vapid_public_key
+        return {"key": key, "enabled": bool(cfg.push.enabled and key)}
+
+    @app.post("/api/push/subscribe")
+    async def push_subscribe(body: _PushSubBody, request: Request) -> dict:
+        """Persist a browser's push subscription so approval cards / briefings can reach it.
+
+        Stored in the injected local store (personal mode); a server-cache store without these
+        helpers returns 503 (team-mode push is part of the live rollout — DESIGN §8)."""
+        if store is None or not hasattr(store, "add_push_subscription"):
+            raise HTTPException(status_code=503, detail="no local store")
+        store.add_push_subscription(
+            endpoint=body.endpoint,
+            p256dh=body.keys.p256dh,
+            auth=body.keys.auth,
+            ua=request.headers.get("user-agent", ""),
+        )
+        return {"ok": True}
+
+    @app.post("/api/push/unsubscribe")
+    async def push_unsubscribe(body: _PushUnsubBody) -> dict:
+        if store is None or not hasattr(store, "delete_push_subscription"):
+            raise HTTPException(status_code=503, detail="no local store")
+        store.delete_push_subscription(body.endpoint)
+        return {"ok": True}
 
     @app.post("/hooks")
     async def receive_hooks(request: Request) -> dict:

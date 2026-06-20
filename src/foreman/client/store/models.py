@@ -73,7 +73,7 @@ class Report(SQLModel, table=True):
 
 class PushSubscription(SQLModel, table=True):
     id: str = Field(primary_key=True)
-    endpoint: str
+    endpoint: str = Field(unique=True, index=True)  # one row per browser; upsert keys off this
     p256dh: str
     auth: str
     ua: str = ""
