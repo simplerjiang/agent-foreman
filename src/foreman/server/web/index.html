@@ -82,6 +82,57 @@
       <button id="generate-brief" class="pill" type="button" data-i18n="generateBriefing">Generate briefing</button>
       <div id="report-list" class="empty" data-i18n="noReports">No briefings yet.</div>
     </section>
+
+    <!-- Definition editor (§11.2, T6.1): add/edit/delete the four 秘方 blocks from the phone/web. -->
+    <section id="definitions" aria-label="Definitions">
+      <h2 data-i18n="definitionsTitle">Recipes</h2>
+      <div class="defn-toolbar">
+        <label>
+          <span data-i18n="filterKind">Kind</span>
+          <select id="defn-filter" aria-label="filter by kind">
+            <option value="" data-i18n="kindAll">All</option>
+            <option value="workflow" data-i18n="kindWorkflow">Workflow</option>
+            <option value="skill" data-i18n="kindSkill">Skill</option>
+            <option value="code_standard" data-i18n="kindStandard">Code standard</option>
+            <option value="qa_rubric" data-i18n="kindQa">QA rubric</option>
+          </select>
+        </label>
+        <button id="defn-new" class="pill" type="button" data-i18n="newDefinition">+ New</button>
+      </div>
+      <div id="defn-list" class="empty" data-i18n="noDefinitions">No recipes yet.</div>
+
+      <form id="defn-form" hidden>
+        <input type="hidden" id="defn-id" />
+        <div class="defn-row">
+          <label><span data-i18n="defnKind">Kind</span>
+            <select id="defn-kind">
+              <option value="workflow" data-i18n="kindWorkflow">Workflow</option>
+              <option value="skill" data-i18n="kindSkill">Skill</option>
+              <option value="code_standard" data-i18n="kindStandard">Code standard</option>
+              <option value="qa_rubric" data-i18n="kindQa">QA rubric</option>
+            </select>
+          </label>
+          <label><span data-i18n="defnName">Name</span>
+            <input id="defn-name" autocomplete="off" placeholder="add-feature" />
+          </label>
+        </div>
+        <label><span data-i18n="defnScope">Scope (JSON)</span>
+          <input id="defn-scope" autocomplete="off" placeholder='{"lang":"py"}' />
+        </label>
+        <label><span data-i18n="defnBody">Body</span>
+          <textarea id="defn-body" rows="8" placeholder="# steps / standard / rubric…"></textarea>
+        </label>
+        <label class="defn-activate">
+          <input type="checkbox" id="defn-activate" checked />
+          <span data-i18n="defnActivate">Activate on save</span>
+        </label>
+        <p id="defn-status" class="hint" hidden></p>
+        <div class="defn-row">
+          <button type="submit" data-i18n="save">Save</button>
+          <button type="button" id="defn-cancel" class="pill" data-i18n="cancel">Cancel</button>
+        </div>
+      </form>
+    </section>
   </main>
 
   <button id="enable-push" class="floating" data-i18n="enablePush">Enable notifications</button>

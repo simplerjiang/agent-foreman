@@ -447,6 +447,26 @@ class Store:
             s.commit()
         return row
 
+    def delete_definition(self, definition_id: str) -> bool:
+        """Delete a definition outright (the UI editor's 删 button, §11.2C). Also removes any
+        links pointing to/from it so no dangling wiring survives. Returns True if a row was
+        removed, False if the id was already gone (idempotent)."""
+        with self.session() as s:
+            row = s.get(Definition, definition_id)
+            if row is None:
+                return False
+            links = s.exec(
+                select(DefinitionLink).where(
+                    (DefinitionLink.from_id == definition_id)
+                    | (DefinitionLink.to_id == definition_id)
+                )
+            ).all()
+            for link in links:
+                s.delete(link)
+            s.delete(row)
+            s.commit()
+        return True
+
     def add_definition_link(self, link: DefinitionLink) -> DefinitionLink:
         """Wire a workflow step to a building block it uses (uses_skill|uses_standard|judged_by)."""
         with self.session() as s:

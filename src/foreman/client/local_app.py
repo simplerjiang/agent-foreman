@@ -50,6 +50,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     from .core.briefing import BriefingService
     from .core.cards import CardService
     from .core.decision_loop import DecisionLoop
+    from .core.definition_service import DefinitionService
     from .core.dispatch_service import DispatchService
     from .core.gate import Gate
     from .core.operator import Operator
@@ -101,9 +102,13 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     briefings = BriefingService(
         LLMClient(cfg), store, bus=bus, pusher=pusher, language=language
     )
+    # DefinitionService is the UI editor for the four 秘方 blocks (workflow/skill/code_standard/
+    # qa_rubric, §11.2). Injected like the Gate/CardService so app.py stays shared-only; definitions
+    # live ONLY in the local store and never reach the shared server (§8.3 / §14).
+    definitions = DefinitionService(store, bus=bus)
     app = create_app(
         cfg, store, bus, hooks=hooks, gate=gate, cards=cards,
-        dispatcher=dispatcher, briefings=briefings,
+        dispatcher=dispatcher, briefings=briefings, definitions=definitions,
     )
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))

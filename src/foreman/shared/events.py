@@ -23,6 +23,8 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "action_executed", "action_undone",
         # hybrid workflow engine (P5/T5.2, §11.2): a workflow run started / advanced a step / finished.
         "workflow",
+        # definition editor (P6/T6.1, §11.2): a 秘方 block was created / updated / activated / deleted.
+        "definition",
     }
 )
 

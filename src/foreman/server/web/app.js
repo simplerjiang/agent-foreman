@@ -17,6 +17,7 @@ async function init() {
   loadSessions();
   loadCards();
   loadReports();
+  loadDefinitions();
   await loadApprovals();
   maybeActOnDeepLink();  // a cold one-tap (notification → openWindow with ?approval=&action=)
 }
@@ -495,6 +496,167 @@ async function decideApproval(id, decision, nonce) {
   loadApprovals();  // refresh the queue (decided ones drop off)
 }
 
+// ── Definition editor (§11.2, T6.1): add/edit/delete 工作流/技能/规范/QA from the phone/web ─────
+const defnListEl = document.getElementById('defn-list');
+const defnForm = document.getElementById('defn-form');
+const KIND_LABEL = {
+  workflow: 'kindWorkflow', skill: 'kindSkill', code_standard: 'kindStandard', qa_rubric: 'kindQa',
+};
+
+async function loadDefinitions() {
+  if (!defnListEl) return;
+  const kind = document.getElementById('defn-filter')?.value || '';
+  try {
+    const url = kind ? `/api/definitions?kind=${encodeURIComponent(kind)}` : '/api/definitions';
+    const r = await fetch(url);
+    if (!r.ok) { renderDefinitions([]); return; }
+    renderDefinitions(await r.json());
+  } catch (e) {
+    renderDefinitions([]);
+  }
+}
+
+// textContent only — names/bodies are user-authored 秘方; treat as untrusted, never innerHTML.
+function renderDefinitions(defs) {
+  const dict = I18N[currentLang];
+  if (!defnListEl) return;
+  if (!defs.length) {
+    defnListEl.classList.add('empty');
+    defnListEl.textContent = dict.noDefinitions;
+    return;
+  }
+  defnListEl.classList.remove('empty');
+  defnListEl.replaceChildren();
+  for (const d of defs) {
+    const row = document.createElement('article');
+    row.className = 'card defn-item';
+    const head = document.createElement('p');
+    head.className = 'card-summary';
+    const kindTxt = dict[KIND_LABEL[d.kind]] || d.kind;
+    const live = d.is_active ? ' ✓' : '';
+    head.textContent = `${kindTxt} · ${d.name} v${d.version}${live}`;
+    const actions = document.createElement('div');
+    actions.className = 'card-actions';
+    actions.appendChild(defnBtn(dict.edit, () => openDefnForm(d)));
+    if (!d.is_active) actions.appendChild(defnBtn(dict.activate, () => activateDefn(d.id)));
+    actions.appendChild(defnBtn(dict.delete, () => deleteDefn(d.id)));
+    row.append(head, actions);
+    defnListEl.appendChild(row);
+  }
+}
+
+function defnBtn(label, onClick) {
+  const b = document.createElement('button');
+  b.className = 'option';
+  b.textContent = label;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+// Open the editor: blank for a new block, or pre-filled to edit an existing one. Editing locks
+// identity (kind/name) — a body change is an in-place edit; a new version is a fresh "+ New".
+async function openDefnForm(def) {
+  if (!defnForm) return;
+  defnForm.hidden = false;
+  const idEl = document.getElementById('defn-id');
+  const kindEl = document.getElementById('defn-kind');
+  const nameEl = document.getElementById('defn-name');
+  const scopeEl = document.getElementById('defn-scope');
+  const bodyEl = document.getElementById('defn-body');
+  const activateEl = document.getElementById('defn-activate');
+  hideDefnStatus();
+  if (def) {
+    idEl.value = def.id;
+    kindEl.value = def.kind; kindEl.disabled = true;
+    nameEl.value = def.name; nameEl.disabled = true;
+    scopeEl.value = def.scope_json || '{}';
+    bodyEl.value = def.body || '';
+    // "Activate on save" means "make THIS version the live one" — there is no deactivate (exactly
+    // one version is ever live, switched by activating another). So default it unchecked on edit:
+    // checking it makes this version live; leaving it just saves the body without changing which
+    // version is live. (Pre-checking an already-active row would be a no-op the user can't undo.)
+    activateEl.checked = false;
+  } else {
+    idEl.value = '';
+    kindEl.disabled = false; nameEl.disabled = false;
+    kindEl.value = document.getElementById('defn-filter')?.value || 'workflow';
+    nameEl.value = ''; scopeEl.value = '{}'; bodyEl.value = ''; activateEl.checked = true;
+  }
+  defnForm.scrollIntoView({ behavior: 'smooth' });
+}
+
+function showDefnStatus(text) {
+  const el = document.getElementById('defn-status');
+  if (!el) return;
+  el.textContent = text;
+  el.hidden = false;
+}
+function hideDefnStatus() {
+  const el = document.getElementById('defn-status');
+  if (el) el.hidden = true;
+}
+
+defnForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const dict = I18N[currentLang];
+  const id = document.getElementById('defn-id').value;
+  const scope = document.getElementById('defn-scope').value.trim() || '{}';
+  const body = document.getElementById('defn-body').value;
+  const activate = document.getElementById('defn-activate').checked;
+  try {
+    let r;
+    if (id) {
+      // Edit in place (identity is locked); activate separately if requested.
+      r = await fetch(`/api/definitions/${encodeURIComponent(id)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body, scope_json: scope }),
+      });
+      if (r.ok && activate) {
+        await fetch(`/api/definitions/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+      }
+    } else {
+      r = await fetch('/api/definitions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: document.getElementById('defn-kind').value,
+          name: document.getElementById('defn-name').value.trim(),
+          body, scope_json: scope, activate,
+        }),
+      });
+    }
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      defnForm.hidden = true;
+      loadDefinitions();
+    } else {
+      showDefnStatus(`${dict.saveFailed} (${data.detail || r.status})`);
+    }
+  } catch (err) {
+    showDefnStatus(dict.saveFailed);
+  }
+});
+
+document.getElementById('defn-new')?.addEventListener('click', () => openDefnForm(null));
+document.getElementById('defn-cancel')?.addEventListener('click', () => { defnForm.hidden = true; });
+document.getElementById('defn-filter')?.addEventListener('change', loadDefinitions);
+
+async function activateDefn(id) {
+  try {
+    const r = await fetch(`/api/definitions/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+    if (!r.ok) console.warn('activate failed', r.status);
+  } catch (e) { console.warn('activate error', e); }
+  loadDefinitions();
+}
+
+async function deleteDefn(id) {
+  if (!confirm(I18N[currentLang].confirmDelete)) return;
+  try {
+    const r = await fetch(`/api/definitions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!r.ok) console.warn('delete failed', r.status);
+  } catch (e) { console.warn('delete error', e); }
+  loadDefinitions();
+}
+
 // ── i18n: UI language (zh/en) + sync to backend so LLM output language follows (§15) ─────────
 const I18N = {
   zh: { sessions: '会话', decisions: '决策', approvals: '审批', timeline: '时间线', dispatch: '下发任务',
@@ -502,14 +664,26 @@ const I18N = {
         codeDiff: '代码改动', noSessions: '暂无活动会话。', noDecisions: '暂无待决策。',
         noApprovals: '没有待你处理的。', approve: '批准', reject: '驳回', viewDetail: '查看详情',
         autonomy: '自治', langToggle: 'EN', briefings: '简报', generateBriefing: '生成简报',
-        noReports: '暂无简报。', dispatched: '已下发', dispatchFailed: '下发失败' },
+        noReports: '暂无简报。', dispatched: '已下发', dispatchFailed: '下发失败',
+        definitionsTitle: '秘方', filterKind: '类型', kindAll: '全部', kindWorkflow: '工作流',
+        kindSkill: '技能', kindStandard: '代码规范', kindQa: 'QA 标准', newDefinition: '+ 新建',
+        noDefinitions: '暂无秘方。', defnKind: '类型', defnName: '名称', defnScope: '适用范围 (JSON)',
+        defnBody: '内容', defnActivate: '保存即启用', save: '保存', cancel: '取消', edit: '编辑',
+        activate: '启用', delete: '删除', confirmDelete: '确定删除这条秘方？',
+        saveFailed: '保存失败' },
   en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
         dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
         rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
         noDecisions: 'No decisions waiting.', noApprovals: 'Nothing waiting on you.',
         approve: 'Approve', reject: 'Reject', viewDetail: 'View detail',
         autonomy: 'Autonomy', langToggle: '中', briefings: 'Briefings', generateBriefing: 'Generate briefing',
-        noReports: 'No briefings yet.', dispatched: 'Dispatched', dispatchFailed: 'Dispatch failed' },
+        noReports: 'No briefings yet.', dispatched: 'Dispatched', dispatchFailed: 'Dispatch failed',
+        definitionsTitle: 'Recipes', filterKind: 'Kind', kindAll: 'All', kindWorkflow: 'Workflow',
+        kindSkill: 'Skill', kindStandard: 'Code standard', kindQa: 'QA rubric', newDefinition: '+ New',
+        noDefinitions: 'No recipes yet.', defnKind: 'Kind', defnName: 'Name', defnScope: 'Scope (JSON)',
+        defnBody: 'Body', defnActivate: 'Activate on save', save: 'Save', cancel: 'Cancel', edit: 'Edit',
+        activate: 'Activate', delete: 'Delete', confirmDelete: 'Delete this recipe?',
+        saveFailed: 'Save failed' },
 };
 let currentLang = 'zh';
 
@@ -543,6 +717,7 @@ async function setLang(lang) {
   loadSessions();  // re-render the (dynamic) session list so its empty text follows the language
   loadCards();  // re-render decision cards in the new language
   loadReports();  // re-render briefings (empty text follows the language)
+  loadDefinitions();  // re-render the 秘方 list + labels in the new language
   renderApprovals();  // re-label approve/reject + empty text in the new language
   try {
     await fetch('/api/settings/language', {

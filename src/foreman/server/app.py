@@ -88,6 +88,27 @@ class _BriefBody(BaseModel):
     session_id: str = ""
     kind: str = "active-briefing"
 
+
+class _DefinitionCreateBody(BaseModel):
+    """Create a 秘方 block (workflow/skill/code_standard/qa_rubric) from the UI editor (§11.2)."""
+
+    kind: str
+    name: str
+    body: str = ""
+    scope_json: str = "{}"
+    metadata_json: str = "{}"
+    version: int | None = None
+    activate: bool = True
+
+
+class _DefinitionUpdateBody(BaseModel):
+    """Edit a definition in place (only the passed fields change; identity is not editable)."""
+
+    body: str | None = None
+    scope_json: str | None = None
+    metadata_json: str | None = None
+    status: str | None = None
+
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
@@ -133,6 +154,7 @@ def create_app(
     cards: object | None = None,
     dispatcher: object | None = None,
     briefings: object | None = None,
+    definitions: object | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
@@ -151,6 +173,7 @@ def create_app(
     app.state.cards = cards
     app.state.dispatcher = dispatcher
     app.state.briefings = briefings
+    app.state.definitions = definitions
 
     def require_account(request: Request):
         """Resolve the Authorization bearer token to an active account, or raise 401/503.
@@ -372,6 +395,94 @@ def create_app(
             return res
         status = {"no_store": 503, "no_llm": 503}.get(res.get("error", ""), 400)
         raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    # ── Definition editor: CRUD the four 秘方 blocks from the phone/web (DESIGN §11.2, T6.1) ──
+    # Delegates to the injected client-side DefinitionService (which owns the local definitions
+    # table); app.py stays shared-only and the 秘方 never leave the local process (§8.3 / §14).
+    # No service (e.g. team-cache server) → 503: definitions are local-only by design.
+    _DEFN_ERR_STATUS = {
+        "bad_kind": 400, "bad_name": 400, "body_too_large": 400,
+        "bad_scope_json": 400, "bad_metadata_json": 400, "bad_status": 400,
+        "version_exists": 409, "not_found": 404, "no_store": 503,
+    }
+
+    @app.get("/api/definitions")
+    async def list_definitions(
+        kind: str | None = None, name: str | None = None, active_only: bool = False
+    ) -> list[dict]:
+        """List 秘方 blocks (optionally filtered by kind/name, or to active versions). §11.2."""
+        if definitions is None or not hasattr(definitions, "list_definitions"):
+            raise HTTPException(status_code=503, detail="no definition service")
+        return definitions.list_definitions(kind=kind, name=name, active_only=active_only)
+
+    @app.get("/api/definitions/{definition_id}")
+    async def get_definition(definition_id: str) -> dict:
+        """One definition (the editor opens it to edit its body). §11.2."""
+        if definitions is None or not hasattr(definitions, "get_definition"):
+            raise HTTPException(status_code=503, detail="no definition service")
+        row = definitions.get_definition(definition_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return row
+
+    @app.post("/api/definitions")
+    async def create_definition(body: _DefinitionCreateBody) -> dict:
+        """Create a 秘方 block / a new version (the 增 path). §11.2."""
+        if definitions is None or not hasattr(definitions, "create_definition"):
+            raise HTTPException(status_code=503, detail="no definition service")
+        res = await definitions.create_definition(
+            kind=body.kind, name=body.name, body=body.body,
+            scope_json=body.scope_json, metadata_json=body.metadata_json,
+            version=body.version, activate=body.activate,
+        )
+        if res.get("ok"):
+            return res
+        raise HTTPException(
+            status_code=_DEFN_ERR_STATUS.get(res.get("error", ""), 400),
+            detail=res.get("error", "decline"),
+        )
+
+    @app.patch("/api/definitions/{definition_id}")
+    async def update_definition(definition_id: str, body: _DefinitionUpdateBody) -> dict:
+        """Edit a definition in place (the 改 path). §11.2."""
+        if definitions is None or not hasattr(definitions, "update_definition"):
+            raise HTTPException(status_code=503, detail="no definition service")
+        res = await definitions.update_definition(
+            definition_id, body=body.body, scope_json=body.scope_json,
+            metadata_json=body.metadata_json, status=body.status,
+        )
+        if res.get("ok"):
+            return res
+        raise HTTPException(
+            status_code=_DEFN_ERR_STATUS.get(res.get("error", ""), 400),
+            detail=res.get("error", "decline"),
+        )
+
+    @app.post("/api/definitions/{definition_id}/activate")
+    async def activate_definition(definition_id: str) -> dict:
+        """Make this version THE live one for its (kind, name) — enable/rollback knob. §11.2."""
+        if definitions is None or not hasattr(definitions, "activate_definition"):
+            raise HTTPException(status_code=503, detail="no definition service")
+        res = await definitions.activate_definition(definition_id)
+        if res.get("ok"):
+            return res
+        raise HTTPException(
+            status_code=_DEFN_ERR_STATUS.get(res.get("error", ""), 400),
+            detail=res.get("error", "decline"),
+        )
+
+    @app.delete("/api/definitions/{definition_id}")
+    async def delete_definition(definition_id: str) -> dict:
+        """Delete a definition + its links (the 删 path). §11.2."""
+        if definitions is None or not hasattr(definitions, "delete_definition"):
+            raise HTTPException(status_code=503, detail="no definition service")
+        res = await definitions.delete_definition(definition_id)
+        if res.get("ok"):
+            return res
+        raise HTTPException(
+            status_code=_DEFN_ERR_STATUS.get(res.get("error", ""), 400),
+            detail=res.get("error", "decline"),
+        )
 
     @app.post("/api/auth/login")
     async def auth_login(body: _LoginBody) -> dict:
