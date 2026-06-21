@@ -19,6 +19,7 @@ wires store + bus + pusher in.
 
 from __future__ import annotations
 
+import re
 import secrets
 import uuid
 
@@ -27,6 +28,39 @@ from foreman.shared.config import GatesCfg
 from foreman.shared.events import make_event, utc_now_iso
 
 from ..store.models import Approval
+
+# Whitespace/flag-robust backstop for irreversible commands the plain substring denylist
+# (config.GatesCfg.requires_approval) misses. The deterministic Gate is the red line (§6.7①), so
+# it must not be defeated by trivial reformatting (`rm  -rf`, `rm -fr`, `git -C <path> push`) nor be
+# blind to the Windows/PowerShell verbs absent from the Unix-centric default list. Matched against
+# the lowercased action text with internal whitespace collapsed. `[^|&;\n]*` keeps a match within a
+# single command segment so a later, unrelated pipe stage can't smuggle a false hit across `; | &`.
+_IRREVERSIBLE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p)
+    for p in (
+        r"\brm\s+-{1,2}\w*[rf]",                                  # rm -rf / -fr / -r / -f
+        r"\brm\s+--(?:recursive|force)\b",                        # rm --recursive / --force
+        r"\bremove-item\b[^|&;\n]*-(?:recurse|force|r|fo|f)\b",   # PowerShell rm (Remove-Item)
+        r"\bri\s+-\w*(?:recurse|force|r|fo|f)\b",                 # Remove-Item alias `ri`
+        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s/[sq]\b",          # cmd recursive/quiet delete
+        r"\bgit\b[^|&;\n]*\bpush\b",                              # git ... push (incl. -C <path>)
+        r"\bgit\b[^|&;\n]*\breset\b[^|&;\n]*--hard\b",            # discards committed/working state
+        r"\bgit\b[^|&;\n]*\bclean\b[^|&;\n]*-\w*f",               # deletes untracked files
+        r"\bgit\b[^|&;\n]*\bcheckout\b[^|&;\n]*\s--(?:\s|$)",     # discards worktree changes
+        r"\b(?:stop-computer|restart-computer)\b",               # PowerShell shutdown/reboot
+        r"\bformat\b\s+[a-z]:",                                   # format C:
+        r"\b(?:mkfs|diskpart|format-volume|clear-disk)\b",       # filesystem/disk destroyers
+    )
+)
+
+
+def _matches_irreversible(low_text: str) -> bool:
+    """True if the (already-lowercased) action text trips a built-in irreversible pattern.
+
+    Internal whitespace is collapsed first so extra spaces/tabs (`rm  -rf`) can't slip past a
+    spacing-sensitive match — the deterministic red line stays robust to reformatting (§6.7①)."""
+    norm = re.sub(r"\s+", " ", low_text)
+    return any(p.search(norm) for p in _IRREVERSIBLE_PATTERNS)
 
 
 class Gate:
@@ -50,9 +84,17 @@ class Gate:
         self._clock = clock or utc_now_iso
 
     def classify(self, action_text: str) -> str:
-        """Return safe | needs-strategy | requires-approval based on configured patterns."""
+        """Return safe | needs-strategy | requires-approval.
+
+        Two layers decide requires-approval: ① the configured substring denylist (user-extensible
+        via config.yaml) and ② a built-in whitespace/flag-robust regex set that catches irreversible
+        commands the plain list misses (Windows/PowerShell verbs + spacing/order bypasses of the Unix
+        ones). The deterministic Gate is the red line (§6.7①), so it can't be defeated by trivial
+        reformatting or by running on Windows."""
         low = action_text.lower()
         if any(p.lower() in low for p in self.cfg.requires_approval):
+            return "requires-approval"
+        if _matches_irreversible(low):
             return "requires-approval"
         if any(p.lower() in low for p in self.cfg.needs_strategy):
             return "needs-strategy"

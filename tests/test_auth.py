@@ -222,6 +222,35 @@ def test_endpoints_cross_account_revoke_is_404(tmp_path):
     assert auth.store.get_access_key(alice_key).status == "active"
 
 
+def test_login_is_rate_limited_per_ip(tmp_path):
+    """A burst of login attempts from one IP is throttled (online brute-force guard, issue #10).
+
+    The first _AUTH_RL_MAX_ATTEMPTS attempts get the normal 401; the next is refused with 429 before
+    the password is even checked. (TestClient shares one client host, so all land in one IP bucket.)"""
+    from foreman.server.app import _AUTH_RL_MAX_ATTEMPTS
+
+    client, auth = _client(tmp_path)
+    auth.create_account("alice", "pw")
+    codes = [
+        client.post("/api/auth/login", json={"username": "alice", "password": "wrong"}).status_code
+        for _ in range(_AUTH_RL_MAX_ATTEMPTS + 1)
+    ]
+    assert codes[:_AUTH_RL_MAX_ATTEMPTS] == [401] * _AUTH_RL_MAX_ATTEMPTS
+    assert codes[_AUTH_RL_MAX_ATTEMPTS] == 429
+
+
+def test_redeem_is_rate_limited_per_ip(tmp_path):
+    """Invite redemption is throttled the same way (separate bucket from login)."""
+    from foreman.server.app import _AUTH_RL_MAX_ATTEMPTS
+
+    client, _ = _client(tmp_path)
+    codes = [
+        client.post("/api/auth/redeem", json={"code": "nope", "password": "longenough"}).status_code
+        for _ in range(_AUTH_RL_MAX_ATTEMPTS + 1)
+    ]
+    assert codes[_AUTH_RL_MAX_ATTEMPTS] == 429
+
+
 def test_endpoints_503_without_auth_manager(tmp_path):
     client, _ = _client(tmp_path, with_auth=False)
     assert client.post("/api/auth/login", json={"username": "a", "password": "b"}).status_code == 503

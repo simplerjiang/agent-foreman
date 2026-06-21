@@ -61,6 +61,42 @@ def test_classify_three_levels():
     assert g.classify("Read a.py") == "safe"
 
 
+# ── built-in irreversible backstop: Windows/PowerShell verbs + spacing/flag bypasses (issue #8) ──
+@pytest.mark.parametrize(
+    "command",
+    [
+        r"Remove-Item -Recurse -Force C:\Users\jiang\important",  # PowerShell rm -rf
+        "ri -r -fo C:/data",                                     # Remove-Item alias
+        "rm  -rf /important",                                    # extra whitespace bypass
+        "rm -fr /important",                                     # flag order bypass
+        "rm -r -f /important",                                   # split flags
+        "git -C /repo push",                                     # -C splits the 'git push' substring
+        "del /f /s /q C:/data",                                  # cmd recursive delete
+        "rd /s /q C:/data",                                      # rmdir alias
+        "Stop-Computer -Force",                                  # PowerShell shutdown
+        "git reset --hard origin/main",                          # discards committed/working state
+        "git clean -fdx",                                        # deletes untracked files
+        "cmd /c format D: /y",                                   # disk format
+    ],
+)
+def test_classify_catches_irreversible_bypasses(command):
+    """The deterministic red line must not be defeated by Windows verbs or reformatting (§6.7①)."""
+    assert Gate(GatesCfg()).classify(command) == "requires-approval"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Read a.py", "pip install foo", "git status", "git checkout -b feature",
+        "ls -la", "echo hello", "del report.txt", "git log --oneline",
+        "npm run build", "cat C:/projects/src/main.py",
+    ],
+)
+def test_classify_does_not_over_block_safe_commands(command):
+    """Routine commands must stay non-blocking — the backstop adds matches, never floods them."""
+    assert Gate(GatesCfg()).classify(command) != "requires-approval"
+
+
 # ── request_approval ─────────────────────────────────────────────────────────────────────────
 async def test_request_approval_persists_pending_row_and_pushes(tmp_path):
     store = _store(tmp_path)
