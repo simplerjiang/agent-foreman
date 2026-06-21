@@ -30,10 +30,18 @@ from .auth import (
     hash_password,
     verify_password,
 )
-from .store.models import AccessKey, Account, AuthSession
+from .store.models import AccessKey, Account, AuthSession, Invite
 
 # 30 days: a phone PWA stays logged in for weeks (the device, not the password, is the factor).
 DEFAULT_TOKEN_TTL_SECONDS = 30 * 24 * 3600
+
+# 7 days: an admin's invite link is valid for a week, then the admin must re-issue one.
+DEFAULT_INVITE_TTL_SECONDS = 7 * 24 * 3600
+
+# Minimum length for a self-set password (redeem path). Admin-set initial passwords go through
+# create_account, which only requires non-empty (the admin owns that choice); but a user setting
+# their OWN password via an invite gets a modest floor so a one-char password can't slip in.
+MIN_PASSWORD_LEN = 8
 
 # A throwaway hash used to spend the same PBKDF2 time on the missing/disabled-user login path,
 # so response timing can't be used to enumerate valid usernames (computed once at import).
@@ -66,14 +74,18 @@ class AuthManager:
         gen_id=lambda: uuid.uuid4().hex,
         gen_token=generate_token,
         gen_key=generate_access_key,
+        gen_invite=generate_access_key,
         token_ttl_seconds: int = DEFAULT_TOKEN_TTL_SECONDS,
+        invite_ttl_seconds: int = DEFAULT_INVITE_TTL_SECONDS,
     ) -> None:
         self.store = store
         self._now = now
         self._gen_id = gen_id
         self._gen_token = gen_token
         self._gen_key = gen_key
+        self._gen_invite = gen_invite
         self._ttl = token_ttl_seconds
+        self._invite_ttl = invite_ttl_seconds
 
     # ── accounts (admin op — DESIGN §8.2: no self-signup) ────────────────────────────────────
     def create_account(
@@ -100,6 +112,113 @@ class AuthManager:
         )
         return {"ok": True, "account_id": account_id}
 
+    def list_accounts(self) -> list[dict]:
+        """Every account for the admin console — metadata only, NEVER the password hash (§8.4
+        admin sees system health, not anyone's secrets). Oldest first (creation order)."""
+        return [
+            {
+                "id": a.id,
+                "username": a.username,
+                "display_name": a.display_name,
+                "role": a.role,
+                "status": a.status,
+                "created_at": a.created_at,
+            }
+            for a in self.store.get_accounts()
+        ]
+
+    def set_account_enabled(self, account_id: str, enabled: bool) -> dict:
+        """Admin disables/re-enables an account. A disabled account can't log in and any live
+        token is rejected immediately (resolve_token re-checks status). Returns {"ok"} or
+        {"error": "not_found"}."""
+        if self.store.get_account(account_id) is None:
+            return {"error": "not_found"}
+        self.store.set_account_status(account_id, "active" if enabled else "disabled")
+        return {"ok": True}
+
+    # ── invites (admin builds a user, hands out a one-time code — DESIGN §8.2) ────────────────
+    def invite_account(
+        self, username: str, *, role: str = "member", display_name: str = "",
+        invite_ttl_seconds: int | None = None,
+    ) -> dict:
+        """Admin creates a passwordless account in 'invited' status and issues a one-time invite
+        code (DESIGN §8.2: no self-signup — redeeming an admin's invite is the ONLY way to a
+        usable password). The account can't log in until the code is redeemed. Returns
+        {"ok", "account_id", "invite_code", "expires_at"} — invite_code is plaintext shown ONCE
+        (only its hash is stored, §8.4) — or {"error": "exists" | "bad_input"}."""
+        username = (username or "").strip()
+        if not username:
+            return {"error": "bad_input"}
+        if self.store.get_account_by_username(username) is not None:
+            return {"error": "exists"}
+        account_id = self._gen_id()
+        self.store.add_account(
+            Account(
+                id=account_id,
+                username=username,
+                display_name=display_name or username,
+                role="admin" if role == "admin" else "member",
+                status="invited",          # no usable password yet → can't log in until redeemed
+                password_hash="",
+                created_at=self._now(),
+            )
+        )
+        invite = self._issue_invite(account_id, invite_ttl_seconds)
+        return {"ok": True, "account_id": account_id, **invite}
+
+    def reinvite_account(
+        self, account_id: str, *, invite_ttl_seconds: int | None = None
+    ) -> dict:
+        """Re-issue an invite for an existing account (re-invite / admin-driven password reset).
+        Any prior UNused invite for this account is burned first, so there's always exactly one
+        live code. Does NOT change the account's status (redeeming the new code activates it).
+        Returns {"ok", "invite_code", "expires_at"} or {"error": "not_found"}."""
+        if self.store.get_account(account_id) is None:
+            return {"error": "not_found"}
+        self.store.invalidate_account_invites(account_id, self._now())
+        invite = self._issue_invite(account_id, invite_ttl_seconds)
+        return {"ok": True, **invite}
+
+    def _issue_invite(self, account_id: str, ttl_seconds: int | None) -> dict:
+        """Mint + persist one invite (hash only). Returns {"invite_code", "expires_at"}."""
+        ttl = self._invite_ttl if ttl_seconds is None else ttl_seconds
+        code = self._gen_invite()
+        now = self._now()
+        expires_at = _iso_plus_seconds(now, ttl) if ttl and ttl > 0 else ""
+        self.store.add_invite(
+            Invite(
+                id=self._gen_id(),
+                code_hash=hash_access_key(code),
+                account_id=account_id,
+                expires_at=expires_at,
+                used_at="",
+            )
+        )
+        return {"invite_code": code, "expires_at": expires_at}
+
+    def redeem_invite(self, code: str, password: str) -> dict:
+        """Redeem an admin-issued invite: set the account's password, activate it, burn the code,
+        and log the user straight in (DESIGN §8.2). This is the ONLY non-admin path to a usable
+        password — what 'no self-signup' means.
+
+        Fail-closed: a missing / already-used / expired code returns a generic {"error":
+        "bad_code"} (never leaks whether a code existed); a too-short password returns
+        {"error": "bad_password"} BEFORE the code is spent, so a typo doesn't burn the invite.
+        Returns a login result {"ok", "token", "account_id", "role"} on success."""
+        if len(password or "") < MIN_PASSWORD_LEN:
+            return {"error": "bad_password"}
+        invite = self.store.get_invite_by_hash(hash_access_key(code or ""))
+        now = self._now()
+        if invite is None or invite.used_at or _is_expired(invite.expires_at, now):
+            return {"error": "bad_code"}
+        account = self.store.get_account(invite.account_id)
+        if account is None or account.status == "disabled":
+            return {"error": "bad_code"}  # admin disabled/deleted the account before redemption
+        self.store.set_account_password(account.id, hash_password(password))
+        self.store.set_account_status(account.id, "active")
+        self.store.mark_invite_used(invite.id, now)
+        return self._issue_login_token(account)
+
     # ── user login (DESIGN §8.2) ─────────────────────────────────────────────────────────────
     def login(self, username: str, password: str) -> dict:
         """Verify credentials and issue a bearer token. Returns {"ok", "token", "account_id",
@@ -115,6 +234,11 @@ class AuthManager:
         password_ok = verify_password(password or "", pw_hash)
         if not usable or not password_ok:
             return {"error": "invalid"}
+        return self._issue_login_token(account)
+
+    def _issue_login_token(self, account: Account) -> dict:
+        """Mint + persist a bearer token (only its hash) and return the login result. Shared by
+        login() and redeem_invite() so a freshly-redeemed user lands logged in."""
         token = self._gen_token()
         now = self._now()
         self.store.add_auth_session(

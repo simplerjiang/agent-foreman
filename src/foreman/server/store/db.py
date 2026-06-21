@@ -21,7 +21,7 @@ from foreman.shared.migrations import current_version, run_migrations
 
 from . import models  # noqa: F401  (registers server tables on SQLModel.metadata)
 from .migrations import SERVER_MIGRATIONS
-from .models import Account, AccessKey, AuthSession, ProcessRegistry
+from .models import Account, AccessKey, AuthSession, Invite, ProcessRegistry
 
 # v2 adds Account.password_hash + the auth_sessions table (T3.5 user login / access-key mgmt).
 SERVER_SCHEMA_VERSION = 2
@@ -174,6 +174,50 @@ class ServerStore:
             if row is not None:
                 s.delete(row)
                 s.commit()
+
+    # ── invites (admin builds a user → one-time code → user sets password — DESIGN §8.2) ──────
+    def add_invite(self, invite: Invite) -> Invite:
+        """Persist an admin-issued invite. ONLY the code hash is stored (caller hashes the
+        plaintext, shown to the admin once); the code is the only non-admin path to a usable
+        password (no self-signup, §8.2)."""
+        with self.session() as s:
+            s.add(invite)
+            s.commit()
+        return invite
+
+    def get_invite_by_hash(self, code_hash: str) -> Invite | None:
+        """Resolve an invite code (by its hash) to its row. Returns regardless of used/expiry;
+        the caller enforces single-use + expiry so a spent/expired code can be reported."""
+        with self.session() as s:
+            return s.exec(select(Invite).where(Invite.code_hash == code_hash)).first()
+
+    def mark_invite_used(self, invite_id: str, when: str | None = None) -> None:
+        """Burn an invite (single-use). No-op if it's missing."""
+        with self.session() as s:
+            row = s.get(Invite, invite_id)
+            if row is not None:
+                row.used_at = when or utc_now_iso()
+                s.add(row)
+                s.commit()
+
+    def invalidate_account_invites(self, account_id: str, when: str | None = None) -> int:
+        """Burn every still-unused invite for an account (so a re-invite leaves exactly one live
+        code). Returns how many were invalidated."""
+        stamp = when or utc_now_iso()
+        with self.session() as s:
+            rows = list(
+                s.exec(
+                    select(Invite)
+                    .where(Invite.account_id == account_id)
+                    .where(Invite.used_at == "")
+                ).all()
+            )
+            for row in rows:
+                row.used_at = stamp
+                s.add(row)
+            if rows:
+                s.commit()
+            return len(rows)
 
     # ── process registry (online local processes — DESIGN §7.2 / §8.5) ───────────────────────
     def register_process(self, process: ProcessRegistry) -> ProcessRegistry:

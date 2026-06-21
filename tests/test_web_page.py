@@ -56,3 +56,20 @@ def test_decision_card_and_detail_wired(tmp_path):
     assert "chooseCard" in js and "/choose" in js  # one-tap card decision wired
     # diff + raw output are untrusted → rendered via textContent, never assigned to innerHTML.
     assert "renderDiff" in js and "textContent" in js and ".innerHTML" not in js
+
+
+def test_admin_console_and_redeem_pages_ship_and_wire(tmp_path):
+    """The admin console + invite-redemption pages ship and wire the right endpoints (T7.2 §8.2)."""
+    c = TestClient(create_app(load_config()))
+    admin_html = c.get("/admin.html")
+    assert admin_html.status_code == 200 and "data-i18n" in admin_html.text
+    admin_js = c.get("/admin.js").text
+    assert "/api/admin/accounts" in admin_js and "/api/auth/login" in admin_js
+    assert "invite_code" in admin_js and "/status" in admin_js
+    # account-supplied text is rendered via textContent only — never innerHTML (XSS).
+    assert "textContent" in admin_js and ".innerHTML" not in admin_js
+
+    redeem_html = c.get("/redeem.html")
+    assert redeem_html.status_code == 200
+    redeem_js = c.get("/redeem.js").text
+    assert "/api/auth/redeem" in redeem_js and ".innerHTML" not in redeem_js

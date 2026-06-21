@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>Foreman · 激活账号</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header>
+    <h1>🦺 Foreman <span class="pill" data-i18n="redeemTitle">激活账号</span></h1>
+    <button id="lang-toggle" class="pill" type="button" title="language">EN</button>
+  </header>
+
+  <main>
+    <section aria-label="Redeem invite">
+      <h2 data-i18n="redeemHeading">Set your password</h2>
+      <p class="hint" data-i18n="redeemHint">用管理员发给你的邀请码设置密码（无自助注册）。</p>
+      <form id="redeem-form">
+        <label><span data-i18n="inviteCode">Invite code</span>
+          <input id="redeem-code" autocomplete="off" />
+        </label>
+        <label><span data-i18n="newPassword">New password (≥ 8 chars)</span>
+          <input id="redeem-pass" type="password" autocomplete="new-password" />
+        </label>
+        <button type="submit" data-i18n="activate">Activate</button>
+        <p id="redeem-status" class="hint" hidden></p>
+      </form>
+    </section>
+  </main>
+
+  <script src="/redeem.js" type="module"></script>
+</body>
+</html>

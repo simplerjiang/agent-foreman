@@ -74,6 +74,29 @@ class _AccessKeyBody(BaseModel):
     label: str = ""
 
 
+class _AdminAccountBody(BaseModel):
+    """Admin creates a user (DESIGN §8.2 — no self-signup). `password` is optional: given →
+    the account is active immediately (admin-set initial password); omitted → a one-time invite
+    code is issued instead and returned once."""
+
+    username: str
+    display_name: str = ""
+    role: str = "member"  # member | admin
+    password: str = ""
+
+
+class _AccountStatusBody(BaseModel):
+    enabled: bool
+
+
+class _RedeemBody(BaseModel):
+    """A new user redeems an admin's invite to set their own password (the only non-admin path
+    to a usable password — §8.2)."""
+
+    code: str
+    password: str
+
+
 class _DispatchBody(BaseModel):
     """A task dispatched from the phone (DESIGN §5.1). workspace/agent fall back to config."""
 
@@ -192,6 +215,14 @@ def create_app(
         account = auth.resolve_token(_bearer_token(request))
         if account is None:
             raise HTTPException(status_code=401, detail="unauthorized")
+        return account
+
+    def require_admin(request: Request):
+        """Like require_account, but also 403s a non-admin. Gates the admin console (build
+        users / invite — DESIGN §8.2): only an admin may create accounts (no self-signup)."""
+        account = require_account(request)
+        if account.role != "admin":
+            raise HTTPException(status_code=403, detail="admin only")
         return account
 
     @app.get("/health")
@@ -568,6 +599,68 @@ def create_app(
         if not res.get("ok"):
             raise HTTPException(status_code=404, detail="key not found")
         return {"ok": True}
+
+    # ── Admin console: build users + invite (no self-signup — DESIGN §8.2, T7.2) ──────────────
+    @app.get("/api/admin/accounts")
+    async def admin_list_accounts(request: Request) -> list[dict]:
+        """Every account (admin only; metadata, never password hashes — §8.4)."""
+        require_admin(request)
+        return auth.list_accounts()
+
+    @app.post("/api/admin/accounts")
+    async def admin_create_account(body: _AdminAccountBody, request: Request) -> dict:
+        """Build a user (admin only). With a password → active immediately. Without → an invite
+        code is minted and returned ONCE (the admin hands it to the user, who redeems it to set
+        their own password). 409 if the username is taken, 400 on bad input."""
+        require_admin(request)
+        if body.password:
+            res = auth.create_account(
+                body.username, body.password, role=body.role, display_name=body.display_name
+            )
+        else:
+            res = auth.invite_account(
+                body.username, role=body.role, display_name=body.display_name
+            )
+        if res.get("ok"):
+            return res
+        status = {"exists": 409, "bad_input": 400}.get(res.get("error", ""), 400)
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    @app.post("/api/admin/accounts/{account_id}/invite")
+    async def admin_reinvite(account_id: str, request: Request) -> dict:
+        """Re-issue a one-time invite for an existing account (re-invite / password reset). Admin
+        only. Returns {invite_code, expires_at} once; any prior unused code is burned."""
+        require_admin(request)
+        res = auth.reinvite_account(account_id)
+        if res.get("ok"):
+            return res
+        raise HTTPException(status_code=404, detail=res.get("error", "not found"))
+
+    @app.post("/api/admin/accounts/{account_id}/status")
+    async def admin_set_status(
+        account_id: str, body: _AccountStatusBody, request: Request
+    ) -> dict:
+        """Enable/disable an account (admin only). Refuses to disable your OWN account (so an
+        admin can't lock themselves out) — 400. 404 if the account is gone."""
+        admin = require_admin(request)
+        if not body.enabled and account_id == admin.id:
+            raise HTTPException(status_code=400, detail="cannot disable self")
+        res = auth.set_account_enabled(account_id, body.enabled)
+        if res.get("ok"):
+            return res
+        raise HTTPException(status_code=404, detail=res.get("error", "not found"))
+
+    @app.post("/api/auth/redeem")
+    async def auth_redeem(body: _RedeemBody) -> dict:
+        """Redeem an admin's invite (NO auth — this is how a new user bootstraps): set the
+        password, activate the account, and get logged straight in (§8.2). 400 on a bad/spent/
+        expired code or a too-short password; 503 if no auth manager (personal mode)."""
+        if auth is None:
+            raise HTTPException(status_code=503, detail="auth not configured")
+        res = auth.redeem_invite(body.code, body.password)
+        if res.get("ok"):
+            return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
+        raise HTTPException(status_code=400, detail=res.get("error", "decline"))
 
     @app.post("/hooks")
     async def receive_hooks(request: Request) -> dict:

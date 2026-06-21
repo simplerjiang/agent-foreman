@@ -93,3 +93,16 @@ button { padding: 0.6rem 1rem; border: none; border-radius: 8px; background: var
 #defn-form textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .defn-activate { flex-direction: row !important; align-items: center; gap: 0.4rem; }
 #defn-cancel { cursor: pointer; background: #1b2533; color: var(--fg); border: 1px solid #2a3647; }
+
+/* Admin console + invite redemption (T7.2, DESIGN §8.2) */
+#login-form, #create-form, #redeem-form { display: flex; flex-direction: column; gap: 0.6rem; }
+#login-form label, #create-form label, #redeem-form label {
+  display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8rem; color: var(--muted);
+}
+#create-form .defn-row { flex-direction: row; gap: 0.6rem; }
+#create-form .defn-row > label { flex: 1; }
+#login-form input, #create-form input, #create-form select, #redeem-form input {
+  padding: 0.5rem; border-radius: 8px; border: 1px solid #2a3647; background: #0e131b; color: var(--fg); font: inherit;
+}
+#account-list .card-actions button { cursor: pointer; }
+#invite-code { user-select: all; color: var(--accent); }

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>Foreman · 管理员控制台</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header>
+    <h1>🦺 Foreman <span class="pill" data-i18n="adminConsole">管理员控制台</span></h1>
+    <div class="header-right">
+      <span id="who" class="pill" hidden></span>
+      <button id="logout" class="pill" type="button" data-i18n="logout" hidden>登出</button>
+      <button id="lang-toggle" class="pill" type="button" title="language">EN</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Login: only an existing admin can reach the console (no self-signup — DESIGN §8.2). -->
+    <section id="login-pane" aria-label="Login">
+      <h2 data-i18n="adminLogin">Admin login</h2>
+      <form id="login-form">
+        <label><span data-i18n="username">Username</span>
+          <input id="login-user" autocomplete="username" />
+        </label>
+        <label><span data-i18n="password">Password</span>
+          <input id="login-pass" type="password" autocomplete="current-password" />
+        </label>
+        <button type="submit" data-i18n="signIn">Sign in</button>
+        <p id="login-status" class="hint" hidden></p>
+      </form>
+    </section>
+
+    <!-- Console: build users + invite. Shown only after an admin logs in. -->
+    <section id="console-pane" aria-label="Accounts" hidden>
+      <h2 data-i18n="buildUser">Build user</h2>
+      <form id="create-form">
+        <div class="defn-row">
+          <label><span data-i18n="username">Username</span>
+            <input id="new-user" autocomplete="off" placeholder="alice" />
+          </label>
+          <label><span data-i18n="displayName">Display name</span>
+            <input id="new-display" autocomplete="off" placeholder="Alice" />
+          </label>
+        </div>
+        <div class="defn-row">
+          <label><span data-i18n="role">Role</span>
+            <select id="new-role">
+              <option value="member" data-i18n="roleMember">Member</option>
+              <option value="admin" data-i18n="roleAdmin">Admin</option>
+            </select>
+          </label>
+          <label><span data-i18n="initialPassword">Initial password (optional)</span>
+            <input id="new-pass" type="text" autocomplete="off" placeholder="(留空 = 发邀请码)" />
+          </label>
+        </div>
+        <p class="hint" data-i18n="buildHint">留空密码 → 生成一次性邀请码（无自助注册）。</p>
+        <button type="submit" data-i18n="createUser">Create user</button>
+        <p id="create-status" class="hint" hidden></p>
+      </form>
+
+      <!-- The one-time invite code, shown ONCE after creation / re-invite. -->
+      <div id="invite-box" class="card" hidden>
+        <p><strong data-i18n="inviteCode">Invite code</strong> (<span data-i18n="shownOnce">shown once</span>)</p>
+        <pre id="invite-code" class="tabpanel"></pre>
+        <p class="hint" data-i18n="inviteShare">把这串发给用户，让 TA 在 /redeem.html 设置密码。</p>
+      </div>
+
+      <h2 data-i18n="accounts">Accounts</h2>
+      <!-- No data-i18n here: loadAccounts() owns this node's content (rows or the empty state),
+           so a language toggle (applyLang) must not overwrite rendered account rows. -->
+      <div id="account-list" class="empty">No accounts yet.</div>
+    </section>
+  </main>
+
+  <script src="/admin.js" type="module"></script>
+</body>
+</html>
