@@ -31,12 +31,15 @@ def test_schema_version_recorded(tmp_path):
 
 def test_init_is_idempotent(tmp_path):
     st = _store(tmp_path)
-    st.init()  # second call must not duplicate the schema_version row or raise
-    with st.session() as s:
-        from sqlmodel import select
+    from sqlmodel import select
 
-        rows = list(s.exec(select(ServerSchemaVersion)).all())
-    assert len(rows) == 1
+    with st.session() as s:
+        before = {r.version for r in s.exec(select(ServerSchemaVersion)).all()}
+    st.init()  # second call must not duplicate any schema_version ledger row or raise
+    with st.session() as s:
+        after = {r.version for r in s.exec(select(ServerSchemaVersion)).all()}
+    assert before == after == {1, 2}  # one ledger row per applied migration, no duplicates
+    assert st.schema_version() == SERVER_SCHEMA_VERSION
 
 
 # ── accounts ─────────────────────────────────────────────────────────────────────────────────

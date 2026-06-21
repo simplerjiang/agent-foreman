@@ -17,9 +17,11 @@ from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel, col, create_engine, select
 
 from foreman.shared.events import utc_now_iso
+from foreman.shared.migrations import current_version, run_migrations
 
 from . import models  # noqa: F401  (registers server tables on SQLModel.metadata)
-from .models import Account, AccessKey, AuthSession, ProcessRegistry, ServerSchemaVersion
+from .migrations import SERVER_MIGRATIONS
+from .models import Account, AccessKey, AuthSession, ProcessRegistry
 
 # v2 adds Account.password_hash + the auth_sessions table (T3.5 user login / access-key mgmt).
 SERVER_SCHEMA_VERSION = 2
@@ -32,15 +34,22 @@ class ServerStore:
         )
 
     def init(self) -> None:
-        """Create ONLY the server tables (scoped, so a shared metadata never pulls in client
-        tables) and record the current schema version (DESIGN §7.2 / §11.1)."""
+        """Bring the DB to the current schema and stamp the version ledger (DESIGN §7.2 / §11.1).
+
+        `create_all` is scoped to SERVER_TABLES (so a shared metadata never pulls in client
+        tables) and builds any *missing whole tables*; the migrator then applies in-place table
+        changes create_all can't (e.g. accounts.password_hash) and records each applied version
+        in `schema_version`. Both steps are idempotent — safe to re-run and crash-resumable.
+        """
         SQLModel.metadata.create_all(
             self.engine, tables=[m.__table__ for m in models.SERVER_TABLES]
         )
-        with self.session() as s:
-            if s.get(ServerSchemaVersion, SERVER_SCHEMA_VERSION) is None:
-                s.add(ServerSchemaVersion(version=SERVER_SCHEMA_VERSION, applied_at=utc_now_iso()))
-                s.commit()
+        run_migrations(self.engine, SERVER_MIGRATIONS)
+
+    def schema_version(self) -> int:
+        """The DB's effective schema version — the highest applied migration, or 0 if none."""
+        with self.engine.connect() as conn:
+            return current_version(conn)
 
     def session(self) -> DBSession:
         # expire_on_commit=False: returned ORM rows stay readable after the session closes.

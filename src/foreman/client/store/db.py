@@ -12,7 +12,9 @@ from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel, col, create_engine, select
 
 from foreman.shared.events import AgentEvent, utc_now_iso
+from foreman.shared.migrations import current_version, run_migrations
 
+from .migrations import CLIENT_MIGRATIONS, CLIENT_VERSION_TABLE
 from .models import (
     Action,
     Approval,
@@ -25,13 +27,10 @@ from .models import (
     Event,
     PushSubscription,
     Report,
-    SchemaVersion,
     Session,
     Task,
     WorkflowRun,
 )
-
-SCHEMA_VERSION = 1
 
 
 class Store:
@@ -41,31 +40,20 @@ class Store:
         )
 
     def init(self) -> None:
-        """Create tables if absent and record the current schema version (DESIGN §11.1)."""
-        SQLModel.metadata.create_all(self.engine)
-        self._ensure_columns()
-        with self.session() as s:
-            if s.get(SchemaVersion, SCHEMA_VERSION) is None:
-                s.add(SchemaVersion(version=SCHEMA_VERSION, applied_at=utc_now_iso()))
-                s.commit()
+        """Bring the DB to the current schema and stamp the version ledger (DESIGN §11.1).
 
-    def _ensure_columns(self) -> None:
-        """Add columns that postdate a table's creation (create_all only makes *missing* tables).
-
-        A tiny stop-gap until the real migrator (T5.5): SQLite can't add a column create_all won't,
-        so a dev DB whose `decisioncard` table predates `diff_stat` would error on SELECT. Idempotent.
+        `create_all` builds any *missing whole tables* (fresh install, or a release that adds a
+        brand-new table); then the migrator applies the in-place table changes create_all can't
+        (ADD COLUMN, backfills) and records each applied version in `schema_version`. Both steps
+        are idempotent, so this is safe to call repeatedly and resumes cleanly after a crash.
         """
-        from sqlalchemy import text
+        SQLModel.metadata.create_all(self.engine)
+        run_migrations(self.engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
 
-        wanted = {"decisioncard": [("diff_stat", "TEXT NOT NULL DEFAULT ''")]}
-        with self.engine.begin() as conn:
-            for table, cols in wanted.items():
-                existing = {
-                    row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))
-                }
-                for name, decl in cols:
-                    if name not in existing:
-                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {decl}"))
+    def schema_version(self) -> int:
+        """The DB's effective schema version — the highest applied migration, or 0 if none."""
+        with self.engine.connect() as conn:
+            return current_version(conn, CLIENT_VERSION_TABLE)
 
     def session(self) -> DBSession:
         # expire_on_commit=False: returned ORM rows stay readable after the session closes.
