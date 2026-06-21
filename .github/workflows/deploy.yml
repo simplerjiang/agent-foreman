@@ -14,14 +14,16 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: deploy-server
-  cancel-in-progress: false
-
 jobs:
   # ── gate: tests + static checks + a server smoke test ──────────────────────────────────────────
   test:
     runs-on: ubuntu-latest
+    # Per-ref group so a PR's checks never contend with a `main` deploy; a newer push to the same
+    # ref supersedes the stale test run. (The previous shared 'deploy-server' group let main pushes
+    # starve PR checks.)
+    concurrency:
+      group: test-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,6 +59,10 @@ jobs:
     # Don't deploy on pull_request events — only on a real push to main (or manual dispatch).
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # Serialize deploys so two never race; queue (don't cancel) a pending one.
+    concurrency:
+      group: deploy-server
+      cancel-in-progress: false
     steps:
       - name: Deploy over SSH
         env:
