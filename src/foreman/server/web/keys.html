@@ -61,6 +61,12 @@
       <!-- No data-i18n here: loadKeys() owns this node's content, so a language toggle must not
            overwrite rendered key rows. -->
       <div id="key-list" class="empty">No keys yet.</div>
+
+      <!-- My machines: the account's OWN local processes (online/offline). Multi-tenant
+           isolation (DESIGN §8.4, T7.4) — you only ever see your own. -->
+      <h2 data-i18n="yourDevices">Your machines</h2>
+      <p class="hint" data-i18n="devicesHint">用 access key 连上来的本地进程；只显示你自己的。</p>
+      <div id="proc-list" class="empty">No machines yet.</div>
     </section>
   </main>
 

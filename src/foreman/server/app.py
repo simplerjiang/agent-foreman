@@ -610,6 +610,13 @@ def create_app(
             raise HTTPException(status_code=404, detail="key not found")
         return {"ok": True}
 
+    @app.get("/api/processes")
+    async def list_processes(request: Request) -> list[dict]:
+        """The caller's OWN machines (online + offline), metadata only. Multi-tenant isolation
+        (§8.4, T7.4): scoped to the logged-in account — another tenant's processes never show."""
+        account = require_account(request)
+        return auth.list_processes(account.id)
+
     # ── Admin console: build users + invite (no self-signup — DESIGN §8.2, T7.2) ──────────────
     @app.get("/api/admin/accounts")
     async def admin_list_accounts(request: Request) -> list[dict]:
@@ -659,6 +666,14 @@ def create_app(
         if res.get("ok"):
             return res
         raise HTTPException(status_code=404, detail=res.get("error", "not found"))
+
+    @app.get("/api/admin/health")
+    async def admin_health(request: Request) -> dict:
+        """System-wide health for the admin (admin only). AGGREGATE counts only — account
+        totals by status + online-process count — and NEVER any tenant's content or secrets
+        (§8.4: "管理员看系统健康，看不到他人内容")."""
+        require_admin(request)
+        return auth.system_health()
 
     @app.post("/api/auth/redeem")
     async def auth_redeem(body: _RedeemBody) -> dict:

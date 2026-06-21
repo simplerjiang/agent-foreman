@@ -17,6 +17,8 @@ const I18N = {
     active: '活跃', revoked: '已吊销', expired: '已过期',
     lastSeen: '上次在线', expires: '有效期至', never: '永久', revokeConfirm: '吊销这张密钥？该机器将立即断开。',
     badLogin: '用户名或密码错误。', minted: '已生成密钥', error: '出错',
+    yourDevices: '你的设备', devicesHint: '用 access key 连上来的本地进程；只显示你自己的。',
+    noDevices: '还没有设备。', online: '在线', offline: '离线',
   },
   en: {
     accessKeys: 'Access keys', logout: 'Log out', username: 'Username', password: 'Password',
@@ -30,6 +32,9 @@ const I18N = {
     lastSeen: 'last seen', expires: 'expires', never: 'never', revokeConfirm:
       'Revoke this key? That machine disconnects immediately.',
     badLogin: 'Wrong username or password.', minted: 'Key generated', error: 'error',
+    yourDevices: 'Your machines', devicesHint:
+      'Local processes connected with an access key; you only see your own.',
+    noDevices: 'No machines yet.', online: 'online', offline: 'offline',
   },
 };
 
@@ -80,6 +85,7 @@ async function enterKeys() {
   $('login-pane').hidden = true;
   $('keys-pane').hidden = false;
   await loadKeys();
+  await loadProcesses();
   return true;
 }
 
@@ -150,6 +156,50 @@ function renderKey(k) {
   return row;
 }
 
+async function loadProcesses() {
+  // The account's OWN machines only — the endpoint is scoped to the logged-in account
+  // (multi-tenant isolation, DESIGN §8.4 / T7.4).
+  const list = $('proc-list');
+  const r = await fetch('/api/processes', { headers: authHeaders() });
+  list.textContent = '';
+  if (!r.ok) {
+    list.className = 'empty';
+    list.textContent = t('error');
+    return;
+  }
+  const procs = await r.json();
+  if (!procs.length) {
+    list.className = 'empty';
+    list.textContent = t('noDevices');
+    return;
+  }
+  list.className = '';
+  for (const p of procs) list.appendChild(renderProcess(p));
+}
+
+function renderProcess(p) {
+  const row = document.createElement('article');
+  row.className = 'card';
+
+  const head = document.createElement('p');
+  const name = document.createElement('strong');
+  name.textContent = p.name || '(no name)';            // textContent → XSS-safe
+  head.appendChild(name);
+  const badge = document.createElement('span');
+  badge.className = 'pill ' + (p.online ? 'ok' : 'bad');
+  badge.textContent = ` ${t(p.online ? 'online' : 'offline')}`;
+  head.appendChild(badge);
+  row.appendChild(head);
+
+  if (p.last_heartbeat) {
+    const meta = document.createElement('p');
+    meta.className = 'card-diffstat';
+    meta.textContent = `${t('lastSeen')}: ${p.last_heartbeat.slice(0, 19).replace('T', ' ')}`;
+    row.appendChild(meta);
+  }
+  return row;
+}
+
 function showKey(plain) {
   $('key-plain').textContent = plain;
   $('key-box').hidden = false;
@@ -192,7 +242,10 @@ async function init() {
     lang = lang === 'zh' ? 'en' : 'zh';
     localStorage.setItem('foreman.lang', lang);
     applyLang();
-    if (!$('keys-pane').hidden) loadKeys();
+    if (!$('keys-pane').hidden) {
+      loadKeys();
+      loadProcesses();
+    }
   });
   $('logout').addEventListener('click', logout);
   $('login-form').addEventListener('submit', async (ev) => {

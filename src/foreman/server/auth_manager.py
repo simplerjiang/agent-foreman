@@ -335,3 +335,50 @@ class AuthManager:
             return {"error": "not_found"}
         self.store.revoke_access_key(key_id)
         return {"ok": True}
+
+    # ── machines: a user sees only their OWN online/offline processes (DESIGN §8.4, T7.4) ─────
+    def list_processes(self, account_id: str) -> list[dict]:
+        """The caller's registered machines (online + offline) — metadata only, and scoped to
+        the account (multi-tenant isolation, §8.4: "用户只看自己的"). The store query is bound to
+        account_id, so another tenant's machines can never appear; even so we read each row's
+        account_id and skip any that doesn't match, as defense-in-depth. The process registry
+        holds no secrets (no key hashes/plaintext), so this is safe to surface to the UI."""
+        out: list[dict] = []
+        for p in self.store.get_processes(account_id):
+            if p.account_id != account_id:
+                continue  # belt-and-suspenders: never leak across tenants
+            out.append(
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "online": p.online,
+                    "last_heartbeat": p.last_heartbeat,
+                    "access_key_id": p.access_key_id,
+                    "created_at": p.created_at,
+                }
+            )
+        return out
+
+    # ── admin: system health = aggregate counts only, NEVER any tenant's content (§8.4) ───────
+    def system_health(self) -> dict:
+        """System-wide health for the admin console (§8.4: "管理员看系统健康，看不到他人内容").
+
+        Returns AGGREGATE counts only — number of accounts (by status) and how many local
+        processes are currently online — and deliberately NO per-account breakdown and NO
+        content/secrets (passwords, key hashes, tokens, machine names). The server has no 秘方
+        /diff/原始返回 to leak in the first place (§8.3); this method makes the "counts, not
+        content" boundary explicit so an admin oversees fleet health without seeing into any
+        tenant."""
+        accounts = self.store.get_accounts()
+        by_status: dict[str, int] = {}
+        for a in accounts:
+            by_status[a.status] = by_status.get(a.status, 0) + 1
+        return {
+            "accounts": {
+                "total": len(accounts),
+                "active": by_status.get("active", 0),
+                "disabled": by_status.get("disabled", 0),
+                "invited": by_status.get("invited", 0),
+            },
+            "processes": {"online": len(self.store.get_online_processes())},
+        }
