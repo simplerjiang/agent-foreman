@@ -48,10 +48,11 @@ _IRREVERSIBLE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         # the flag must be a space-led token so a filename like `report-final.txt` isn't a false hit.
         r"\brm\b[^|&;\n]*\s-\S*[rf]",
         r"\brm\b[^|&;\n]*\s--(?:recursive|force)\b",             # rm --recursive / --force
-        r"\bremove-item\b[^|&;\n]*-(?:recurse|force|r|fo|f)\b",  # PowerShell rm (Remove-Item)
-        r"\bri\b[^|&;\n]*\s-\S*(?:recurse|force|r|fo|f)\b",      # Remove-Item alias `ri`
-        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s/[sq]\b",         # cmd recursive/quiet delete
-        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s-(?:recurse|force)\b",  # PowerShell-style flags
+        # PowerShell Remove-Item / its `ri` alias with a -Recurse/-Force flag (incl. abbreviations
+        # like -rec / -for that PowerShell accepts as unambiguous prefixes).
+        r"\b(?:remove-item|ri)\b[^|&;\n]*\s-(?:rec\w*|for\w*|r|f|fo)\b",
+        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s/[sq]\b",        # cmd recursive/quiet delete
+        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s-(?:rec\w*|for\w*)\b",  # PowerShell-style flags
         r"\bgit\b[^|&;\n]*\bpush\b",                             # git ... push (incl. -C <path>)
         r"\bgit\b[^|&;\n]*\breset\b[^|&;\n]*--hard\b",           # discards committed/working state
         r"\bgit\b[^|&;\n]*\bclean\b[^|&;\n]*(?:\s-\S*f|--force)",  # deletes untracked files
@@ -61,7 +62,9 @@ _IRREVERSIBLE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\b(?:mkfs|diskpart|format-volume|clear-disk)\b",      # filesystem/disk destroyers
         r"\binvoke-expression\b",                               # iex: pipe-fetched code → execute
         r"\biex\b",
-        r"-encodedcommand\b",                                   # powershell -EncodedCommand (obfusc.)
+        # powershell -EncodedCommand (and its accepted abbreviations -enc … -encodedcommand),
+        # without snagging the benign -Encoding parameter.
+        r"\s-enc(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?)?)?)?)?)?(?=\s|$)",
     )
 )
 
@@ -69,10 +72,13 @@ _IRREVERSIBLE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 def _matches_irreversible(low_text: str) -> bool:
     """True if the (already-lowercased) action text trips a built-in irreversible pattern.
 
-    Runs of spaces/tabs are collapsed (so `rm  -rf` can't slip past a spacing-sensitive match) while
-    newlines are KEPT as real segment separators — the deterministic red line stays robust to
-    reformatting yet still bounds each pattern to one command segment (§6.7①)."""
-    norm = re.sub(r"[ \t]+", " ", low_text)
+    Normalization, in order: (1) splice line-continuations (a backslash or PowerShell backtick right
+    before a newline) so a command split across lines is screened as one (a common bypass); (2)
+    collapse runs of spaces/tabs so 'rm  -rf' can't slip past a spacing-sensitive match; (3) KEEP
+    remaining newlines as real segment separators, so the per-segment patterns still bound each match
+    to one command. The red line stays robust to reformatting yet segment-aware (DESIGN §6.7①)."""
+    spliced = re.sub(r"[`\\][ \t]*\n", " ", low_text)   # join backslash/backtick line continuations
+    norm = re.sub(r"[ \t]+", " ", spliced)
     return any(p.search(norm) for p in _IRREVERSIBLE_PATTERNS)
 
 

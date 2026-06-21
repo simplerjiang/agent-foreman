@@ -39,7 +39,34 @@ class SlidingWindowLimiter:
             del self._hits[k]
 
     def allow(self, key: str) -> bool:
-        """Record an attempt for ``key``; return False if it exceeds the window budget."""
+        """Record an attempt for ``key``; return False if it exceeds the window budget.
+
+        Convenience for the common "check-and-count in one shot" case. For auth, prefer the
+        ``over_limit`` (peek) + ``record`` (count only on failure) pair so a correct credential is
+        never pre-blocked and successes don't burn the budget."""
+        if self.over_limit(key):
+            return False
+        return self.record(key)  # False if a key-flood made the record fail closed
+
+    def over_limit(self, key: str) -> bool:
+        """True if ``key`` is already at/over budget in the current window. Peeks (evicts aged-out
+        entries lazily) but records nothing — so checking can't itself consume the budget."""
+        dq = self._hits.get(key)
+        if dq is None:
+            return False
+        cutoff = self._now() - self.window
+        while dq and dq[0] <= cutoff:
+            dq.popleft()
+        if not dq:
+            self._hits.pop(key, None)  # drained → drop the key
+            return False
+        return len(dq) >= self.max_events
+
+    def record(self, key: str) -> bool:
+        """Count one attempt (e.g. a failure) for ``key``, bounding the key map against a flood.
+
+        Returns True if it was recorded; False if a distinct-key flood is at capacity even after a
+        sweep, in which case the record is dropped rather than growing memory without bound."""
         t = self._now()
         cutoff = t - self.window
         dq = self._hits.get(key)
@@ -47,14 +74,12 @@ class SlidingWindowLimiter:
             if len(self._hits) >= self.max_keys:
                 self._sweep(cutoff)  # reclaim drained buckets before admitting a new key
                 if len(self._hits) >= self.max_keys:
-                    return False  # still flooded → fail closed rather than grow unbounded
+                    return False  # still flooded → drop this record rather than grow unbounded
             dq = deque()
             self._hits[key] = dq
         else:
             while dq and dq[0] <= cutoff:
                 dq.popleft()
-        if len(dq) >= self.max_events:
-            return False
         dq.append(t)
         return True
 

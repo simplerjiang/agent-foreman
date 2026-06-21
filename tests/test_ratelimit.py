@@ -34,6 +34,21 @@ def test_reset_clears_history():
     assert rl.allow("a") is True
 
 
+def test_over_limit_peeks_and_record_counts_separately():
+    """The auth path uses over_limit (peek) + record (count only failures) so a check never consumes
+    budget and a success doesn't accrue toward the limit (issue #10 hardening)."""
+    t = {"v": 0.0}
+    rl = SlidingWindowLimiter(2, 60, now=lambda: t["v"])
+    assert rl.over_limit("ip") is False          # nothing recorded yet
+    rl.record("ip")
+    assert rl.over_limit("ip") is False          # 1 < 2
+    rl.record("ip")
+    assert rl.over_limit("ip") is True           # 2 >= 2 → over budget
+    assert rl.over_limit("ip") is True           # peeking again neither clears nor advances it
+    rl.reset("ip")
+    assert rl.over_limit("ip") is False          # reset (success) clears it
+
+
 def test_key_map_is_bounded_against_a_flood():
     """A flood of distinct keys (e.g. spoofed IPs) can't grow the map without bound: at capacity it
     sweeps drained buckets, and if still full it fails closed instead of allocating more (issue #10)."""

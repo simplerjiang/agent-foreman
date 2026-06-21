@@ -253,10 +253,15 @@ def create_app(
         ip = _client_ip(request, trust_proxy=cfg.server.trust_proxy_headers)
         return f"{scope}:{ip}"
 
-    def _throttle_auth(request: Request, scope: str) -> None:
-        """429 if this client IP has exceeded the auth-attempt budget for ``scope`` (login/redeem)."""
-        if not auth_limiter.allow(_auth_bucket(request, scope)):
+    def _guard_auth(request: Request, scope: str) -> str:
+        """429 if this client IP is over the recent-FAILURE budget for ``scope`` (login/redeem);
+        otherwise return the bucket key. Peeks only — the check itself never counts, and only
+        failures are recorded (by the caller), so a correct credential is never pre-blocked unless
+        the IP already failed too many times, and personal-mode 503s never accrue toward the limit."""
+        bucket = _auth_bucket(request, scope)
+        if auth_limiter.over_limit(bucket):
             raise HTTPException(status_code=429, detail="too many attempts")
+        return bucket
 
     def require_account(request: Request):
         """Resolve the Authorization bearer token to an active account, or raise 401/503.
@@ -609,15 +614,16 @@ def create_app(
         """PWA user login → bearer token (DESIGN §8.2). 401 on bad credentials (generic, no
         leak of which field was wrong); 429 when a client IP exceeds the attempt budget (brute-force
         guard, §8.2); 503 if no auth manager (personal mode)."""
-        _throttle_auth(request, "login")
+        bucket = _guard_auth(request, "login")
         if auth is None:
             raise HTTPException(status_code=503, detail="auth not configured")
         res = auth.login(body.username, body.password)
         if not res.get("ok"):
+            auth_limiter.record(bucket)  # count only the failure
             raise HTTPException(status_code=401, detail="invalid credentials")
-        # A successful login clears this IP's bucket, so a legitimate user re-logging in (or sharing
-        # a NAT/egress IP) isn't throttled by their own earlier attempts — only failures accumulate.
-        auth_limiter.reset(_auth_bucket(request, "login"))
+        # A successful login clears this IP's bucket, so a legitimate user (incl. a shared NAT/egress
+        # IP) isn't throttled by their own earlier failures — only consecutive failures accumulate.
+        auth_limiter.reset(bucket)
         return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
 
     @app.post("/api/auth/logout")
@@ -756,12 +762,14 @@ def create_app(
         password, activate the account, and get logged straight in (§8.2). 400 on a bad/spent/
         expired code or a too-short password; 429 when a client IP exceeds the attempt budget
         (brute-force guard, §8.2); 503 if no auth manager (personal mode)."""
-        _throttle_auth(request, "redeem")
+        bucket = _guard_auth(request, "redeem")
         if auth is None:
             raise HTTPException(status_code=503, detail="auth not configured")
         res = auth.redeem_invite(body.code, body.password)
         if res.get("ok"):
+            auth_limiter.reset(bucket)  # a good redemption clears this IP's bucket
             return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
+        auth_limiter.record(bucket)  # count only the failed redemption
         raise HTTPException(status_code=400, detail=res.get("error", "decline"))
 
     @app.post("/hooks")

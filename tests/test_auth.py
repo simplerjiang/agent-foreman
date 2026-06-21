@@ -281,6 +281,20 @@ def test_successful_login_resets_the_bucket(tmp_path):
     assert client.post("/api/auth/login", json={"username": "alice", "password": "x"}).status_code == 401
 
 
+def test_personal_mode_login_stays_503_under_load(tmp_path):
+    """With no auth manager, repeated login posts keep returning 503 — never flip to 429. Failures
+    are recorded only AFTER the credential check, which personal mode 503s before reaching, so the
+    limiter never accrues (issue #10 hardening: no 503→429 inconsistency)."""
+    from foreman.server.app import _AUTH_RL_MAX_ATTEMPTS
+
+    client, _ = _client(tmp_path, with_auth=False)
+    codes = {
+        client.post("/api/auth/login", json={"username": "a", "password": "b"}).status_code
+        for _ in range(_AUTH_RL_MAX_ATTEMPTS + 5)
+    }
+    assert codes == {503}
+
+
 def test_endpoints_503_without_auth_manager(tmp_path):
     client, _ = _client(tmp_path, with_auth=False)
     assert client.post("/api/auth/login", json={"username": "a", "password": "b"}).status_code == 503
