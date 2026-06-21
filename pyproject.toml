@@ -52,6 +52,13 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.9"]
 [project.scripts]
 foreman = "foreman.__main__:app"
 
+# Third-party notification channels auto-load from this entry-point group on startup (DESIGN §777,
+# T6.3). A plugin package `foreman-plugin-xxx` registers a factory `(config) -> Notifier | None`:
+#   [project.entry-points."foreman.notifiers"]
+#   slack = "foreman_plugin_slack:from_config"
+# Built-in channels (feishu / telegram / bark / email) are loaded directly, not via this group, so
+# core notifications work without a (re)install — see foreman.shared.notify.BUILTIN_NOTIFIER_FACTORIES.
+
 [project.urls]
 Homepage = "https://github.com/simplerjiang/agent-foreman"
 Design = "https://github.com/simplerjiang/agent-foreman/blob/main/docs/DESIGN.zh-CN.md"

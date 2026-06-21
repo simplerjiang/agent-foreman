@@ -24,6 +24,12 @@ class Secrets(BaseSettings):
     # Optional at-rest encryption key for definition bodies (DESIGN §765, T6.2). A urlsafe-base64
     # Fernet key (scripts/gen_definition_key.py). Empty (the default) → bodies stay plaintext.
     definition_key: str = ""
+    # Notification-channel secrets (DESIGN §776, T6.3) — bot tokens / webhook URLs / SMTP password.
+    # Empty = that channel stays disabled. Never put these in config.yaml or git.
+    feishu_webhook: str = ""
+    telegram_bot_token: str = ""
+    bark_key: str = ""
+    smtp_password: str = ""
 
 
 class ServerCfg(BaseModel):
@@ -98,6 +104,41 @@ class AutonomyCfg(BaseModel):
     level: int = 1
 
 
+# Notification channels (DESIGN §776, T6.3). Structure (enabled flags / addresses / hosts) lives
+# here; the secrets (webhook URL / bot token / device key / SMTP password) live in .env / Secrets.
+# Each channel defaults to disabled — opt in per channel.
+class FeishuCfg(BaseModel):
+    enabled: bool = False  # webhook URL itself is the secret (Secrets.feishu_webhook)
+
+
+class TelegramCfg(BaseModel):
+    enabled: bool = False
+    chat_id: str = ""
+    api_base: str = "https://api.telegram.org"
+
+
+class BarkCfg(BaseModel):
+    enabled: bool = False
+    server: str = "https://api.day.app"
+
+
+class EmailCfg(BaseModel):
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    use_tls: bool = True
+    username: str = ""
+    from_addr: str = ""
+    to_addrs: list[str] = Field(default_factory=list)
+
+
+class NotifyCfg(BaseModel):
+    feishu: FeishuCfg = FeishuCfg()
+    telegram: TelegramCfg = TelegramCfg()
+    bark: BarkCfg = BarkCfg()
+    email: EmailCfg = EmailCfg()
+
+
 class Config(BaseModel):
     server: ServerCfg = ServerCfg()
     llm: LLMCfg = LLMCfg()
@@ -110,6 +151,7 @@ class Config(BaseModel):
     push: PushCfg = PushCfg()
     ui: UICfg = UICfg()
     autonomy: AutonomyCfg = AutonomyCfg()
+    notify: NotifyCfg = NotifyCfg()
 
     # Populated from .env, not from config.yaml.
     secrets: Secrets = Field(default_factory=Secrets)
