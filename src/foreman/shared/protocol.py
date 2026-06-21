@@ -27,6 +27,8 @@ KIND_EVENT = "event"            # local process -> relay: an AgentEvent for the 
 KIND_COMMAND = "command"        # relay -> local process: a request from the PWA
 KIND_CARD = "card"              # decision card push
 KIND_ACK = "ack"                # generic acknowledgement
+KIND_CACHE_SYNC = "cache_sync"  # local process -> relay: display-cache snapshot (sessions/cards)
+                                # so the PWA can read a read-only copy while the PC is offline (§8.5 ③)
 
 
 @dataclass

@@ -189,6 +189,7 @@ def create_app(
     dispatcher: object | None = None,
     briefings: object | None = None,
     definitions: object | None = None,
+    cache: object | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
@@ -208,6 +209,7 @@ def create_app(
     app.state.dispatcher = dispatcher
     app.state.briefings = briefings
     app.state.definitions = definitions
+    app.state.cache = cache
 
     def require_account(request: Request):
         """Resolve the Authorization bearer token to an active account, or raise 401/503.
@@ -617,6 +619,27 @@ def create_app(
         account = require_account(request)
         return auth.list_processes(account.id)
 
+    # ── Display cache: the PWA reads a read-only copy while the PC is offline (§8.5 ③, T7.5) ───
+    # Served from the relay box's display cache (cache_sessions / cache_cards), which the local
+    # process pushes up the link. Scoped to the logged-in account (§8.4) — another tenant's cache
+    # never shows. Personal mode injects no cache → 503. (When the PC is online the PWA is routed
+    # live to it; that live proxy is the deferred team rollout — see TASKS T7.1.)
+    @app.get("/api/cache/sessions")
+    async def cache_sessions(request: Request) -> list[dict]:
+        """The caller's cached session summaries (offline read-only copy). §8.5 ③."""
+        account = require_account(request)
+        if cache is None or not hasattr(cache, "list_sessions"):
+            raise HTTPException(status_code=503, detail="no display cache")
+        return cache.list_sessions(account.id)
+
+    @app.get("/api/cache/cards")
+    async def cache_cards(request: Request, session_id: str | None = None) -> list[dict]:
+        """The caller's cached decision cards (offline read-only copy), optionally per session."""
+        account = require_account(request)
+        if cache is None or not hasattr(cache, "list_cards"):
+            raise HTTPException(status_code=503, detail="no display cache")
+        return cache.list_cards(account.id, session_id)
+
     # ── Admin console: build users + invite (no self-signup — DESIGN §8.2, T7.2) ──────────────
     @app.get("/api/admin/accounts")
     async def admin_list_accounts(request: Request) -> list[dict]:
@@ -767,25 +790,29 @@ def build_serve_app(cfg: Config) -> FastAPI:
     the deployed server keeps behaving exactly as before unless team mode is opted into.
 
     Team mode (`server.mode == "team"`): build the server store (accounts / access_keys /
-    process_registry), an AuthManager (user login + key mgmt) and a Relay, and inject them so
-    local processes dial in at /relay and the PWA routes BY ACCOUNT to the right machine. The
-    team server holds NO 秘方 / diffs / per-user LLM keys (§8.3) — those stay on each local
-    process; `store` is deliberately left None here (the display cache that backs the PWA's
-    session/card endpoints on a relay box is T7.5), so those endpoints 503 until then.
+    process_registry), an AuthManager (user login + key mgmt), a Relay, and a DisplayCache, and
+    inject them so local processes dial in at /relay and the PWA routes BY ACCOUNT to the right
+    machine — or, while that machine is offline, reads the relay's display cache (T7.5, §8.5 ③).
+    The team server holds NO 秘方 / diffs / per-user LLM keys (§8.3) — those stay on each local
+    process; `store` stays None (the relay box has no client-style local store), so the personal
+    session/event endpoints 503 while the account-scoped /api/cache/* endpoints serve the cache.
     """
     if (cfg.server.mode or "personal").strip().lower() != "team":
         return create_app(cfg)
 
     # Lazy imports: keep create_app's import surface unchanged for personal mode / tests.
     from .auth_manager import AuthManager
+    from .display_cache import DisplayCacheService
     from .relay import Relay
     from .store import ServerStore
 
     server_store = ServerStore(cfg.server.db_path)
     server_store.init()
     bus = EventBus()
-    relay = Relay(server_store, bus)
+    cache = DisplayCacheService(server_store)
+    relay = Relay(server_store, bus, cache=cache)
     auth = AuthManager(server_store)
     # store stays None: the team relay box has no client-style local store (秘方/events live on
-    # each user's machine); the display cache is T7.5. relay + auth carry the ServerStore.
-    return create_app(cfg, bus=bus, relay=relay, auth=auth)
+    # each user's machine). relay + auth + cache carry the ServerStore. The PWA reads the display
+    # cache (§8.5 ③) while a machine is offline; the live proxy-when-online is the deferred rollout.
+    return create_app(cfg, bus=bus, relay=relay, auth=auth, cache=cache)

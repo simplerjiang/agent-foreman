@@ -7,8 +7,10 @@ WHO (accounts), WHICH MACHINE may connect (access_keys, hash-only), and WHAT IS 
 It deliberately holds NO 秘方 (definitions), no full diffs/raw output, and NO per-user LLM
 keys — those live in each user's local .env (§8.3/§8.4).
 
-invites / cache_sessions / cache_cards are placeholder tables for later phases (admin
-invites T7.2, display caches T7.5); only their tables are created here, no helpers yet.
+cache_sessions / cache_cards are the display cache (T7.5, DESIGN §8.5 ③): a read-only copy
+of each account's session summaries + decision cards, pushed up by the local process so the
+PWA can still view them while the PC is offline. They hold ONLY display summaries — never full
+diffs / raw output / 秘方 (§8.3) — and every read/write is scoped by account_id (§8.4).
 """
 
 from __future__ import annotations
@@ -21,7 +23,15 @@ from foreman.shared.migrations import current_version, run_migrations
 
 from . import models  # noqa: F401  (registers server tables on SQLModel.metadata)
 from .migrations import SERVER_MIGRATIONS
-from .models import Account, AccessKey, AuthSession, Invite, ProcessRegistry
+from .models import (
+    Account,
+    AccessKey,
+    AuthSession,
+    CacheCard,
+    CacheSession,
+    Invite,
+    ProcessRegistry,
+)
 
 # v2 adds Account.password_hash + the auth_sessions table (T3.5 user login / access-key mgmt).
 SERVER_SCHEMA_VERSION = 2
@@ -279,3 +289,70 @@ class ServerStore:
             if account_id is not None:
                 stmt = stmt.where(ProcessRegistry.account_id == account_id)
             return list(s.exec(stmt).all())
+
+    # ── display cache (read-only copy for the PWA while the PC is offline — §8.5 ③) ───────────
+    def upsert_cache_session(self, row: CacheSession) -> CacheSession:
+        """Insert/refresh one cached session summary, keyed by (account_id, session_id) so a
+        re-sync overwrites the prior copy instead of piling up duplicates. Stamps updated_at if
+        unset. Holds only a display summary — no diffs/raw output (§8.3)."""
+        if not row.updated_at:
+            row.updated_at = utc_now_iso()
+        with self.session() as s:
+            existing = s.exec(
+                select(CacheSession)
+                .where(CacheSession.account_id == row.account_id)
+                .where(CacheSession.session_id == row.session_id)
+            ).first()
+            if existing is None:
+                s.add(row)
+                s.commit()
+                return row
+            existing.summary_json = row.summary_json
+            existing.updated_at = row.updated_at
+            s.add(existing)
+            s.commit()
+            return existing
+
+    def get_cache_sessions(self, account_id: str) -> list[CacheSession]:
+        """An account's cached session summaries, newest first. Scoped to the account (§8.4)."""
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(CacheSession)
+                    .where(CacheSession.account_id == account_id)
+                    .order_by(col(CacheSession.updated_at).desc())
+                ).all()
+            )
+
+    def upsert_cache_card(self, row: CacheCard) -> CacheCard:
+        """Insert/refresh one cached decision card, keyed by (account_id, card_id). Stamps
+        updated_at if unset. Holds only the card's display payload (§8.3)."""
+        if not row.updated_at:
+            row.updated_at = utc_now_iso()
+        with self.session() as s:
+            existing = s.exec(
+                select(CacheCard)
+                .where(CacheCard.account_id == row.account_id)
+                .where(CacheCard.card_id == row.card_id)
+            ).first()
+            if existing is None:
+                s.add(row)
+                s.commit()
+                return row
+            existing.payload_json = row.payload_json
+            existing.status = row.status
+            existing.updated_at = row.updated_at
+            s.add(existing)
+            s.commit()
+            return existing
+
+    def get_cache_cards(self, account_id: str) -> list[CacheCard]:
+        """An account's cached decision cards, newest first. Scoped to the account (§8.4)."""
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(CacheCard)
+                    .where(CacheCard.account_id == account_id)
+                    .order_by(col(CacheCard.updated_at).desc())
+                ).all()
+            )

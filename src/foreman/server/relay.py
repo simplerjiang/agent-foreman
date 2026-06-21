@@ -22,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from foreman.shared.events import EventBus, make_event, utc_now_iso
 from foreman.shared.protocol import (
+    KIND_CACHE_SYNC,
     KIND_HEARTBEAT,
     KIND_HELLO_ACK,
     Envelope,
@@ -64,10 +65,16 @@ class Relay:
     react. `now` is injectable for deterministic tests.
     """
 
-    def __init__(self, store, bus: EventBus | None = None, *, now=utc_now_iso) -> None:
+    def __init__(
+        self, store, bus: EventBus | None = None, *, now=utc_now_iso, cache=None
+    ) -> None:
         self.store = store
         self.bus = bus
         self._now = now
+        # Optional DisplayCacheService: a local process pushes session/card snapshots up the link
+        # (cache_sync frames) so the PWA can read them while the PC is offline (§8.5 ③). None = the
+        # relay just doesn't cache (frames are dropped), keeping routing-only deployments simple.
+        self.cache = cache
         # account_id -> live connections (a person may run several machines — §8.2).
         self.conns: dict[str, list[RelayClient]] = {}
 
@@ -185,7 +192,7 @@ class Relay:
             await self._publish_health(client, online=False)
 
     async def _on_frame(self, client: RelayClient, msg: object) -> None:
-        """Handle one inbound frame from a local process. Today: heartbeat keep-alive.
+        """Handle one inbound frame from a local process: heartbeat keep-alive + display-cache sync.
 
         Event/command/card forwarding to the PWA is layered on in P4 (decision loop) — the
         relay already routes frames either way (`route`), only the higher-level wiring is later.
@@ -198,6 +205,15 @@ class Relay:
             # peer's reply to OUR ping — replying again would bounce forever (§8.5 ③ ping/pong).
             if not env.payload.get("pong"):
                 await client.send(Envelope(kind=KIND_HEARTBEAT, payload={"pong": True}))
+        elif env.kind == KIND_CACHE_SYNC:
+            # The process pushed a display snapshot so the PWA can read it while the PC is offline
+            # (§8.5 ③). Scope it to the AUTHENTICATED account (from the key, never the frame — §8.4).
+            if self.cache is not None:
+                self.cache.sync(
+                    client.account_id,
+                    env.payload.get("sessions"),
+                    env.payload.get("cards"),
+                )
 
     async def _publish_health(self, client: RelayClient, *, online: bool) -> None:
         if self.bus is None:

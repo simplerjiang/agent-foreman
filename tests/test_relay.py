@@ -525,10 +525,14 @@ def test_build_serve_app_team_mode_wires_relay_and_auth(tmp_path):
 
     assert app.state.relay is not None  # relay 总机 wired (DESIGN §8.5)
     assert app.state.auth is not None  # user login + key mgmt wired (§8.2)
-    assert app.state.store is None  # display cache (T7.5) not wired yet → session endpoints 503
+    assert app.state.cache is not None  # display cache wired (T7.5, §8.5 ③)
+    assert app.state.relay.cache is app.state.cache  # cache_sync frames feed the same cache
+    assert app.state.store is None  # no client-style local store on the relay box
     c = TestClient(app)
     assert c.get("/health").status_code == 200
-    assert c.get("/api/sessions").status_code == 503  # no display cache on the relay box
+    assert c.get("/api/sessions").status_code == 503  # personal session endpoint: no local store
+    # the team display-cache endpoint exists but is account-scoped → 401 without a login token
+    assert c.get("/api/cache/sessions").status_code == 401
     # auth IS configured, so bad creds are a 401 (not the 503 "auth not configured" of personal mode)
     assert c.post("/api/auth/login", json={"username": "x", "password": "y"}).status_code == 401
 
