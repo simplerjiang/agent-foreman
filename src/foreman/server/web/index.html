@@ -98,6 +98,10 @@
           </select>
         </label>
         <button id="defn-new" class="pill" type="button" data-i18n="newDefinition">+ New</button>
+        <!-- Backup: export all 秘方 to a JSON file / import one back (T6.2, §765). -->
+        <button id="defn-export" class="pill" type="button" data-i18n="exportDefinitions">⬇ Export</button>
+        <button id="defn-import" class="pill" type="button" data-i18n="importDefinitions">⬆ Import</button>
+        <input type="file" id="defn-import-file" accept="application/json,.json" hidden />
       </div>
       <div id="defn-list" class="empty" data-i18n="noDefinitions">No recipes yet.</div>
 

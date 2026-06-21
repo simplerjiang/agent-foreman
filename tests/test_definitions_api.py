@@ -97,3 +97,44 @@ def test_no_service_returns_503(tmp_path):
     c = TestClient(app)
     assert c.get("/api/definitions").status_code == 503
     assert c.post("/api/definitions", json={"kind": "skill", "name": "s"}).status_code == 503
+
+
+# ── export / import endpoints (T6.2) ─────────────────────────────────────────────────────────────
+def test_export_import_round_trip(tmp_path):
+    """GET /api/definitions/export → POST /api/definitions/import restores everything (T6.2)."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    app, _ = _app(tmp_path / "a")
+    c = TestClient(app)
+    c.post("/api/definitions", json={"kind": "workflow", "name": "wf", "body": "steps: []"})
+    c.post("/api/definitions", json={"kind": "skill", "name": "sk", "body": "# skill"})
+    bundle = c.get("/api/definitions/export").json()
+    assert bundle["format"] == "foreman-definitions"
+    assert len(bundle["definitions"]) == 2
+
+    app2, _ = _app(tmp_path / "b")
+    c2 = TestClient(app2)
+    r = c2.post("/api/definitions/import", json={"bundle": bundle})
+    assert r.status_code == 200 and r.json()["imported"] == 2
+    assert {d["name"] for d in c2.get("/api/definitions").json()} == {"wf", "sk"}
+
+
+def test_export_route_not_shadowed_by_param(tmp_path):
+    """/api/definitions/export must not be captured as definition_id='export' (route order)."""
+    app, _ = _app(tmp_path)
+    c = TestClient(app)
+    r = c.get("/api/definitions/export")
+    assert r.status_code == 200 and "definitions" in r.json()
+
+
+def test_import_bad_bundle_400(tmp_path):
+    app, _ = _app(tmp_path)
+    c = TestClient(app)
+    assert c.post("/api/definitions/import", json={"bundle": {}}).status_code == 400
+
+
+def test_export_import_no_service_503(tmp_path):
+    app, _ = _app(tmp_path, with_service=False)
+    c = TestClient(app)
+    assert c.get("/api/definitions/export").status_code == 503
+    assert c.post("/api/definitions/import", json={"bundle": {}}).status_code == 503

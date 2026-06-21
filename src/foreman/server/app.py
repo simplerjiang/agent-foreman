@@ -109,6 +109,12 @@ class _DefinitionUpdateBody(BaseModel):
     metadata_json: str | None = None
     status: str | None = None
 
+
+class _DefinitionImportBody(BaseModel):
+    """Restore definitions from a backup bundle (T6.2). `bundle` is the exported envelope."""
+
+    bundle: dict
+
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
@@ -414,6 +420,35 @@ def create_app(
         if definitions is None or not hasattr(definitions, "list_definitions"):
             raise HTTPException(status_code=503, detail="no definition service")
         return definitions.list_definitions(kind=kind, name=name, active_only=active_only)
+
+    # NOTE: these literal-path routes MUST be registered before /api/definitions/{definition_id}
+    # so "export"/"import" aren't captured as a definition_id path param.
+    @app.get("/api/definitions/export")
+    async def export_definitions(encrypt: bool = False) -> dict:
+        """Download a backup bundle of all 秘方 + wiring (T6.2). `encrypt=true` encrypts each body
+        with the configured cipher so the file can be carried without leaking recipes (§765)."""
+        if definitions is None or not hasattr(definitions, "export_bundle"):
+            raise HTTPException(status_code=503, detail="no definition service")
+        res = definitions.export_bundle(encrypt=encrypt)
+        if res.get("ok"):
+            return res["bundle"]
+        status = {"no_store": 503, "no_cipher": 400}.get(res.get("error", ""), 400)
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    @app.post("/api/definitions/import")
+    async def import_definitions(body: _DefinitionImportBody) -> dict:
+        """Restore 秘方 from a backup bundle (T6.2). Merge semantics: existing rows are skipped,
+        so re-import is idempotent and never clobbers live recipes."""
+        if definitions is None or not hasattr(definitions, "import_bundle"):
+            raise HTTPException(status_code=503, detail="no definition service")
+        res = await definitions.import_bundle(body.bundle)
+        if res.get("ok"):
+            return res
+        status = {
+            "no_store": 503, "bad_bundle": 400, "bad_format": 400,
+            "unsupported_version": 400, "too_large": 413, "needs_key": 400, "bad_key": 400,
+        }.get(res.get("error", ""), 400)
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
 
     @app.get("/api/definitions/{definition_id}")
     async def get_definition(definition_id: str) -> dict:

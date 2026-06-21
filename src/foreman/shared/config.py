@@ -21,6 +21,9 @@ class Secrets(BaseSettings):
     llm_api_key: str = ""
     vapid_private_key: str = ""
     auth_token: str = ""
+    # Optional at-rest encryption key for definition bodies (DESIGN §765, T6.2). A urlsafe-base64
+    # Fernet key (scripts/gen_definition_key.py). Empty (the default) → bodies stay plaintext.
+    definition_key: str = ""
 
 
 class ServerCfg(BaseModel):

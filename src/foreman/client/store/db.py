@@ -11,6 +11,7 @@ import uuid
 from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel, col, create_engine, select
 
+from foreman.shared.crypto import maybe_decrypt, maybe_encrypt
 from foreman.shared.events import AgentEvent, utc_now_iso
 from foreman.shared.migrations import current_version, run_migrations
 
@@ -34,10 +35,16 @@ from .models import (
 
 
 class Store:
-    def __init__(self, db_path: str = "foreman.db") -> None:
+    def __init__(self, db_path: str = "foreman.db", *, cipher=None) -> None:
         self.engine = create_engine(
             f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
         )
+        # Optional at-rest encryption for definition bodies (DESIGN §765, T6.2). None → plaintext
+        # (the default). When set, bodies are encrypted on write and decrypted on read here, so it
+        # is transparent to every reader (workflow engine, injector, qa reviewer, UI editor). The
+        # `fenc:` tag lets encrypted and plaintext rows coexist, so turning it on/off never corrupts
+        # existing rows.
+        self._cipher = cipher
 
     def init(self) -> None:
         """Bring the DB to the current schema and stamp the version ledger (DESIGN §11.1).
@@ -335,6 +342,8 @@ class Store:
             definition.created_at = utc_now_iso()
         if not definition.updated_at:
             definition.updated_at = definition.created_at
+        plaintext = definition.body
+        definition.body = maybe_encrypt(self._cipher, definition.body)  # encrypt at rest (§765)
         with self.session() as s:
             dup = s.exec(
                 select(Definition).where(
@@ -344,16 +353,25 @@ class Store:
                 )
             ).first()
             if dup is not None:
+                definition.body = plaintext  # restore so the raised-into caller keeps plaintext
                 raise ValueError(
                     f"definition {definition.kind}/{definition.name} v{definition.version} exists"
                 )
             s.add(definition)
             s.commit()
+        definition.body = plaintext  # callers always see plaintext, never the stored ciphertext
         return definition
 
     def get_definition(self, definition_id: str) -> Definition | None:
         with self.session() as s:
-            return s.get(Definition, definition_id)
+            row = s.get(Definition, definition_id)
+        return self._decrypt_row(row)
+
+    def _decrypt_row(self, row: Definition | None) -> Definition | None:
+        """Decrypt a definition row's body in place (no-op when encryption is off / body untagged)."""
+        if row is not None:
+            row.body = maybe_decrypt(self._cipher, row.body)
+        return row
 
     def get_definitions(
         self,
@@ -376,18 +394,22 @@ class Store:
             stmt = stmt.order_by(
                 col(Definition.kind), col(Definition.name), col(Definition.version)
             )
-            return list(s.exec(stmt).all())
+            rows = list(s.exec(stmt).all())
+        for row in rows:
+            self._decrypt_row(row)
+        return rows
 
     def get_active_definition(self, kind: str, name: str) -> Definition | None:
         """The currently-enabled version of a (kind, name) building block, or None (§7.1 is_active)."""
         with self.session() as s:
-            return s.exec(
+            row = s.exec(
                 select(Definition).where(
                     Definition.kind == kind,
                     Definition.name == name,
                     col(Definition.is_active).is_(True),
                 )
             ).first()
+        return self._decrypt_row(row)
 
     def set_definition_active(self, definition_id: str) -> Definition | None:
         """Make this version THE active one for its (kind, name): activate it (is_active + status
@@ -415,7 +437,7 @@ class Store:
                 row.updated_at = now
                 s.add(row)
             s.commit()
-        return row
+        return self._decrypt_row(row)
 
     def update_definition(
         self,
@@ -435,7 +457,7 @@ class Store:
             if row is None:
                 return None
             if body is not None:
-                row.body = body
+                row.body = maybe_encrypt(self._cipher, body)  # encrypt at rest (§765)
             if scope_json is not None:
                 row.scope_json = scope_json
             if metadata_json is not None:
@@ -445,7 +467,7 @@ class Store:
             row.updated_at = utc_now_iso()
             s.add(row)
             s.commit()
-        return row
+        return self._decrypt_row(row)
 
     def delete_definition(self, definition_id: str) -> bool:
         """Delete a definition outright (the UI editor's 删 button, §11.2C). Also removes any
@@ -488,6 +510,18 @@ class Store:
                 stmt = stmt.where(DefinitionLink.step_index == step_index)
             stmt = stmt.order_by(col(DefinitionLink.step_index), col(DefinitionLink.relation))
             return list(s.exec(stmt).all())
+
+    def get_all_definition_links(self) -> list[DefinitionLink]:
+        """Every wiring row, ordered by (from_id, step_index) — used to export the recipe graph
+        (T6.2). Links carry no 秘方 body, only ids/relations, so they're safe to serialize."""
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(DefinitionLink).order_by(
+                        col(DefinitionLink.from_id), col(DefinitionLink.step_index)
+                    )
+                ).all()
+            )
 
     def delete_definition_link(self, link_id: str) -> None:
         """Remove a wiring (UI editor unlinks a block). No-op if already gone."""

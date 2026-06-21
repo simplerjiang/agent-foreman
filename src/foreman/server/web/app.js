@@ -640,6 +640,50 @@ document.getElementById('defn-new')?.addEventListener('click', () => openDefnFor
 document.getElementById('defn-cancel')?.addEventListener('click', () => { defnForm.hidden = true; });
 document.getElementById('defn-filter')?.addEventListener('change', loadDefinitions);
 
+// ── Backup: export / import all 秘方 (T6.2, §765) ─────────────────────────────────────────────
+// Export downloads the bundle as a JSON file; import reads one back and POSTs it (merge — existing
+// rows are skipped, so re-import is idempotent and never clobbers live recipes).
+document.getElementById('defn-export')?.addEventListener('click', async () => {
+  try {
+    const r = await fetch('/api/definitions/export');
+    if (!r.ok) { showDefnStatus(I18N[currentLang].exportFailed); return; }
+    const bundle = await r.json();
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'foreman-definitions.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    showDefnStatus(I18N[currentLang].exportFailed);
+  }
+});
+
+const defnImportFile = document.getElementById('defn-import-file');
+document.getElementById('defn-import')?.addEventListener('click', () => defnImportFile?.click());
+defnImportFile?.addEventListener('change', async () => {
+  const dict = I18N[currentLang];
+  const file = defnImportFile.files && defnImportFile.files[0];
+  defnImportFile.value = '';  // allow re-importing the same file
+  if (!file) return;
+  try {
+    const bundle = JSON.parse(await file.text());
+    const r = await fetch('/api/definitions/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bundle }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showDefnStatus(`${dict.imported}: ${data.imported} (+${data.links_imported} links)`);
+      loadDefinitions();
+    } else {
+      showDefnStatus(`${dict.importFailed} (${data.detail || r.status})`);
+    }
+  } catch (err) {
+    showDefnStatus(dict.importFailed);
+  }
+});
+
 async function activateDefn(id) {
   try {
     const r = await fetch(`/api/definitions/${encodeURIComponent(id)}/activate`, { method: 'POST' });
@@ -670,7 +714,8 @@ const I18N = {
         noDefinitions: '暂无秘方。', defnKind: '类型', defnName: '名称', defnScope: '适用范围 (JSON)',
         defnBody: '内容', defnActivate: '保存即启用', save: '保存', cancel: '取消', edit: '编辑',
         activate: '启用', delete: '删除', confirmDelete: '确定删除这条秘方？',
-        saveFailed: '保存失败' },
+        saveFailed: '保存失败', exportDefinitions: '⬇ 导出', importDefinitions: '⬆ 导入',
+        exportFailed: '导出失败', importFailed: '导入失败', imported: '已导入' },
   en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
         dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
         rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
@@ -683,7 +728,8 @@ const I18N = {
         noDefinitions: 'No recipes yet.', defnKind: 'Kind', defnName: 'Name', defnScope: 'Scope (JSON)',
         defnBody: 'Body', defnActivate: 'Activate on save', save: 'Save', cancel: 'Cancel', edit: 'Edit',
         activate: 'Activate', delete: 'Delete', confirmDelete: 'Delete this recipe?',
-        saveFailed: 'Save failed' },
+        saveFailed: 'Save failed', exportDefinitions: '⬇ Export', importDefinitions: '⬆ Import',
+        exportFailed: 'Export failed', importFailed: 'Import failed', imported: 'Imported' },
 };
 let currentLang = 'zh';
 

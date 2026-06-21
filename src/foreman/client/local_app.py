@@ -43,6 +43,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
 
     from foreman.server.app import create_app
     from foreman.server.push import Pusher
+    from foreman.shared.crypto import cipher_from_config
     from foreman.shared.llm import LLMClient
 
     from .computer_use.toolbelt import Toolbelt
@@ -56,7 +57,10 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     from .core.operator import Operator
     from .monitor.hooks import HookReceiver
 
-    store = Store(cfg.store.db_path)
+    # Optional at-rest encryption for definition bodies (DESIGN §765, T6.2). The key lives in a
+    # secret (.env: FOREMAN_DEFINITION_KEY), never config.yaml; empty → bodies stay plaintext.
+    cipher = cipher_from_config(cfg.secrets.definition_key)
+    store = Store(cfg.store.db_path, cipher=cipher)
     store.init()
     bus = EventBus()
     runner = Runner(cfg, bus, store)
@@ -105,7 +109,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # DefinitionService is the UI editor for the four 秘方 blocks (workflow/skill/code_standard/
     # qa_rubric, §11.2). Injected like the Gate/CardService so app.py stays shared-only; definitions
     # live ONLY in the local store and never reach the shared server (§8.3 / §14).
-    definitions = DefinitionService(store, bus=bus)
+    definitions = DefinitionService(store, bus=bus, cipher=cipher)
     app = create_app(
         cfg, store, bus, hooks=hooks, gate=gate, cards=cards,
         dispatcher=dispatcher, briefings=briefings, definitions=definitions,
