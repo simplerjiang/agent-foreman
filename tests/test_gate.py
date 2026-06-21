@@ -87,8 +87,10 @@ def test_classify_three_levels():
         "Remove-Item -Rec -For C:/x",                            # PowerShell flag abbreviations
         "ri -rec C:/x",                                          # alias + abbreviation
         "echo hi\nrm -rf /important",                            # second line still screened
-        "rm `\n  -rf /important",                                # backtick line continuation
-        "rm \\\n  -rf /important",                               # backslash line continuation
+        "rm `\n  -rf /important",                                # backtick line continuation (LF)
+        "rm \\\n  -rf /important",                               # backslash line continuation (LF)
+        "rm `\r\n  -rf /important",                              # backtick line continuation (CRLF)
+        "git -C . `\r\n  push",                                  # CRLF continuation can't split a push
     ],
 )
 def test_classify_catches_irreversible_bypasses(command):

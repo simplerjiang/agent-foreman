@@ -72,12 +72,14 @@ _IRREVERSIBLE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 def _matches_irreversible(low_text: str) -> bool:
     """True if the (already-lowercased) action text trips a built-in irreversible pattern.
 
-    Normalization, in order: (1) splice line-continuations (a backslash or PowerShell backtick right
-    before a newline) so a command split across lines is screened as one (a common bypass); (2)
-    collapse runs of spaces/tabs so 'rm  -rf' can't slip past a spacing-sensitive match; (3) KEEP
-    remaining newlines as real segment separators, so the per-segment patterns still bound each match
-    to one command. The red line stays robust to reformatting yet segment-aware (DESIGN §6.7①)."""
-    spliced = re.sub(r"[`\\][ \t]*\n", " ", low_text)   # join backslash/backtick line continuations
+    Normalization, in order: (0) fold CRLF/CR to LF so Windows line endings are handled like Unix;
+    (1) splice line-continuations (a backslash or PowerShell backtick right before a newline) so a
+    command split across lines is screened as one (a common bypass); (2) collapse runs of spaces/tabs
+    so 'rm  -rf' can't slip past a spacing-sensitive match; (3) KEEP remaining newlines as real segment
+    separators, so the per-segment patterns still bound each match to one command. The red line stays
+    robust to reformatting yet segment-aware (DESIGN §6.7①)."""
+    unix = low_text.replace("\r\n", "\n").replace("\r", "\n")  # CRLF/CR → LF (Windows)
+    spliced = re.sub(r"[`\\][ \t]*\n", " ", unix)              # join backslash/backtick continuations
     norm = re.sub(r"[ \t]+", " ", spliced)
     return any(p.search(norm) for p in _IRREVERSIBLE_PATTERNS)
 

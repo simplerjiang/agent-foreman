@@ -257,7 +257,14 @@ def create_app(
         """429 if this client IP is over the recent-FAILURE budget for ``scope`` (login/redeem);
         otherwise return the bucket key. Peeks only — the check itself never counts, and only
         failures are recorded (by the caller), so a correct credential is never pre-blocked unless
-        the IP already failed too many times, and personal-mode 503s never accrue toward the limit."""
+        the IP already failed too many times, and personal-mode 503s never accrue toward the limit.
+
+        POLICY (intentional, not an oversight): once an IP exceeds the failure budget it is locked for
+        the rest of the window — a *correct* credential from that IP is also 429'd until the window
+        rolls off. Checking the credential first instead would (a) re-enable unbounded PBKDF2 CPU
+        burn per guess and (b) make the throttle pointless against online guessing. We keep it
+        per-IP (never per-account) so an attacker can't lock a victim out by guessing their username;
+        reset-on-success + failure-only counting keep the blast radius to a genuinely abusive IP."""
         bucket = _auth_bucket(request, scope)
         if auth_limiter.over_limit(bucket):
             raise HTTPException(status_code=429, detail="too many attempts")
