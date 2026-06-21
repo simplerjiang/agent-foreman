@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>Foreman · 接入密钥</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header>
+    <h1>🦺 Foreman <span class="pill" data-i18n="accessKeys">接入密钥</span></h1>
+    <div class="header-right">
+      <span id="who" class="pill" hidden></span>
+      <button id="logout" class="pill" type="button" data-i18n="logout" hidden>登出</button>
+      <button id="lang-toggle" class="pill" type="button" title="language">EN</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Login: any account (member or admin) can manage its OWN keys (DESIGN §8.2). -->
+    <section id="login-pane" aria-label="Login">
+      <h2 data-i18n="signIn">Sign in</h2>
+      <form id="login-form">
+        <label><span data-i18n="username">Username</span>
+          <input id="login-user" autocomplete="username" />
+        </label>
+        <label><span data-i18n="password">Password</span>
+          <input id="login-pass" type="password" autocomplete="current-password" />
+        </label>
+        <button type="submit" data-i18n="signIn">Sign in</button>
+        <p id="login-status" class="hint" hidden></p>
+      </form>
+    </section>
+
+    <!-- Key management. Shown only after login. -->
+    <section id="keys-pane" aria-label="Access keys" hidden>
+      <h2 data-i18n="mintKey">Generate access key</h2>
+      <p class="hint" data-i18n="mintHint">一台机器一张，一个账号可发多张；丢了 / 换机可单独吊销。</p>
+      <form id="mint-form">
+        <div class="defn-row">
+          <label><span data-i18n="label">Label (machine name)</span>
+            <input id="key-label" autocomplete="off" placeholder="我的台式机" />
+          </label>
+          <label><span data-i18n="expiresIn">Expires in (days, 0 = never)</span>
+            <input id="key-expiry" type="number" min="0" step="1" value="0" />
+          </label>
+        </div>
+        <button type="submit" data-i18n="mintKey">Generate access key</button>
+        <p id="mint-status" class="hint" hidden></p>
+      </form>
+
+      <!-- The plaintext key, shown ONCE after minting (only its hash is stored — §8.4). -->
+      <div id="key-box" class="card" hidden>
+        <p><strong data-i18n="newKey">New access key</strong> (<span data-i18n="shownOnce">shown once</span>)</p>
+        <pre id="key-plain" class="tabpanel"></pre>
+        <p class="hint" data-i18n="keyShare">把这串填进你本地进程的配置（access key）。关掉本页就再也看不到了。</p>
+      </div>
+
+      <h2 data-i18n="yourKeys">Your keys</h2>
+      <!-- No data-i18n here: loadKeys() owns this node's content, so a language toggle must not
+           overwrite rendered key rows. -->
+      <div id="key-list" class="empty">No keys yet.</div>
+    </section>
+  </main>
+
+  <script src="/keys.js" type="module"></script>
+</body>
+</html>

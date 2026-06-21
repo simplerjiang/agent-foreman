@@ -229,3 +229,60 @@ def test_endpoints_503_without_auth_manager(tmp_path):
     assert client.get("/api/auth/me").status_code == 503
     # logout is always ok (idempotent), even with no auth manager
     assert client.post("/api/auth/logout").status_code == 200
+
+
+# ── access-key expiry (DESIGN §8.4 "可设有效期") ──────────────────────────────────────────────────
+def test_access_key_expiry_computed_and_enforced_by_relay(tmp_path):
+    """`expires_in_days` stamps an absolute expiry; the relay handshake (§8.5) refuses the key
+    once it lapses — so a stale key stops working on its own, even before it's revoked."""
+    from foreman.server.relay import Relay
+
+    store = _store(tmp_path)
+    m = AuthManager(store, now=lambda: "2026-06-21T00:00:00+00:00")
+    acct = m.create_account("alice", "pw")["account_id"]
+    res = m.create_access_key(acct, label="laptop", expires_in_days=2)
+    assert res["expires_at"] == "2026-06-23T00:00:00+00:00"
+    key = res["key"]
+
+    # before expiry: the relay authenticates the key to its account
+    relay_ok = Relay(store, now=lambda: "2026-06-22T00:00:00+00:00")
+    auth_ok = relay_ok.authenticate({"access_key": key})
+    assert auth_ok.ok and auth_ok.account_id == acct
+
+    # after expiry: rejected (never marks the process online)
+    relay_late = Relay(store, now=lambda: "2026-06-24T00:00:00+00:00")
+    auth_late = relay_late.authenticate({"access_key": key})
+    assert not auth_late.ok and "expired" in auth_late.reason
+
+
+def test_access_key_no_expiry_by_default(tmp_path):
+    """Omitting the knob → a key with no time limit (expires_at empty); the relay never expires it."""
+    m = _mgr(tmp_path)
+    acct = m.create_account("alice", "pw")["account_id"]
+    res = m.create_access_key(acct, label="server")
+    assert res["expires_at"] == ""
+    # a 0 / negative day count is treated as "no expiry" (UI sends 0 for "never")
+    assert m.create_access_key(acct, expires_in_days=0)["expires_at"] == ""
+    assert m.create_access_key(acct, expires_in_days=-5)["expires_at"] == ""
+
+
+def test_endpoints_mint_key_with_expiry(tmp_path):
+    client, auth = _client(tmp_path)
+    auth.create_account("alice", "pw")
+    token = client.post("/api/auth/login", json={"username": "alice", "password": "pw"}).json()["token"]
+    hdr = {"Authorization": f"Bearer {token}"}
+
+    # mint with an expiry → response + listing both carry expires_at
+    created = client.post("/api/keys", json={"label": "phone", "expires_in_days": 30}, headers=hdr)
+    assert created.status_code == 200
+    assert created.json()["expires_at"]  # non-empty ISO timestamp
+    listed = client.get("/api/keys", headers=hdr).json()
+    assert listed[0]["expires_at"] == created.json()["expires_at"]
+
+    # mint without an expiry → no time limit
+    plain = client.post("/api/keys", json={"label": "desktop"}, headers=hdr)
+    assert plain.status_code == 200 and plain.json()["expires_at"] == ""
+
+    # an absurd expiry is rejected (422), not a timedelta-overflow 500
+    huge = client.post("/api/keys", json={"expires_in_days": 10**8}, headers=hdr)
+    assert huge.status_code == 422

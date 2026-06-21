@@ -44,3 +44,6 @@ Thumbs.db
 
 # Local Claude Code config (machine-local; never commit)
 .claude/
+
+# Local acceptance screenshots / scratch (not project artifacts)
+artifacts/

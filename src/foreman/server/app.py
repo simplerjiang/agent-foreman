@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from foreman.shared.autonomy import level_label, normalize_level
 from foreman.shared.config import Config
@@ -71,7 +71,12 @@ class _LoginBody(BaseModel):
 
 
 class _AccessKeyBody(BaseModel):
+    """Mint an access key for the caller's own account (DESIGN §8.2). `expires_in_days` is the
+    optional expiry knob (§8.4 "可设有效期"); 0/absent → a key that never expires by time."""
+
     label: str = ""
+    # Bounded so a huge value can't overflow timedelta into an unhandled 500 (max 10y; 0 = never).
+    expires_in_days: int = Field(default=0, ge=0, le=3650)
 
 
 class _AdminAccountBody(BaseModel):
@@ -586,10 +591,15 @@ def create_app(
     @app.post("/api/keys")
     async def create_key(body: _AccessKeyBody, request: Request) -> dict:
         """Mint a new access key for the caller. The plaintext is returned exactly ONCE here —
-        the user pastes it into their local process; only its hash is stored (§8.4)."""
+        the user pastes it into their local process; only its hash is stored (§8.4). An optional
+        `expires_in_days` sets a time limit (§8.4); the relay refuses the key once it lapses."""
         account = require_account(request)
-        res = auth.create_access_key(account.id, label=body.label)
-        return {"id": res["id"], "key": res["key"], "label": res["label"]}
+        days = body.expires_in_days if body.expires_in_days > 0 else None
+        res = auth.create_access_key(account.id, label=body.label, expires_in_days=days)
+        return {
+            "id": res["id"], "key": res["key"],
+            "label": res["label"], "expires_at": res["expires_at"],
+        }
 
     @app.delete("/api/keys/{key_id}")
     async def revoke_key(key_id: str, request: Request) -> dict:

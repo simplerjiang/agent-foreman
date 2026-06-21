@@ -73,3 +73,16 @@ def test_admin_console_and_redeem_pages_ship_and_wire(tmp_path):
     assert redeem_html.status_code == 200
     redeem_js = c.get("/redeem.js").text
     assert "/api/auth/redeem" in redeem_js and ".innerHTML" not in redeem_js
+
+
+def test_access_keys_page_ships_and_wires(tmp_path):
+    """The user-facing access-key page ships and wires mint/list/revoke + expiry (T7.3 §8.2/§8.4)."""
+    c = TestClient(create_app(load_config()))
+    keys_html = c.get("/keys.html")
+    assert keys_html.status_code == 200 and "data-i18n" in keys_html.text
+    keys_js = c.get("/keys.js").text
+    assert "/api/auth/login" in keys_js and "/api/keys" in keys_js
+    assert "expires_in_days" in keys_js  # the expiry knob (§8.4) is wired
+    assert "DELETE" in keys_js  # revoke
+    # the key label is user-supplied → rendered via textContent only, never innerHTML (XSS).
+    assert "textContent" in keys_js and ".innerHTML" not in keys_js

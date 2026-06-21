@@ -276,9 +276,20 @@ class AuthManager:
             self.store.delete_auth_session(hash_access_key(token))
 
     # ── access-key management (a logged-in user mints/lists/revokes their own — §8.2) ─────────
-    def create_access_key(self, account_id: str, label: str = "", expires_at: str = "") -> dict:
+    def create_access_key(
+        self, account_id: str, label: str = "", *,
+        expires_at: str = "", expires_in_days: int | None = None,
+    ) -> dict:
         """Mint an access key for an account. The plaintext is returned exactly ONCE here and
-        never stored (only its hash is) — DESIGN §8.4. Returns {"ok", "id", "key", "label"}."""
+        never stored (only its hash is) — DESIGN §8.4.
+
+        Expiry (DESIGN §8.4 "可设有效期"): pass `expires_in_days` (the UI knob) to expire N days
+        from now, or an explicit ISO `expires_at`; omit both for a key that never expires by time.
+        The relay handshake (§8.5) refuses an expired key, so a lost/stale key stops working on its
+        own even before it's revoked. Returns {"ok", "id", "key", "label", "expires_at"}."""
+        now = self._now()
+        if not expires_at and expires_in_days and expires_in_days > 0:
+            expires_at = _iso_plus_seconds(now, expires_in_days * 24 * 3600)
         plaintext = self._gen_key()
         key_id = self._gen_id()
         self.store.add_access_key(
@@ -289,10 +300,13 @@ class AuthManager:
                 label=label or "",
                 status="active",
                 expires_at=expires_at or "",
-                created_at=self._now(),
+                created_at=now,
             )
         )
-        return {"ok": True, "id": key_id, "key": plaintext, "label": label or ""}
+        return {
+            "ok": True, "id": key_id, "key": plaintext,
+            "label": label or "", "expires_at": expires_at or "",
+        }
 
     def list_access_keys(self, account_id: str) -> list[dict]:
         """An account's keys for the management UI — metadata only, NEVER the hash or plaintext
