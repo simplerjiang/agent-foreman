@@ -32,3 +32,18 @@ def test_reset_clears_history():
     assert rl.allow("a") is True and rl.allow("a") is False
     rl.reset("a")
     assert rl.allow("a") is True
+
+
+def test_key_map_is_bounded_against_a_flood():
+    """A flood of distinct keys (e.g. spoofed IPs) can't grow the map without bound: at capacity it
+    sweeps drained buckets, and if still full it fails closed instead of allocating more (issue #10)."""
+    t = {"v": 0.0}
+    rl = SlidingWindowLimiter(5, 10, now=lambda: t["v"], max_keys=3)
+    assert rl.allow("a") and rl.allow("b") and rl.allow("c")  # 3 live keys → at capacity
+    # a 4th distinct key while a/b/c are still in-window: nothing to reclaim → fail closed
+    assert rl.allow("d") is False
+    assert len(rl._hits) == 3
+    # once the window passes, a/b/c are drained; admitting a new key sweeps them away
+    t["v"] += 11
+    assert rl.allow("d") is True
+    assert len(rl._hits) <= 3

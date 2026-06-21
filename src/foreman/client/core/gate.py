@@ -30,26 +30,38 @@ from foreman.shared.events import make_event, utc_now_iso
 from ..store.models import Approval
 
 # Whitespace/flag-robust backstop for irreversible commands the plain substring denylist
-# (config.GatesCfg.requires_approval) misses. The deterministic Gate is the red line (§6.7①), so
-# it must not be defeated by trivial reformatting (`rm  -rf`, `rm -fr`, `git -C <path> push`) nor be
-# blind to the Windows/PowerShell verbs absent from the Unix-centric default list. Matched against
-# the lowercased action text with internal whitespace collapsed. `[^|&;\n]*` keeps a match within a
-# single command segment so a later, unrelated pipe stage can't smuggle a false hit across `; | &`.
+# (config.GatesCfg.requires_approval) misses. The deterministic Gate is the red line (§6.7①), so it
+# must not be defeated by trivial reformatting (`rm  -rf`, `rm -fr`, `rm -i -rf`, `git -C <path>
+# push`) nor be blind to the Windows/PowerShell verbs absent from the Unix-centric default list.
+#
+# Matched against the lowercased text with runs of spaces/tabs collapsed to one space but NEWLINES
+# PRESERVED, so `[^|&;\n]*` genuinely keeps a match inside a single command segment (a later pipe /
+# `;` / `&` / newline stage can't smuggle a false hit across it). This is a *backstop*, not a
+# complete parser: it deliberately errs toward over-blocking (fail-closed, §6.7 从严默认) — a spurious
+# approval card costs one tap, a missed irreversible command may be unrecoverable. It does NOT
+# replace the Auditor LLM (the gray-area judge) or per-step checkpoints; novel obfuscations
+# (encoded payloads, custom aliases) remain the Auditor's job by design.
 _IRREVERSIBLE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p)
     for p in (
-        r"\brm\s+-{1,2}\w*[rf]",                                  # rm -rf / -fr / -r / -f
-        r"\brm\s+--(?:recursive|force)\b",                        # rm --recursive / --force
-        r"\bremove-item\b[^|&;\n]*-(?:recurse|force|r|fo|f)\b",   # PowerShell rm (Remove-Item)
-        r"\bri\s+-\w*(?:recurse|force|r|fo|f)\b",                 # Remove-Item alias `ri`
-        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s/[sq]\b",          # cmd recursive/quiet delete
-        r"\bgit\b[^|&;\n]*\bpush\b",                              # git ... push (incl. -C <path>)
-        r"\bgit\b[^|&;\n]*\breset\b[^|&;\n]*--hard\b",            # discards committed/working state
-        r"\bgit\b[^|&;\n]*\bclean\b[^|&;\n]*-\w*f",               # deletes untracked files
-        r"\bgit\b[^|&;\n]*\bcheckout\b[^|&;\n]*\s--(?:\s|$)",     # discards worktree changes
-        r"\b(?:stop-computer|restart-computer)\b",               # PowerShell shutdown/reboot
-        r"\bformat\b\s+[a-z]:",                                   # format C:
-        r"\b(?:mkfs|diskpart|format-volume|clear-disk)\b",       # filesystem/disk destroyers
+        # rm with a -r/-f flag ANYWHERE in the segment (so `rm -i -rf`, `rm --verbose -rf` count);
+        # the flag must be a space-led token so a filename like `report-final.txt` isn't a false hit.
+        r"\brm\b[^|&;\n]*\s-\S*[rf]",
+        r"\brm\b[^|&;\n]*\s--(?:recursive|force)\b",             # rm --recursive / --force
+        r"\bremove-item\b[^|&;\n]*-(?:recurse|force|r|fo|f)\b",  # PowerShell rm (Remove-Item)
+        r"\bri\b[^|&;\n]*\s-\S*(?:recurse|force|r|fo|f)\b",      # Remove-Item alias `ri`
+        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s/[sq]\b",         # cmd recursive/quiet delete
+        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s-(?:recurse|force)\b",  # PowerShell-style flags
+        r"\bgit\b[^|&;\n]*\bpush\b",                             # git ... push (incl. -C <path>)
+        r"\bgit\b[^|&;\n]*\breset\b[^|&;\n]*--hard\b",           # discards committed/working state
+        r"\bgit\b[^|&;\n]*\bclean\b[^|&;\n]*(?:\s-\S*f|--force)",  # deletes untracked files
+        r"\bgit\b[^|&;\n]*\bcheckout\b[^|&;\n]*\s--(?:\s|$)",    # discards worktree changes
+        r"\b(?:stop-computer|restart-computer)\b",              # PowerShell shutdown/reboot
+        r"\bformat\b\s+[a-z]:",                                  # format C:
+        r"\b(?:mkfs|diskpart|format-volume|clear-disk)\b",      # filesystem/disk destroyers
+        r"\binvoke-expression\b",                               # iex: pipe-fetched code → execute
+        r"\biex\b",
+        r"-encodedcommand\b",                                   # powershell -EncodedCommand (obfusc.)
     )
 )
 
@@ -57,9 +69,10 @@ _IRREVERSIBLE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 def _matches_irreversible(low_text: str) -> bool:
     """True if the (already-lowercased) action text trips a built-in irreversible pattern.
 
-    Internal whitespace is collapsed first so extra spaces/tabs (`rm  -rf`) can't slip past a
-    spacing-sensitive match — the deterministic red line stays robust to reformatting (§6.7①)."""
-    norm = re.sub(r"\s+", " ", low_text)
+    Runs of spaces/tabs are collapsed (so `rm  -rf` can't slip past a spacing-sensitive match) while
+    newlines are KEPT as real segment separators — the deterministic red line stays robust to
+    reformatting yet still bounds each pattern to one command segment (§6.7①)."""
+    norm = re.sub(r"[ \t]+", " ", low_text)
     return any(p.search(norm) for p in _IRREVERSIBLE_PATTERNS)
 
 

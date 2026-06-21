@@ -11,8 +11,6 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from foreman.client.store import Store
-from foreman.client.store.models import Session
 from foreman.server.app import _event_visible_to, create_app
 from foreman.server.auth_manager import AuthManager
 from foreman.server.store import ServerStore
@@ -43,12 +41,13 @@ def test_event_visible_team_mode_scopes_to_account():
     assert _event_visible_to(untagged, session_id=None, account_id="me") is False
 
 
-# ── integration: the auth gate on /ws ────────────────────────────────────────────────────────────
-def _team_app(tmp_path, store=None):
+# ── integration: the auth gate + account scope on a real team app (store=None) ───────────────────
+def _team_app(tmp_path):
     sstore = ServerStore(str(tmp_path / "srv.db"))
     sstore.init()
     auth = AuthManager(sstore)
-    app = create_app(load_config(tmp_path / "none.yaml"), store=store, auth=auth)
+    # store=None mirrors build_serve_app's team relay box (秘方/events live on each user's machine).
+    app = create_app(load_config(tmp_path / "none.yaml"), auth=auth)
     return app, auth
 
 
@@ -62,16 +61,21 @@ def test_team_ws_rejects_missing_or_bad_token(tmp_path):
         assert ei.value.code == 1008  # policy violation: unauthenticated
 
 
-def test_team_ws_accepts_valid_token_and_streams_backlog(tmp_path):
-    cstore = Store(str(tmp_path / "c.db"))
-    cstore.init()
-    cstore.add_session(Session(id="s1", goal="g"))
-    cstore.add_event(make_event("agent_output", "claude-code", "s1", payload={"text": "hi"}))
-    app, auth = _team_app(tmp_path, store=cstore)
-    client = TestClient(app)
+def test_team_ws_streams_only_the_callers_account(tmp_path):
+    """End-to-end: a valid token opens the stream, but another tenant's health frame is filtered
+    out — the cross-tenant leak (issue #9) is closed even on a live connection."""
+    app, auth = _team_app(tmp_path)
     auth.create_account("alice", "pw")
-    tok = client.post("/api/auth/login", json={"username": "alice", "password": "pw"}).json()["token"]
-    # a valid token opens the stream (proves it was NOT rejected) and backlog flows
-    with client.websocket_connect(f"/ws?session_id=s1&token={tok}") as ws:
-        msg = ws.receive_json()
-    assert msg["type"] == "agent_output" and msg["session_id"] == "s1"
+    client = TestClient(app)
+    with client:  # enter lifespan so the blocking portal is live (publish into the app's loop)
+        tok = client.post(
+            "/api/auth/login", json={"username": "alice", "password": "pw"}
+        ).json()["token"]
+        mine = auth.store.get_account_by_username("alice").id
+        with client.websocket_connect(f"/ws?token={tok}") as ws:
+            # publish another tenant's frame FIRST, then the caller's: a working filter drops the
+            # first and delivers only the second, so the first frame received must be the caller's.
+            client.portal.call(app.state.bus.publish, _health(account_id="other-tenant"))
+            client.portal.call(app.state.bus.publish, _health(account_id=mine))
+            msg = ws.receive_json()
+    assert msg["payload"]["account_id"] == mine

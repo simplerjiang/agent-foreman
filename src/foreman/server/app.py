@@ -184,16 +184,18 @@ def _bearer_token(request: Request) -> str:
     return token.strip() if scheme.lower() == "bearer" else ""
 
 
-def _client_ip(request: Request) -> str:
-    """Best-effort client IP for rate-limiting. Behind a trusted proxy (Cloudflare) the real client
-    is in CF-Connecting-IP / the leftmost X-Forwarded-For; fall back to the socket peer. Used only to
-    bucket a brute-force speed bump — never an authz decision — so a spoofable header here is benign."""
-    cf = request.headers.get("cf-connecting-ip", "").strip()
-    if cf:
-        return cf
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip()
+def _client_ip(request: Request, *, trust_proxy: bool = False) -> str:
+    """Client IP for rate-limit bucketing. Only consult CF-Connecting-IP / X-Forwarded-For when
+    ``trust_proxy`` is set (a trusted proxy like the Cloudflare tunnel fronts the app) — those
+    headers are client-spoofable, so an attacker on a directly-reachable server could otherwise
+    rotate them to evade the limiter and bloat its key map. Otherwise use the socket peer."""
+    if trust_proxy:
+        cf = request.headers.get("cf-connecting-ip", "").strip()
+        if cf:
+            return cf
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            return xff.split(",")[0].strip()
     client = request.client
     return client.host if client else "unknown"
 
@@ -247,9 +249,13 @@ def create_app(
     auth_limiter = SlidingWindowLimiter(_AUTH_RL_MAX_ATTEMPTS, _AUTH_RL_WINDOW_SECONDS)
     app.state.auth_limiter = auth_limiter
 
+    def _auth_bucket(request: Request, scope: str) -> str:
+        ip = _client_ip(request, trust_proxy=cfg.server.trust_proxy_headers)
+        return f"{scope}:{ip}"
+
     def _throttle_auth(request: Request, scope: str) -> None:
         """429 if this client IP has exceeded the auth-attempt budget for ``scope`` (login/redeem)."""
-        if not auth_limiter.allow(f"{scope}:{_client_ip(request)}"):
+        if not auth_limiter.allow(_auth_bucket(request, scope)):
             raise HTTPException(status_code=429, detail="too many attempts")
 
     def require_account(request: Request):
@@ -609,6 +615,9 @@ def create_app(
         res = auth.login(body.username, body.password)
         if not res.get("ok"):
             raise HTTPException(status_code=401, detail="invalid credentials")
+        # A successful login clears this IP's bucket, so a legitimate user re-logging in (or sharing
+        # a NAT/egress IP) isn't throttled by their own earlier attempts — only failures accumulate.
+        auth_limiter.reset(_auth_bucket(request, "login"))
         return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
 
     @app.post("/api/auth/logout")
@@ -799,7 +808,11 @@ def create_app(
                 return
             caller_account_id = account.id
         await websocket.accept()
-        if store is not None and session_id:
+        # Backlog replay is personal-mode only: team-mode events aren't account-tagged at the row
+        # level, so replaying a store here couldn't be account-scoped. In team mode `store` is None
+        # anyway; gating on caller_account_id is None makes that a hard invariant, not a coincidence
+        # (defence-in-depth against a future auth+store combo — §8.4).
+        if store is not None and session_id and caller_account_id is None:
             for e in store.get_events(session_id):
                 await websocket.send_json(_row_to_dict(e))
         q = bus.subscribe_queue()

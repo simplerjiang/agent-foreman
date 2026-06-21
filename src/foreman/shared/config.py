@@ -44,6 +44,11 @@ class ServerCfg(BaseModel):
     # Server/relay DB (team mode only; DESIGN §7.2). Holds NO 秘方/diffs/LLM keys — those stay on
     # each user's local process (§8.3). Separate file from the client's StoreCfg.db_path.
     db_path: str = "foreman-server.db"
+    # Trust CF-Connecting-IP / X-Forwarded-For for the real client IP (auth rate-limit bucketing).
+    # OFF by default: those headers are client-spoofable, so trusting them on a directly-reachable
+    # server lets an attacker evade the brute-force limiter and inflate its key map. Set true ONLY
+    # when a trusted proxy (e.g. the Cloudflare tunnel, which sets CF-Connecting-IP) fronts the app.
+    trust_proxy_headers: bool = False
 
 
 class LLMCfg(BaseModel):

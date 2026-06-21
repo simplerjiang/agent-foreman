@@ -251,6 +251,36 @@ def test_redeem_is_rate_limited_per_ip(tmp_path):
     assert codes[_AUTH_RL_MAX_ATTEMPTS] == 429
 
 
+def test_rate_limit_not_evaded_by_spoofed_forwarded_headers(tmp_path):
+    """With trust_proxy_headers off (default), CF-Connecting-IP / X-Forwarded-For are ignored, so an
+    attacker can't rotate them to mint fresh buckets and bypass the limiter (issue #10 hardening)."""
+    from foreman.server.app import _AUTH_RL_MAX_ATTEMPTS
+
+    client, auth = _client(tmp_path)
+    auth.create_account("alice", "pw")
+    codes = [
+        client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "x"},
+            headers={"X-Forwarded-For": f"10.0.0.{i}", "CF-Connecting-IP": f"10.1.0.{i}"},
+        ).status_code
+        for i in range(_AUTH_RL_MAX_ATTEMPTS + 1)
+    ]
+    assert codes[_AUTH_RL_MAX_ATTEMPTS] == 429  # all land in one (socket-peer) bucket regardless
+
+
+def test_successful_login_resets_the_bucket(tmp_path):
+    """A success clears the IP's budget so a legitimate user (incl. shared NAT/egress) isn't locked
+    out by their own earlier attempts — only consecutive failures accumulate (issue #10 hardening)."""
+    client, auth = _client(tmp_path)
+    auth.create_account("alice", "pw")
+    for _ in range(9):
+        client.post("/api/auth/login", json={"username": "alice", "password": "x"})  # 9 failures
+    assert client.post("/api/auth/login", json={"username": "alice", "password": "pw"}).status_code == 200
+    # bucket reset on success → the next failure is a normal 401, not a 429
+    assert client.post("/api/auth/login", json={"username": "alice", "password": "x"}).status_code == 401
+
+
 def test_endpoints_503_without_auth_manager(tmp_path):
     client, _ = _client(tmp_path, with_auth=False)
     assert client.post("/api/auth/login", json={"username": "a", "password": "b"}).status_code == 503
