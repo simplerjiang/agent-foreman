@@ -1,0 +1,17 @@
+# QA 标准：自审 + lint 全过（lint-passes）
+# 引擎在「自审 + 跑 lint」这一步干完后用它审阅。通用脱敏示例，请按你的工具链改写。
+name: lint-passes
+summary: 改动经过自审，lint / 格式化全过，无新增告警。
+criteria:
+  - id: lint-clean
+    must: true
+    check: 跑 lint / 格式化器后没有报错，也没有新增的告警。
+  - id: self-reviewed
+    must: true
+    check: 通读了自己的 diff，没有调试残留（print、临时变量、被注释的代码）。
+  - id: no-unrelated-churn
+    must: false
+    check: 没有夹带与本任务无关的大范围改动 / 格式抖动。
+fail_when:
+  - lint 仍有报错或新增告警。
+  - diff 里留着调试代码或大段无关改动。

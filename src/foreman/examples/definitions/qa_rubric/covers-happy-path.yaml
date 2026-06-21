@@ -1,0 +1,21 @@
+# QA 标准：测试是否覆盖主路径（covers-happy-path）
+# 验收清单——引擎在「写测试」这一步干完后，拿这把尺子让 Reviewer 审一遍，过了才走下一步。
+# 通用脱敏示例，请按你的真实验收口径改写。
+name: covers-happy-path
+summary: 这一步产出的测试是否覆盖了主路径与关键边界。
+criteria:
+  - id: happy-path
+    must: true
+    check: 最常见的成功流程（happy path）有至少一个能跑、有意义的断言。
+  - id: key-edges
+    must: true
+    check: 空输入、非法值、超长输入等关键边界各有覆盖。
+  - id: focused
+    must: false
+    check: 一个测试只验一件事，断言聚焦、命名说清输入与期望。
+  - id: no-secrets
+    must: true
+    check: 测试里没有真实密钥/密码/内网地址，且不依赖真实网络或凭据。
+fail_when:
+  - 只有空测试或「永远绿」的占位断言。
+  - 主路径完全没有被任何断言覆盖。

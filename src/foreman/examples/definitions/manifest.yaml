@@ -1,0 +1,44 @@
+# Manifest of the built-in starter definitions (T6.4, DESIGN §11.2C / §765).
+#
+# The loader (foreman.client.core.examples) reads this list, pulls each body from its `file`, and
+# seeds them into a fresh local DB as 秘方 — so OSS users get a working, editable library to start
+# from. Everything here is GENERIC and REDACTED: no secrets, no project-specific anything. Edit the
+# bodies (or build your own from the UI) and they live only in your own DB — never in git.
+#
+# `scope` (optional, a JSON object) records "何时适用" (languages / path globs / triggers, §7.1).
+# Every seeded row is also tagged metadata `{"example": true}` so you can tell starters from your own.
+definitions:
+  - kind: skill
+    name: write-tests
+    file: skill/write-tests.md
+    scope: { languages: [python] }
+
+  - kind: skill
+    name: implementation-notes
+    file: skill/implementation-notes.md
+
+  - kind: code_standard
+    name: python-style
+    file: code_standard/python-style.md
+    scope: { languages: [python], paths: ["**/*.py"] }
+
+  - kind: code_standard
+    name: test-naming
+    file: code_standard/test-naming.md
+    scope: { languages: [python], paths: ["**/test_*.py"] }
+
+  - kind: qa_rubric
+    name: covers-happy-path
+    file: qa_rubric/covers-happy-path.yaml
+
+  - kind: qa_rubric
+    name: meets-standard-no-shortcuts
+    file: qa_rubric/meets-standard-no-shortcuts.yaml
+
+  - kind: qa_rubric
+    name: lint-passes
+    file: qa_rubric/lint-passes.yaml
+
+  - kind: workflow
+    name: add-feature
+    file: workflow/add-feature.yaml

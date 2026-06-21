@@ -98,6 +98,29 @@ def dispatch(
            f"([cyan]{agent}[/] in {workspace})")
 
 
+@app.command("seed-examples")
+def seed_examples_cmd(
+    config: str = typer.Option("config.yaml", help="Path to config.yaml"),
+    activate: bool = typer.Option(True, help="Make each seeded example the active version"),
+) -> None:
+    """Seed the built-in, generic, redacted starter definitions into the local DB (idempotent)."""
+    from foreman.client.core.examples import seed_examples  # lazy: keeps `foreman serve` client-free
+    from foreman.client.store import Store
+    from foreman.shared.crypto import cipher_from_config
+
+    cfg = load_config(config)
+    cipher = cipher_from_config(cfg.secrets.definition_key)
+    store = Store(cfg.store.db_path, cipher=cipher)
+    store.init()
+    result = seed_examples(store, activate=activate)
+    added, skipped = result["added"], result["skipped"]
+    rprint(f"[green]seeded {len(added)} example definition(s)[/] into {cfg.store.db_path}")
+    for label in added:
+        rprint(f"  [cyan]+[/] {label}")
+    if skipped:
+        rprint(f"[dim]skipped {len(skipped)} already present: {', '.join(skipped)}[/]")
+
+
 @app.command()
 def token(rotate: bool = typer.Option(False, "--rotate", help="Generate a new auth token")) -> None:
     """Show or rotate the phone auth token (P3+)."""

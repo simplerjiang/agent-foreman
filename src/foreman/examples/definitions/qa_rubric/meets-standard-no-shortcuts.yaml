@@ -1,0 +1,23 @@
+# QA 标准：实现是否合规范、有没有偷工（meets-standard-no-shortcuts）
+# 引擎在「写实现」这一步干完后用它审阅。通用脱敏示例，请按你的口径改写。
+name: meets-standard-no-shortcuts
+summary: 实现让测试通过，且遵守代码规范、没有偷工减料。
+criteria:
+  - id: tests-green
+    must: true
+    check: 相关测试全部通过，不是靠改/删测试或注释掉断言换来的绿。
+  - id: follows-standard
+    must: true
+    check: 命名、结构、错误处理符合引用的代码规范，风格与周围代码一致。
+  - id: no-shortcuts
+    must: true
+    check: 没有 TODO 占位、空实现、被注释掉的逻辑来「先过」。
+  - id: minimal-change
+    must: false
+    check: 改动是达成目标的最简方式，没有为「以后可能用」加无人要的抽象。
+  - id: no-secrets
+    must: true
+    check: 没有把密钥/密码/token 写进代码或日志，没有 shell=True 拼接命令。
+fail_when:
+  - 用偷工（占位/空实现/删断言）换取测试通过。
+  - 引入命令注入、机密泄露等明显风险。

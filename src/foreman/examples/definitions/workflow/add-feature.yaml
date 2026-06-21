@@ -1,0 +1,29 @@
+# 工作流：加新功能（add-feature）
+#
+# 「骨架是死的，每步的干法是活的」（DESIGN §11.2）：步骤顺序固定、可复现；每一步具体怎么做，
+# 引擎临时把对应的 技能 + 代码规范 喂给 AI 去发挥；干完用这步的 QA 标准审一遍，过了才走下一步；
+# push 前卡一个审批闸推你手机问一句「准不准」。
+#
+# 这是一个**通用脱敏示例**——它引用的技能/规范/QA 都是仓库里一并附带的示例，改成你团队的真东西后
+# 存进你自己的库即可（不进 git）。每步用 skills/standards/qa 按名字引用其它积木，名字对上就能解析。
+name: add-feature
+steps:
+  - name: write-tests
+    instruction: 先为这个功能写测试，覆盖主路径和关键边界，再去写实现。
+    skills: [write-tests]
+    standards: [test-naming]
+    qa: covers-happy-path
+
+  - name: implement
+    instruction: 实现功能，让上一步的测试变绿，遵守代码规范，保持改动最小。
+    skills: [implementation-notes]
+    standards: [python-style]
+    qa: meets-standard-no-shortcuts
+
+  - name: self-review-and-lint
+    instruction: 通读自己的 diff 自审一遍，跑 lint / 格式化，修掉所有报错与告警。
+    qa: lint-passes
+
+  - name: approve-before-push
+    summary: 准备 push 了，请确认是否继续。
+    approval: true

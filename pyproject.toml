@@ -66,6 +66,16 @@ Design = "https://github.com/simplerjiang/agent-foreman/blob/main/docs/DESIGN.zh
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Ship the built-in starter definitions (T6.4) as package data so they're available at runtime
+# (importlib.resources) in both source and wheel installs. Generic, redacted — no secrets.
+[tool.setuptools.package-data]
+"foreman.examples" = [
+    "definitions/*.yaml",
+    "definitions/*.md",
+    "definitions/*/*.yaml",
+    "definitions/*/*.md",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
