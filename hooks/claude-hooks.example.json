@@ -1,5 +1,6 @@
 {
   "_comment": "Example Claude Code hooks. Merge into your Claude Code settings (.claude/settings.json) or a project .claude/settings.json. Each hook POSTs the event JSON (provided by Claude Code on stdin) to Foreman's local /hooks endpoint. On Windows, prefer curl.exe. See docs/ARCHITECTURE.md.",
+  "_comment_auth": "If you set FOREMAN_AUTH_TOKEN to expose the app (e.g. via a tunnel — issue #1 P0), /hooks is gated too: add an auth header to each command, e.g. append -H \"Authorization: Bearer YOUR_TOKEN\". With no token configured (loopback-only single-user), the commands below work as-is.",
   "hooks": {
     "PreToolUse": [
       {

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from foreman.shared.events import make_event, utc_now_iso
 from foreman.shared.i18n import language_directive
@@ -120,10 +121,10 @@ class BriefingService:
     def __init__(
         self,
         llm: LLMClient | None,
-        store: object,
+        store: Any,
         *,
-        bus: object | None = None,
-        pusher: object | None = None,
+        bus: Any = None,
+        pusher: Any = None,
         language: str = "zh",
         clock=None,
         max_events: int = DEFAULT_MAX_EVENTS,
@@ -172,6 +173,7 @@ class BriefingService:
     # ── internals ─────────────────────────────────────────────────────────────────────────────
     async def _run_llm(self, goal: str, activity: str, kind: str) -> BriefingResult:
         """Call the LLM; a transient failure degrades to a note rather than 500'ing the request."""
+        assert self.llm is not None  # generate() returns no_llm before reaching here
         system = BRIEF_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_brief_prompt(goal, activity, kind=kind)
         try:

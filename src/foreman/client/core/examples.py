@@ -16,6 +16,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from importlib.resources import files
+from typing import Any
 
 from foreman.shared.events import utc_now_iso
 
@@ -93,7 +94,7 @@ def load_example_definitions() -> list[ExampleDefinition]:
     return out
 
 
-def seed_examples(store: object, *, activate: bool = True, clock=utc_now_iso) -> dict:
+def seed_examples(store: Any, *, activate: bool = True, clock=utc_now_iso) -> dict:
     """Seed the shipped examples into ``store`` — **idempotent** (DESIGN §11.2C / §765).
 
     For each example: if **any** version of (kind, name) already exists it's left untouched (skip —
@@ -132,7 +133,7 @@ def seed_examples(store: object, *, activate: bool = True, clock=utc_now_iso) ->
     return {"added": added, "skipped": skipped}
 
 
-def _exists(store: object, kind: str, name: str) -> bool:
+def _exists(store: Any, kind: str, name: str) -> bool:
     """True iff any version of (kind, name) is already in the store (idempotency guard)."""
     if not hasattr(store, "get_definitions"):
         return False

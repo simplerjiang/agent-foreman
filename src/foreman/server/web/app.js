@@ -4,6 +4,34 @@
 
 const statusEl = document.getElementById('status');
 
+// ── personal-mode access token (issue #1 P0) ────────────────────────────────────────────────────
+// When the local app is exposed (e.g. via a Cloudflare/Tailscale/frp tunnel), FOREMAN_AUTH_TOKEN
+// gates every operational call. The user pastes the token once; it's stored and attached to all
+// same-origin /api and /hooks requests as a bearer, and to the WS as a ?token= query param (a
+// browser can't set an Authorization header on a WebSocket). On 127.0.0.1 with no token set the
+// server is open, so this is a no-op for the on-machine native window.
+const TOKEN_KEY = 'foreman.token';
+function authToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
+let _promptedForToken = false;
+function promptForToken() {
+  if (_promptedForToken) return;
+  _promptedForToken = true;
+  const t = window.prompt('Access token required (FOREMAN_AUTH_TOKEN):', '');
+  if (t && t.trim()) { localStorage.setItem(TOKEN_KEY, t.trim()); location.reload(); }
+}
+const _origFetch = window.fetch.bind(window);
+window.fetch = async (input, init = {}) => {
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  const sameOrigin = url.startsWith('/') || url.startsWith(location.origin);
+  const t = authToken();
+  if (sameOrigin && t) {
+    init = { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${t}` } };
+  }
+  const r = await _origFetch(input, init);
+  if (r.status === 401 && sameOrigin) promptForToken();  // exposed app, missing/stale token
+  return r;
+};
+
 async function init() {
   if ('serviceWorker' in navigator) {
     try {
@@ -404,7 +432,11 @@ function openTimeline(sessionId) {
   eventListEl.replaceChildren();
   eventListEl.classList.remove('empty');
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws?session_id=${encodeURIComponent(sessionId)}`);
+  const t = authToken();
+  const tokenQuery = t ? `&token=${encodeURIComponent(t)}` : '';  // WS auth rides the query (P0)
+  ws = new WebSocket(
+    `${proto}://${location.host}/ws?session_id=${encodeURIComponent(sessionId)}${tokenQuery}`
+  );
   ws.addEventListener('message', (ev) => {
     try { renderEvent(JSON.parse(ev.data)); } catch (e) { console.warn('bad event', e); }
   });

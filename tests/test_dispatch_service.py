@@ -141,9 +141,19 @@ async def test_workspace_outside_allowlist_rejected(tmp_path):
     assert res["error"] == "workspace_not_allowed"
 
 
-async def test_explicit_workspace_accepted_when_no_allowlist(tmp_path):
-    # No workspaces configured → no allowlist to enforce → explicit path accepted as-is.
+async def test_explicit_workspace_rejected_when_no_allowlist(tmp_path):
+    # No workspaces configured → fail closed: an explicit path is rejected, not run in an arbitrary
+    # cwd (issue #1 P2). Previously this failed open and accepted the path as-is.
     svc = DispatchService(_cfg(), _store(tmp_path))
+    res = await svc.create("do x", workspace="E:/anywhere")
+    assert res["error"] == "workspace_not_allowed"
+
+
+async def test_explicit_workspace_accepted_when_no_allowlist_with_dev_flag(tmp_path):
+    # The escape hatch: opting into allow_unlisted_workspaces_for_dev restores accept-as-is (P2).
+    cfg = _cfg()
+    cfg.allow_unlisted_workspaces_for_dev = True
+    svc = DispatchService(cfg, _store(tmp_path))
     res = await svc.create("do x", workspace="E:/anywhere")
     assert res["ok"] and res["workspace"] == "E:/anywhere"
 

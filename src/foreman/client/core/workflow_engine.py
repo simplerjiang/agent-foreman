@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from foreman.shared.events import make_event, utc_now_iso
 
@@ -127,6 +128,7 @@ def parse_workflow(body: str, *, name: str = "") -> WorkflowSpec:
     data = _load_body(body)
     if data is None:
         return WorkflowSpec(name=name, error="workflow body is empty or not valid YAML/JSON")
+    steps_raw: Any
     if isinstance(data, list):
         steps_raw, wf_name = data, name
     elif isinstance(data, dict):
@@ -165,11 +167,11 @@ class WorkflowEngine:
 
     def __init__(
         self,
-        store: object,
+        store: Any,
         *,
-        cards: object | None = None,
-        bus: object | None = None,
-        injector: object | None = None,
+        cards: Any = None,
+        bus: Any = None,
+        injector: Any = None,
         clock=None,
     ) -> None:
         self.store = store
@@ -182,7 +184,7 @@ class WorkflowEngine:
         self._clock = clock or utc_now_iso
 
     # ── load + start ───────────────────────────────────────────────────────────────────────────
-    def load(self, workflow_name: str, *, version: int | None = None) -> tuple[object, WorkflowSpec]:
+    def load(self, workflow_name: str, *, version: int | None = None) -> tuple[Any, WorkflowSpec]:
         """Resolve a workflow definition (active version, or a specific one) and parse its skeleton.
 
         Returns ``(definition_row_or_None, spec)``. The spec carries ``error`` when the row is missing

@@ -44,6 +44,29 @@ class ServerCfg(BaseModel):
     # Server/relay DB (team mode only; DESIGN §7.2). Holds NO 秘方/diffs/LLM keys — those stay on
     # each user's local process (§8.3). Separate file from the client's StoreCfg.db_path.
     db_path: str = "foreman-server.db"
+    # ── security hardening (issue #1) ─────────────────────────────────────────────────────────
+    # Personal-mode operational APIs are gated by a shared access token (FOREMAN_AUTH_TOKEN). When
+    # no token is set, exposing them on a non-loopback bind (or with a public_base_url) FAILS
+    # CLOSED at startup — anyone with the URL could otherwise read sessions / dispatch work /
+    # approve actions (issue #1 P0). Set this true ONLY for a trusted LAN where you accept that.
+    allow_insecure_bind: bool = False
+    # Redirect http→https at the app layer (issue #1 P2). Prefer terminating TLS + redirecting at
+    # Cloudflare/your proxy; this is a defense-in-depth fallback that honours X-Forwarded-Proto so
+    # it won't loop behind a TLS-terminating proxy. Off by default.
+    force_https: bool = False
+    # Emit Strict-Transport-Security. Turn on ONLY once HTTPS is stable end-to-end (issue #1 P2) —
+    # a premature HSTS header can lock clients out of an http fallback. max-age seconds.
+    hsts: bool = False
+    hsts_max_age: int = 31536000
+    # Content-Security-Policy for the PWA (conservative default — the front-end has no inline
+    # script/style, so 'self' is sufficient). Empty string disables the header (issue #1 P2).
+    csp: str = (
+        "default-src 'self'; img-src 'self' data:; connect-src 'self'; "
+        "base-uri 'none'; frame-ancestors 'none'"
+    )
+    # Include the DB path in /health. Off by default so the public readiness probe doesn't leak the
+    # deployment's filesystem layout (issue #1 P2).
+    health_show_db: bool = False
 
 
 class LLMCfg(BaseModel):
@@ -152,6 +175,10 @@ class Config(BaseModel):
     llm: LLMCfg = LLMCfg()
     store: StoreCfg = StoreCfg()
     workspaces: list[WorkspaceCfg] = Field(default_factory=list)
+    # When no workspace allowlist is configured, a dispatch with an explicit workspace path FAILS
+    # CLOSED (rejected) unless this dev flag is set — so a phone dispatch can never launch an agent
+    # in an arbitrary cwd on a server with no roots configured (issue #1 P2). Defaults false.
+    allow_unlisted_workspaces_for_dev: bool = False
     agents: dict[str, AgentCfg] = Field(default_factory=dict)
     monitor: MonitorCfg = MonitorCfg()
     gates: GatesCfg = GatesCfg()

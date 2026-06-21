@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets as _secrets
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -177,19 +180,78 @@ def _bearer_token(request: Request) -> str:
     return token.strip() if scheme.lower() == "bearer" else ""
 
 
+# Hosts that mean "only this machine" — a personal app bound here is not network-exposed (the
+# tunnel case binds loopback too, so the request-layer token is what protects an exposed app).
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "0.0.0.0", ""}
+
+# Operational endpoints are everything EXCEPT these public ones. The PWA shell (static files,
+# manifest, service worker) is served by the StaticFiles mount and is public by design; only
+# /health and the unauthenticated auth-bootstrap endpoints are public among the routed paths.
+_PUBLIC_API_PATHS = frozenset(
+    {"/api/auth/login", "/api/auth/redeem", "/api/push/vapid-public-key"}
+)
+
+
+def _is_operational_path(path: str) -> bool:
+    """True if a request path must clear the access guard (issue #1 P0).
+
+    Operational = the local REST surface (/api/*) plus the hook sink (/hooks). The static PWA
+    shell and /health are public. WebSockets (/ws, /relay) authorize inside their own handlers
+    (HTTP middleware never sees a websocket scope)."""
+    if path in _PUBLIC_API_PATHS:
+        return False
+    return path.startswith("/api/") or path == "/hooks"
+
+
+def _effective_scheme(request: Request) -> str:
+    """Client-facing scheme, trusting a proxy's X-Forwarded-Proto (Cloudflare terminates TLS, so
+    request.url.scheme is http on the proxy→app hop). Used for the http→https redirect so it does
+    not loop behind a TLS-terminating proxy."""
+    fwd = request.headers.get("x-forwarded-proto", "")
+    if fwd:
+        return fwd.split(",")[0].strip().lower()
+    return (request.url.scheme or "http").lower()
+
+
+def _ensure_safe_exposure(cfg: Config, host: str | None = None) -> None:
+    """Fail closed if personal-mode operational APIs would be exposed without protection (P0).
+
+    Personal mode has no per-account auth; its only gate is the shared access token
+    (FOREMAN_AUTH_TOKEN). Binding to a non-loopback host — or advertising a public_base_url —
+    without that token would let anyone with the URL read sessions, dispatch work, or approve
+    actions, so we refuse to start. Team mode (per-account auth) and an explicit
+    `server.allow_insecure_bind` opt-out are exempt. `host` overrides cfg.server.host for callers
+    (e.g. `foreman app`) that bind a host of their own. Raises RuntimeError when unsafe."""
+    if (cfg.server.mode or "personal").strip().lower() == "team":
+        return
+    if cfg.secrets.auth_token or cfg.server.allow_insecure_bind:
+        return
+    bind = (host if host is not None else cfg.server.host or "").strip().lower()
+    exposed = bind not in _LOOPBACK_HOSTS or bool((cfg.server.public_base_url or "").strip())
+    # 0.0.0.0 binds every interface — treat it as exposed even though it is in the set above.
+    if bind == "0.0.0.0":
+        exposed = True
+    if exposed:
+        raise RuntimeError(
+            "Refusing to expose personal-mode operational APIs without an access token. "
+            "Set FOREMAN_AUTH_TOKEN, switch server.mode to 'team', or (trusted LAN only) set "
+            "server.allow_insecure_bind: true. See deploy/README.md (issue #1 P0)."
+        )
+
+
 def create_app(
     cfg: Config,
-    store: object | None = None,
+    store: Any = None,
     bus: EventBus | None = None,
-    hooks: object | None = None,
-    relay: object | None = None,
-    gate: object | None = None,
-    auth: object | None = None,
-    cards: object | None = None,
-    dispatcher: object | None = None,
-    briefings: object | None = None,
-    definitions: object | None = None,
-    cache: object | None = None,
+    hooks: Any = None,
+    relay: Any = None,
+    gate: Any = None,
+    auth: Any = None,
+    cards: Any = None,
+    dispatcher: Any = None,
+    briefings: Any = None,
+    definitions: Any = None,
+    cache: Any = None,
 ) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
@@ -210,6 +272,62 @@ def create_app(
     app.state.briefings = briefings
     app.state.definitions = definitions
     app.state.cache = cache
+
+    # ── access guard (issue #1 P0): no operational endpoint is reachable unauthenticated ───────
+    # Personal mode (no AuthManager injected): a configured shared token (FOREMAN_AUTH_TOKEN) gates
+    # every /api/* call and /hooks; the PWA pastes it once and sends it as a bearer. With no token
+    # the app is single-user local — startup (_ensure_safe_exposure) refuses to bind it to a public
+    # interface, so "open" only ever means loopback.
+    # Team mode (AuthManager injected): each operational endpoint already enforces a per-ACCOUNT
+    # token via require_account/require_admin, so the shared-token middleware stays out of the way.
+    _shared_token = (cfg.secrets.auth_token or "").strip()
+
+    def _access_authorized(request: Request) -> bool:
+        if auth is not None:
+            return True  # team mode: per-route account guards enforce auth
+        if not _shared_token:
+            return True  # personal local mode (exposure blocked at startup)
+        return _secrets.compare_digest(_bearer_token(request), _shared_token)
+
+    def _ws_authorized(token: str) -> bool:
+        """Authorize a websocket (browsers can't set Authorization headers, so the token rides a
+        query param). Team mode requires a valid account token; personal mode the shared token."""
+        if auth is not None:
+            return auth.resolve_token(token) is not None
+        if not _shared_token:
+            return True
+        return _secrets.compare_digest(token or "", _shared_token)
+
+    def _security_headers(response: Response) -> None:
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if cfg.server.csp:
+            response.headers.setdefault("Content-Security-Policy", cfg.server.csp)
+        if cfg.server.hsts:
+            response.headers.setdefault(
+                "Strict-Transport-Security",
+                f"max-age={int(cfg.server.hsts_max_age)}; includeSubDomains",
+            )
+
+    @app.middleware("http")
+    async def _guard(request: Request, call_next):
+        # 1) optional http→https redirect (defense-in-depth; prefer doing this at the proxy — P2).
+        if cfg.server.force_https and _effective_scheme(request) == "http":
+            target = request.url.replace(scheme="https")
+            resp: Response = RedirectResponse(str(target), status_code=308)
+            _security_headers(resp)
+            return resp
+        # 2) fail-closed access guard on operational endpoints (P0).
+        if _is_operational_path(request.url.path) and not _access_authorized(request):
+            resp = JSONResponse({"detail": "unauthorized"}, status_code=401)
+            resp.headers["WWW-Authenticate"] = "Bearer"
+            _security_headers(resp)
+            return resp
+        # 3) hardening headers on every response (P2).
+        response = await call_next(request)
+        _security_headers(response)
+        return response
 
     def require_account(request: Request):
         """Resolve the Authorization bearer token to an active account, or raise 401/503.
@@ -234,12 +352,16 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict:
-        return {
+        """Public readiness probe. Non-sensitive by default — the DB path is only included when
+        server.health_show_db is set, so the public endpoint doesn't leak deployment paths (P2)."""
+        out: dict = {
             "ok": True,
             "version": __version__,
             "agents": sorted(k for k, a in cfg.agents.items() if a.enabled),
-            "db": cfg.store.db_path,
         }
+        if cfg.server.health_show_db:
+            out["db"] = cfg.store.db_path
+        return out
 
     @app.get("/api/sessions")
     async def list_sessions() -> list[dict]:
@@ -735,8 +857,18 @@ def create_app(
         return await hooks.handle(hook_name, payload, session_id)
 
     @app.websocket("/ws")
-    async def ws_endpoint(websocket: WebSocket, session_id: str | None = None) -> None:
-        """Stream events: backlog for ?session_id (from the store), then live from the bus."""
+    async def ws_endpoint(
+        websocket: WebSocket, session_id: str | None = None, token: str = ""
+    ) -> None:
+        """Stream events: backlog for ?session_id (from the store), then live from the bus.
+
+        Authorized like the REST surface (issue #1 P0): the access token rides a ?token= query
+        param since browsers can't set an Authorization header on a WebSocket. Unauthorized →
+        accept-then-close(1008) rather than a bare upgrade refusal."""
+        if not _ws_authorized(token):
+            await websocket.accept()
+            await websocket.close(code=1008)
+            return
         await websocket.accept()
         if store is not None and session_id:
             for e in store.get_events(session_id):
@@ -797,6 +929,8 @@ def build_serve_app(cfg: Config) -> FastAPI:
     process; `store` stays None (the relay box has no client-style local store), so the personal
     session/event endpoints 503 while the account-scoped /api/cache/* endpoints serve the cache.
     """
+    # Fail closed before binding: never expose unprotected personal-mode operational APIs (P0).
+    _ensure_safe_exposure(cfg)
     if (cfg.server.mode or "personal").strip().lower() != "team":
         return create_app(cfg)
 

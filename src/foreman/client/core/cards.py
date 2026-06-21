@@ -22,6 +22,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from foreman.shared.events import utc_now_iso
 
@@ -206,9 +207,9 @@ class CardService:
 
     def __init__(
         self,
-        store: object,
+        store: Any,
         *,
-        bus: object | None = None,
+        bus: Any = None,
         checkpoint_factory=None,
         executor=None,
         clock=None,

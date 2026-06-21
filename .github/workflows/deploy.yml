@@ -1,11 +1,13 @@
 name: Deploy to server
 
-# On push to main, deploy the server-side component (PWA + /health now; relay later).
-# Connects as the unprivileged `foreman` user and runs the on-server deploy script.
+# On push to main: run the full test/static gate FIRST, and only deploy if it passes (issue #1 P1).
+# Deploy connects as the unprivileged `foreman` user and runs the on-server deploy script.
 # Secrets (set in repo settings, never committed): DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY.
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -17,7 +19,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ── gate: tests + static checks + a server smoke test ──────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (both sides + dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[client,server,dev]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Types (mypy)
+        run: mypy src
+      - name: Unit tests (pytest)
+        run: python -m pytest -q
+      - name: Server smoke test (foreman serve -> /health)
+        run: |
+          set -euo pipefail
+          foreman serve --host 127.0.0.1 --port 8899 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:8899/health" >/dev/null 2>&1; then
+              echo "health OK after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::server did not become healthy in time"; exit 1
+
+  # ── deploy: only after the gate is green ──────────────────────────────────────────────────────
   deploy:
+    needs: test
+    # Don't deploy on pull_request events — only on a real push to main (or manual dispatch).
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH

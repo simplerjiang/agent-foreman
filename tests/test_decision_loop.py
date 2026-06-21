@@ -105,14 +105,14 @@ def _git_workspace(tmp_path):
     return ws
 
 
-def _loop(store, *, operator, auditor, toolbelt=None, gate_cfg=None, bus=None):
+def _loop(store, *, operator, auditor, toolbelt=None, gate_cfg=None, bus=None, autonomy_level=None):
     from foreman.client.core.gate import Gate
 
     gate = Gate(gate_cfg or GatesCfg(requires_approval=["git push"], needs_strategy=["pip install"]))
     cards = CardService(store, bus=bus)
     loop = DecisionLoop(
         store=store, gate=gate, cards=cards, operator=operator, auditor=auditor,
-        bus=bus, toolbelt=toolbelt,
+        bus=bus, toolbelt=toolbelt, autonomy_level=autonomy_level,
     )
     cards.executor = loop.on_card_decision
     return loop, cards
@@ -148,6 +148,40 @@ async def test_observe_reject_drops_without_a_card(tmp_path):
     assert res["results"][0]["outcome"] == "rejected"
     assert cards.list_cards("s1") == []
     assert store.get_action(res["results"][0]["action_id"]).status == "rejected"
+
+
+async def test_observe_honors_config_baseline_when_no_db_override(tmp_path):
+    """Config baseline (cfg.autonomy.level=3) drives the loop with no DB override (issue #1 P1).
+
+    The bug: _level() read only config_kv and normalized a missing setting to level 1, so a config
+    of level 3 was silently demoted — the UI showed 3 but a safe action still carded. With the
+    baseline wired in, a safe action auto-executes without `level=` being passed to observe()."""
+    store = _store(tmp_path)
+    ws = _git_workspace(tmp_path)
+    store.add_session(Session(id="s1", goal="g", workspace=str(ws)))
+    op = _FakeOperator(_OpResult(proposals=[_Proposal(command="echo hi", kind="shell")]))
+    tb = _FakeToolbelt(workspace=ws)
+    loop, _cards = _loop(
+        store, operator=op, auditor=_FakeAuditor(verdict="pass"), toolbelt=tb, autonomy_level=3
+    )
+    res = await loop.observe("s1", "g", "out")  # NO explicit level → falls back to the baseline
+    assert res["results"][0]["outcome"] == "auto"
+    assert tb.calls == [{"command": "echo hi", "approved": True}]
+
+
+async def test_db_override_beats_config_baseline(tmp_path):
+    """A written config_kv autonomy.level wins over the construction baseline (the UI dial is the
+    runtime source of truth; the baseline is only the default before one is set) — issue #1 P1."""
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="g"))
+    store.set_setting("autonomy.level", "1")  # user dialed back to ask-everything
+    op = _FakeOperator(_OpResult(proposals=[_Proposal(command="echo hi", kind="shell")]))
+    loop, cards = _loop(
+        store, operator=op, auditor=_FakeAuditor(verdict="pass"), autonomy_level=3
+    )
+    res = await loop.observe("s1", "g", "out")
+    assert res["results"][0]["outcome"] == "card"  # DB override 1 → card, not the baseline-3 auto
+    assert len(cards.list_cards("s1")) == 1
 
 
 async def test_observe_escalate_always_cards_even_at_level_3(tmp_path):
