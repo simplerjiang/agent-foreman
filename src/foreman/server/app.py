@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -144,6 +146,30 @@ class _DefinitionImportBody(BaseModel):
     bundle: dict
 
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
+
+
+def _compute_asset_ver() -> str:
+    """Cache-busting token stamped into the PWA's ``?v=…`` asset URLs. Changes every deploy so
+    Cloudflare's edge cache (and browsers) refetch the CSS/JS instead of serving a stale copy.
+    Prefers the deployed git commit (the server deploy does ``git reset --hard origin/main``),
+    falling back to the package version if git isn't available (e.g. a non-repo install)."""
+    repo = Path(__file__).resolve().parents[3]
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(repo), capture_output=True, text=True, timeout=3, check=True,
+        )
+        sha = out.stdout.strip()
+        if sha:
+            return sha
+    except Exception:  # noqa: BLE001 — git missing / not a repo / timeout → fall back
+        pass
+    return __version__
+
+
+# Computed once at import (server start). The deploy restarts the service after the git reset,
+# so this reflects the just-deployed commit.
+ASSET_VER = _compute_asset_ver()
 
 
 def _session_to_dict(s) -> dict:
@@ -775,8 +801,27 @@ def create_app(
             return
         await relay.serve(websocket)
 
-    # Serve the PWA if present (mounted last so it doesn't shadow API routes).
+    # Serve the PWA if present (mounted last so it doesn't shadow API routes). The HTML entry
+    # pages go through a thin wrapper that stamps ASSET_VER into their ``?v=__VER__`` asset tokens
+    # so every deploy busts Cloudflare's edge cache for the CSS/JS. HTML itself is served dynamically
+    # (never edge-cached), so the new tokens reach browsers immediately. Other assets (css/js/icons)
+    # fall through to StaticFiles below.
     if WEB_DIR.exists():
+        def _render_page(name: str) -> HTMLResponse:
+            html = (WEB_DIR / name).read_text(encoding="utf-8").replace("__VER__", ASSET_VER)
+            return HTMLResponse(html)
+
+        async def _serve_root() -> HTMLResponse:
+            return _render_page("index.html")
+
+        app.add_api_route("/", _serve_root, include_in_schema=False)
+        for _page in ("index.html", "admin.html", "keys.html", "redeem.html"):
+            def _make(name: str):
+                async def _handler() -> HTMLResponse:
+                    return _render_page(name)
+                return _handler
+            app.add_api_route(f"/{_page}", _make(_page), include_in_schema=False)
+
         app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
     return app
