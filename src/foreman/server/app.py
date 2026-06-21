@@ -686,9 +686,12 @@ def create_app(
         if auth is None:
             raise HTTPException(status_code=503, detail="auth not configured")
         res = auth.login(body.username, body.password)
-        if not res.get("ok"):
-            raise HTTPException(status_code=401, detail="invalid credentials")
-        return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
+        if res.get("ok"):
+            return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
+        if res.get("error") == "locked":
+            # Brute-force throttle tripped — uniform per submitted username, so no enumeration leak.
+            raise HTTPException(status_code=429, detail="too many attempts, try again later")
+        raise HTTPException(status_code=401, detail="invalid credentials")
 
     @app.post("/api/auth/logout")
     async def auth_logout(request: Request) -> dict:
