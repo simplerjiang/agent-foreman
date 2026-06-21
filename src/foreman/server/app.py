@@ -639,3 +639,35 @@ def create_app(
         app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
     return app
+
+
+def build_serve_app(cfg: Config) -> FastAPI:
+    """Assemble the app that `foreman serve` runs (DESIGN §8.5 live wiring, T7.1).
+
+    Personal mode (default, `server.mode != "team"`): no relay/accounts — just /health + PWA +
+    the single-user REST/WS the tunnel exposes. Identical to the previous `create_app(cfg)`, so
+    the deployed server keeps behaving exactly as before unless team mode is opted into.
+
+    Team mode (`server.mode == "team"`): build the server store (accounts / access_keys /
+    process_registry), an AuthManager (user login + key mgmt) and a Relay, and inject them so
+    local processes dial in at /relay and the PWA routes BY ACCOUNT to the right machine. The
+    team server holds NO 秘方 / diffs / per-user LLM keys (§8.3) — those stay on each local
+    process; `store` is deliberately left None here (the display cache that backs the PWA's
+    session/card endpoints on a relay box is T7.5), so those endpoints 503 until then.
+    """
+    if (cfg.server.mode or "personal").strip().lower() != "team":
+        return create_app(cfg)
+
+    # Lazy imports: keep create_app's import surface unchanged for personal mode / tests.
+    from .auth_manager import AuthManager
+    from .relay import Relay
+    from .store import ServerStore
+
+    server_store = ServerStore(cfg.server.db_path)
+    server_store.init()
+    bus = EventBus()
+    relay = Relay(server_store, bus)
+    auth = AuthManager(server_store)
+    # store stays None: the team relay box has no client-style local store (秘方/events live on
+    # each user's machine); the display cache is T7.5. relay + auth carry the ServerStore.
+    return create_app(cfg, bus=bus, relay=relay, auth=auth)

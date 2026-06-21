@@ -10,9 +10,14 @@ connection with async `send(str)` / `recv() -> str` / `close()`. The default fac
 imports `websockets` (an optional client dep); tests inject a fake. This keeps the module
 importable without a websocket lib installed and the reconnect logic unit-testable.
 
-Live wiring (a long-running `foreman` command that owns this loop, plus a periodic
-client-initiated heartbeat timer) is deferred to the P4 decision loop / live rollout — this
-task delivers the connector + handshake + pong + backoff, all mock-tested.
+While connected, the connector also runs a periodic client-initiated heartbeat timer (§8.5
+③ "两端定时 ping/pong"): every `heartbeat_interval` seconds it sends a ping; the relay refreshes
+`last_heartbeat` and replies pong. It replies pong only to a *ping* (never to a pong) so the
+two ends don't bounce a heartbeat forever.
+
+The remaining live wiring (the running `foreman` command that owns this loop with a real
+access key + wss dial-out to a deployed relay) is the credential-gated team rollout — built
+and mock-tested here; the live PC dial-out is hooked up in the live rollout (see TASKS T7.1).
 """
 
 from __future__ import annotations
@@ -54,6 +59,8 @@ class RelayConnector:
         backoff_cap: float = 60.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        heartbeat_interval: float = 30.0,
+        heartbeat_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.url = url
         self.access_key = access_key
@@ -65,6 +72,10 @@ class RelayConnector:
         self._backoff_cap = backoff_cap
         self._sleep = sleep
         self._clock = clock
+        # Periodic client-initiated keep-alive (§8.5 ③). <= 0 disables it. A SEPARATE sleep from
+        # the backoff `sleep` so injecting one in a reconnect test doesn't perturb the other.
+        self._heartbeat_interval = heartbeat_interval
+        self._heartbeat_sleep = heartbeat_sleep
         self._handshook = False  # set per-session once the relay accepts our key
 
     def hello(self) -> Envelope:
@@ -79,11 +90,12 @@ class RelayConnector:
         )
 
     async def run_once(self, conn) -> None:
-        """One connected session: handshake, then read frames until the line drops.
+        """One connected session: handshake, then read frames + send heartbeats until it drops.
 
-        Replies pong to relay heartbeats (§8.5 ③). Raises RelayAuthError if the relay denies
-        the handshake — the caller's reconnect loop treats that as fatal (no point retrying a
-        revoked key). Any other read error propagates so the loop reconnects with backoff.
+        Replies pong to relay pings and sends its own periodic pings (§8.5 ③). Raises
+        RelayAuthError if the relay denies the handshake — the caller's reconnect loop treats
+        that as fatal (no point retrying a revoked key). Any other read error propagates so the
+        loop reconnects with backoff.
         """
         await conn.send(self.hello().to_json())
         ack = Envelope.from_json(await conn.recv())
@@ -94,13 +106,43 @@ class RelayConnector:
             # Explicit denial (revoked/unknown/expired) — fatal; retrying a bad key is pointless.
             raise RelayAuthError(str(ack.payload.get("reason") or "handshake denied"))
         self._handshook = True
+
+        tasks = [asyncio.create_task(self._read_loop(conn))]
+        if self._heartbeat_interval and self._heartbeat_interval > 0:
+            tasks.append(asyncio.create_task(self._heartbeat_loop(conn)))
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        # Re-raise the first finished task's error (the read loop normally ends with the drop),
+        # so run()'s reconnect/backoff still triggers exactly as before.
+        for t in done:
+            exc = t.exception()
+            if exc is not None:
+                raise exc
+
+    async def _read_loop(self, conn) -> None:
+        """Read frames until the line drops, replying pong to pings (never to pongs — §8.5 ③)."""
         while True:
             env = Envelope.from_json(await conn.recv())
             if env.kind == KIND_HEARTBEAT:
-                await conn.send(Envelope(kind=KIND_HEARTBEAT, payload={"pong": True}).to_json())
+                if not env.payload.get("pong"):  # a ping → pong it; a pong → already alive, drop it
+                    await conn.send(
+                        Envelope(kind=KIND_HEARTBEAT, payload={"pong": True}).to_json()
+                    )
                 continue
             if self._on_frame is not None:
                 await self._on_frame(env)
+
+    async def _heartbeat_loop(self, conn) -> None:
+        """Send a ping every `heartbeat_interval` seconds (§8.5 ③). run_once cancels it on a normal
+        disconnect; if a ping itself can't be sent the line is dead, so the error ends the session
+        and run()'s backoff reconnects (same path as a read error)."""
+        ping = Envelope(kind=KIND_HEARTBEAT, payload={"ping": True}).to_json()
+        while True:
+            await self._heartbeat_sleep(self._heartbeat_interval)
+            await conn.send(ping)
 
     async def run(self, *, max_attempts: int | None = None) -> None:
         """Keep a connection up forever, reconnecting with exponential backoff (§8.5 ③).

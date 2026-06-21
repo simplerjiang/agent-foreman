@@ -69,11 +69,12 @@ def serve(
     if port:
         cfg.server.port = port
 
-    from .server.app import create_app
+    from .server.app import build_serve_app
 
-    rprint(f"[bold green]Foreman[/] v{__version__} starting on "
+    mode = "team (relay 总机)" if (cfg.server.mode or "").lower() == "team" else "personal"
+    rprint(f"[bold green]Foreman[/] v{__version__} [{mode}] starting on "
            f"http://{cfg.server.host}:{cfg.server.port}")
-    uvicorn.run(create_app(cfg), host=cfg.server.host, port=cfg.server.port)
+    uvicorn.run(build_serve_app(cfg), host=cfg.server.host, port=cfg.server.port)
 
 
 @app.command()

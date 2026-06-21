@@ -36,6 +36,14 @@ class ServerCfg(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8787
     public_base_url: str = ""
+    # "personal" (default) | "team". Team mode makes `foreman serve` the relay 总机 (DESIGN §8.5):
+    # it builds the server store (accounts / access_keys / process_registry), an AuthManager and a
+    # Relay, so local processes dial in at /relay and the PWA routes by account. Personal mode keeps
+    # serve as today — just /health + PWA + the single-user REST/WS the tunnel exposes.
+    mode: str = "personal"
+    # Server/relay DB (team mode only; DESIGN §7.2). Holds NO 秘方/diffs/LLM keys — those stay on
+    # each user's local process (§8.3). Separate file from the client's StoreCfg.db_path.
+    db_path: str = "foreman-server.db"
 
 
 class LLMCfg(BaseModel):

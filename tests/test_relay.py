@@ -8,6 +8,8 @@ wss transport is duck-typed on both ends and faked here (the live dialer is defe
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
@@ -419,3 +421,154 @@ def test_relay_endpoint_delegates_to_injected_relay(tmp_path):
     except WebSocketDisconnect:
         pass
     assert calls == [1]
+
+
+# ── heartbeat: ping/pong keep-alive without a bounce (DESIGN §8.5 ③, T7.1) ────────────────────────
+async def test_read_loop_pongs_a_ping_but_stays_quiet_for_a_pong():
+    """A relay *ping* gets a pong; a relay *pong* is terminal — replying would bounce forever."""
+    conn = _FakeClientConn(
+        [
+            Envelope(kind=KIND_HEARTBEAT, payload={"ping": True}).to_json(),  # relay ping -> we pong
+            Envelope(kind=KIND_HEARTBEAT, payload={"pong": True}).to_json(),  # relay pong -> quiet
+        ]
+    )
+    rc = RelayConnector("wss://x/relay", "sim", process_id="p1")
+    with pytest.raises(ConnectionError):  # recv exhausts -> session ends
+        await rc._read_loop(conn)
+    replies = [Envelope.from_json(s) for s in conn.sent]
+    assert len(replies) == 1  # exactly one pong — the bare pong was NOT echoed
+    assert replies[0].kind == KIND_HEARTBEAT and replies[0].payload.get("pong") is True
+
+
+async def test_run_once_sends_periodic_heartbeats():
+    """run_once runs a client-initiated heartbeat timer alongside the read loop (§8.5 ③)."""
+    done = asyncio.Event()
+    fired = {"n": 0}
+
+    async def hb_sleep(_interval: float) -> None:
+        fired["n"] += 1
+        if fired["n"] >= 3:  # after two pings, unblock the read loop and stop pinging
+            done.set()
+            await asyncio.Event().wait()  # block this task forever (run_once will cancel it)
+
+    class _BlockingConn:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+            self._first = True
+
+        async def send(self, data: str) -> None:
+            self.sent.append(data)
+
+        async def recv(self) -> str:
+            if self._first:  # the handshake ack
+                self._first = False
+                return Envelope(kind=KIND_HELLO_ACK, payload={"ok": True}).to_json()
+            await done.wait()  # keep the session alive until the heartbeats have fired
+            raise ConnectionError("closed")
+
+        async def close(self) -> None:
+            pass
+
+    conn = _BlockingConn()
+    rc = RelayConnector(
+        "wss://x/relay", "sim", process_id="p1",
+        heartbeat_interval=0.01, heartbeat_sleep=hb_sleep,
+    )
+    with pytest.raises(ConnectionError):
+        await rc.run_once(conn)
+
+    sent = [Envelope.from_json(s) for s in conn.sent]
+    pings = [e for e in sent if e.kind == KIND_HEARTBEAT and e.payload.get("ping")]
+    assert len(pings) == 2  # the heartbeat timer fired periodically while connected
+
+
+async def test_server_on_frame_pongs_a_ping_and_drops_a_pong(tmp_path):
+    """Server mirror of the no-bounce rule: refresh liveness on any heartbeat, reply only to a ping."""
+    st, _ = _seed(tmp_path)
+    relay = Relay(st, now=lambda: "2026-06-20T00:00:00Z")
+    ws = _SendOnlyWS()
+    client = RelayClient(account_id="a1", process_id="p1", key_id="k1", name="", ws=ws)
+    relay.register(client)
+
+    # a pong from the local process: liveness refreshed, but NO reply (would bounce, §8.5 ③)
+    await relay._on_frame(client, Envelope(kind=KIND_HEARTBEAT, payload={"pong": True}).to_dict())
+    assert ws.sent == []
+    assert st.get_online_processes("a1")  # still online (heartbeat refreshed)
+
+    # a ping from the local process: replied with a pong
+    await relay._on_frame(client, Envelope(kind=KIND_HEARTBEAT, payload={"ping": True}).to_dict())
+    assert len(ws.sent) == 1 and ws.sent[0]["payload"]["pong"] is True
+
+
+# ── serve wiring: foreman serve assembles personal vs team mode (DESIGN §8.5, T7.1) ───────────────
+def test_build_serve_app_personal_mode_has_no_relay_or_auth(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from foreman.server.app import build_serve_app
+    from foreman.shared.config import load_config
+
+    app = build_serve_app(load_config(tmp_path / "none.yaml"))  # default mode = personal
+    assert app.state.relay is None and app.state.auth is None
+    assert TestClient(app).get("/health").status_code == 200
+
+
+def test_build_serve_app_team_mode_wires_relay_and_auth(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from foreman.server.app import build_serve_app
+    from foreman.shared.config import load_config
+
+    cfg = load_config(tmp_path / "none.yaml")
+    cfg.server.mode = "team"
+    cfg.server.db_path = str(tmp_path / "srv.db")
+    app = build_serve_app(cfg)
+
+    assert app.state.relay is not None  # relay 总机 wired (DESIGN §8.5)
+    assert app.state.auth is not None  # user login + key mgmt wired (§8.2)
+    assert app.state.store is None  # display cache (T7.5) not wired yet → session endpoints 503
+    c = TestClient(app)
+    assert c.get("/health").status_code == 200
+    assert c.get("/api/sessions").status_code == 503  # no display cache on the relay box
+    # auth IS configured, so bad creds are a 401 (not the 503 "auth not configured" of personal mode)
+    assert c.post("/api/auth/login", json={"username": "x", "password": "y"}).status_code == 401
+
+
+def test_team_relay_multiple_processes_dial_in_routed_by_account(tmp_path):
+    """End-to-end through the REAL /relay endpoint: several local processes dial in and the
+    registry separates them BY ACCOUNT (DESIGN §8.5 ① outbound接入 + ② 按账号路由)."""
+    from fastapi.testclient import TestClient
+
+    from foreman.server.app import create_app
+    from foreman.shared.config import load_config
+
+    st = ServerStore(str(tmp_path / "team.db"))
+    st.init()
+    st.add_account(Account(id="a1", username="alice"))
+    st.add_account(Account(id="a2", username="bob"))
+    st.add_access_key(AccessKey(id="k1", account_id="a1", key_hash=hash_access_key("alice-1")))
+    st.add_access_key(AccessKey(id="k2", account_id="a1", key_hash=hash_access_key("alice-2")))
+    st.add_access_key(AccessKey(id="k3", account_id="a2", key_hash=hash_access_key("bob-1")))
+    relay = Relay(st)
+    client = TestClient(create_app(load_config(tmp_path / "none.yaml"), relay=relay))
+
+    def _hello(plain: str, name: str) -> dict:
+        return Envelope(kind=KIND_HELLO, payload={"access_key": plain, "name": name}).to_dict()
+
+    # Two of alice's machines + one of bob's, all dialing the same relay concurrently.
+    with client.websocket_connect("/relay") as w1:
+        w1.send_json(_hello("alice-1", "box1"))
+        assert w1.receive_json()["payload"]["ok"] is True
+        with client.websocket_connect("/relay") as w2:
+            w2.send_json(_hello("alice-2", "box2"))
+            assert w2.receive_json()["payload"]["ok"] is True
+            with client.websocket_connect("/relay") as w3:
+                w3.send_json(_hello("bob-1", "bbox"))
+                assert w3.receive_json()["payload"]["ok"] is True
+
+                # process_id is server-derived from the key → k1/k2 are alice's, k3 is bob's.
+                assert {p.id for p in st.get_online_processes("a1")} == {"k1", "k2"}
+                assert {p.id for p in st.get_online_processes("a2")} == {"k3"}
+                assert {c.process_id for c in relay.clients_for("a1")} == {"k1", "k2"}
+                assert {c.process_id for c in relay.clients_for("a2")} == {"k3"}
+                # a1's traffic never reaches a2's machine and vice-versa
+                assert relay.clients_for("a1", process_id="k3") == []

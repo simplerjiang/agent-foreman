@@ -192,8 +192,12 @@ class Relay:
         """
         env = Envelope.from_dict(msg)
         if env.kind == KIND_HEARTBEAT:
+            # Any heartbeat (ping or pong) proves the process is alive → refresh last_heartbeat.
             self.store.set_process_online(client.process_id, True, self._now())
-            await client.send(Envelope(kind=KIND_HEARTBEAT, payload={"pong": True}))
+            # Reply pong ONLY to a ping (a bare heartbeat). A heartbeat carrying pong=True is the
+            # peer's reply to OUR ping — replying again would bounce forever (§8.5 ③ ping/pong).
+            if not env.payload.get("pong"):
+                await client.send(Envelope(kind=KIND_HEARTBEAT, payload={"pong": True}))
 
     async def _publish_health(self, client: RelayClient, *, online: bool) -> None:
         if self.bus is None:
