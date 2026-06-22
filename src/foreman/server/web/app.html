@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#141414" media="(prefers-color-scheme: dark)" />
+  <title>Foreman · 控制台</title>
+  <style>
+    /* Pre-React shell only. Ant Design owns the rest of the styling at runtime (CSS-in-JS). */
+    html, body { margin: 0; padding: 0; height: 100%; }
+    #root { min-height: 100vh; }
+    .boot {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 14px; font-family: -apple-system, BlinkMacSystemFont,
+      "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; color: #8c8c8c;
+      background: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) { .boot { background: #141414; color: #888; } }
+    .boot .spin {
+      width: 30px; height: 30px; border: 3px solid currentColor; border-top-color: transparent;
+      border-radius: 50%; animation: boot-spin .8s linear infinite; opacity: .6;
+    }
+    @keyframes boot-spin { to { transform: rotate(360deg); } }
+    .boot .err { max-width: 420px; text-align: center; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="boot" id="boot">
+      <div class="spin"></div>
+      <div>🦺 Foreman 控制台加载中…</div>
+    </div>
+  </div>
+
+  <!-- Vendored UMD bundles (no build step). Versioned by their own library version so browsers
+       cache them long-term; only the app code below is busted on every deploy via ?v=__VER__. -->
+  <script src="/vendor/react.production.min.js?v=18.3.1"></script>
+  <script src="/vendor/react-dom.production.min.js?v=18.3.1"></script>
+  <script src="/vendor/dayjs.min.js?v=1.11.13"></script>
+  <script src="/vendor/ant-design-icons.min.js?v=5.5.2"></script>
+  <script src="/vendor/antd.min.js?v=5.22.5"></script>
+  <script src="/vendor/htm.umd.js?v=3.1.1"></script>
+  <script src="/admin-app.js?v=__VER__"></script>
+</body>
+</html>

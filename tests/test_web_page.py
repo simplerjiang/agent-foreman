@@ -58,19 +58,30 @@ def test_decision_card_and_detail_wired(tmp_path):
     assert "renderDiff" in js and "textContent" in js and ".innerHTML" not in js
 
 
-def test_admin_console_and_redeem_pages_ship_and_wire(tmp_path):
-    """The admin console + invite-redemption pages ship and wire the right endpoints (T7.2 §8.2)."""
+def test_admin_console_spa_ships_and_wires(tmp_path):
+    """The new Ant Design console SPA ships and is served at /app.html and /admin.html (the
+    back-compat alias). It's login-gated client-side and wires the admin dashboard endpoints."""
     c = TestClient(create_app(load_config()))
-    admin_html = c.get("/admin.html")
-    assert admin_html.status_code == 200 and "data-i18n" in admin_html.text
-    admin_js = c.get("/admin.js").text
-    assert "/api/admin/accounts" in admin_js and "/api/auth/login" in admin_js
-    assert "invite_code" in admin_js and "/status" in admin_js
-    # account-supplied text is rendered via textContent only — never innerHTML (XSS).
-    assert "textContent" in admin_js and ".innerHTML" not in admin_js
+    for path in ("/app.html", "/admin.html"):
+        page = c.get(path)
+        assert page.status_code == 200, path
+        # loads the vendored Ant Design stack + the first-party app code (no build step)
+        assert "admin-app.js" in page.text and "/vendor/antd.min.js" in page.text
 
-    redeem_html = c.get("/redeem.html")
-    assert redeem_html.status_code == 200
+    app_js = c.get("/admin-app.js").text
+    # login + the admin dashboard endpoints are wired
+    assert "/api/auth/login" in app_js and "/api/auth/me" in app_js
+    assert "/api/admin/overview" in app_js and "/api/admin/accounts" in app_js
+    assert "/api/admin/sessions" in app_js and "/api/admin/db" in app_js
+    assert "/api/admin/logs" in app_js
+    # rendering goes through React (htm), never raw innerHTML of server/account data (XSS).
+    assert "htm.bind" in app_js and ".innerHTML" not in app_js
+
+
+def test_redeem_page_still_ships(tmp_path):
+    """The legacy invite-redemption page still ships (the new SPA also has a redeem tab)."""
+    c = TestClient(create_app(load_config()))
+    assert c.get("/redeem.html").status_code == 200
     redeem_js = c.get("/redeem.js").text
     assert "/api/auth/redeem" in redeem_js and ".innerHTML" not in redeem_js
 
