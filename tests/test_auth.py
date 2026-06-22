@@ -181,7 +181,19 @@ def test_login_throttle_key_is_length_bounded(tmp_path):
     m = _mgr(tmp_path, max_login_failures=100)
     m.login("x" * 1_000_000, "wrong")
     assert m._login_failures  # an entry was recorded
-    assert all(len(k) <= 256 for k in m._login_failures)
+    assert all(len(k) <= 256 + 65 for k in m._login_failures)  # ip(≤64) + "|" + username(≤256)
+
+
+def test_login_lockout_scoped_to_ip_no_global_dos(tmp_path):
+    # Keying the lock by (IP, username) stops a remote attacker from locking a victim's account
+    # globally (codex finding): the attacker's IP is locked, but the victim from another IP still
+    # logs in with the correct password.
+    m = _mgr(tmp_path, max_login_failures=2, login_lockout_seconds=900)
+    m.create_account("alice", "pw")
+    m.login("alice", "wrong", client_ip="1.1.1.1")
+    m.login("alice", "wrong", client_ip="1.1.1.1")  # (1.1.1.1, alice) now locked
+    assert m.login("alice", "pw", client_ip="1.1.1.1") == {"error": "locked"}  # attacker IP blocked
+    assert m.login("alice", "pw", client_ip="2.2.2.2")["ok"]  # victim's own IP unaffected
 
 
 def test_resolve_token_valid_and_logout(tmp_path):

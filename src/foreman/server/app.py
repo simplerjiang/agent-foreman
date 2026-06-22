@@ -786,7 +786,9 @@ def create_app(
         bucket = _guard_auth(request, "login")
         if auth is None:
             raise HTTPException(status_code=503, detail="auth not configured")
-        res = auth.login(body.username, body.password)
+        # client_ip scopes the per-account lockout so it can't be used to lock a victim globally.
+        client_ip = _client_ip(request, trust_proxy=cfg.server.trust_proxy_headers)
+        res = auth.login(body.username, body.password, client_ip=client_ip)
         if res.get("ok"):
             # A successful login clears this IP's bucket, so a legitimate user (incl. a shared
             # NAT/egress IP) isn't throttled by their own earlier failures — only consecutive

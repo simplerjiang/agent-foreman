@@ -247,20 +247,24 @@ class AuthManager:
         return self._issue_login_token(account)
 
     # ── user login (DESIGN §8.2) ─────────────────────────────────────────────────────────────
-    def login(self, username: str, password: str) -> dict:
+    def login(self, username: str, password: str, *, client_ip: str = "") -> dict:
         """Verify credentials and issue a bearer token. Returns {"ok", "token", "account_id",
         "role"}, {"error": "invalid"}, or {"error": "locked"} when the brute-force throttle trips.
 
         A single generic "invalid" is returned for unknown user / wrong password / disabled
         account — never leak which one failed. To avoid username enumeration via response timing,
         the missing/disabled-user path still spends one PBKDF2 verify against a throwaway hash, so
-        every login costs the same regardless of whether the account exists. After
-        ``max_login_failures`` consecutive failures the submitted username is locked for the
-        lockout window (issue #1 follow-up) — applied uniformly so it never reveals existence."""
+        every login costs the same regardless of whether the account exists.
+
+        After ``max_login_failures`` failures the throttle locks for the lockout window. The lock is
+        keyed by (client_ip, username), NOT username alone — so an attacker can't lock a victim's
+        account from afar (the victim from another IP is unaffected); it's a per-IP-per-account speed
+        bump that layers under the per-IP limiter in app.py (codex finding: scope the lock to IP)."""
         uname = (username or "").strip()
         now = self._now()
-        # Throttle key is length-bounded (the raw username is attacker-controlled — codex finding).
-        tkey = uname[:MAX_LOGIN_USERNAME_KEY_LEN]
+        # Key = ip|username, both length-bounded (the raw username is attacker-controlled). Scoping by
+        # IP prevents a global account-lockout DoS while keeping a per-account speed bump per source.
+        tkey = f"{(client_ip or '').strip()[:64]}|{uname[:MAX_LOGIN_USERNAME_KEY_LEN]}"
         if self._is_locked(tkey, now):
             return {"error": "locked"}
         account = self.store.get_account_by_username(uname)
