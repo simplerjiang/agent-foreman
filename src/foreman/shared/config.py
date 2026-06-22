@@ -63,15 +63,17 @@ class ServerCfg(BaseModel):
     # a premature HSTS header can lock clients out of an http fallback. max-age seconds.
     hsts: bool = False
     hsts_max_age: int = 31536000
-    # Content-Security-Policy for the PWA (conservative default — the front-end has no inline
-    # script/style, so 'self' is sufficient). Empty string disables the header (issue #1 P2).
-    # connect-src lists ws:/wss: explicitly: the live timeline opens a same-origin WebSocket, and
-    # not every browser treats `'self'` as covering the ws/wss schemes — without this the /ws
-    # stream is blocked under the default hardening header (codex acceptance finding). script-src is
-    # still locked to 'self' with no inline script, so only first-party code can open a connection.
+    # Content-Security-Policy for the PWA. script-src stays locked to 'self' (no inline script —
+    # the Ant Design console is plain first-party JS using vendored React/antd UMD bundles served
+    # from /vendor, so only first-party code runs). style-src adds 'unsafe-inline' because Ant
+    # Design v5 injects its component styles as runtime <style> tags (CSS-in-JS) and inline style=
+    # attributes — without it the console renders unstyled under the hardening header. Inline STYLE
+    # (not script) is low-risk: it can't execute code. connect-src lists ws:/wss: explicitly: the
+    # live timeline opens a same-origin WebSocket and not every browser treats `'self'` as covering
+    # the ws/wss schemes. Empty string disables the header (issue #1 P2).
     csp: str = (
-        "default-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; "
-        "base-uri 'none'; frame-ancestors 'none'"
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "connect-src 'self' ws: wss:; base-uri 'none'; frame-ancestors 'none'"
     )
     # Include the DB path in /health. Off by default so the public readiness probe doesn't leak the
     # deployment's filesystem layout (issue #1 P2).
