@@ -55,10 +55,14 @@ YAML
 fi
 # FOREMAN_AUTH_TOKEN gates every operational endpoint when the server is exposed (issue #1 P0).
 # The server binds 0.0.0.0, so this token is REQUIRED — `foreman serve` fails closed without it.
-# Ensure it exists even when .env already holds OTHER secrets (append if missing), so an upgrade on
-# a box with a pre-existing .env doesn't fail closed on the next restart (codex acceptance finding).
-if [ ! -f "$APP/.env" ] || ! grep -q '^FOREMAN_AUTH_TOKEN=' "$APP/.env"; then
+# Ensure a NON-EMPTY token exists even when .env already holds OTHER secrets or a blank placeholder
+# (e.g. copied from .env.example), so an upgrade on a box with a pre-existing .env doesn't fail
+# closed on the next restart (codex acceptance finding). Idempotent.
+CUR_TOKEN=""
+[ -f "$APP/.env" ] && CUR_TOKEN=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$APP/.env" | tail -n1 | cut -d= -f2- | tr -d '[:space:]')
+if [ -z "$CUR_TOKEN" ]; then
   TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
+  [ -f "$APP/.env" ] && sed -i '/^FOREMAN_AUTH_TOKEN=/d' "$APP/.env"   # drop any blank entry first
   echo "FOREMAN_AUTH_TOKEN=$TOKEN" >> "$APP/.env"   # append; creates the file if absent
   chown foreman:foreman "$APP/.env"
   chmod 600 "$APP/.env"
