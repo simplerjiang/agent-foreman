@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 import secrets
 import uuid
+from typing import Any
 
 from foreman.shared.autonomy import decide_disposition
 from foreman.shared.config import GatesCfg
@@ -89,9 +90,9 @@ class Gate:
         self,
         cfg: GatesCfg,
         *,
-        store: object | None = None,
-        bus: object | None = None,
-        pusher: object | None = None,
+        store: Any = None,
+        bus: Any = None,
+        pusher: Any = None,
         public_base_url: str = "",
         nonce_factory=None,
         clock=None,

@@ -17,6 +17,8 @@ See docs/DESIGN.zh-CN.md §4.3 / §6.6.
 
 from __future__ import annotations
 
+from typing import Any
+
 from foreman.shared.events import AgentEvent, make_event
 
 # Claude Code hook name → Foreman event type (DESIGN §7.1 vocabulary).
@@ -71,7 +73,7 @@ class HookReceiver:
     server.app.create_app so app.py imports only shared (DESIGN §14 boundary).
     """
 
-    def __init__(self, store: object | None, bus: object, gate: object | None = None) -> None:
+    def __init__(self, store: Any, bus: Any, gate: Any = None) -> None:
         self.store = store
         self.bus = bus
         self.gate = gate

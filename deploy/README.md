@@ -4,6 +4,28 @@ The server hosts the **team-mode** component (today: the PWA + `/health`; later:
 admin console). The actual PM Core runs on each person's local machine — see
 [DESIGN.zh-CN.md §8](../docs/DESIGN.zh-CN.md).
 
+## Deployment mode: personal (default) vs team
+
+`server.mode` (config.yaml) decides what `foreman serve` assembles:
+
+- **`personal` (default)** — just `/health` + the PWA shell + the single-user REST/WS. On a public
+  bind it **fails closed unless `FOREMAN_AUTH_TOKEN` is set** (issue #1 P0): no token + non-loopback
+  host (or a `public_base_url`) → the process refuses to start. With a token, every operational
+  endpoint (`/api/*`, `/hooks`, `/ws`) requires `Authorization: Bearer <token>` (the PWA prompts for
+  it once and stores it). The public deployment runs this mode today.
+- **`team`** — adds accounts, access keys, the relay, and the display cache; each operational
+  endpoint is gated per-account. There is **no self-signup**, so bootstrap the first admin once:
+
+  ```bash
+  # on the server, with config.yaml setting server.mode: team and server.db_path
+  foreman create-admin <username>          # prompts for the password
+  ```
+
+  Then that admin logs into the PWA and builds the rest of the team from the admin console
+  (`/admin.html`). Live acceptance to run after enabling team mode: PWA login → mint an access key
+  (`/keys.html`) → a local process completes the relay handshake → the PWA reads the display cache
+  while that machine is offline.
+
 Auto-deploy: push to `main` → GitHub Actions SSHes in as the unprivileged `foreman` user and runs
 [`remote_deploy.sh`](remote_deploy.sh) (git reset to `origin/main` → `pip install -e .` → restart).
 
@@ -68,6 +90,16 @@ tunnel needs to be open** for phone access. (8787 may also be `ufw allow`ed for 
 > server-side surface (today the PWA + `/health`; later the relay hub). Pushing to `main` redeploys the
 > server side; local processes update themselves separately (`foreman update`, see DESIGN §11.1).
 
+## HTTPS + hardening (issue #1 P2)
+
+- **Force HTTP→HTTPS at Cloudflare** (SSL/TLS → Edge Certificates → *Always Use HTTPS*). That is the
+  primary redirect; the app also honours `server.force_https: true` as a defense-in-depth fallback
+  (it trusts `X-Forwarded-Proto`, so it won't loop behind Cloudflare's TLS termination).
+- **HSTS:** turn on `server.hsts: true` only once HTTPS is stable end-to-end (Cloudflare can also
+  emit HSTS). The app sends a conservative **CSP** by default (`server.csp`) plus
+  `X-Content-Type-Options`, `X-Frame-Options`, and `Referrer-Policy` on every response.
+- **/health** no longer leaks the DB path by default (`server.health_show_db: false`).
+
 ## Security hardening checklist
 
 Recommended before real multi-user data lives on the box:
@@ -75,6 +107,7 @@ Recommended before real multi-user data lives on the box:
 - **Restrict SSH (port 22)** to known sources (cloud firewall / `ufw`), or deploy from a pinned egress
   rather than a world-open GitHub-hosted runner.
 - **Key-only SSH** — disable root password login (`PasswordAuthentication no`) and add `fail2ban`.
-- **Put a login gate on the public URL** (e.g. Cloudflare Access / a Zero-Trust email gate): the PWA
-  has no built-in auth in personal mode, so anyone with the URL could otherwise reach it.
+- **App-level access gate is now enforced** (issue #1 P0): operational endpoints require the bearer
+  token in personal mode, or a per-account login in team mode. Cloudflare Access (Zero-Trust email
+  gate) is still recommended as an additional outer layer before real multi-user data lives here.
 - **Rotate any tokens** (e.g. the Cloudflare tunnel/API token) that may have been exposed during setup.

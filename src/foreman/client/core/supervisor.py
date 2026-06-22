@@ -36,6 +36,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from foreman.shared.events import make_event, utc_now_iso
 from foreman.shared.i18n import language_directive
@@ -441,7 +442,7 @@ class LLMJudge:
     parsing are exercised here via a mock transport; wiring to a real key is deferred (TASKS T2.6).
     """
 
-    llm: object  # foreman.shared.llm.LLMClient
+    llm: Any  # foreman.shared.llm.LLMClient
     language: str = "zh"
     tail_chars: int = 2000  # only the tail is sent — bounded token cost
 

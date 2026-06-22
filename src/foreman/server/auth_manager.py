@@ -43,6 +43,21 @@ DEFAULT_INVITE_TTL_SECONDS = 7 * 24 * 3600
 # their OWN password via an invite gets a modest floor so a one-char password can't slip in.
 MIN_PASSWORD_LEN = 8
 
+# Login brute-force throttle (issue #1 follow-up): after this many consecutive failures for a given
+# submitted username, further logins are refused for the lockout window. Keyed on the SUBMITTED
+# username (created for any string, real or not) so it never reveals whether an account exists, and
+# the count resets on a successful login or once the window passes.
+DEFAULT_MAX_LOGIN_FAILURES = 10
+DEFAULT_LOGIN_LOCKOUT_SECONDS = 15 * 60
+# Hard cap on how many distinct submitted usernames the throttle tracks at once. A credential-
+# stuffing scan rotates usernames, so without a bound _login_failures would grow forever; stale
+# entries are pruned by time first, and this cap evicts the oldest as a backstop (codex finding).
+DEFAULT_MAX_TRACKED_LOGIN_USERNAMES = 4096
+# Cap the throttle KEY length too: the submitted username is attacker-controlled and could be
+# megabytes, so the entry-count cap alone wouldn't bound memory (codex finding). No real username
+# is near this; longer ones just share a truncated throttle bucket (harmless for rate-limiting).
+MAX_LOGIN_USERNAME_KEY_LEN = 256
+
 # A throwaway hash used to spend the same PBKDF2 time on the missing/disabled-user login path,
 # so response timing can't be used to enumerate valid usernames (computed once at import).
 _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(16))
@@ -77,6 +92,9 @@ class AuthManager:
         gen_invite=generate_access_key,
         token_ttl_seconds: int = DEFAULT_TOKEN_TTL_SECONDS,
         invite_ttl_seconds: int = DEFAULT_INVITE_TTL_SECONDS,
+        max_login_failures: int = DEFAULT_MAX_LOGIN_FAILURES,
+        login_lockout_seconds: int = DEFAULT_LOGIN_LOCKOUT_SECONDS,
+        max_tracked_login_usernames: int = DEFAULT_MAX_TRACKED_LOGIN_USERNAMES,
     ) -> None:
         self.store = store
         self._now = now
@@ -86,6 +104,15 @@ class AuthManager:
         self._gen_invite = gen_invite
         self._ttl = token_ttl_seconds
         self._invite_ttl = invite_ttl_seconds
+        self._max_login_failures = max_login_failures
+        self._login_lockout_seconds = login_lockout_seconds
+        self._max_tracked_login_usernames = max_tracked_login_usernames
+        # submitted-username -> {"count": int, "locked_until": iso, "seen_at": iso}. In-memory by
+        # design: a process restart clears it, which only ever *loosens* the throttle (never a
+        # lockout that outlives a restart), and PBKDF2 already makes each attempt expensive. Pruned
+        # by time (a sliding window) and hard-capped in size so a stuffing scan can't grow it
+        # without bound; cleared for a username on its successful login.
+        self._login_failures: dict[str, dict] = {}
 
     # ── accounts (admin op — DESIGN §8.2: no self-signup) ────────────────────────────────────
     def create_account(
@@ -220,21 +247,92 @@ class AuthManager:
         return self._issue_login_token(account)
 
     # ── user login (DESIGN §8.2) ─────────────────────────────────────────────────────────────
-    def login(self, username: str, password: str) -> dict:
+    def login(self, username: str, password: str, *, client_ip: str = "") -> dict:
         """Verify credentials and issue a bearer token. Returns {"ok", "token", "account_id",
-        "role"} or {"error": "invalid"}.
+        "role"}, {"error": "invalid"}, or {"error": "locked"} when the brute-force throttle trips.
 
         A single generic "invalid" is returned for unknown user / wrong password / disabled
         account — never leak which one failed. To avoid username enumeration via response timing,
         the missing/disabled-user path still spends one PBKDF2 verify against a throwaway hash, so
-        every login costs the same regardless of whether the account exists."""
-        account = self.store.get_account_by_username((username or "").strip())
+        every login costs the same regardless of whether the account exists.
+
+        After ``max_login_failures`` failures the throttle locks for the lockout window. The lock is
+        keyed by (client_ip, username), NOT username alone — so an attacker can't lock a victim's
+        account from afar (the victim from another IP is unaffected); it's a per-IP-per-account speed
+        bump that layers under the per-IP limiter in app.py (codex finding: scope the lock to IP)."""
+        uname = (username or "").strip()
+        now = self._now()
+        # Key = ip|username, both length-bounded (the raw username is attacker-controlled). Scoping by
+        # IP prevents a global account-lockout DoS while keeping a per-account speed bump per source.
+        tkey = f"{(client_ip or '').strip()[:64]}|{uname[:MAX_LOGIN_USERNAME_KEY_LEN]}"
+        if self._is_locked(tkey, now):
+            return {"error": "locked"}
+        account = self.store.get_account_by_username(uname)
         usable = account is not None and account.status == "active"
         pw_hash = account.password_hash if usable else _DUMMY_PASSWORD_HASH
         password_ok = verify_password(password or "", pw_hash)
         if not usable or not password_ok:
+            self._record_login_failure(tkey, now)
             return {"error": "invalid"}
+        self._login_failures.pop(tkey, None)  # success resets the throttle
         return self._issue_login_token(account)
+
+    def _is_locked(self, username: str, now: str) -> bool:
+        """True while the submitted username is inside its lockout window (expired locks clear)."""
+        rec = self._login_failures.get(username)
+        if not rec:
+            return False
+        locked_until = rec.get("locked_until", "")
+        if not locked_until:
+            return False
+        if _is_expired(locked_until, now):  # window passed → clear and allow again
+            self._login_failures.pop(username, None)
+            return False
+        return True
+
+    def _record_login_failure(self, username: str, now: str) -> None:
+        """Count a failed attempt; arm the lockout once it crosses the threshold.
+
+        Stale entries are pruned by time BEFORE incrementing so a count from outside the sliding
+        window never carries over (codex finding: two old mistypes + one fresh one must not lock).
+        The size cap is then enforced AFTER inserting so the map never exceeds the cap yet the
+        just-touched (newest) entry is never the one evicted."""
+        if self._max_login_failures <= 0:
+            return  # throttle disabled
+        self._prune_stale_login_failures(now)
+        rec = self._login_failures.setdefault(username, {"count": 0, "locked_until": ""})
+        rec["count"] = int(rec.get("count", 0)) + 1
+        rec["seen_at"] = now
+        if rec["count"] >= self._max_login_failures:
+            rec["locked_until"] = _iso_plus_seconds(now, self._login_lockout_seconds)
+            rec["count"] = 0  # reset the counter; the window now governs access
+        self._enforce_login_failure_cap()
+
+    def _prune_stale_login_failures(self, now: str) -> None:
+        """Drop entries whose window has lapsed — a locked entry past its lockout, or a still-
+        counting entry idle longer than the lockout window (the sliding window)."""
+        stale = []
+        for uname, rec in self._login_failures.items():
+            locked_until = rec.get("locked_until", "")
+            if locked_until:
+                if _is_expired(locked_until, now):
+                    stale.append(uname)
+            else:
+                seen = rec.get("seen_at", "")
+                window_end = _iso_plus_seconds(seen, self._login_lockout_seconds) if seen else ""
+                if not window_end or _is_expired(window_end, now):
+                    stale.append(uname)
+        for uname in stale:
+            self._login_failures.pop(uname, None)
+
+    def _enforce_login_failure_cap(self) -> None:
+        """Backstop against a burst of distinct usernames within the window: evict the oldest-seen
+        entries above the hard cap so the map size can't grow without bound."""
+        overflow = len(self._login_failures) - self._max_tracked_login_usernames
+        if overflow > 0:
+            oldest = sorted(self._login_failures.items(), key=lambda kv: kv[1].get("seen_at", ""))
+            for uname, _rec in oldest[:overflow]:
+                self._login_failures.pop(uname, None)
 
     def _issue_login_token(self, account: Account) -> dict:
         """Mint + persist a bearer token (only its hash) and return the login result. Shared by

@@ -12,6 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from foreman.shared.config import Config
 from foreman.shared.events import EventBus
@@ -29,7 +30,7 @@ class LocalApp:
     store: Store
     bus: EventBus
     runner: Runner
-    _server: object       # uvicorn.Server
+    _server: Any          # uvicorn.Server
     _thread: threading.Thread
 
     def stop(self) -> None:
@@ -41,7 +42,11 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     """Start the local engine + web server in a background thread; return a LocalApp handle."""
     import uvicorn
 
-    from foreman.server.app import create_app
+    from foreman.server.app import _ensure_safe_exposure, create_app
+
+    # Fail closed: never serve the fully-wired operational API on a public bind without a token
+    # (issue #1 P0). Exposing `foreman app` via a tunnel requires setting FOREMAN_AUTH_TOKEN.
+    _ensure_safe_exposure(cfg, host=host)
     from foreman.server.push import Pusher
     from foreman.shared.crypto import cipher_from_config
     from foreman.shared.llm import LLMClient
@@ -91,6 +96,9 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
         runner=runner,
         toolbelt=toolbelt,
         language=language,
+        # Config baseline autonomy dial (§6.4): honoured by the loop until a DB override is written,
+        # so a config of level 2/3 isn't silently demoted to level 1 at runtime (issue #1 P1).
+        autonomy_level=cfg.autonomy.level,
     )
     # Close the loop: a tapped card executes the chosen path (approve→checkpoint+execute / undo /
     # revise) instead of only recording the decision (the "你点→检查点→执行" half, §6.2).

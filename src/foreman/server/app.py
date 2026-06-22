@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets as _secrets
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -210,6 +212,83 @@ def _bearer_token(request: Request) -> str:
     return token.strip() if scheme.lower() == "bearer" else ""
 
 
+def _ct_eq(a: str, b: str) -> bool:
+    """Constant-time string compare that tolerates non-ASCII input. ``secrets.compare_digest`` on
+    ``str`` raises TypeError if either side has a non-ASCII char (e.g. a `?token=%C3%A9` query or a
+    latin-1 Authorization header), which would turn a malformed unauthenticated attempt into a 500
+    instead of a clean reject (codex finding). Encoding both to UTF-8 bytes first avoids that."""
+    return _secrets.compare_digest(a.encode("utf-8", "surrogatepass"), b.encode("utf-8"))
+
+
+# Hosts that mean "only this machine" — a personal app bound here is not network-exposed (the
+# tunnel case binds loopback too, so the request-layer token is what protects an exposed app).
+# NB: "0.0.0.0" and "" both mean ALL interfaces (an empty host binds INADDR_ANY) — they are NOT
+# loopback and must be treated as exposed (codex acceptance finding).
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+# Operational endpoints are everything EXCEPT these public ones. The PWA shell (static files,
+# manifest, service worker) is served by the StaticFiles mount and is public by design; only
+# /health and the unauthenticated auth-bootstrap endpoints are public among the routed paths.
+_PUBLIC_API_PATHS = frozenset(
+    {"/api/auth/login", "/api/auth/redeem", "/api/push/vapid-public-key"}
+)
+
+
+def _is_operational_path(path: str) -> bool:
+    """True if a request path must clear the access guard (issue #1 P0).
+
+    Operational = the local REST surface (/api/*) plus the hook sink (/hooks). The static PWA
+    shell and /health are public. WebSockets (/ws, /relay) authorize inside their own handlers
+    (HTTP middleware never sees a websocket scope)."""
+    if path in _PUBLIC_API_PATHS:
+        return False
+    return path.startswith("/api/") or path == "/hooks"
+
+
+def _effective_scheme(request: Request, *, trust_proxy: bool = False) -> str:
+    """Client-facing scheme. X-Forwarded-Proto is consulted ONLY when ``trust_proxy`` is set (a
+    trusted proxy like the Cloudflare tunnel fronts the app and terminates TLS, so request.url.scheme
+    is http on the proxy→app hop). That header is client-spoofable, so on a directly-reachable app an
+    attacker could otherwise send `X-Forwarded-Proto: https` to skip the http→https redirect (codex
+    finding). Without trust_proxy, use the socket scheme."""
+    if trust_proxy:
+        fwd = request.headers.get("x-forwarded-proto", "")
+        if fwd:
+            return fwd.split(",")[0].strip().lower()
+    return (request.url.scheme or "http").lower()
+
+
+def _ensure_safe_exposure(
+    cfg: Config, host: str | None = None, *, account_auth: bool = False
+) -> None:
+    """Fail closed if operational APIs would be exposed without protection (P0).
+
+    `account_auth` is whether the caller will inject a per-account AuthManager that gates every
+    operational endpoint (true only for the team relay built by `build_serve_app`). When it is
+    false — which includes `foreman app`, whose local server is ALWAYS wired with `auth=None`
+    regardless of `server.mode` (codex acceptance finding) — the only gate is the shared access
+    token (FOREMAN_AUTH_TOKEN). Binding to a non-loopback host (0.0.0.0, an empty host, or a LAN
+    IP) — or advertising a public_base_url — without that token would let anyone with the URL read
+    sessions, dispatch work, or approve actions, so we refuse to start. An explicit
+    `server.allow_insecure_bind` opt-out is exempt. `host` overrides cfg.server.host for callers
+    that bind a host of their own. Raises RuntimeError when unsafe."""
+    if account_auth:
+        return  # per-account auth (the team relay) protects every operational endpoint
+    # Strip before testing: create_app() also strips, so a whitespace-only token would otherwise
+    # pass this gate here yet leave the request-layer guard wide open (codex acceptance finding).
+    if (cfg.secrets.auth_token or "").strip() or cfg.server.allow_insecure_bind:
+        return
+    # Empty host and 0.0.0.0 both bind all interfaces → not loopback → exposed (codex finding).
+    bind = (host if host is not None else cfg.server.host or "").strip().lower()
+    exposed = bind not in _LOOPBACK_HOSTS or bool((cfg.server.public_base_url or "").strip())
+    if exposed:
+        raise RuntimeError(
+            "Refusing to expose operational APIs without an access token. "
+            "Set FOREMAN_AUTH_TOKEN, switch server.mode to 'team', or (trusted LAN only) set "
+            "server.allow_insecure_bind: true. See deploy/README.md (issue #1 P0)."
+        )
+
+
 def _client_ip(request: Request, *, trust_proxy: bool = False) -> str:
     """Client IP for rate-limit bucketing. Only consult CF-Connecting-IP / X-Forwarded-For when
     ``trust_proxy`` is set (a trusted proxy like the Cloudflare tunnel fronts the app) — those
@@ -240,17 +319,17 @@ def _event_visible_to(ev: AgentEvent, *, session_id: str | None, account_id: str
 
 def create_app(
     cfg: Config,
-    store: object | None = None,
+    store: Any = None,
     bus: EventBus | None = None,
-    hooks: object | None = None,
-    relay: object | None = None,
-    gate: object | None = None,
-    auth: object | None = None,
-    cards: object | None = None,
-    dispatcher: object | None = None,
-    briefings: object | None = None,
-    definitions: object | None = None,
-    cache: object | None = None,
+    hooks: Any = None,
+    relay: Any = None,
+    gate: Any = None,
+    auth: Any = None,
+    cards: Any = None,
+    dispatcher: Any = None,
+    briefings: Any = None,
+    definitions: Any = None,
+    cache: Any = None,
 ) -> FastAPI:
     app = FastAPI(title="Foreman", version=__version__)
 
@@ -296,6 +375,67 @@ def create_app(
             raise HTTPException(status_code=429, detail="too many attempts")
         return bucket
 
+    # ── access guard (issue #1 P0): no operational endpoint is reachable unauthenticated ───────
+    # Personal mode (no AuthManager injected): a configured shared token (FOREMAN_AUTH_TOKEN) gates
+    # every /api/* call and /hooks; the PWA pastes it once and sends it as a bearer. With no token
+    # the app is single-user local — startup (_ensure_safe_exposure) refuses to bind it to a public
+    # interface, so "open" only ever means loopback.
+    # Team mode (AuthManager injected): each operational endpoint already enforces a per-ACCOUNT
+    # token via require_account/require_admin, so the shared-token middleware stays out of the way.
+    _shared_token = (cfg.secrets.auth_token or "").strip()
+
+    def _access_authorized(request: Request) -> bool:
+        if auth is not None:
+            # Team mode: require a VALID account token at the middleware. Most routes also call
+            # require_account, but a few (e.g. GET /api/settings/language|autonomy) don't — gating
+            # here closes that gap so no operational endpoint answers unauthenticated (codex finding).
+            return auth.resolve_token(_bearer_token(request)) is not None
+        if not _shared_token:
+            return True  # personal local mode (exposure blocked at startup)
+        return _ct_eq(_bearer_token(request), _shared_token)
+
+    def _ws_authorized(token: str) -> bool:
+        """Authorize a websocket (browsers can't set Authorization headers, so the token rides a
+        query param). Team mode requires a valid account token; personal mode the shared token."""
+        if auth is not None:
+            return auth.resolve_token(token) is not None
+        if not _shared_token:
+            return True
+        return _ct_eq(token or "", _shared_token)
+
+    def _security_headers(response: Response) -> None:
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if cfg.server.csp:
+            response.headers.setdefault("Content-Security-Policy", cfg.server.csp)
+        if cfg.server.hsts:
+            response.headers.setdefault(
+                "Strict-Transport-Security",
+                f"max-age={int(cfg.server.hsts_max_age)}; includeSubDomains",
+            )
+
+    @app.middleware("http")
+    async def _guard(request: Request, call_next):
+        # 1) optional http→https redirect (defense-in-depth; prefer doing this at the proxy — P2).
+        # Only trust X-Forwarded-Proto behind a trusted proxy, else a direct client could spoof it.
+        scheme = _effective_scheme(request, trust_proxy=cfg.server.trust_proxy_headers)
+        if cfg.server.force_https and scheme == "http":
+            target = request.url.replace(scheme="https")
+            resp: Response = RedirectResponse(str(target), status_code=308)
+            _security_headers(resp)
+            return resp
+        # 2) fail-closed access guard on operational endpoints (P0).
+        if _is_operational_path(request.url.path) and not _access_authorized(request):
+            resp = JSONResponse({"detail": "unauthorized"}, status_code=401)
+            resp.headers["WWW-Authenticate"] = "Bearer"
+            _security_headers(resp)
+            return resp
+        # 3) hardening headers on every response (P2).
+        response = await call_next(request)
+        _security_headers(response)
+        return response
+
     def require_account(request: Request):
         """Resolve the Authorization bearer token to an active account, or raise 401/503.
 
@@ -319,12 +459,16 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict:
-        return {
+        """Public readiness probe. Non-sensitive by default — the DB path is only included when
+        server.health_show_db is set, so the public endpoint doesn't leak deployment paths (P2)."""
+        out: dict = {
             "ok": True,
             "version": __version__,
             "agents": sorted(k for k, a in cfg.agents.items() if a.enabled),
-            "db": cfg.store.db_path,
         }
+        if cfg.server.health_show_db:
+            out["db"] = cfg.store.db_path
+        return out
 
     @app.get("/api/sessions")
     async def list_sessions() -> list[dict]:
@@ -650,14 +794,21 @@ def create_app(
         bucket = _guard_auth(request, "login")
         if auth is None:
             raise HTTPException(status_code=503, detail="auth not configured")
-        res = auth.login(body.username, body.password)
-        if not res.get("ok"):
-            auth_limiter.record(bucket)  # count only the failure
-            raise HTTPException(status_code=401, detail="invalid credentials")
-        # A successful login clears this IP's bucket, so a legitimate user (incl. a shared NAT/egress
-        # IP) isn't throttled by their own earlier failures — only consecutive failures accumulate.
-        auth_limiter.reset(bucket)
-        return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
+        # client_ip scopes the per-account lockout so it can't be used to lock a victim globally.
+        client_ip = _client_ip(request, trust_proxy=cfg.server.trust_proxy_headers)
+        res = auth.login(body.username, body.password, client_ip=client_ip)
+        if res.get("ok"):
+            # A successful login clears this IP's bucket, so a legitimate user (incl. a shared
+            # NAT/egress IP) isn't throttled by their own earlier failures — only consecutive
+            # failures accumulate.
+            auth_limiter.reset(bucket)
+            return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
+        auth_limiter.record(bucket)  # count the failure toward the per-IP budget (main #11)
+        if res.get("error") == "locked":
+            # Per-USERNAME lockout tripped (defense-in-depth alongside the per-IP limiter): uniform
+            # per submitted username, so no enumeration leak (issue #1 follow-up).
+            raise HTTPException(status_code=429, detail="too many attempts, try again later")
+        raise HTTPException(status_code=401, detail="invalid credentials")
 
     @app.post("/api/auth/logout")
     async def auth_logout(request: Request) -> dict:
@@ -835,11 +986,14 @@ def create_app(
     ) -> None:
         """Stream events: backlog for ?session_id (from the store), then live from the bus.
 
-        Team mode (auth manager injected): the relay box's bus carries cross-tenant ``health``
-        events, so /ws MUST be authenticated and account-scoped — never an open firehose (§8.4).
-        Browsers can't set WS headers, so the bearer token arrives as the ``?token=`` query param;
-        an invalid/absent token is closed (1008), and the stream is hard-filtered to the caller's
-        account. Personal mode (no auth manager) is unchanged."""
+        Authorized like the REST surface — the access token rides a ?token= query param since
+        browsers can't set an Authorization header on a WebSocket; unauthorized → accept-then-
+        close(1008). Two layers (defense-in-depth):
+          • Team mode (auth manager injected): the relay box's bus carries cross-tenant ``health``
+            events, so the token MUST resolve to an account and the stream is hard-filtered to it —
+            never an open firehose (§8.4, main #11).
+          • Personal mode (no auth manager): the shared access token gates the connection when one
+            is configured (issue #1 P0)."""
         caller_account_id: str | None = None
         if auth is not None:
             account = auth.resolve_token(token or "")
@@ -848,6 +1002,10 @@ def create_app(
                 await websocket.close(code=1008)  # policy violation: unauthenticated
                 return
             caller_account_id = account.id
+        elif not _ws_authorized(token or ""):
+            await websocket.accept()
+            await websocket.close(code=1008)  # personal-mode shared-token guard (issue #1 P0)
+            return
         await websocket.accept()
         # Backlog replay is personal-mode only: team-mode events aren't account-tagged at the row
         # level, so replaying a store here couldn't be account-scoped. In team mode `store` is None
@@ -933,7 +1091,12 @@ def build_serve_app(cfg: Config) -> FastAPI:
     process; `store` stays None (the relay box has no client-style local store), so the personal
     session/event endpoints 503 while the account-scoped /api/cache/* endpoints serve the cache.
     """
-    if (cfg.server.mode or "personal").strip().lower() != "team":
+    # Fail closed before binding: never expose unprotected operational APIs (P0). The team relay
+    # builds a per-account AuthManager below, so it's exempt; personal mode must clear the
+    # token/loopback check.
+    is_team = (cfg.server.mode or "personal").strip().lower() == "team"
+    _ensure_safe_exposure(cfg, account_auth=is_team)
+    if not is_team:
         return create_app(cfg)
 
     # Lazy imports: keep create_app's import surface unchanged for personal mode / tests.

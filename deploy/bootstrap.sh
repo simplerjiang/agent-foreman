@@ -53,9 +53,19 @@ push:
 YAML
   chown foreman:foreman "$APP/config.yaml"
 fi
-if [ ! -f "$APP/.env" ]; then
+# FOREMAN_AUTH_TOKEN gates every operational endpoint when the server is exposed (issue #1 P0).
+# The server binds 0.0.0.0, so this token is REQUIRED — `foreman serve` fails closed without it.
+# Ensure a NON-EMPTY token exists even when .env already holds OTHER secrets or a blank placeholder
+# (e.g. copied from .env.example), so an upgrade on a box with a pre-existing .env doesn't fail
+# closed on the next restart (codex acceptance finding). Idempotent.
+# `|| true` so the no-match grep doesn't abort the script under `set -euo pipefail` (codex finding).
+CUR_TOKEN=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$APP/.env" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '[:space:]' | sed -e 's/^["'\'']//' -e 's/["'\'']$//' || true)
+if [ -z "${CUR_TOKEN:-}" ]; then
   TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
-  echo "FOREMAN_AUTH_TOKEN=$TOKEN" > "$APP/.env"
+  [ -f "$APP/.env" ] && sed -i '/^FOREMAN_AUTH_TOKEN=/d' "$APP/.env"   # drop any blank entry first
+  # ensure a trailing newline so we don't concatenate onto an existing secret line (codex finding)
+  [ -s "$APP/.env" ] && [ -n "$(tail -c1 "$APP/.env")" ] && printf '\n' >> "$APP/.env"
+  echo "FOREMAN_AUTH_TOKEN=$TOKEN" >> "$APP/.env"   # append; creates the file if absent
   chown foreman:foreman "$APP/.env"
   chmod 600 "$APP/.env"
 fi

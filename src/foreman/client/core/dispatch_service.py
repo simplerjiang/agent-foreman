@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 from foreman.shared.config import Config
 from foreman.shared.events import make_event, utc_now_iso
@@ -51,9 +52,9 @@ class DispatchService:
     def __init__(
         self,
         cfg: Config,
-        store: object,
+        store: Any,
         *,
-        bus: object | None = None,
+        bus: Any = None,
         launcher=None,
         clock=None,
     ) -> None:
@@ -129,15 +130,18 @@ class DispatchService:
     def _resolve_workspace(self, workspace: str | None) -> tuple[str, str]:
         """Resolve the workspace; an explicit one must sit inside an approved root (§6.6 白名单).
 
-        When config declares no workspaces (minimal/dev configs) there is no allowlist to enforce,
-        so an explicit path is accepted as-is; with an allowlist, a path outside every approved root
-        is rejected so a dispatch can never launch the agent in an arbitrary cwd."""
+        Fail closed (issue #1 P2): with an allowlist, a path outside every approved root is
+        rejected; with NO allowlist configured, an explicit path is rejected too — unless the
+        explicit dev flag ``allow_unlisted_workspaces_for_dev`` is set — so a dispatch can never
+        launch the agent in an arbitrary cwd on a server that simply forgot to declare its roots."""
         roots = [w.path for w in self.cfg.workspaces]
+        allow_unlisted = getattr(self.cfg, "allow_unlisted_workspaces_for_dev", False)
         if workspace and str(workspace).strip():
             ws = str(workspace).strip()
-            if roots and not _within_any(ws, roots):
-                return "", "workspace_not_allowed"
-            return ws, ""
+            if roots:
+                return ("", "workspace_not_allowed") if not _within_any(ws, roots) else (ws, "")
+            # No allowlist: accept the explicit path ONLY in dev; otherwise fail closed.
+            return (ws, "") if allow_unlisted else ("", "workspace_not_allowed")
         if roots:
             return roots[0], ""
         return "", "no_workspace"

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 
 from foreman.shared.autonomy import AUTO, CARD, REPORT, level_label, normalize_level
 from foreman.shared.events import make_event, utc_now_iso
@@ -60,16 +61,17 @@ class DecisionLoop:
     def __init__(
         self,
         *,
-        store: object,
-        gate: object,
-        cards: object,
-        operator: object | None = None,
-        auditor: object | None = None,
-        bus: object | None = None,
-        runner: object | None = None,
-        toolbelt: object | None = None,
+        store: Any,
+        gate: Any,
+        cards: Any,
+        operator: Any = None,
+        auditor: Any = None,
+        bus: Any = None,
+        runner: Any = None,
+        toolbelt: Any = None,
         checkpoint_factory=None,
         language: str = "zh",
+        autonomy_level: int | None = None,
         clock=None,
     ) -> None:
         self.store = store
@@ -82,17 +84,28 @@ class DecisionLoop:
         self.toolbelt = toolbelt
         self._ckpt_factory = checkpoint_factory or _default_checkpoint_factory
         self.language = language
+        # Config baseline (cfg.autonomy.level): the effective level when no DB override exists, so a
+        # config of level 2/3 actually drives the loop instead of being normalized to 1 (issue #1 P1).
+        self._baseline = normalize_level(autonomy_level) if autonomy_level is not None else None
         self._clock = clock or utc_now_iso
 
     # ── the level (autonomy dial) ───────────────────────────────────────────────────────────────
     def _level(self, override=None) -> int:
-        """Effective autonomy level: explicit override, else the stored config_kv, else default 1."""
+        """Effective autonomy level: explicit override, else the stored config_kv override, else the
+        config baseline passed at construction, else the module default (1).
+
+        Mirrors the server settings endpoint (GET /api/settings/autonomy), which also falls back to
+        cfg.autonomy.level — so the dial the UI shows and the dial the loop enforces agree (P1)."""
         if override is not None:
             return normalize_level(override)
         current = None
         if hasattr(self.store, "get_setting"):
             current = self.store.get_setting("autonomy.level")
-        return normalize_level(current)
+        if current is not None:
+            return normalize_level(current)
+        if self._baseline is not None:
+            return self._baseline
+        return normalize_level(None)
 
     # ── observe one agent step → propose / audit / gate / card / (auto-)execute ─────────────────
     async def observe(
@@ -338,7 +351,9 @@ class DecisionLoop:
     async def _undo(self, action_id: str) -> dict:
         """Restore the worktree to the action's checkpoint — one-click undo (§6.5②)."""
         action = self.store.get_action(action_id) if action_id else None
-        ckpt_id = getattr(action, "checkpoint_id", None) if action else None
+        if action is None:
+            return {"ok": False, "executed": False, "error": "no_checkpoint"}
+        ckpt_id = getattr(action, "checkpoint_id", None)
         if not ckpt_id or not hasattr(self.store, "get_checkpoint"):
             return {"ok": False, "executed": False, "error": "no_checkpoint"}
         ckpt = self.store.get_checkpoint(ckpt_id)

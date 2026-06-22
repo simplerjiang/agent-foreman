@@ -91,6 +91,111 @@ def test_login_rejects_disabled_account(tmp_path):
     assert m.login("alice", "pw") == {"error": "invalid"}
 
 
+# ── login brute-force throttle (issue #1 follow-up) ──────────────────────────────────────────────
+def test_login_locks_out_after_repeated_failures(tmp_path):
+    m = _mgr(tmp_path, max_login_failures=3, login_lockout_seconds=900)
+    m.create_account("alice", "pw")
+    assert m.login("alice", "wrong") == {"error": "invalid"}
+    assert m.login("alice", "wrong") == {"error": "invalid"}
+    assert m.login("alice", "wrong") == {"error": "invalid"}  # 3rd failure arms the lock
+    # now even the CORRECT password is refused while locked
+    assert m.login("alice", "pw") == {"error": "locked"}
+
+
+def test_login_lockout_expires_after_window(tmp_path):
+    clock = {"t": "2026-06-21T00:00:00+00:00"}
+    m = AuthManager(_store(tmp_path), now=lambda: clock["t"],
+                    max_login_failures=2, login_lockout_seconds=600)
+    m.create_account("alice", "pw")
+    m.login("alice", "wrong")
+    m.login("alice", "wrong")
+    assert m.login("alice", "pw") == {"error": "locked"}
+    clock["t"] = "2026-06-21T00:11:00+00:00"  # 11 min later, past the 10-min window
+    res = m.login("alice", "pw")
+    assert res["ok"] and res["token"]
+
+
+def test_login_success_resets_failure_counter(tmp_path):
+    m = _mgr(tmp_path, max_login_failures=3, login_lockout_seconds=900)
+    m.create_account("alice", "pw")
+    m.login("alice", "wrong")
+    m.login("alice", "wrong")
+    assert m.login("alice", "pw")["ok"]  # a success clears the count before the lock arms
+    # the counter reset, so two more failures don't immediately lock
+    assert m.login("alice", "wrong") == {"error": "invalid"}
+    assert m.login("alice", "wrong") == {"error": "invalid"}
+    assert m.login("alice", "pw")["ok"]
+
+
+def test_login_lockout_does_not_leak_account_existence(tmp_path):
+    # The throttle is keyed on the submitted username — a non-existent one locks identically,
+    # so "locked" never reveals whether the account exists.
+    m = _mgr(tmp_path, max_login_failures=2, login_lockout_seconds=900)
+    m.login("ghost", "x")
+    m.login("ghost", "x")
+    assert m.login("ghost", "x") == {"error": "locked"}
+
+
+def test_login_failure_map_is_bounded_under_username_scan(tmp_path):
+    # A credential-stuffing scan over many distinct usernames must not grow the throttle map
+    # without bound (codex finding): the hard cap evicts the oldest-seen entries.
+    clock = {"t": "2026-06-21T00:00:00+00:00"}
+    m = AuthManager(_store(tmp_path), now=lambda: clock["t"],
+                    max_login_failures=5, login_lockout_seconds=600,
+                    max_tracked_login_usernames=8)
+    for i in range(200):
+        m._record_login_failure(f"user{i}", clock["t"])
+    assert len(m._login_failures) <= 8
+
+
+def test_login_failure_entries_expire_by_time(tmp_path):
+    # A still-counting entry idle longer than the lockout window is pruned (sliding window), so a
+    # slow scan doesn't accumulate stale entries either.
+    clock = {"t": "2026-06-21T00:00:00+00:00"}
+    m = AuthManager(_store(tmp_path), now=lambda: clock["t"],
+                    max_login_failures=5, login_lockout_seconds=600)
+    m._record_login_failure("alice", clock["t"])
+    assert "alice" in m._login_failures
+    clock["t"] = "2026-06-21T00:11:00+00:00"  # 11 min later, past the 10-min window
+    m._record_login_failure("bob", clock["t"])  # triggers a prune
+    assert "alice" not in m._login_failures and "bob" in m._login_failures
+
+
+def test_login_stale_count_does_not_carry_over(tmp_path):
+    # Sliding window (codex finding): two old mistypes, wait past the window, one fresh mistype must
+    # NOT lock — the stale count is pruned before incrementing, so the next correct password works.
+    clock = {"t": "2026-06-21T00:00:00+00:00"}
+    m = AuthManager(_store(tmp_path), now=lambda: clock["t"],
+                    max_login_failures=3, login_lockout_seconds=600)
+    m.create_account("alice", "pw")
+    m.login("alice", "wrong")  # count 1
+    m.login("alice", "wrong")  # count 2
+    clock["t"] = "2026-06-21T00:11:00+00:00"  # past the window → the count-2 entry is stale
+    assert m.login("alice", "wrong") == {"error": "invalid"}  # fresh count 1, NOT a 3rd → no lock
+    assert m.login("alice", "pw")["ok"]  # correct password still works (not locked)
+
+
+def test_login_throttle_key_is_length_bounded(tmp_path):
+    # The throttle key is the attacker-controlled username; cap its length so a megabyte-username
+    # spray can't blow up memory despite the entry-count cap (codex finding).
+    m = _mgr(tmp_path, max_login_failures=100)
+    m.login("x" * 1_000_000, "wrong")
+    assert m._login_failures  # an entry was recorded
+    assert all(len(k) <= 256 + 65 for k in m._login_failures)  # ip(≤64) + "|" + username(≤256)
+
+
+def test_login_lockout_scoped_to_ip_no_global_dos(tmp_path):
+    # Keying the lock by (IP, username) stops a remote attacker from locking a victim's account
+    # globally (codex finding): the attacker's IP is locked, but the victim from another IP still
+    # logs in with the correct password.
+    m = _mgr(tmp_path, max_login_failures=2, login_lockout_seconds=900)
+    m.create_account("alice", "pw")
+    m.login("alice", "wrong", client_ip="1.1.1.1")
+    m.login("alice", "wrong", client_ip="1.1.1.1")  # (1.1.1.1, alice) now locked
+    assert m.login("alice", "pw", client_ip="1.1.1.1") == {"error": "locked"}  # attacker IP blocked
+    assert m.login("alice", "pw", client_ip="2.2.2.2")["ok"]  # victim's own IP unaffected
+
+
 def test_resolve_token_valid_and_logout(tmp_path):
     m = _mgr(tmp_path)
     m.create_account("alice", "pw")
@@ -164,11 +269,36 @@ def test_revoke_access_key_ownership_checked(tmp_path):
 
 
 # ── REST endpoints ───────────────────────────────────────────────────────────────────────────────
-def _client(tmp_path, with_auth=True):
+def _client(tmp_path, with_auth=True, **auth_kw):
     cfg = load_config(tmp_path / "none.yaml")
-    auth = AuthManager(_store(tmp_path)) if with_auth else None
+    auth = AuthManager(_store(tmp_path), **auth_kw) if with_auth else None
     app = create_app(cfg, auth=auth)
     return TestClient(app), auth
+
+
+def test_team_mode_unguarded_api_route_still_requires_token(tmp_path):
+    # In team mode the middleware must require a valid account token for EVERY operational route,
+    # including ones that don't call require_account themselves (GET /api/settings/autonomy) —
+    # otherwise they'd answer unauthenticated on a public team server (codex finding).
+    client, auth = _client(tmp_path)
+    assert client.get("/api/settings/autonomy").status_code == 401  # no token → blocked
+    auth.create_account("alice", "pw")
+    token = client.post("/api/auth/login", json={"username": "alice", "password": "pw"}).json()[
+        "token"
+    ]
+    r = client.get("/api/settings/autonomy", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200  # valid token → allowed
+
+
+def test_login_endpoint_429_after_lockout(tmp_path):
+    client, auth = _client(tmp_path, max_login_failures=2, login_lockout_seconds=900)
+    auth.create_account("alice", "pw")
+    body = {"username": "alice", "password": "wrong"}
+    assert client.post("/api/auth/login", json=body).status_code == 401
+    assert client.post("/api/auth/login", json=body).status_code == 401  # arms the lock
+    # locked → 429 even with the correct password (uniform, no enumeration leak)
+    r = client.post("/api/auth/login", json={"username": "alice", "password": "pw"})
+    assert r.status_code == 429
 
 
 def test_endpoints_login_and_key_lifecycle(tmp_path):

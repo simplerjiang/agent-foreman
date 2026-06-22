@@ -1,30 +1,77 @@
 name: Deploy to server
 
-# On push to main, deploy the server-side component (PWA + /health now; relay later).
-# Connects as the unprivileged `foreman` user and runs the on-server deploy script.
+# On push to main: run the full test/static gate FIRST, and only deploy if it passes (issue #1 P1).
+# Deploy connects as the unprivileged `foreman` user and runs the on-server deploy script.
 # Secrets (set in repo settings, never committed): DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY.
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: deploy-server
-  cancel-in-progress: false
-
 jobs:
-  deploy:
+  # ── gate: tests + static checks + a server smoke test ──────────────────────────────────────────
+  test:
     runs-on: ubuntu-latest
+    # Per-ref group so a PR's checks never contend with a `main` deploy; a newer push to the same
+    # ref supersedes the stale test run. (The previous shared 'deploy-server' group let main pushes
+    # starve PR checks.)
+    concurrency:
+      group: test-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (both sides + dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[client,server,dev]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Types (mypy)
+        run: mypy src
+      - name: Unit tests (pytest)
+        run: python -m pytest -q
+      - name: Server smoke test (foreman serve -> /health)
+        run: |
+          set -euo pipefail
+          foreman serve --host 127.0.0.1 --port 8899 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:8899/health" >/dev/null 2>&1; then
+              echo "health OK after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::server did not become healthy in time"; exit 1
+
+  # ── deploy: only after the gate is green ──────────────────────────────────────────────────────
+  deploy:
+    needs: test
+    # Deploy ONLY for main: a push to main, or a manual dispatch ON the main ref. This bars a
+    # workflow_dispatch from a feature branch (which would otherwise pin that branch's SHA and push
+    # an unmerged ref to production — codex finding) and never runs on pull_request.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Serialize deploys so two never race; queue (don't cancel) a pending one.
+    concurrency:
+      group: deploy-server
+      cancel-in-progress: false
     steps:
       - name: Deploy over SSH
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           if [ -z "${SSH_KEY:-}" ] || [ -z "${HOST:-}" ] || [ -z "${USER:-}" ]; then
@@ -35,6 +82,31 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -T 15 "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          # Drive the deploy via a remote script over stdin so the token-seeding runs INDEPENDENTLY
+          # of whichever remote_deploy.sh version is on disk. The first rollout after this change
+          # still runs the OLD on-disk script, which would otherwise restart the new fail-closed
+          # server before its own seeding block exists (codex finding). $1 = the gated commit SHA.
           ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
             -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "$USER@$HOST" \
-            'bash -lc "/opt/foreman/app/deploy/remote_deploy.sh"'
+            'bash -s' "$DEPLOY_SHA" <<'REMOTE'
+          set -euo pipefail
+          APP=/opt/foreman/app
+          ENV="$APP/.env"
+          # Pin the gated SHA FIRST — this brings the up-to-date remote_deploy.sh onto disk, so even
+          # the very first rollout (whose pre-existing on-disk script ignores DEPLOY_SHA and would
+          # reset to origin/main) deploys exactly the tested commit (codex finding).
+          git -C "$APP" fetch --quiet origin
+          git -C "$APP" reset --hard "$1"
+          # Seed a usable token (strip optional dotenv quotes so `FOREMAN_AUTH_TOKEN=""` counts as
+          # empty, like the app parses it — codex finding). `|| true` so a no-match grep doesn't abort.
+          CUR=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$ENV" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '[:space:]' | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//' || true)
+          if [ -z "${CUR:-}" ]; then
+            echo "== seeding missing FOREMAN_AUTH_TOKEN (pre-deploy) =="
+            TOK=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
+            [ -f "$ENV" ] && sed -i '/^FOREMAN_AUTH_TOKEN=/d' "$ENV" || true
+            [ -s "$ENV" ] && [ -n "$(tail -c1 "$ENV")" ] && printf '\n' >> "$ENV"
+            echo "FOREMAN_AUTH_TOKEN=$TOK" >> "$ENV"
+            chmod 600 "$ENV"
+          fi
+          DEPLOY_SHA="$1" "$APP/deploy/remote_deploy.sh"
+          REMOTE

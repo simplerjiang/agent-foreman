@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
+from typing import Any
 
 # ── cursor render options for screenshots (DESIGN §4.7) ──────────────────────────────────────────
 HIDE_CURSOR = "hide"  # clean frame / pointer was occluding content
@@ -89,7 +90,7 @@ def capability_risk(
     *,
     admin: bool = False,
     command: str = "",
-    gate: object | None = None,
+    gate: Any = None,
 ) -> str:
     """Map a capability to the Gate's risk vocabulary (DESIGN §4.7 risk table / §6.6).
 
@@ -134,11 +135,11 @@ class Toolbelt:
     def __init__(
         self,
         *,
-        screen: object | None = None,
-        mouse: object | None = None,
-        keyboard: object | None = None,
-        shell: object | None = None,
-        gate: object | None = None,
+        screen: Any = None,
+        mouse: Any = None,
+        keyboard: Any = None,
+        shell: Any = None,
+        gate: Any = None,
         self_cursor: str = HIDE_CURSOR,
     ) -> None:
         self._screen = screen

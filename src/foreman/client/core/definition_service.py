@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from typing import Any
 
 from foreman.shared.crypto import BodyCipher
 from foreman.shared.events import make_event, utc_now_iso
@@ -92,7 +93,7 @@ class DefinitionService:
     """
 
     def __init__(
-        self, store: object, *, bus: object | None = None, clock=None, cipher: BodyCipher | None = None
+        self, store: Any, *, bus: Any = None, clock=None, cipher: BodyCipher | None = None
     ) -> None:
         self.store = store
         self.bus = bus
@@ -258,6 +259,7 @@ class DefinitionService:
         for d in self.store.get_definitions():
             row = _definition_to_dict(d)
             if encrypt:
+                assert self._cipher is not None  # guarded by the no_cipher check above
                 row["body"] = self._cipher.encrypt(row["body"])
             defs.append(row)
         links = []

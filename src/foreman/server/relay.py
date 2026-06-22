@@ -17,6 +17,7 @@ Testability: `serve()` is a thin shell over duck-typed `accept/receive_json/send
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from starlette.websockets import WebSocketDisconnect
 
@@ -50,7 +51,7 @@ class RelayClient:
     process_id: str
     key_id: str
     name: str
-    ws: object  # duck-typed: has async send_json(dict)
+    ws: Any  # duck-typed: has async send_json(dict)
     extra: dict = field(default_factory=dict)
 
     async def send(self, env: Envelope) -> None:

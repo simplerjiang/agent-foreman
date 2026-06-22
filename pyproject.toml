@@ -82,3 +82,17 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+# Optional/native deps without bundled type stubs (desktop window, web push, vapid, the wss dialer).
+# Foreman drives these dynamically; their absence of stubs shouldn't fail the type gate.
+ignore_missing_imports = true
+# The wiring seam (DESIGN §14) injects duck-typed collaborators so server.app never imports client
+# types. Those params are annotated `Any` (intentionally dynamic), so mypy stays honest about the
+# rest of the code while not flagging the injection boundary. Run as `mypy src`.
+
+[[tool.mypy.overrides]]
+# SQLModel's metaclass confuses mypy's attribute resolution on the table classes (`__table__`).
+module = ["foreman.server.store.db", "foreman.server.store.models"]
+disable_error_code = ["union-attr", "attr-defined"]
