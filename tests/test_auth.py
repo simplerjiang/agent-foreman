@@ -161,6 +161,29 @@ def test_login_failure_entries_expire_by_time(tmp_path):
     assert "alice" not in m._login_failures and "bob" in m._login_failures
 
 
+def test_login_stale_count_does_not_carry_over(tmp_path):
+    # Sliding window (codex finding): two old mistypes, wait past the window, one fresh mistype must
+    # NOT lock — the stale count is pruned before incrementing, so the next correct password works.
+    clock = {"t": "2026-06-21T00:00:00+00:00"}
+    m = AuthManager(_store(tmp_path), now=lambda: clock["t"],
+                    max_login_failures=3, login_lockout_seconds=600)
+    m.create_account("alice", "pw")
+    m.login("alice", "wrong")  # count 1
+    m.login("alice", "wrong")  # count 2
+    clock["t"] = "2026-06-21T00:11:00+00:00"  # past the window → the count-2 entry is stale
+    assert m.login("alice", "wrong") == {"error": "invalid"}  # fresh count 1, NOT a 3rd → no lock
+    assert m.login("alice", "pw")["ok"]  # correct password still works (not locked)
+
+
+def test_login_throttle_key_is_length_bounded(tmp_path):
+    # The throttle key is the attacker-controlled username; cap its length so a megabyte-username
+    # spray can't blow up memory despite the entry-count cap (codex finding).
+    m = _mgr(tmp_path, max_login_failures=100)
+    m.login("x" * 1_000_000, "wrong")
+    assert m._login_failures  # an entry was recorded
+    assert all(len(k) <= 256 for k in m._login_failures)
+
+
 def test_resolve_token_valid_and_logout(tmp_path):
     m = _mgr(tmp_path)
     m.create_account("alice", "pw")

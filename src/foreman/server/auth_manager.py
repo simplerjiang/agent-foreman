@@ -53,6 +53,10 @@ DEFAULT_LOGIN_LOCKOUT_SECONDS = 15 * 60
 # stuffing scan rotates usernames, so without a bound _login_failures would grow forever; stale
 # entries are pruned by time first, and this cap evicts the oldest as a backstop (codex finding).
 DEFAULT_MAX_TRACKED_LOGIN_USERNAMES = 4096
+# Cap the throttle KEY length too: the submitted username is attacker-controlled and could be
+# megabytes, so the entry-count cap alone wouldn't bound memory (codex finding). No real username
+# is near this; longer ones just share a truncated throttle bucket (harmless for rate-limiting).
+MAX_LOGIN_USERNAME_KEY_LEN = 256
 
 # A throwaway hash used to spend the same PBKDF2 time on the missing/disabled-user login path,
 # so response timing can't be used to enumerate valid usernames (computed once at import).
@@ -255,16 +259,18 @@ class AuthManager:
         lockout window (issue #1 follow-up) — applied uniformly so it never reveals existence."""
         uname = (username or "").strip()
         now = self._now()
-        if self._is_locked(uname, now):
+        # Throttle key is length-bounded (the raw username is attacker-controlled — codex finding).
+        tkey = uname[:MAX_LOGIN_USERNAME_KEY_LEN]
+        if self._is_locked(tkey, now):
             return {"error": "locked"}
         account = self.store.get_account_by_username(uname)
         usable = account is not None and account.status == "active"
         pw_hash = account.password_hash if usable else _DUMMY_PASSWORD_HASH
         password_ok = verify_password(password or "", pw_hash)
         if not usable or not password_ok:
-            self._record_login_failure(uname, now)
+            self._record_login_failure(tkey, now)
             return {"error": "invalid"}
-        self._login_failures.pop(uname, None)  # success resets the throttle
+        self._login_failures.pop(tkey, None)  # success resets the throttle
         return self._issue_login_token(account)
 
     def _is_locked(self, username: str, now: str) -> bool:
@@ -281,24 +287,26 @@ class AuthManager:
         return True
 
     def _record_login_failure(self, username: str, now: str) -> None:
-        """Count a failed attempt; arm the lockout once it crosses the threshold."""
+        """Count a failed attempt; arm the lockout once it crosses the threshold.
+
+        Stale entries are pruned by time BEFORE incrementing so a count from outside the sliding
+        window never carries over (codex finding: two old mistypes + one fresh one must not lock).
+        The size cap is then enforced AFTER inserting so the map never exceeds the cap yet the
+        just-touched (newest) entry is never the one evicted."""
         if self._max_login_failures <= 0:
             return  # throttle disabled
+        self._prune_stale_login_failures(now)
         rec = self._login_failures.setdefault(username, {"count": 0, "locked_until": ""})
         rec["count"] = int(rec.get("count", 0)) + 1
         rec["seen_at"] = now
         if rec["count"] >= self._max_login_failures:
             rec["locked_until"] = _iso_plus_seconds(now, self._login_lockout_seconds)
             rec["count"] = 0  # reset the counter; the window now governs access
-        # Prune AFTER inserting so the map never exceeds the cap (the just-touched entry is newest,
-        # so the oldest-first eviction never drops it).
-        self._prune_login_failures(now)
+        self._enforce_login_failure_cap()
 
-    def _prune_login_failures(self, now: str) -> None:
-        """Keep _login_failures bounded (codex finding): drop entries whose window has lapsed — a
-        locked entry past its lockout, or a still-counting entry idle longer than the lockout window
-        (a sliding window) — then, as a backstop against a burst within the window, evict the
-        oldest-seen entries above the hard cap."""
+    def _prune_stale_login_failures(self, now: str) -> None:
+        """Drop entries whose window has lapsed — a locked entry past its lockout, or a still-
+        counting entry idle longer than the lockout window (the sliding window)."""
         stale = []
         for uname, rec in self._login_failures.items():
             locked_until = rec.get("locked_until", "")
@@ -312,6 +320,10 @@ class AuthManager:
                     stale.append(uname)
         for uname in stale:
             self._login_failures.pop(uname, None)
+
+    def _enforce_login_failure_cap(self) -> None:
+        """Backstop against a burst of distinct usernames within the window: evict the oldest-seen
+        entries above the hard cap so the map size can't grow without bound."""
         overflow = len(self._login_failures) - self._max_tracked_login_usernames
         if overflow > 0:
             oldest = sorted(self._login_failures.items(), key=lambda kv: kv[1].get("seen_at", ""))

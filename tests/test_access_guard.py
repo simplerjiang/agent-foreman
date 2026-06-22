@@ -27,6 +27,14 @@ TOKEN = "s3cr3t-access-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_token(monkeypatch):
+    """Keep the suite deterministic regardless of the runner's environment (codex finding): clear
+    any ambient FOREMAN_AUTH_TOKEN so load_config()/Config() don't silently pick one up. The
+    no-token tests below ALSO set cfg.secrets.auth_token = "" explicitly to cover a repo .env."""
+    monkeypatch.delenv("FOREMAN_AUTH_TOKEN", raising=False)
+
+
 def _personal_app(tmp_path, *, token: str = TOKEN):
     """A fully-wired personal-mode app (store + gate + cards) with a shared access token set."""
     cfg = load_config(tmp_path / "none.yaml")
@@ -88,7 +96,8 @@ def test_public_endpoints_open_without_token(tmp_path):
 def test_no_token_configured_is_open_for_local_use(tmp_path):
     """With no token (single-user local), operational endpoints stay open — startup is what blocks
     binding such an app to a public interface."""
-    cfg = load_config(tmp_path / "none.yaml")  # no auth_token
+    cfg = load_config(tmp_path / "none.yaml")
+    cfg.secrets.auth_token = ""  # explicit no-token (deterministic regardless of env/.env)
     store = Store(str(tmp_path / "t.db"))
     store.init()
     store.add_session(Session(id="s1", goal="g"))
@@ -116,6 +125,7 @@ def test_ws_open_with_token(tmp_path):
 # ── P0: startup fails closed when exposed without protection ────────────────────────────────────
 def test_build_serve_app_refuses_public_bind_without_token():
     cfg = Config()
+    cfg.secrets.auth_token = ""  # explicit no-token (deterministic regardless of env/.env)
     cfg.server.host = "0.0.0.0"  # exposed
     with pytest.raises(RuntimeError):
         build_serve_app(cfg)
@@ -123,6 +133,7 @@ def test_build_serve_app_refuses_public_bind_without_token():
 
 def test_build_serve_app_refuses_public_base_url_without_token():
     cfg = Config()  # loopback host, but a public URL is advertised → exposed
+    cfg.secrets.auth_token = ""
     cfg.server.public_base_url = "https://foreman.example.com"
     with pytest.raises(RuntimeError):
         build_serve_app(cfg)
@@ -149,6 +160,7 @@ def test_build_serve_app_refuses_empty_host_without_token():
     # An empty host binds all interfaces (INADDR_ANY), not loopback — it must fail closed without a
     # token, not be mistaken for "this machine only" (codex finding).
     cfg = Config()
+    cfg.secrets.auth_token = ""
     cfg.server.host = ""
     with pytest.raises(RuntimeError):
         build_serve_app(cfg)
@@ -159,6 +171,7 @@ def test_local_app_context_not_exempted_by_team_mode():
     # team-mode CONFIG must not exempt the local-app exposure check (codex finding): account_auth
     # defaults False (the local-app path), so a public bind without a token still fails closed.
     cfg = Config()
+    cfg.secrets.auth_token = ""
     cfg.server.mode = "team"
     with pytest.raises(RuntimeError):
         _ensure_safe_exposure(cfg, host="0.0.0.0")
