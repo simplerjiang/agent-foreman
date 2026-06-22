@@ -25,10 +25,29 @@ def app_cmd(
     port: int = typer.Option(8788, help="Local bind port"),
 ) -> None:
     """Start the PC app: engine + local UI in a native window (open=online, close=offline)."""
-    from foreman.client.local_app import start_local_app  # lazy: keeps `foreman serve` client-free
+    from foreman.client.local_app import (  # lazy: keeps `foreman serve` client-free
+        PortInUseError,
+        is_running,
+        start_local_app,
+    )
+
+    url = f"http://{host}:{port}/"
+    # Single instance: the engine owns the local SQLite store + gates, so only one may run per
+    # machine. If Foreman already answers on the port (e.g. the exe was double-clicked again), open
+    # that instance's window instead of starting a rival engine that can't bind the port — the bug
+    # where a second launch died with "local server did not start in time" (really EADDRINUSE).
+    if is_running(host, port):
+        rprint(f"[yellow]Foreman is already running[/] — opening {url}")
+        _open_window(url)
+        return
 
     cfg = load_config(config)
-    local = start_local_app(cfg, host=host, port=port)
+    try:
+        local = start_local_app(cfg, host=host, port=port)
+    except PortInUseError:
+        rprint(f"[red]Port {port} is already in use[/] by another program — close it, or start "
+               "Foreman on a different port with [cyan]--port[/].")
+        raise typer.Exit(code=1) from None
     rprint(f"[bold green]Foreman[/] online — {local.url}  (close the window to go offline)")
 
     try:
@@ -52,6 +71,19 @@ def app_cmd(
     finally:
         local.stop()
         rprint("[dim]Foreman offline.[/]")
+
+
+def _open_window(url: str) -> None:
+    """Open a native window onto an already-running local server (no engine of our own). Falls back
+    to a hint when pywebview isn't installed (headless build). Closing this window leaves the
+    running instance untouched — we never started it, so we don't stop it."""
+    try:
+        import webview  # pywebview, in the .[client] extra (imported lazily — desktop only)
+    except ImportError:
+        rprint(f"[yellow]pywebview not installed[/] — open {url} in a browser.")
+        return
+    webview.create_window("Foreman", url, width=1000, height=760)
+    webview.start()  # blocks until this window is closed
 
 
 @app.command()
