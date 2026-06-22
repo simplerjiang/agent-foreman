@@ -114,6 +114,15 @@ def test_ws_closed_without_token(tmp_path):
                 ws.receive_json()  # closed (1008) before any backlog is sent
 
 
+def test_ws_non_ascii_token_rejected_cleanly(tmp_path):
+    # A non-ASCII ?token= must close (1008), not 500 via a compare_digest TypeError (codex finding).
+    app = _personal_app(tmp_path)
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws?session_id=s1&token=%C3%A9") as ws:
+            with pytest.raises(Exception):
+                ws.receive_json()
+
+
 def test_ws_open_with_token(tmp_path):
     app = _personal_app(tmp_path)
     with TestClient(app) as c:

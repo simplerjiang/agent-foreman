@@ -212,6 +212,14 @@ def _bearer_token(request: Request) -> str:
     return token.strip() if scheme.lower() == "bearer" else ""
 
 
+def _ct_eq(a: str, b: str) -> bool:
+    """Constant-time string compare that tolerates non-ASCII input. ``secrets.compare_digest`` on
+    ``str`` raises TypeError if either side has a non-ASCII char (e.g. a `?token=%C3%A9` query or a
+    latin-1 Authorization header), which would turn a malformed unauthenticated attempt into a 500
+    instead of a clean reject (codex finding). Encoding both to UTF-8 bytes first avoids that."""
+    return _secrets.compare_digest(a.encode("utf-8", "surrogatepass"), b.encode("utf-8"))
+
+
 # Hosts that mean "only this machine" — a personal app bound here is not network-exposed (the
 # tunnel case binds loopback too, so the request-layer token is what protects an exposed app).
 # NB: "0.0.0.0" and "" both mean ALL interfaces (an empty host binds INADDR_ANY) — they are NOT
@@ -384,7 +392,7 @@ def create_app(
             return auth.resolve_token(_bearer_token(request)) is not None
         if not _shared_token:
             return True  # personal local mode (exposure blocked at startup)
-        return _secrets.compare_digest(_bearer_token(request), _shared_token)
+        return _ct_eq(_bearer_token(request), _shared_token)
 
     def _ws_authorized(token: str) -> bool:
         """Authorize a websocket (browsers can't set Authorization headers, so the token rides a
@@ -393,7 +401,7 @@ def create_app(
             return auth.resolve_token(token) is not None
         if not _shared_token:
             return True
-        return _secrets.compare_digest(token or "", _shared_token)
+        return _ct_eq(token or "", _shared_token)
 
     def _security_headers(response: Response) -> None:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")

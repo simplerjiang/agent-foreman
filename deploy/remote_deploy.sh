@@ -25,7 +25,7 @@ pip install -e ".[server]" --quiet   # server deployable only (no client/desktop
 # the public 0.0.0.0 bind without one (issue #1 P0); this is the script the deploy path runs, so
 # seed it here too or a box whose .env lacks/blanks the token would stay down after the restart
 # (codex finding). The `|| true` keeps the no-match grep from aborting under `set -euo pipefail`.
-CUR_TOKEN=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$APP/.env" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '[:space:]' || true)
+CUR_TOKEN=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$APP/.env" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '[:space:]' | sed -e 's/^["'\'']//' -e 's/["'\'']$//' || true)
 if [ -z "${CUR_TOKEN:-}" ]; then
   echo "== seeding missing FOREMAN_AUTH_TOKEN =="
   NEW_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)

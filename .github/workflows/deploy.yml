@@ -90,17 +90,23 @@ jobs:
             -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "$USER@$HOST" \
             'bash -s' "$DEPLOY_SHA" <<'REMOTE'
           set -euo pipefail
-          ENV=/opt/foreman/app/.env
-          CUR=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$ENV" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '[:space:]' || true)
+          APP=/opt/foreman/app
+          ENV="$APP/.env"
+          # Pin the gated SHA FIRST — this brings the up-to-date remote_deploy.sh onto disk, so even
+          # the very first rollout (whose pre-existing on-disk script ignores DEPLOY_SHA and would
+          # reset to origin/main) deploys exactly the tested commit (codex finding).
+          git -C "$APP" fetch --quiet origin
+          git -C "$APP" reset --hard "$1"
+          # Seed a usable token (strip optional dotenv quotes so `FOREMAN_AUTH_TOKEN=""` counts as
+          # empty, like the app parses it — codex finding). `|| true` so a no-match grep doesn't abort.
+          CUR=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$ENV" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '[:space:]' | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//' || true)
           if [ -z "${CUR:-}" ]; then
             echo "== seeding missing FOREMAN_AUTH_TOKEN (pre-deploy) =="
             TOK=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
             [ -f "$ENV" ] && sed -i '/^FOREMAN_AUTH_TOKEN=/d' "$ENV" || true
-            # ensure a trailing newline so the token starts on its own line (don't corrupt an
-            # existing secret on a file with no final newline — codex finding)
             [ -s "$ENV" ] && [ -n "$(tail -c1 "$ENV")" ] && printf '\n' >> "$ENV"
             echo "FOREMAN_AUTH_TOKEN=$TOK" >> "$ENV"
             chmod 600 "$ENV"
           fi
-          DEPLOY_SHA="$1" /opt/foreman/app/deploy/remote_deploy.sh
+          DEPLOY_SHA="$1" "$APP/deploy/remote_deploy.sh"
           REMOTE

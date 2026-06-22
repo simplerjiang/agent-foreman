@@ -59,7 +59,7 @@ fi
 # (e.g. copied from .env.example), so an upgrade on a box with a pre-existing .env doesn't fail
 # closed on the next restart (codex acceptance finding). Idempotent.
 # `|| true` so the no-match grep doesn't abort the script under `set -euo pipefail` (codex finding).
-CUR_TOKEN=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$APP/.env" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '[:space:]' || true)
+CUR_TOKEN=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$APP/.env" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '[:space:]' | sed -e 's/^["'\'']//' -e 's/["'\'']$//' || true)
 if [ -z "${CUR_TOKEN:-}" ]; then
   TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
   [ -f "$APP/.env" ] && sed -i '/^FOREMAN_AUTH_TOKEN=/d' "$APP/.env"   # drop any blank entry first
