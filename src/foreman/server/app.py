@@ -472,6 +472,19 @@ def create_app(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(next_lines) + ("\n" if next_lines else ""), encoding="utf-8")
 
+    def _runtime_llm_settings() -> dict:
+        provider, model, base_url = cfg.llm.provider, cfg.llm.model, cfg.llm.base_url
+        if store is not None and hasattr(store, "get_setting"):
+            provider = store.get_setting("llm.provider") or provider
+            model = store.get_setting("llm.model") or model
+            base_url = store.get_setting("llm.base_url") or base_url
+        return {
+            "provider": provider,
+            "model": model,
+            "base_url": base_url,
+            "api_key": cfg.secrets.llm_api_key,
+        }
+
     _effective_workspaces()
 
     def _auth_bucket(request: Request, scope: str) -> str:
@@ -600,6 +613,41 @@ def create_app(
             if a.enabled
         ]
 
+    @app.get("/api/models")
+    async def list_models(agent: str | None = None) -> dict:
+        """Model choices for the dispatch form. Provider discovery is best-effort; configured
+        defaults are returned even when `/models` is unavailable or no PM API key is set."""
+        from foreman.shared.llm import LLMClient
+
+        models: list[dict] = []
+        seen: set[str] = set()
+
+        def add(model_id: str, source: str) -> None:
+            mid = (model_id or "").strip()
+            if mid and mid not in seen:
+                seen.add(mid)
+                models.append({"id": mid, "source": source})
+
+        agent_cfg = cfg.agents.get((agent or "").strip())
+        if agent_cfg is not None:
+            add(agent_cfg.model, "agent")
+        settings = _runtime_llm_settings()
+        add(settings.get("model", ""), "pm")
+        error = ""
+        client = LLMClient(cfg, settings_resolver=_runtime_llm_settings)
+        try:
+            for model_id in await client.list_models():
+                add(model_id, "provider")
+        except Exception as exc:  # noqa: BLE001 — optional UI discovery must never break dispatch
+            error = f"{type(exc).__name__}: {str(exc)[:160]}"
+        finally:
+            await client.aclose()
+        return {
+            "models": models,
+            "default": (agent_cfg.model if agent_cfg is not None else "") or settings.get("model", ""),
+            "error": error,
+        }
+
     @app.get("/api/workspaces")
     async def list_workspaces() -> list[dict]:
         """Effective workspace allowlist for the local UI's workspace menu."""
@@ -690,15 +738,11 @@ def create_app(
     async def get_llm_settings() -> dict:
         """Effective PM 大脑 brain settings: a config_kv override (if a store) else the config
         default (§15). Never returns the api key; only whether one is configured."""
-        provider, model, base_url = cfg.llm.provider, cfg.llm.model, cfg.llm.base_url
-        if store is not None and hasattr(store, "get_setting"):
-            provider = store.get_setting("llm.provider") or provider
-            model = store.get_setting("llm.model") or model
-            base_url = store.get_setting("llm.base_url") or base_url
+        settings = _runtime_llm_settings()
         return {
-            "provider": provider,
-            "model": model,
-            "base_url": base_url,
+            "provider": settings["provider"],
+            "model": settings["model"],
+            "base_url": settings["base_url"],
             "transport": cfg.llm.transport,  # wiring stays config-only (read-only hint for the UI)
             "api_key_set": bool((cfg.secrets.llm_api_key or "").strip()),
         }

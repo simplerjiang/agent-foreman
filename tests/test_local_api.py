@@ -68,6 +68,23 @@ def test_api_agents_lists_enabled_with_model():
     assert agents == [{"name": "claude-code", "model": "sonnet", "effort": "high"}]
 
 
+def test_api_models_returns_configured_defaults_without_key():
+    cfg = Config()
+    cfg.llm.model = "pm-model"
+    cfg.secrets.llm_api_key = ""
+    cfg.agents = {
+        "codex": AgentCfg(command="codex", enabled=True, model="agent-model"),
+    }
+    c = TestClient(create_app(cfg))
+    data = c.get("/api/models?agent=codex").json()
+    assert data["models"] == [
+        {"id": "agent-model", "source": "agent"},
+        {"id": "pm-model", "source": "pm"},
+    ]
+    assert data["default"] == "agent-model"
+    assert "LLMConfigError" in data["error"]
+
+
 # ── /api/workspaces: local UI can edit the workspace allowlist ──────────────────────────────────
 
 

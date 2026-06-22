@@ -16,6 +16,9 @@ from . import __version__
 from foreman.shared.config import load_config
 
 app = typer.Typer(add_completion=False, help="Foreman — a PM agent for your local coding agents.")
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 800
+WINDOW_MIN_SIZE = (1120, 680)
 
 
 @app.command("app")  # command name "app"; function renamed so it doesn't shadow the Typer instance
@@ -65,7 +68,14 @@ def app_cmd(
             local.stop()
         return
 
-    webview.create_window("Foreman", local.url, width=1000, height=760)
+    webview.create_window(
+        "Foreman",
+        local.url,
+        js_api=_DesktopApi(),
+        width=WINDOW_WIDTH,
+        height=WINDOW_HEIGHT,
+        min_size=WINDOW_MIN_SIZE,
+    )
     try:
         webview.start()  # blocks until the window is closed
     finally:
@@ -82,8 +92,37 @@ def _open_window(url: str) -> None:
     except ImportError:
         rprint(f"[yellow]pywebview not installed[/] — open {url} in a browser.")
         return
-    webview.create_window("Foreman", url, width=1000, height=760)
+    webview.create_window(
+        "Foreman",
+        url,
+        js_api=_DesktopApi(),
+        width=WINDOW_WIDTH,
+        height=WINDOW_HEIGHT,
+        min_size=WINDOW_MIN_SIZE,
+    )
     webview.start()  # blocks until this window is closed
+
+
+class _DesktopApi:
+    """Small pywebview bridge used by the local settings page."""
+
+    def select_workspace_folder(self) -> str:
+        try:
+            import webview
+
+            window = webview.windows[0] if webview.windows else None
+            if window is None:
+                return ""
+            file_dialog = getattr(webview, "FileDialog", None)
+            folder_dialog = getattr(file_dialog, "FOLDER", None)
+            if folder_dialog is None:
+                folder_dialog = getattr(webview, "FOLDER_DIALOG", 20)
+            paths = window.create_file_dialog(folder_dialog, allow_multiple=False)
+        except Exception:
+            return ""
+        if not paths:
+            return ""
+        return str(paths[0])
 
 
 @app.command()

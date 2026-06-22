@@ -130,6 +130,46 @@ async def test_settings_resolver_falls_back_to_config_on_empty():
     assert cap["json"]["model"] == "config-model"
 
 
+async def test_list_models_openai_compatible():
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["url"] = str(request.url)
+        cap["auth"] = request.headers["authorization"]
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "gpt-5"}, {"id": "gpt-5"}, {"id": "gpt-5-mini"}]},
+        )
+
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    models = await c.list_models()
+    await c.aclose()
+    assert cap == {"url": "https://example.test/v1/models", "auth": "Bearer secret-key"}
+    assert models == ["gpt-5", "gpt-5-mini"]
+
+
+async def test_list_models_anthropic_shape():
+    cfg = Config()
+    cfg.llm.provider = "anthropic"
+    cfg.llm.base_url = "https://api.anthropic.test/v1"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["key"] = request.headers["x-api-key"]
+        return httpx.Response(200, json={"data": [{"id": "claude-sonnet-4-5"}]})
+
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    models = await c.list_models()
+    await c.aclose()
+    assert cap["key"] == "secret-key"
+    assert models == ["claude-sonnet-4-5"]
+
+
 async def test_openai_json_mode_sets_response_format():
     cap: dict = {}
     c = _client("openai", cap)

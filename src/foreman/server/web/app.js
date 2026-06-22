@@ -50,6 +50,7 @@
       dispatchAgent: "Agent",
       dispatchModel: "模型",
       dispatchEffort: "档位",
+      modelRefresh: "刷新模型",
       agentDefault: "默认",
       effortDefault: "默认",
       effortLow: "快速",
@@ -69,6 +70,8 @@
       workspacePath: "项目路径",
       workspaceName: "显示名称",
       workspacePathHint: "例如 E:\\AutoWorkAgent",
+      browseFolder: "浏览",
+      folderPickerUnavailable: "当前浏览器不支持直接选择文件夹，请手动输入路径。",
       addWorkspace: "添加/更新工作区",
       remove: "移除",
       uiSettings: "界面",
@@ -116,6 +119,8 @@
       reject: "驳回",
       rawJson: "原始数据",
       ev_dispatch: "已下发",
+      ev_pm_plan: "PM 计划",
+      ev_pm_review: "PM 复查",
       ev_agent_output: "输出",
       ev_stop: "完成",
       ev_error: "错误",
@@ -178,6 +183,7 @@
       dispatchAgent: "Agent",
       dispatchModel: "Model",
       dispatchEffort: "Level",
+      modelRefresh: "Refresh models",
       agentDefault: "Default",
       effortDefault: "Default",
       effortLow: "Fast",
@@ -197,6 +203,8 @@
       workspacePath: "Project path",
       workspaceName: "Display name",
       workspacePathHint: "e.g. E:\\AutoWorkAgent",
+      browseFolder: "Browse",
+      folderPickerUnavailable: "This browser cannot open a folder picker. Enter the path manually.",
       addWorkspace: "Add/update workspace",
       remove: "Remove",
       uiSettings: "UI",
@@ -244,6 +252,8 @@
       reject: "Reject",
       rawJson: "Raw data",
       ev_dispatch: "Dispatched",
+      ev_pm_plan: "PM plan",
+      ev_pm_review: "PM review",
       ev_agent_output: "Output",
       ev_stop: "Done",
       ev_error: "Error",
@@ -414,8 +424,19 @@
       case "dispatch": {
         const extra = [payload.agent, payload.model, payload.effort].filter(Boolean).join(" / ");
         const deferred = payload.execution_deferred ? ` - ${d.evDeferred}` : "";
-        return `${payload.goal || ""}${extra ? ` (${extra})` : ""}${deferred}`.trim();
+        const pm = payload.pm_agent ? " / PM" : "";
+        return `${payload.goal || ""}${extra ? ` (${extra}${pm})` : pm}${deferred}`.trim();
       }
+      case "pm_plan":
+        return [payload.summary, payload.agent, payload.model, payload.effort, payload.instruction]
+          .filter(Boolean).join("\n");
+      case "pm_review":
+        return [
+          payload.done ? "done" : "needs follow-up",
+          payload.summary,
+          payload.reason,
+          payload.follow_up,
+        ].filter(Boolean).join("\n");
       case "briefing":
         return payload.title || "";
       case "stop":
@@ -484,6 +505,8 @@
     const [status, setStatus] = useState({ online: false, text: "..." });
     const [workspaces, setWorkspaces] = useState([]);
     const [agents, setAgents] = useState([]);
+    const [modelOptions, setModelOptions] = useState([]);
+    const [modelLoading, setModelLoading] = useState(false);
     const [sessions, setSessions] = useState([]);
     const [selectedSession, setSelectedSession] = useState("");
     const [events, setEvents] = useState([]);
@@ -535,6 +558,24 @@
       try { setAgents(await api("/api/agents") || []); }
       catch (e) { setAgents([]); }
     }, []);
+
+    const loadModels = useCallback(async (selectedAgent) => {
+      const name = selectedAgent || agent || "";
+      setModelLoading(true);
+      try {
+        const suffix = name ? `?agent=${encodeURIComponent(name)}` : "";
+        const data = await api(`/api/models${suffix}`);
+        const rows = (data && data.models) || [];
+        setModelOptions(rows.map((m) => ({
+          value: m.id,
+          label: m.source ? `${m.id} (${m.source})` : m.id,
+        })));
+      } catch (e) {
+        setModelOptions([]);
+      } finally {
+        setModelLoading(false);
+      }
+    }, [agent]);
 
     const loadSessions = useCallback(async () => {
       try {
@@ -618,10 +659,11 @@
       () => sessions.find((s) => s.id === selectedSession),
       [sessions, selectedSession]
     );
+    const selectedAgentName = agent || ((agents[0] && agents[0].name) || "");
     const agentDefault = useMemo(() => {
-      const row = agents.find((a) => a.name === agent);
+      const row = agents.find((a) => a.name === selectedAgentName);
       return (row && row.model) || d.modelDefaultHint;
-    }, [agent, agents, d.modelDefaultHint]);
+    }, [selectedAgentName, agents, d.modelDefaultHint]);
     const workspaceGroups = useMemo(() => {
       const groups = new Map();
       for (const s of sessions) {
@@ -666,6 +708,8 @@
       loadLlm();
       loadAutonomy();
     }, [loadAgents, loadApprovals, loadAutonomy, loadCards, loadLlm, loadReports, loadSessions, loadWorkspaces]);
+
+    useEffect(() => { loadModels(agent); }, [agent, loadModels]);
 
     useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
 
@@ -820,6 +864,25 @@
       } catch (e) { notifyError(e); }
     }
 
+    async function browseWorkspaceFolder() {
+      const bridge = window.pywebview && window.pywebview.api;
+      if (!bridge || !bridge.select_workspace_folder) {
+        ui && ui.message.info(d.folderPickerUnavailable);
+        return;
+      }
+      try {
+        const path = await bridge.select_workspace_folder();
+        if (!path) return;
+        setWorkspaceDraft((prev) => ({
+          ...prev,
+          path,
+          name: prev.name || shortPath(path, d),
+        }));
+      } catch (e) {
+        ui && ui.message.info(d.folderPickerUnavailable);
+      }
+    }
+
     async function deleteWorkspace(path) {
       try {
         const rows = await api(`/api/workspaces?path=${encodeURIComponent(path)}`, {
@@ -847,6 +910,7 @@
         const data = await api("/api/settings/llm", { method: "POST", body });
         setLlm({ ...data, api_key: "" });
         setLlmStatus(d.saved);
+        await loadModels(agent);
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
     }
 
@@ -855,6 +919,7 @@
         const data = await api("/api/settings/llm", { method: "POST", body: { api_key: "" } });
         setLlm({ ...data, api_key: "" });
         setLlmStatus(d.saved);
+        await loadModels(agent);
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
     }
 
@@ -961,6 +1026,9 @@
                     setAgent=${setAgent}
                     model=${model}
                     setModel=${setModel}
+                    modelOptions=${modelOptions}
+                    modelLoading=${modelLoading}
+                    refreshModels=${() => loadModels(agent)}
                     effort=${effort}
                     setEffort=${setEffort}
                     task=${task}
@@ -1015,6 +1083,7 @@
                     loadWorkspaces=${loadWorkspaces}
                     workspaceDraft=${workspaceDraft}
                     setWorkspaceDraft=${setWorkspaceDraft}
+                    browseWorkspaceFolder=${browseWorkspaceFolder}
                     saveWorkspace=${saveWorkspace}
                     deleteWorkspace=${deleteWorkspace}
                     llm=${llm}
@@ -1084,8 +1153,8 @@
   function WorkspaceView(props) {
     const {
       d, lang, workspaces, workspace, setWorkspace, agents, agent, setAgent, model, setModel,
-      effort, setEffort, task, setTask, agentDefault, dispatching, runDispatch, dispatchStatus,
-      selectedSessionRow, events,
+      modelOptions, modelLoading, refreshModels, effort, setEffort, task, setTask, agentDefault,
+      dispatching, runDispatch, dispatchStatus, selectedSessionRow, events,
     } = props;
     return html`
       <div className="view-grid">
@@ -1116,7 +1185,23 @@
               </${A.Col}>
               <${A.Col} xs=${24} md=${7}>
                 <${A.Form.Item} label=${d.dispatchModel}>
-                  <${A.Input} value=${model} onChange=${(e) => setModel(e.target.value)} placeholder=${agentDefault} />
+                  <${A.Space.Compact} block>
+                    <${A.AutoComplete}
+                      style=${{ width: "100%" }}
+                      value=${model}
+                      onChange=${setModel}
+                      options=${modelOptions}
+                      placeholder=${agentDefault}
+                      filterOption=${(input, option) => String(option.value || "").toLowerCase().includes(input.toLowerCase())}
+                    />
+                    <${A.Button}
+                      htmlType="button"
+                      loading=${modelLoading}
+                      icon=${icon("ReloadOutlined")}
+                      onClick=${refreshModels}
+                      title=${d.modelRefresh}
+                    />
+                  </${A.Space.Compact}>
                 </${A.Form.Item}>
               </${A.Col}>
               <${A.Col} xs=${24} md=${4}>
@@ -1350,7 +1435,8 @@
 
   function SettingsView({
     d, workspaces, loadWorkspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace,
-    deleteWorkspace, llm, setLlm, saveLlm, clearLlmKey, llmStatus, autonomy, saveAutonomy,
+    browseWorkspaceFolder, deleteWorkspace, llm, setLlm, saveLlm, clearLlmKey, llmStatus,
+    autonomy, saveAutonomy,
   }) {
     return html`
       <div className="view-grid">
@@ -1372,11 +1458,18 @@
             <${A.Row} gutter=${12}>
               <${A.Col} xs=${24} md=${16}>
                 <${A.Form.Item} label=${d.workspacePath}>
-                  <${A.Input}
-                    value=${workspaceDraft.path}
-                    onChange=${(e) => setWorkspaceDraft({ ...workspaceDraft, path: e.target.value })}
-                    placeholder=${d.workspacePathHint}
-                  />
+                  <${A.Space.Compact} block>
+                    <${A.Input}
+                      value=${workspaceDraft.path}
+                      onChange=${(e) => setWorkspaceDraft({ ...workspaceDraft, path: e.target.value })}
+                      placeholder=${d.workspacePathHint}
+                    />
+                    <${A.Button}
+                      htmlType="button"
+                      icon=${icon("FolderOpenOutlined")}
+                      onClick=${browseWorkspaceFolder}
+                    >${d.browseFolder}</${A.Button}>
+                  </${A.Space.Compact}>
                 </${A.Form.Item}>
               </${A.Col}>
               <${A.Col} xs=${24} md=${8}>

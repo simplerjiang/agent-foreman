@@ -10,6 +10,7 @@ import asyncio
 import json
 
 from foreman.client.core.dispatch_service import DispatchService
+from foreman.client.core.pm_agent import PMPlan, PMReview
 from foreman.client.store import Store
 from foreman.client.store.models import (
     Approval,
@@ -105,6 +106,79 @@ async def test_create_runs_launcher_in_background(tmp_path):
     assert calls and calls[0][0] == res["session_id"] and calls[0][1] == "do x"
     assert calls[0][4] == "run-model"
     assert calls[0][5] == "high"  # reasoning level threads to the launcher
+
+
+async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        max_runs = 2
+
+        def __init__(self):
+            self.plan_goal = ""
+            self.reviews = 0
+
+        async def plan(self, goal, **kw):
+            self.plan_goal = goal
+            assert kw["requested_agent"] == "claude-code"
+            return PMPlan(
+                agent="codex",
+                model="gpt-5",
+                effort="high",
+                instruction="PM planned instruction",
+                summary="use codex",
+            )
+
+        async def review(self, goal, plan, timeline, *, run_count):
+            self.reviews += 1
+            assert "PM planned instruction" in plan.instruction
+            if self.reviews == 1:
+                return PMReview(done=False, summary="not done", follow_up="PM follow-up")
+            return PMReview(done=True, summary="done")
+
+    class FakeHandle:
+        session_id = "s"
+
+    class FakeRunner:
+        def __init__(self):
+            self.launched = []
+            self.sent = []
+            self.handle = FakeHandle()
+
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            self.handle.session_id = session_id
+            self.launched.append((agent, instruction, str(workspace), model, effort))
+            store.add_event(make_event("stop", agent, session_id, payload={"result": "first"}))
+            return self.handle
+
+        async def wait(self, handle):
+            return None
+
+        async def send(self, handle, text):
+            self.sent.append(text)
+            store.add_event(make_event("stop", "codex", handle.session_id, payload={"result": text}))
+
+    cfg = _cfg(
+        agents={
+            "claude-code": AgentCfg(command="claude", enabled=True),
+            "codex": AgentCfg(command="codex", enabled=True),
+        },
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    pm = FakePM()
+    runner = FakeRunner()
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=pm)
+
+    res = await svc.create("raw user task", agent="claude-code")
+    assert res["pm_agent"] is True
+    await asyncio.gather(*list(svc._tasks))
+
+    assert pm.plan_goal == "raw user task"
+    assert runner.launched == [("codex", "PM planned instruction", str(tmp_path), "gpt-5", "high")]
+    assert runner.sent == ["PM follow-up"]
+    events = store.get_events(res["session_id"])
+    assert "pm_plan" in [e.type for e in events]
+    assert [e.type for e in events].count("pm_review") == 2
 
 
 async def test_create_ignores_bad_effort(tmp_path):

@@ -11,7 +11,6 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from foreman.shared.config import Config
@@ -85,6 +84,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     from .core.dispatch_service import DispatchService
     from .core.gate import Gate
     from .core.operator import Operator
+    from .core.pm_agent import PMAgent
     from .monitor.hooks import HookReceiver
 
     # Optional at-rest encryption for definition bodies (DESIGN §765, T6.2). The key lives in a
@@ -145,14 +145,12 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # Close the loop: a tapped card executes the chosen path (approve→checkpoint+execute / undo /
     # revise) instead of only recording the decision (the "你点→检查点→执行" half, §6.2).
     cards.executor = loop.on_card_decision
-    # DispatchService creates Root Sessions from the phone (§5.1); its launcher drives the real
-    # Runner so a phone tap actually starts an agent (multiple sessions run concurrently, T1.7).
-    async def _launcher(
-        session_id: str, goal: str, workspace: str, agent: str, model: str, effort: str = ""
-    ) -> None:
-        await runner.launch(agent, goal, Path(workspace), session_id, model=model, effort=effort)
-
-    dispatcher = DispatchService(cfg, store, bus=bus, launcher=_launcher)
+    # DispatchService creates Root Sessions from the phone (§5.1). In the local app it is wired
+    # through the PM agent first: PM plans the prompt/agent/model, waits for the CLI run, then
+    # reviews and resumes if the work is incomplete.
+    dispatcher = DispatchService(
+        cfg, store, bus=bus, runner=runner, pm_agent=PMAgent(_llm(), language=language)
+    )
     # BriefingService summarizes a session's activity with YOUR LLM → reports table + Web Push
     # (§5.5). Output language follows the runtime ui.language setting (§15, resolved above).
     briefings = BriefingService(

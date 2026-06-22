@@ -24,6 +24,7 @@ from foreman.shared.config import Config
 from foreman.shared.events import make_event, utc_now_iso
 
 from ..dispatch import build_session_task
+from .pm_agent import PMPlan, events_to_text
 
 # Bound the goal so a multi-megabyte string can't inflate every later briefing's token cost (and
 # keeps the argv passed to the agent CLI sane). Truncated, not rejected, to stay friendly.
@@ -61,6 +62,8 @@ class DispatchService:
         *,
         bus: Any = None,
         launcher=None,
+        runner=None,
+        pm_agent=None,
         clock=None,
     ) -> None:
         self.cfg = cfg
@@ -68,6 +71,8 @@ class DispatchService:
         self.bus = bus
         # launcher(session_id, goal, workspace, agent, model, effort) -> awaitable; None = deferred.
         self.launcher = launcher
+        self.runner = runner
+        self.pm_agent = pm_agent
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
 
@@ -104,11 +109,34 @@ class DispatchService:
         resolved_effort = self._resolve_effort(resolved_agent, effort)
 
         session, task = build_session_task(self.store, goal, ws, resolved_agent)
-        deferred = self.launcher is None
+        pm_enabled = self.pm_agent is not None and self.runner is not None
+        deferred = self.launcher is None and not pm_enabled
         await self._emit_dispatch(
-            session.id, task.id, goal, ws, resolved_agent, resolved_model, resolved_effort, deferred
+            session.id,
+            task.id,
+            goal,
+            ws,
+            resolved_agent,
+            resolved_model,
+            resolved_effort,
+            deferred,
+            pm_enabled,
         )
-        if self.launcher is not None:
+        if pm_enabled:
+            launch_task = asyncio.create_task(
+                self._safe_pm_launch(
+                    session.id,
+                    task.id,
+                    goal,
+                    ws,
+                    resolved_agent,
+                    resolved_model,
+                    resolved_effort,
+                )
+            )
+            self._tasks.add(launch_task)
+            launch_task.add_done_callback(self._tasks.discard)
+        elif self.launcher is not None:
             # Fire-and-forget: a phone dispatch returns immediately; the agent runs in the
             # background (Runner pumps its events to store+bus, T1.7). Failures emit an `error`.
             # Keep a strong ref (discarded on completion) so the task isn't GC'd mid-flight.
@@ -129,6 +157,7 @@ class DispatchService:
             "model": resolved_model,
             "effort": resolved_effort,
             "execution_deferred": deferred,
+            "pm_agent": pm_enabled,
         }
 
     def _resolve_agent(self, agent: str | None) -> tuple[str, str]:
@@ -193,6 +222,7 @@ class DispatchService:
         model: str,
         effort: str,
         deferred: bool,
+        pm_enabled: bool = False,
     ) -> None:
         event = make_event(
             "dispatch",
@@ -207,7 +237,123 @@ class DispatchService:
                 "workspace": workspace,
                 # launching the agent is the two-way control layer (P4) when no launcher is wired.
                 "execution_deferred": deferred,
+                "pm_agent": pm_enabled,
             },
+        )
+        await self._persist_then_publish(event)
+
+    async def _safe_pm_launch(
+        self,
+        session_id: str,
+        task_id: str,
+        goal: str,
+        workspace: str,
+        agent: str,
+        model: str,
+        effort: str,
+    ) -> None:
+        try:
+            await self._pm_launch(session_id, task_id, goal, workspace, agent, model, effort)
+        except Exception as exc:  # noqa: BLE001 — PM failure must be visible, not crash the server
+            event = make_event(
+                "error",
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload={"msg": f"{type(exc).__name__}: {str(exc)[:200]}"},
+            )
+            await self._persist_then_publish(event)
+
+    async def _pm_launch(
+        self,
+        session_id: str,
+        task_id: str,
+        goal: str,
+        workspace: str,
+        agent: str,
+        model: str,
+        effort: str,
+    ) -> None:
+        enabled_agents = [
+            {"name": name, "model": cfg.model, "effort": getattr(cfg, "effort", "")}
+            for name, cfg in sorted(self.cfg.agents.items())
+            if cfg.enabled
+        ] or [{"name": agent, "model": model, "effort": effort}]
+        plan = await self.pm_agent.plan(
+            goal,
+            workspace=workspace,
+            available_agents=enabled_agents,
+            requested_agent=agent,
+            requested_model=model,
+            requested_effort=effort,
+            fallback_instruction=_fallback_instruction(goal),
+        )
+        await self._emit_pm_plan(session_id, task_id, plan)
+        handle = await self.runner.launch(
+            plan.agent, plan.instruction, Path(workspace), session_id,
+            model=plan.model, effort=plan.effort,
+        )
+        run_count = 1
+        await self.runner.wait(handle)
+        while True:
+            timeline = events_to_text(self.store.get_events(session_id))
+            review = await self.pm_agent.review(goal, plan, timeline, run_count=run_count)
+            await self._emit_pm_review(session_id, task_id, review, run_count)
+            if review.done:
+                return
+            if run_count >= self.pm_agent.max_runs:
+                await self._emit_pm_error(
+                    session_id,
+                    task_id,
+                    "PM review still thinks the task is incomplete, but the run limit was reached.",
+                )
+                return
+            if not review.follow_up:
+                await self._emit_pm_error(
+                    session_id,
+                    task_id,
+                    "PM review asked to continue but did not provide a follow-up prompt.",
+                )
+                return
+            await self.runner.send(handle, review.follow_up)
+            run_count += 1
+            await self.runner.wait(handle)
+
+    async def _emit_pm_plan(self, session_id: str, task_id: str, plan: PMPlan) -> None:
+        event = make_event(
+            "pm_plan",
+            "pm-agent",
+            session_id,
+            task_id=task_id,
+            payload={
+                "summary": plan.summary,
+                "agent": plan.agent,
+                "model": plan.model,
+                "effort": plan.effort,
+                "instruction": plan.instruction,
+            },
+        )
+        await self._persist_then_publish(event)
+
+    async def _emit_pm_review(self, session_id: str, task_id: str, review, run_count: int) -> None:
+        event = make_event(
+            "pm_review",
+            "pm-agent",
+            session_id,
+            task_id=task_id,
+            payload={
+                "run_count": run_count,
+                "done": review.done,
+                "summary": review.summary,
+                "reason": review.reason,
+                "follow_up": review.follow_up,
+            },
+        )
+        await self._persist_then_publish(event)
+
+    async def _emit_pm_error(self, session_id: str, task_id: str, msg: str) -> None:
+        event = make_event(
+            "error", "pm-agent", session_id, task_id=task_id, payload={"msg": msg}
         )
         await self._persist_then_publish(event)
 
@@ -275,3 +421,11 @@ class DispatchService:
 
 
 __all__ = ["DispatchService"]
+
+
+def _fallback_instruction(goal: str) -> str:
+    return (
+        "You are working under Foreman's PM supervision. Complete the user task, verify the result, "
+        "and report honestly what changed and what could not be verified.\n\n"
+        f"User task:\n{goal}"
+    )

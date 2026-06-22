@@ -134,6 +134,24 @@ class LLMClient:
             return await self._anthropic(messages, json_mode, base_url, model)
         return await self._openai(messages, json_mode, base_url, model)
 
+    async def list_models(self) -> list[str]:
+        """Return model ids from the configured PM provider's `/models` endpoint.
+
+        The endpoint is used only to populate UI choices; callers should treat failures as optional
+        and fall back to configured defaults. The API key still goes through `_api_key()`, so a
+        missing key fails before any network request.
+        """
+        provider, base_url, _model = self._resolve()
+        headers = {"Authorization": f"Bearer {self._api_key()}"}
+        if provider == "anthropic":
+            headers = {
+                "x-api-key": self._api_key(),
+                "anthropic-version": "2023-06-01",
+            }
+        r = await self._client.get(f"{base_url}/models", headers=headers)
+        r.raise_for_status()
+        return _model_ids(r.json())
+
     async def _openai(
         self, messages: list[Message], json_mode: bool, base_url: str, model: str
     ) -> str:
@@ -207,3 +225,24 @@ class LLMClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+def _model_ids(data: object) -> list[str]:
+    """Extract model ids from common OpenAI/Anthropic-compatible shapes."""
+    if isinstance(data, dict):
+        items = data.get("data", data.get("models", []))
+    else:
+        items = data
+    out: list[str] = []
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if isinstance(item, str):
+            mid = item.strip()
+        elif isinstance(item, dict):
+            mid = str(item.get("id") or item.get("name") or "").strip()
+        else:
+            mid = ""
+        if mid and mid not in out:
+            out.append(mid)
+    return out
