@@ -15,6 +15,9 @@ diffs / raw output / 秘方 (§8.3) — and every read/write is scoped by accoun
 
 from __future__ import annotations
 
+import os
+
+from sqlalchemy import text
 from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel, col, create_engine, select
 
@@ -36,9 +39,20 @@ from .models import (
 # v2 adds Account.password_hash + the auth_sessions table (T3.5 user login / access-key mgmt).
 SERVER_SCHEMA_VERSION = 2
 
+# Tables the admin console may inspect (数据库管理). A fixed allowlist so a path param can never
+# reach an arbitrary/unknown table name in raw SQL (the names come from our own schema, but we
+# never interpolate a client-supplied string we haven't matched against this set).
+_BROWSABLE_TABLES = frozenset(
+    {
+        "accounts", "access_keys", "process_registry", "auth_sessions",
+        "cache_sessions", "cache_cards", "invites", "schema_version",
+    }
+)
+
 
 class ServerStore:
     def __init__(self, db_path: str = "foreman-server.db") -> None:
+        self.db_path = db_path
         self.engine = create_engine(
             f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
         )
@@ -356,3 +370,112 @@ class ServerStore:
                     .order_by(col(CacheCard.updated_at).desc())
                 ).all()
             )
+
+    # ── admin console: cross-tenant operational views (admin only — gated in app.py) ──────────
+    # These power the admin dashboard (概览/在线会话/进程/数据库). They surface operational
+    # metadata (who is logged in, which machines are online, table sizes) for the deployment's
+    # operator. Secret columns (anything ending in `_hash`) are NEVER returned — browse_table
+    # redacts them so even an admin can't read a password/token/key hash out of the DB.
+    def get_active_auth_sessions(self, now: str) -> list[dict]:
+        """Currently-valid PWA login sessions joined to their account (在线会话 / 登录账户).
+
+        Newest first. Returns account metadata + session timestamps only — never the token hash.
+        ``now`` is an ISO8601 UTC string; expiry is a lexical compare (AuthSession.expires_at is
+        stored lexically comparable to utc_now_iso())."""
+        out: list[dict] = []
+        with self.session() as s:
+            accounts = {a.id: a for a in s.exec(select(Account)).all()}
+            rows = s.exec(
+                select(AuthSession).order_by(col(AuthSession.created_at).desc())
+            ).all()
+            for r in rows:
+                if r.expires_at and r.expires_at <= now:
+                    continue  # expired
+                a = accounts.get(r.account_id)
+                out.append(
+                    {
+                        "account_id": r.account_id,
+                        "username": a.username if a else "(deleted)",
+                        "display_name": a.display_name if a else "",
+                        "role": a.role if a else "",
+                        "created_at": r.created_at,
+                        "expires_at": r.expires_at,
+                    }
+                )
+        return out
+
+    def get_all_processes(self) -> list[ProcessRegistry]:
+        """Every registered process across all accounts (admin system-wide 进程 view), oldest
+        first. Holds no secrets (the registry never stores key hashes/plaintext — §8.3)."""
+        with self.session() as s:
+            return list(
+                s.exec(
+                    select(ProcessRegistry).order_by(col(ProcessRegistry.created_at))
+                ).all()
+            )
+
+    def db_size_bytes(self) -> int:
+        """On-disk size of the SQLite file (0 if it can't be stat'd, e.g. an :memory: db)."""
+        try:
+            return os.path.getsize(self.db_path)
+        except OSError:
+            return 0
+
+    def table_stats(self) -> list[dict]:
+        """Per-table row counts for the 数据库管理 overview. Names come from sqlite_master (our
+        own schema), sorted by name."""
+        out: list[dict] = []
+        with self.engine.connect() as conn:
+            names = [
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type='table' "
+                        "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                    )
+                )
+            ]
+            for n in names:
+                try:
+                    cnt = conn.execute(text(f'SELECT COUNT(*) FROM "{n}"')).scalar() or 0
+                except Exception:  # noqa: BLE001 — a weird/legacy table shouldn't break the view
+                    cnt = -1
+                out.append({"name": n, "rows": int(cnt)})
+        return out
+
+    def browse_table(self, name: str, *, limit: int = 50, offset: int = 0) -> dict:
+        """Read a page of rows from one allowlisted table (read-only). Any column whose name ends
+        in ``_hash`` is redacted to ``***`` so a password/token/invite/key hash is never returned
+        to the UI (§8.4). Returns {"error": "unknown_table"} for a name not in the allowlist."""
+        if name not in _BROWSABLE_TABLES:
+            return {"error": "unknown_table"}
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text(f'SELECT * FROM "{name}" LIMIT :limit OFFSET :offset'),
+                {"limit": limit, "offset": offset},
+            )
+            cols = list(result.keys())
+            rows: list[dict] = []
+            for rec in result:
+                row: dict = {}
+                for c, v in zip(cols, rec):
+                    row[c] = ("***" if v else "") if c.endswith("_hash") else v
+                rows.append(row)
+            total = conn.execute(text(f'SELECT COUNT(*) FROM "{name}"')).scalar() or 0
+        return {
+            "name": name, "columns": cols, "rows": rows,
+            "total": int(total), "limit": limit, "offset": offset,
+        }
+
+    def vacuum(self) -> None:
+        """Run VACUUM (reclaim space / defragment). Must run outside a transaction, so we flip the
+        connection to AUTOCOMMIT first."""
+        with self.engine.connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT").execute(text("VACUUM"))
+
+    def integrity_check(self) -> str:
+        """Run PRAGMA integrity_check; returns 'ok' on a healthy DB, else the first problem."""
+        with self.engine.connect() as conn:
+            return str(conn.execute(text("PRAGMA integrity_check")).scalar())

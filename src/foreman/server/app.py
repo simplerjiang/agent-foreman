@@ -11,6 +11,8 @@ import asyncio
 import json
 import secrets as _secrets
 import subprocess
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from foreman.shared.autonomy import level_label, normalize_level
 from foreman.shared.config import Config
-from foreman.shared.events import AgentEvent, EventBus
+from foreman.shared.events import AgentEvent, EventBus, utc_now_iso
 from foreman.shared.i18n import normalize as normalize_lang
 from foreman.shared.ratelimit import SlidingWindowLimiter
 
@@ -112,6 +114,12 @@ class _AdminAccountBody(BaseModel):
 
 class _AccountStatusBody(BaseModel):
     enabled: bool
+
+
+class _DbMaintenanceBody(BaseModel):
+    """A safe DB maintenance op from the admin console (数据库管理): 'vacuum' | 'integrity_check'."""
+
+    action: str
 
 
 class _RedeemBody(BaseModel):
@@ -342,7 +350,18 @@ def create_app(
     definitions: Any = None,
     cache: Any = None,
 ) -> FastAPI:
-    app = FastAPI(title="Foreman", version=__version__)
+    # In-memory log tail for the admin console's 日志管理 view (process-wide singleton). Re-attached
+    # on startup because uvicorn applies its own logging dictConfig AFTER the app is built, which
+    # would otherwise drop a handler attached here — so the tail stays empty under a real
+    # `foreman serve` without this (caught in live preview testing). Idempotent.
+    from .logbuffer import get_log_buffer
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        get_log_buffer()  # re-attach once uvicorn's logging config is in place
+        yield
+
+    app = FastAPI(title="Foreman", version=__version__, lifespan=_lifespan)
 
     # Store + bus + hooks + relay are INJECTED by the caller (personal mode: client store + a
     # Gate-aware HookReceiver, no relay; team server: cache store + a Relay, no hooks). This
@@ -361,6 +380,8 @@ def create_app(
     app.state.briefings = briefings
     app.state.definitions = definitions
     app.state.cache = cache
+    app.state.started_at = time.time()  # for the admin overview's uptime stat
+    app.state.log_buffer = get_log_buffer()
     # One limiter per app instance, shared across requests (team-mode brute-force speed bump, §8.2).
     auth_limiter = SlidingWindowLimiter(_AUTH_RL_MAX_ATTEMPTS, _AUTH_RL_WINDOW_SECONDS)
     app.state.auth_limiter = auth_limiter
@@ -999,6 +1020,126 @@ def create_app(
         require_admin(request)
         return auth.system_health()
 
+    # ── admin dashboard (新版 Web 管理后台 — overview / sessions / processes / DB / logs) ──────
+    # All admin-only. They surface OPERATIONAL metadata for the deployment's operator (who is
+    # logged in, which machines are online, table sizes, recent server log lines). Secret columns
+    # (any *_hash) are redacted by the store; the DB browse is read-only with a fixed table
+    # allowlist. No tenant content (秘方/diffs/raw output) exists on the relay box to leak (§8.3).
+    def _server_store():
+        return getattr(auth, "store", None) if auth is not None else None
+
+    @app.get("/api/admin/overview")
+    async def admin_overview(request: Request) -> dict:
+        """Dashboard summary cards: account counts by status, online/total processes, active login
+        sessions, DB size, schema version, server version + uptime."""
+        require_admin(request)
+        health = auth.system_health()
+        st = _server_store()
+        sessions = 0
+        total_procs = health["processes"]["online"]
+        db: dict = {}
+        if st is not None:
+            sessions = len(st.get_active_auth_sessions(utc_now_iso()))
+            total_procs = len(st.get_all_processes())
+            db = {
+                "size_bytes": st.db_size_bytes(),
+                "schema_version": st.schema_version(),
+                "path": getattr(st, "db_path", ""),
+            }
+        return {
+            "version": __version__,
+            "mode": "team",
+            "uptime_seconds": int(time.time() - getattr(app.state, "started_at", time.time())),
+            "accounts": health["accounts"],
+            "processes": {"online": health["processes"]["online"], "total": total_procs},
+            "active_sessions": sessions,
+            "db": db,
+        }
+
+    @app.get("/api/admin/sessions")
+    async def admin_sessions(request: Request) -> list[dict]:
+        """Currently-logged-in PWA sessions (在线会话 / 登录账户) — account + timestamps, no token."""
+        require_admin(request)
+        st = _server_store()
+        return st.get_active_auth_sessions(utc_now_iso()) if st is not None else []
+
+    @app.get("/api/admin/processes")
+    async def admin_processes(request: Request) -> list[dict]:
+        """Every registered local process across accounts (system-wide 进程 view). Metadata only —
+        the registry holds no secrets (§8.3). The owning account's username is joined in so the
+        admin can see who runs what; no diffs/秘方/raw output are ever exposed."""
+        require_admin(request)
+        st = _server_store()
+        if st is None:
+            return []
+        usernames = {a["id"]: a["username"] for a in auth.list_accounts()}
+        return [
+            {
+                "id": p.id,
+                "account_id": p.account_id,
+                "username": usernames.get(p.account_id, "(unknown)"),
+                "name": p.name,
+                "online": p.online,
+                "last_heartbeat": p.last_heartbeat,
+                "created_at": p.created_at,
+            }
+            for p in st.get_all_processes()
+        ]
+
+    @app.get("/api/admin/db")
+    async def admin_db(request: Request) -> dict:
+        """DB overview (数据库管理): file path/size, schema version, and per-table row counts."""
+        require_admin(request)
+        st = _server_store()
+        if st is None:
+            raise HTTPException(status_code=503, detail="no server store")
+        return {
+            "path": getattr(st, "db_path", ""),
+            "size_bytes": st.db_size_bytes(),
+            "schema_version": st.schema_version(),
+            "tables": st.table_stats(),
+        }
+
+    @app.get("/api/admin/db/{table}")
+    async def admin_db_table(
+        table: str, request: Request, limit: int = 50, offset: int = 0
+    ) -> dict:
+        """Read a page of one allowlisted table (read-only). *_hash columns are redacted by the
+        store; an unknown/non-allowlisted table name → 404 (never reaches arbitrary SQL)."""
+        require_admin(request)
+        st = _server_store()
+        if st is None:
+            raise HTTPException(status_code=503, detail="no server store")
+        res = st.browse_table(table, limit=limit, offset=offset)
+        if res.get("error"):
+            raise HTTPException(status_code=404, detail=res["error"])
+        return res
+
+    @app.post("/api/admin/db/maintenance")
+    async def admin_db_maintenance(body: _DbMaintenanceBody, request: Request) -> dict:
+        """Run a safe maintenance op: 'vacuum' (reclaim space) or 'integrity_check'. No destructive
+        actions (no DROP/DELETE) are exposed over HTTP — those stay an SSH-only operation."""
+        require_admin(request)
+        st = _server_store()
+        if st is None:
+            raise HTTPException(status_code=503, detail="no server store")
+        action = (body.action or "").strip().lower()
+        if action == "vacuum":
+            st.vacuum()
+            return {"ok": True, "action": "vacuum"}
+        if action == "integrity_check":
+            return {"ok": True, "action": "integrity_check", "result": st.integrity_check()}
+        raise HTTPException(status_code=400, detail="unknown action")
+
+    @app.get("/api/admin/logs")
+    async def admin_logs(request: Request, limit: int = 200, level: str | None = None) -> dict:
+        """Recent server log lines from the in-memory ring buffer (日志管理), newest first."""
+        require_admin(request)
+        buf = getattr(app.state, "log_buffer", None)
+        if buf is None:
+            return {"records": []}
+        return {"records": buf.records(limit=limit, level=level)}
+
     @app.post("/api/auth/redeem")
     async def auth_redeem(body: _RedeemBody, request: Request) -> dict:
         """Redeem an admin's invite (NO auth — this is how a new user bootstraps): set the
@@ -1115,15 +1256,28 @@ def create_app(
     # (never edge-cached), so the new tokens reach browsers immediately. Other assets (css/js/icons)
     # fall through to StaticFiles below.
     if WEB_DIR.exists():
+        # Team mode is login-gated end to end: the root serves the new Ant Design console SPA
+        # (app.html), which shows a login screen until /api/auth/me succeeds — so visiting the
+        # site without a session never exposes any page content. Personal mode keeps serving the
+        # local dashboard (index.html) unchanged.
+        is_team = (cfg.server.mode or "personal").strip().lower() == "team"
+
         def _render_page(name: str) -> HTMLResponse:
             html = (WEB_DIR / name).read_text(encoding="utf-8").replace("__VER__", ASSET_VER)
             return HTMLResponse(html)
 
         async def _serve_root() -> HTMLResponse:
-            return _render_page("index.html")
+            return _render_page("app.html" if is_team else "index.html")
+
+        async def _serve_app() -> HTMLResponse:
+            return _render_page("app.html")
 
         app.add_api_route("/", _serve_root, include_in_schema=False)
-        for _page in ("index.html", "admin.html", "keys.html", "redeem.html"):
+        # The new console SPA. /admin.html kept as a back-compat alias (the old admin URL).
+        for _alias in ("/app.html", "/admin.html"):
+            app.add_api_route(_alias, _serve_app, include_in_schema=False)
+        # Legacy entry pages still version-stamped so their ?v= asset tokens bust the edge cache.
+        for _page in ("index.html", "keys.html", "redeem.html"):
             def _make(name: str):
                 async def _handler() -> HTMLResponse:
                     return _render_page(name)

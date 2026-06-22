@@ -6,3 +6,8 @@
 *.service text eol=lf
 .github/workflows/*.yml text eol=lf
 deploy/** text eol=lf
+
+# Vendored UMD bundles (React / Ant Design / dayjs / htm) for the no-build admin console. Keep
+# them byte-for-byte as shipped upstream — no EOL normalization, and collapse them in diffs so a
+# 1.5 MB minified blob never floods a review.
+src/foreman/server/web/vendor/** -text -diff linguist-vendored
