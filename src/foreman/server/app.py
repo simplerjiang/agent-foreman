@@ -182,7 +182,9 @@ def _bearer_token(request: Request) -> str:
 
 # Hosts that mean "only this machine" — a personal app bound here is not network-exposed (the
 # tunnel case binds loopback too, so the request-layer token is what protects an exposed app).
-_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "0.0.0.0", ""}
+# NB: "0.0.0.0" and "" both mean ALL interfaces (an empty host binds INADDR_ANY) — they are NOT
+# loopback and must be treated as exposed (codex acceptance finding).
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 # Operational endpoints are everything EXCEPT these public ones. The PWA shell (static files,
 # manifest, service worker) is served by the StaticFiles mount and is public by design; only
@@ -213,29 +215,32 @@ def _effective_scheme(request: Request) -> str:
     return (request.url.scheme or "http").lower()
 
 
-def _ensure_safe_exposure(cfg: Config, host: str | None = None) -> None:
-    """Fail closed if personal-mode operational APIs would be exposed without protection (P0).
+def _ensure_safe_exposure(
+    cfg: Config, host: str | None = None, *, account_auth: bool = False
+) -> None:
+    """Fail closed if operational APIs would be exposed without protection (P0).
 
-    Personal mode has no per-account auth; its only gate is the shared access token
-    (FOREMAN_AUTH_TOKEN). Binding to a non-loopback host — or advertising a public_base_url —
-    without that token would let anyone with the URL read sessions, dispatch work, or approve
-    actions, so we refuse to start. Team mode (per-account auth) and an explicit
-    `server.allow_insecure_bind` opt-out are exempt. `host` overrides cfg.server.host for callers
-    (e.g. `foreman app`) that bind a host of their own. Raises RuntimeError when unsafe."""
-    if (cfg.server.mode or "personal").strip().lower() == "team":
-        return
+    `account_auth` is whether the caller will inject a per-account AuthManager that gates every
+    operational endpoint (true only for the team relay built by `build_serve_app`). When it is
+    false — which includes `foreman app`, whose local server is ALWAYS wired with `auth=None`
+    regardless of `server.mode` (codex acceptance finding) — the only gate is the shared access
+    token (FOREMAN_AUTH_TOKEN). Binding to a non-loopback host (0.0.0.0, an empty host, or a LAN
+    IP) — or advertising a public_base_url — without that token would let anyone with the URL read
+    sessions, dispatch work, or approve actions, so we refuse to start. An explicit
+    `server.allow_insecure_bind` opt-out is exempt. `host` overrides cfg.server.host for callers
+    that bind a host of their own. Raises RuntimeError when unsafe."""
+    if account_auth:
+        return  # per-account auth (the team relay) protects every operational endpoint
     # Strip before testing: create_app() also strips, so a whitespace-only token would otherwise
     # pass this gate here yet leave the request-layer guard wide open (codex acceptance finding).
     if (cfg.secrets.auth_token or "").strip() or cfg.server.allow_insecure_bind:
         return
+    # Empty host and 0.0.0.0 both bind all interfaces → not loopback → exposed (codex finding).
     bind = (host if host is not None else cfg.server.host or "").strip().lower()
     exposed = bind not in _LOOPBACK_HOSTS or bool((cfg.server.public_base_url or "").strip())
-    # 0.0.0.0 binds every interface — treat it as exposed even though it is in the set above.
-    if bind == "0.0.0.0":
-        exposed = True
     if exposed:
         raise RuntimeError(
-            "Refusing to expose personal-mode operational APIs without an access token. "
+            "Refusing to expose operational APIs without an access token. "
             "Set FOREMAN_AUTH_TOKEN, switch server.mode to 'team', or (trusted LAN only) set "
             "server.allow_insecure_bind: true. See deploy/README.md (issue #1 P0)."
         )
@@ -934,9 +939,12 @@ def build_serve_app(cfg: Config) -> FastAPI:
     process; `store` stays None (the relay box has no client-style local store), so the personal
     session/event endpoints 503 while the account-scoped /api/cache/* endpoints serve the cache.
     """
-    # Fail closed before binding: never expose unprotected personal-mode operational APIs (P0).
-    _ensure_safe_exposure(cfg)
-    if (cfg.server.mode or "personal").strip().lower() != "team":
+    # Fail closed before binding: never expose unprotected operational APIs (P0). The team relay
+    # builds a per-account AuthManager below, so it's exempt; personal mode must clear the
+    # token/loopback check.
+    is_team = (cfg.server.mode or "personal").strip().lower() == "team"
+    _ensure_safe_exposure(cfg, account_auth=is_team)
+    if not is_team:
         return create_app(cfg)
 
     # Lazy imports: keep create_app's import surface unchanged for personal mode / tests.

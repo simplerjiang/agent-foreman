@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from foreman.client.core.gate import Gate
 from foreman.client.store import Store
 from foreman.client.store.models import Session
-from foreman.server.app import build_serve_app, create_app
+from foreman.server.app import _ensure_safe_exposure, build_serve_app, create_app
 from foreman.shared.config import Config, GatesCfg, load_config
 from foreman.shared.events import EventBus, make_event
 
@@ -143,6 +143,33 @@ def test_build_serve_app_refuses_public_bind_with_whitespace_token():
     cfg.secrets.auth_token = "   "
     with pytest.raises(RuntimeError):
         build_serve_app(cfg)
+
+
+def test_build_serve_app_refuses_empty_host_without_token():
+    # An empty host binds all interfaces (INADDR_ANY), not loopback — it must fail closed without a
+    # token, not be mistaken for "this machine only" (codex finding).
+    cfg = Config()
+    cfg.server.host = ""
+    with pytest.raises(RuntimeError):
+        build_serve_app(cfg)
+
+
+def test_local_app_context_not_exempted_by_team_mode():
+    # `foreman app` always wires the local server with auth=None regardless of server.mode, so a
+    # team-mode CONFIG must not exempt the local-app exposure check (codex finding): account_auth
+    # defaults False (the local-app path), so a public bind without a token still fails closed.
+    cfg = Config()
+    cfg.server.mode = "team"
+    with pytest.raises(RuntimeError):
+        _ensure_safe_exposure(cfg, host="0.0.0.0")
+
+
+def test_team_relay_with_account_auth_is_exempt():
+    # The team relay (build_serve_app) DOES inject a per-account AuthManager, so it's exempt even
+    # on a public bind with no shared token.
+    cfg = Config()
+    cfg.server.mode = "team"
+    _ensure_safe_exposure(cfg, host="0.0.0.0", account_auth=True)  # must not raise
 
 
 def test_build_serve_app_ok_with_insecure_opt_in():
