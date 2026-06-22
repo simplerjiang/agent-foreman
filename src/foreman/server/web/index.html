@@ -3,198 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#F7F8FA" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0E0E10" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#111318" media="(prefers-color-scheme: dark)" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>Foreman</title>
   <link rel="stylesheet" href="/app.css?v=__VER__" />
 </head>
 <body>
-  <header>
-    <h1>🦺 Foreman</h1>
-    <div class="header-right">
-      <span id="status" class="pill">connecting…</span>
-      <label id="autonomy" class="pill" title="autonomy dial">
-        <span data-i18n="autonomy">自治</span>
-        <select id="autonomy-select" aria-label="autonomy dial">
-          <option value="0">0</option>
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-        </select>
-      </label>
-      <button id="lang-toggle" class="pill" type="button" title="language">EN</button>
-    </div>
-  </header>
+  <div id="root">
+    <div class="boot">Foreman 加载中...</div>
+  </div>
 
-  <main>
-    <section id="sessions" aria-label="Sessions">
-      <h2 data-i18n="sessions">Sessions</h2>
-      <div id="session-list" class="empty">No active sessions yet.</div>
-    </section>
-
-    <section id="decisions" aria-label="Decision cards">
-      <h2 data-i18n="decisions">Decisions</h2>
-      <div id="card-list" class="empty" data-i18n="noDecisions">No decisions waiting.</div>
-      <!-- P4 renders cards from /api/cards. Structure (see DESIGN.zh-CN.md §6.3): -->
-      <template id="card-template">
-        <article class="card">
-          <p class="card-summary">💬 <span class="summary"></span></p>
-          <p class="card-audit">🕵️ <span class="audit"></span></p>
-          <p class="card-diffstat">📎 <span class="diffstat"></span>
-            <button class="link view-detail" data-action-id="">🔍 查看详情</button></p>
-          <div class="card-actions"><!-- one-tap option buttons injected here --></div>
-        </article>
-      </template>
-    </section>
-
-    <!-- Step detail: drill-down from a card's 查看详情 — raw agent return + actual diff (§6.3) -->
-    <section id="detail" aria-label="Step detail" hidden>
-      <h2><button class="link" id="detail-back">← 返回</button> <span data-i18n="stepDetail">步骤详情</span></h2>
-      <div class="tabs">
-        <button class="tab active" data-tab="raw" data-i18n="rawReturn">原始返回</button>
-        <button class="tab" data-tab="diff" data-i18n="codeDiff">代码改动</button>
-      </div>
-      <pre id="tab-raw" class="tabpanel">（codex/claude/copilot 这一步的完整返回）</pre>
-      <pre id="tab-diff" class="tabpanel" hidden>（逐文件、逐行 diff）</pre>
-    </section>
-
-    <section id="approvals" aria-label="Approvals">
-      <h2 data-i18n="approvals">Approvals</h2>
-      <div id="approval-list" class="empty" data-i18n="noApprovals">Nothing waiting on you.</div>
-    </section>
-
-    <section id="timeline" aria-label="Timeline">
-      <h2 data-i18n="timeline">Timeline</h2>
-      <ol id="event-list" class="empty"></ol>
-    </section>
-
-    <section id="dispatch" aria-label="Dispatch a task">
-      <h2 data-i18n="dispatch">Dispatch</h2>
-      <form id="dispatch-form">
-        <div class="dispatch-main">
-          <input id="task-input" placeholder="e.g. 重构 auth 模块，push 前问我" autocomplete="off" />
-          <button type="submit" data-i18n="send">Send</button>
-        </div>
-        <!-- Worker pickers (§5.1): which CLI agent, its model, and the reasoning/速度档位. All
-             optional — left blank/default, each falls back to config. -->
-        <div class="dispatch-opts">
-          <label><span data-i18n="dispatchAgent">Agent</span>
-            <select id="dispatch-agent" aria-label="agent">
-              <option value="" data-i18n="agentDefault">Default</option>
-            </select>
-          </label>
-          <label><span data-i18n="dispatchModel">Model</span>
-            <input id="dispatch-model" autocomplete="off" placeholder="" />
-          </label>
-          <label><span data-i18n="dispatchEffort">Level</span>
-            <select id="dispatch-effort" aria-label="reasoning level">
-              <option value="" data-i18n="effortDefault">Default</option>
-              <option value="low" data-i18n="effortLow">Fast</option>
-              <option value="medium" data-i18n="effortMedium">Standard</option>
-              <option value="high" data-i18n="effortHigh">Deep</option>
-            </select>
-          </label>
-        </div>
-      </form>
-      <p id="dispatch-status" class="hint" hidden></p>
-    </section>
-
-    <section id="briefings" aria-label="Briefings">
-      <h2 data-i18n="briefings">Briefings</h2>
-      <button id="generate-brief" class="pill" type="button" data-i18n="generateBriefing">Generate briefing</button>
-      <p id="brief-status" class="hint" hidden></p>
-      <div id="report-list" class="empty" data-i18n="noReports">No briefings yet.</div>
-    </section>
-
-    <!-- PM 大脑 settings (§15): switch the brain's provider/model/base_url at runtime. The API key
-         stays a .env secret and is never shown or editable here. -->
-    <section id="pm-settings" aria-label="PM brain settings">
-      <h2 data-i18n="pmSettings">PM brain</h2>
-      <form id="llm-form">
-        <div class="defn-row">
-          <label><span data-i18n="pmProvider">Provider</span>
-            <select id="llm-provider">
-              <option value="openai">OpenAI-compatible</option>
-              <option value="anthropic">Anthropic</option>
-            </select>
-          </label>
-          <label><span data-i18n="pmModel">Model</span>
-            <input id="llm-model" autocomplete="off" placeholder="gpt-4o" />
-          </label>
-        </div>
-        <label><span data-i18n="pmBaseUrl">Base URL</span>
-          <input id="llm-base-url" autocomplete="off" placeholder="https://api.openai.com/v1" />
-        </label>
-        <p id="llm-keyhint" class="hint" data-i18n="pmKeyHint">
-          API key is read from .env (FOREMAN_LLM_API_KEY) — not editable here.
-        </p>
-        <p id="llm-status" class="hint" hidden></p>
-        <div class="defn-row">
-          <button type="submit" data-i18n="save">Save</button>
-        </div>
-      </form>
-    </section>
-
-    <!-- Definition editor (§11.2, T6.1): add/edit/delete the four 秘方 blocks from the phone/web. -->
-    <section id="definitions" aria-label="Definitions">
-      <h2 data-i18n="definitionsTitle">Recipes</h2>
-      <div class="defn-toolbar">
-        <label>
-          <span data-i18n="filterKind">Kind</span>
-          <select id="defn-filter" aria-label="filter by kind">
-            <option value="" data-i18n="kindAll">All</option>
-            <option value="workflow" data-i18n="kindWorkflow">Workflow</option>
-            <option value="skill" data-i18n="kindSkill">Skill</option>
-            <option value="code_standard" data-i18n="kindStandard">Code standard</option>
-            <option value="qa_rubric" data-i18n="kindQa">QA rubric</option>
-          </select>
-        </label>
-        <button id="defn-new" class="pill" type="button" data-i18n="newDefinition">+ New</button>
-        <!-- Backup: export all 秘方 to a JSON file / import one back (T6.2, §765). -->
-        <button id="defn-export" class="pill" type="button" data-i18n="exportDefinitions">⬇ Export</button>
-        <button id="defn-import" class="pill" type="button" data-i18n="importDefinitions">⬆ Import</button>
-        <input type="file" id="defn-import-file" accept="application/json,.json" hidden />
-      </div>
-      <div id="defn-list" class="empty" data-i18n="noDefinitions">No recipes yet.</div>
-
-      <form id="defn-form" hidden>
-        <input type="hidden" id="defn-id" />
-        <div class="defn-row">
-          <label><span data-i18n="defnKind">Kind</span>
-            <select id="defn-kind">
-              <option value="workflow" data-i18n="kindWorkflow">Workflow</option>
-              <option value="skill" data-i18n="kindSkill">Skill</option>
-              <option value="code_standard" data-i18n="kindStandard">Code standard</option>
-              <option value="qa_rubric" data-i18n="kindQa">QA rubric</option>
-            </select>
-          </label>
-          <label><span data-i18n="defnName">Name</span>
-            <input id="defn-name" autocomplete="off" placeholder="add-feature" />
-          </label>
-        </div>
-        <label><span data-i18n="defnScope">Scope (JSON)</span>
-          <input id="defn-scope" autocomplete="off" placeholder='{"lang":"py"}' />
-        </label>
-        <label><span data-i18n="defnBody">Body</span>
-          <textarea id="defn-body" rows="8" placeholder="# steps / standard / rubric…"></textarea>
-        </label>
-        <label class="defn-activate">
-          <input type="checkbox" id="defn-activate" checked />
-          <span data-i18n="defnActivate">Activate on save</span>
-        </label>
-        <p id="defn-status" class="hint" hidden></p>
-        <div class="defn-row">
-          <button type="submit" data-i18n="save">Save</button>
-          <button type="button" id="defn-cancel" class="pill" data-i18n="cancel">Cancel</button>
-        </div>
-      </form>
-    </section>
-  </main>
-
-  <button id="enable-push" class="floating" data-i18n="enablePush">Enable notifications</button>
-
-  <!-- P0 placeholder UI. P3/P4 wires this to /ws, /api/*, and Web Push. -->
-  <script src="/app.js?v=__VER__" type="module"></script>
+  <script src="/vendor/react.production.min.js?v=18.3.1"></script>
+  <script src="/vendor/react-dom.production.min.js?v=18.3.1"></script>
+  <script src="/vendor/dayjs.min.js?v=1.11.13"></script>
+  <script src="/vendor/ant-design-icons.min.js?v=5.5.2"></script>
+  <script src="/vendor/antd.min.js?v=5.22.5"></script>
+  <script src="/vendor/htm.umd.js?v=3.1.1"></script>
+  <script src="/app.js?v=__VER__"></script>
 </body>
 </html>

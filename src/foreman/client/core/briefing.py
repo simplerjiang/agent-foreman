@@ -94,6 +94,28 @@ def parse_brief(raw: str) -> BriefingResult:
     return BriefingResult(title=title, body_md=body)
 
 
+def _friendly_llm_error(exc: Exception) -> str:
+    """Return a user-facing LLM failure reason without exposing secrets."""
+    name = type(exc).__name__
+    text = str(exc).strip()
+    if name == "LLMConfigError":
+        return (
+            "PM 大脑未配置 API Key。请在 `.env` 设置 `FOREMAN_LLM_API_KEY` 后重启 Foreman。"
+        )
+    if name == "LocalProtocolError":
+        return (
+            "HTTP 协议错误。请检查「PM 大脑」里的接口地址是否是完整 URL "
+            "（例如 https://api.openai.com/v1），以及 transport/base_url 是否匹配。"
+            f"原始错误：{text[:300] or name}"
+        )
+    if "InvalidURI" in name or "InvalidURL" in name:
+        return (
+            "接口地址格式不正确。请在「PM 大脑」里填写完整的 http(s) 地址。"
+            f"原始错误：{text[:300] or name}"
+        )
+    return f"{name}: {text[:300]}" if text else name
+
+
 def build_brief_prompt(goal: str, activity: str, *, kind: str = DEFAULT_KIND,
                        max_activity_chars: int = DEFAULT_MAX_ACTIVITY_CHARS) -> str:
     """Assemble the user prompt; keep the *tail* of an over-long activity log (most recent first)."""
@@ -186,7 +208,7 @@ class BriefingService:
             return BriefingResult(
                 title="简报生成失败",
                 body_md=(
-                    f"调用 PM 大脑失败（{type(exc).__name__}）。请检查：\n"
+                    f"调用 PM 大脑失败：{_friendly_llm_error(exc)}\n\n请检查：\n"
                     "1. `.env` 里的 `FOREMAN_LLM_API_KEY`\n"
                     "2. 「PM 大脑」设置页的 服务商 / 模型 / 接口地址\n"
                 ),

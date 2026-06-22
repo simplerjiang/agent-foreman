@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from foreman.client.core.dispatch_service import DispatchService
 from foreman.client.store import Store
 from foreman.client.store.models import Session
 from foreman.shared.config import AgentCfg, Config, load_config
@@ -67,6 +68,29 @@ def test_api_agents_lists_enabled_with_model():
     assert agents == [{"name": "claude-code", "model": "sonnet", "effort": "high"}]
 
 
+# ── /api/workspaces: local UI can edit the workspace allowlist ──────────────────────────────────
+
+
+def test_workspace_settings_can_dispatch_without_restart(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    dispatcher = DispatchService(cfg, store)
+    c = TestClient(create_app(cfg, store, EventBus(), dispatcher=dispatcher))
+    path = str(tmp_path / "project")
+
+    rows = c.post("/api/workspaces", json={"path": path, "name": "Project"}).json()
+    assert rows == [{"path": path, "name": "Project"}]
+    assert cfg.workspaces[0].path == path
+
+    res = c.post("/api/tasks", json={"goal": "do x", "workspace": path})
+    assert res.status_code == 200
+    assert res.json()["workspace"] == path
+
+    assert c.delete("/api/workspaces", params={"path": path}).json() == []
+    assert c.get("/api/workspaces").json() == []
+
+
 # ── /api/settings/llm: switch the PM brain at runtime (§15) ──────────────────────────────────────
 
 
@@ -86,6 +110,34 @@ def test_llm_settings_default_and_override(tmp_path):
     assert saved["model"] == "gpt-5" and saved["provider"] == "anthropic"
     # persisted as a config_kv override (survives a fresh GET)
     assert c.get("/api/settings/llm").json()["model"] == "gpt-5"
+
+
+def test_llm_settings_blank_key_is_not_configured(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    cfg.secrets.llm_api_key = "  "
+    c = TestClient(create_app(cfg, store, EventBus()))
+
+    assert c.get("/api/settings/llm").json()["api_key_set"] is False
+
+
+def test_llm_settings_saves_and_clears_api_key_in_env(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    cfg.env_path = str(tmp_path / ".env")
+    c = TestClient(create_app(cfg, store, EventBus()))
+
+    saved = c.post("/api/settings/llm", json={"api_key": "sk-test"}).json()
+    assert saved["api_key_set"] is True
+    assert cfg.secrets.llm_api_key == "sk-test"
+    assert "FOREMAN_LLM_API_KEY=sk-test" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+    cleared = c.post("/api/settings/llm", json={"api_key": ""}).json()
+    assert cleared["api_key_set"] is False
+    assert cfg.secrets.llm_api_key == ""
+    assert "FOREMAN_LLM_API_KEY" not in (tmp_path / ".env").read_text(encoding="utf-8")
 
 
 def test_llm_settings_rejects_bad_provider(tmp_path):

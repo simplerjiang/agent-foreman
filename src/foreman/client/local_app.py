@@ -113,7 +113,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
 
     # PM 大脑 settings page (§15): provider/model/base_url can be switched at runtime from the UI
     # (stored in config_kv). The resolver is read per LLM request so a change takes effect WITHOUT
-    # restarting the app. The api key stays in .env (a secret never surfaced in the UI).
+    # restarting the app. The api key is stored in local .env and is never returned by the UI.
     def _llm_settings() -> dict:
         if not hasattr(store, "get_setting"):
             return {}
@@ -121,6 +121,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
             "provider": store.get_setting("llm.provider") or "",
             "model": store.get_setting("llm.model") or "",
             "base_url": store.get_setting("llm.base_url") or "",
+            "api_key": cfg.secrets.llm_api_key,
         }
 
     def _llm() -> LLMClient:

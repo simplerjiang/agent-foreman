@@ -125,6 +125,47 @@ async def test_generate_no_llm(tmp_path):
     assert (await svc.generate("s1"))["error"] == "no_llm"
 
 
+async def test_generate_protocol_error_is_actionable(tmp_path):
+    class BrokenLLM:
+        async def complete(self, messages, *, json_mode=False):
+            raise httpx.LocalProtocolError("bad base url")
+
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="g"))
+    svc = BriefingService(BrokenLLM(), store)
+
+    res = await svc.generate("s1")
+
+    assert res["ok"] is True
+    assert res["report"]["title"] == "简报生成失败"
+    assert "HTTP 协议错误" in res["report"]["body_md"]
+    assert "PM 大脑" in res["report"]["body_md"]
+
+
+async def test_generate_missing_api_key_is_actionable(tmp_path):
+    called = False
+    cfg = Config()
+    cfg.secrets.llm_api_key = " "
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="g"))
+    svc = BriefingService(LLMClient(cfg, transport=httpx.MockTransport(handler)), store)
+
+    res = await svc.generate("s1")
+    await svc.llm.aclose()
+
+    assert res["ok"] is True
+    assert res["report"]["title"] == "简报生成失败"
+    assert "FOREMAN_LLM_API_KEY" in res["report"]["body_md"]
+    assert "HTTP 协议错误" not in res["report"]["body_md"]
+    assert called is False
+
+
 async def test_generate_unknown_kind_normalized(tmp_path):
     store = _store(tmp_path)
     store.add_session(Session(id="s1", goal="g"))

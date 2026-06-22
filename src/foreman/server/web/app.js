@@ -1,1145 +1,1452 @@
-// Foreman PWA — P0 skeleton.
-// Registers the service worker and probes /health. P3/P4 will add /ws live events,
-// /api/* calls, Web Push subscription, and the dispatch/approve flows.
-
-const statusEl = document.getElementById('status');
-
-// ── personal-mode access token (issue #1 P0) ────────────────────────────────────────────────────
-// When the local app is exposed (e.g. via a Cloudflare/Tailscale/frp tunnel), FOREMAN_AUTH_TOKEN
-// gates every operational call. The user pastes the token once; it's stored and attached to all
-// same-origin /api and /hooks requests as a bearer, and to the WS as a ?token= query param (a
-// browser can't set an Authorization header on a WebSocket). On 127.0.0.1 with no token set the
-// server is open, so this is a no-op for the on-machine native window.
-const TOKEN_KEY = 'foreman.token';
-function authToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
-let _promptedForToken = false;
-function promptForToken() {
-  if (_promptedForToken) return;
-  _promptedForToken = true;
-  const t = window.prompt('Access token required (FOREMAN_AUTH_TOKEN):', '');
-  if (t && t.trim()) { localStorage.setItem(TOKEN_KEY, t.trim()); location.reload(); }
-}
-const _origFetch = window.fetch.bind(window);
-window.fetch = async (input, init = {}) => {
-  const url = typeof input === 'string' ? input : (input && input.url) || '';
-  const sameOrigin = url.startsWith('/') || url.startsWith(location.origin);
-  const t = authToken();
-  if (sameOrigin && t) {
-    init = { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${t}` } };
-  }
-  const r = await _origFetch(input, init);
-  if (r.status === 401 && sameOrigin) promptForToken();  // exposed app, missing/stale token
-  return r;
-};
-
-async function init() {
-  if ('serviceWorker' in navigator) {
-    try {
-      await navigator.serviceWorker.register('/sw.js');
-    } catch (e) {
-      console.warn('SW registration failed', e);
-    }
-  }
-  await initLang();
-  probeHealth();
-  loadSessions();
-  loadCards();
-  loadReports();
-  loadDefinitions();
-  loadAgents();        // populate the dispatch agent/model pickers
-  loadLlmSettings();   // PM brain provider/model/base_url
-  await loadApprovals();
-  maybeActOnDeepLink();  // a cold one-tap (notification → openWindow with ?approval=&action=)
-}
-
-// A notification opened the app cold with ?approval=<id>&action=approve|reject — act on it once.
-function maybeActOnDeepLink() {
-  const params = new URLSearchParams(location.search);
-  const id = params.get('approval');
-  const action = params.get('action');
-  if (id && (action === 'approve' || action === 'reject')) {
-    const a = pendingApprovals.find((x) => x.id === id);
-    if (a) decideApproval(a.id, action, a.nonce);
-  }
-  // Drop the one-shot params so a refresh doesn't re-fire (and stale ids don't linger in the URL).
-  if (id || action) history.replaceState(null, '', location.pathname);
-}
-
-// The service worker forwards a notification tap (approve/reject one-tap, or just a focus) here.
-navigator.serviceWorker?.addEventListener('message', (e) => {
-  const m = e.data || {};
-  if (m.type !== 'notificationclick') return;
-  loadApprovals().then(() => {
-    // If the SW relayed a one-tap action, pre-trigger it for the deep-linked approval.
-    const id = approvalIdFromUrl(m.url);
-    if (id && (m.action === 'approve' || m.action === 'reject')) {
-      const a = pendingApprovals.find((x) => x.id === id);
-      if (a) decideApproval(a.id, m.action, a.nonce);
-    }
-  });
-});
-
-function approvalIdFromUrl(url) {
-  try { return new URL(url, location.origin).searchParams.get('approval'); }
-  catch (e) { return null; }
-}
-
-async function probeHealth() {
-  try {
-    const r = await fetch('/health');
-    const j = await r.json();
-    statusEl.textContent = `online · v${j.version} · ${(j.agents || []).join(', ') || 'no agents'}`;
-    statusEl.classList.add('ok');
-  } catch (e) {
-    statusEl.textContent = 'offline';
-    statusEl.classList.add('bad');
-  }
-}
-
-// Dispatch a task from the phone → a new Root Session (§5.1, T4.6): POST /api/tasks.
-document.getElementById('dispatch-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const input = document.getElementById('task-input');
-  const goal = input.value.trim();
-  if (!goal) return;
-  // Optional worker pickers — only include a field when the user picked something (empty = config
-  // default, resolved server-side). The PM model is configured separately (PM brain settings).
-  const body = { goal };
-  const agent = document.getElementById('dispatch-agent')?.value || '';
-  const model = document.getElementById('dispatch-model')?.value.trim() || '';
-  const effort = document.getElementById('dispatch-effort')?.value || '';
-  if (agent) body.agent = agent;
-  if (model) body.model = model;
-  if (effort) body.effort = effort;
-  try {
-    const r = await fetch('/api/tasks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (r.ok) {
-      input.value = '';
-      const bits = [data.agent, data.model, data.effort].filter(Boolean).join(' · ');
-      showDispatchStatus(`${I18N[currentLang].dispatched}${bits ? ' · ' + bits : ''}`);
-      loadSessions();  // a new session appears in the multi-session list
-    } else {
-      showDispatchStatus(`${I18N[currentLang].dispatchFailed} (${data.detail || r.status})`);
-    }
-  } catch (err) {
-    showDispatchStatus(I18N[currentLang].dispatchFailed);
-  }
-});
-
-// Populate the agent picker from /api/agents (enabled CLIs + their configured model). Choosing an
-// agent prefills the model placeholder with that agent's configured default, so an empty model box
-// clearly means "use the configured default" rather than "no model".
-let agentDefaults = {};
-async function loadAgents() {
-  const sel = document.getElementById('dispatch-agent');
-  if (!sel) return;
-  try {
-    const r = await fetch('/api/agents');
-    if (!r.ok) return;
-    const agents = await r.json();
-    agentDefaults = {};
-    // Keep the leading "Default" option; append one per enabled agent.
-    for (const a of agents) {
-      agentDefaults[a.name] = a.model || '';
-      const opt = document.createElement('option');
-      opt.value = a.name;
-      opt.textContent = a.name;
-      sel.appendChild(opt);
-    }
-    updateModelPlaceholder();
-  } catch (e) { /* offline / server mode — leave just the Default option */ }
-}
-
-function updateModelPlaceholder() {
-  const sel = document.getElementById('dispatch-agent');
-  const modelEl = document.getElementById('dispatch-model');
-  if (!sel || !modelEl) return;
-  const def = agentDefaults[sel.value] || '';
-  modelEl.placeholder = def || I18N[currentLang].modelDefaultHint;
-}
-
-document.getElementById('dispatch-agent')?.addEventListener('change', updateModelPlaceholder);
-
-function showDispatchStatus(text) {
-  const el = document.getElementById('dispatch-status');
-  if (!el) return;
-  el.textContent = text;
-  el.hidden = false;
-}
-
-// ── Web Push (VAPID) — T3.3 ──────────────────────────────────────────────────
-// VAPID application-server keys are base64url; PushManager wants a Uint8Array.
-function urlBase64ToUint8Array(base64String) {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const raw = atob(base64);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
-}
-
-// ── Toast: transient feedback for actions with no inline UI (e.g. enable-push) ──────────────
-// The host is created lazily so index.html needs no extra markup. role=alert for errors so
-// screen readers announce failures; status for the rest.
-function toast(message, type = 'info') {
-  let host = document.getElementById('toast-host');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'toast-host';
-    document.body.appendChild(host);
-  }
-  const el = document.createElement('div');
-  el.className = `toast toast-${type}`;
-  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
-  el.textContent = message;
-  host.appendChild(el);
-  requestAnimationFrame(() => el.classList.add('show'));  // animate in after layout
-  setTimeout(() => {
-    el.classList.remove('show');
-    el.addEventListener('transitionend', () => el.remove(), { once: true });
-    setTimeout(() => el.remove(), 400);  // fallback if transitionend never fires
-  }, 3200);
-}
-
-async function enablePush() {
-  const btn = document.getElementById('enable-push');
-  const dict = I18N[currentLang];
-  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
-    console.warn('Web Push not supported in this browser');
-    toast(dict.pushUnsupported, 'error');
-    return;
-  }
-  try {
-    const r = await fetch('/api/push/vapid-public-key');
-    const { key, enabled } = await r.json();
-    if (!enabled || !key) {
-      console.warn('Web Push not configured on the server (no VAPID key)');
-      toast(dict.pushNotConfigured, 'error');
-      return;
-    }
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') {
-      console.warn('Notification permission not granted:', perm);
-      toast(dict.pushDenied, 'error');
-      return;
-    }
-    const reg = await navigator.serviceWorker.ready;
-    let sub = await reg.pushManager.getSubscription();
-    if (!sub) {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(key),
-      });
-    }
-    const resp = await fetch('/api/push/subscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(sub.toJSON ? sub.toJSON() : sub),
-    });
-    if (!resp.ok) {
-      console.warn('push subscribe rejected by server:', resp.status);
-      toast(dict.pushFailed, 'error');
-      return;
-    }
-    if (btn) { btn.textContent = '🔔 ✓'; btn.disabled = true; }
-    toast(dict.pushEnabled, 'success');
-    // Fire a real system notification right now: it both confirms success and proves the
-    // OS-level pipeline works, which a banner alone can't. Missing icon degrades gracefully.
-    try {
-      await reg.showNotification('Foreman', {
-        body: dict.pushEnabledBody,
-        icon: '/icon-192.png',
-        badge: '/icon-192.png',
-        tag: 'foreman-push-test',
-      });
-    } catch (e) {
-      console.warn('test notification failed (subscription still active)', e);
-    }
-  } catch (e) {
-    console.warn('enable push failed', e);
-    toast(dict.pushFailed, 'error');
-  }
-}
-
-document.getElementById('enable-push')?.addEventListener('click', enablePush);
-
-// ── Decision cards (§6.3): folded summary + audit note + one-tap options + 🔍 详情 ───────────
-const cardListEl = document.getElementById('card-list');
-const cardTemplate = document.getElementById('card-template');
-
-async function loadCards() {
-  if (!cardListEl) return;
-  try {
-    const r = await fetch('/api/cards');
-    if (!r.ok) { renderCards([]); return; }
-    renderCards(await r.json());
-  } catch (e) {
-    renderCards([]);
-  }
-}
-
-// Build cards from the template with textContent only — summaries/audit notes echo untrusted
-// agent output, so never innerHTML them (same rule as the timeline + approvals).
-function renderCards(cards) {
-  const dict = I18N[currentLang];
-  if (!cards.length) {
-    cardListEl.classList.add('empty');
-    cardListEl.textContent = dict.noDecisions;
-    return;
-  }
-  cardListEl.classList.remove('empty');
-  cardListEl.replaceChildren();
-  for (const c of cards) {
-    const node = cardTemplate.content.cloneNode(true);
-    node.querySelector('.summary').textContent = c.summary || '';
-    node.querySelector('.audit').textContent = c.audit_note || '';
-    node.querySelector('.diffstat').textContent = c.diff_stat || dict.viewDetail;
-    const detailBtn = node.querySelector('.view-detail');
-    detailBtn.dataset.actionId = c.action_id || '';
-    if (!c.action_id) detailBtn.hidden = true;
-    const actions = node.querySelector('.card-actions');
-    for (const opt of c.options || []) {
-      const b = document.createElement('button');
-      b.className = 'option';
-      b.textContent = opt.label || opt.action || '';
-      b.dataset.cardId = c.id || '';
-      b.dataset.option = opt.action || '';
-      b.addEventListener('click', () => chooseCard(c.id, opt.action));
-      actions.appendChild(b);
-    }
-    cardListEl.appendChild(node);
-  }
-}
-
-// One-tap card decision (§6.3): record the chosen option. Executing the chosen path (run / nudge /
-// undo the agent) is the two-way control layer (P4) — this closes the "you tap" half.
-async function chooseCard(cardId, option) {
-  if (!cardId || !option) return;
-  try {
-    const r = await fetch(`/api/cards/${encodeURIComponent(cardId)}/choose`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ option }),
-    });
-    if (!r.ok) console.warn('choose failed', r.status);
-  } catch (e) {
-    console.warn('choose error', e);
-  }
-  loadCards();  // refresh so the decided card reflects the choice
-}
-
-// Decision card -> step detail drill-down (§6.3): GET /api/actions/{id}/detail.
-const detailSection = document.getElementById('detail');
-
-async function openDetail(actionId) {
-  detailSection?.removeAttribute('hidden');
-  detailSection?.scrollIntoView({ behavior: 'smooth' });
-  const rawEl = document.getElementById('tab-raw');
-  const diffEl = document.getElementById('tab-diff');
-  rawEl.textContent = '…';
-  diffEl.replaceChildren();
-  try {
-    const r = await fetch(`/api/actions/${encodeURIComponent(actionId)}/detail`);
-    if (!r.ok) { rawEl.textContent = `（详情不可用 ${r.status}）`; return; }
-    const detail = await r.json();
-    renderRaw(rawEl, detail.raw || []);
-    renderDiff(diffEl, detail.diff || { files: [] });
-  } catch (e) {
-    rawEl.textContent = '（加载详情失败）';
-  }
-}
-
-// Tab ① 原始返回 — each raw event on its own line; textContent only (untrusted agent output).
-function renderRaw(el, events) {
-  if (!events.length) { el.textContent = '（这一步没有原始返回）'; return; }
-  el.textContent = events
-    .map((e) => `[${e.ts || ''}] ${e.type} (${e.source || ''})\n${JSON.stringify(e.payload)}`)
-    .join('\n\n');
-}
-
-// Tab ② 代码改动 — per-file, per-line diff with line tags/highlight; textContent only.
-function renderDiff(el, diff) {
-  const files = diff.files || [];
-  if (!files.length) {
-    const p = document.createElement('p');
-    p.className = 'empty';
-    p.textContent = diff.note || '（这一步没有代码改动）';
-    el.appendChild(p);
-    return;
-  }
-  for (const f of files) {
-    const head = document.createElement('div');
-    head.className = 'diff-file';
-    head.textContent = `${f.path}  +${f.additions} / −${f.deletions}`;
-    el.appendChild(head);
-    for (const ln of f.lines || []) {
-      const row = document.createElement('div');
-      row.className = `diff-line diff-${ln.kind}`;
-      const sign = ln.kind === 'add' ? '+' : ln.kind === 'del' ? '−' : ' ';
-      row.textContent = sign + ln.text;
-      el.appendChild(row);
-    }
-  }
-}
-
-document.addEventListener('click', (e) => {
-  const btn = e.target.closest('.view-detail');
-  if (btn) openDetail(btn.dataset.actionId);
-});
-
-document.getElementById('detail-back')?.addEventListener('click', () => {
-  detailSection?.setAttribute('hidden', '');
-});
-
-// Detail tab switching: 原始返回 / 代码改动.
-document.querySelectorAll('#detail .tab').forEach((tab) => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('#detail .tab').forEach((t) => t.classList.remove('active'));
-    tab.classList.add('active');
-    const which = tab.dataset.tab; // 'raw' | 'diff'
-    document.getElementById('tab-raw').hidden = which !== 'raw';
-    document.getElementById('tab-diff').hidden = which !== 'diff';
-  });
-});
-
-// ── Sessions + live timeline (T1.11) ─────────────────────────────────────────
-let ws = null;
-const sessionListEl = document.getElementById('session-list');
-const eventListEl = document.getElementById('event-list');
-
-// Multi-session dashboard (T4.6): /api/overview enriches each session with activity counts so
-// several concurrent root sessions show at a glance. Falls back to /api/sessions if unavailable.
-async function loadSessions() {
-  try {
-    let sessions = null;
-    try {
-      const ov = await fetch('/api/overview');
-      if (ov.ok) sessions = await ov.json();
-    } catch (e) { /* fall through to /api/sessions below */ }
-    if (sessions === null) {
-      const r = await fetch('/api/sessions');
-      if (!r.ok) { sessionListEl.textContent = 'No local store (server mode).'; return; }
-      sessions = await r.json();
-    }
-    if (!sessions.length) {
-      sessionListEl.classList.add('empty');
-      sessionListEl.textContent = I18N[currentLang].noSessions;
-      return;
-    }
-    sessionListEl.classList.remove('empty');
-    sessionListEl.replaceChildren();
-    for (const s of sessions) {
-      const b = document.createElement('button');
-      b.className = 'session-item';
-      // textContent only — goal echoes untrusted user/agent input (never innerHTML).
-      const head = document.createElement('span');
-      head.className = 'session-head';
-      head.textContent = `${s.goal || s.id} · ${s.status || ''} [${s.agent_type || ''}]`;
-      b.appendChild(head);
-      if (s.events !== undefined) {
-        const meta = document.createElement('span');
-        meta.className = 'session-meta';
-        const bits = [`📋 ${s.events}`];
-        if (s.open_cards) bits.push(`🗂️ ${s.open_cards}`);
-        if (s.pending_approvals) bits.push(`⛔ ${s.pending_approvals}`);
-        if (s.last_event_type) bits.push(s.last_event_type);
-        meta.textContent = bits.join(' · ');
-        b.appendChild(meta);
-      }
-      b.addEventListener('click', () => openTimeline(s.id));
-      sessionListEl.appendChild(b);
-    }
-  } catch (e) {
-    sessionListEl.textContent = 'Failed to load sessions.';
-  }
-}
-
-// ── Briefings (§5.5, T4.6): the phone's status-report feed + a one-tap "generate now" ─────────
-const reportListEl = document.getElementById('report-list');
-
-async function loadReports() {
-  if (!reportListEl) return;
-  try {
-    const r = await fetch('/api/reports');
-    if (!r.ok) { renderReports([]); return; }
-    renderReports(await r.json());
-  } catch (e) {
-    renderReports([]);
-  }
-}
-
-// textContent only — briefing text comes from the LLM over untrusted agent output.
-function renderReports(reports) {
-  if (!reportListEl) return;
-  if (!reports.length) {
-    reportListEl.classList.add('empty');
-    reportListEl.textContent = I18N[currentLang].noReports;
-    return;
-  }
-  reportListEl.classList.remove('empty');
-  reportListEl.replaceChildren();
-  for (const rep of reports) {
-    const card = document.createElement('article');
-    card.className = 'card report';
-    const title = document.createElement('p');
-    title.className = 'card-summary';
-    title.textContent = `📰 ${rep.title || rep.kind || ''}`;
-    const body = document.createElement('pre');
-    body.className = 'report-body';
-    body.textContent = rep.body_md || '';
-    const meta = document.createElement('p');
-    meta.className = 'session-meta';
-    meta.textContent = `${rep.kind || ''} · ${rep.ts || ''}`;
-    card.append(title, body, meta);
-    reportListEl.appendChild(card);
-  }
-}
-
-function showBriefStatus(text) {
-  const el = document.getElementById('brief-status');
-  if (!el) return;
-  el.textContent = text;
-  el.hidden = false;
-}
-function hideBriefStatus() {
-  const el = document.getElementById('brief-status');
-  if (el) el.hidden = true;
-}
-
-async function generateReport() {
-  const dict = I18N[currentLang];
-  const btn = document.getElementById('generate-brief');
-  if (btn) btn.disabled = true;
-  hideBriefStatus();
-  showBriefStatus(dict.briefGenerating);
-  try {
-    const r = await fetch('/api/reports/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'active-briefing' }),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (r.ok) {
-      // 503 no_llm is the common cause: the PM brain isn't configured (see PM brain settings + .env).
-      hideBriefStatus();
-    } else {
-      const reason = data.detail === 'no_llm' ? dict.briefNoLlm : (data.detail || r.status);
-      showBriefStatus(`${dict.briefFailed} (${reason})`);
-    }
-  } catch (e) {
-    showBriefStatus(dict.briefFailed);
-  }
-  if (btn) btn.disabled = false;
-  loadReports();
-}
-
-document.getElementById('generate-brief')?.addEventListener('click', generateReport);
-
-function openTimeline(sessionId) {
-  if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
-  eventListEl.replaceChildren();
-  eventListEl.classList.remove('empty');
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const t = authToken();
-  const tokenQuery = t ? `&token=${encodeURIComponent(t)}` : '';  // WS auth rides the query (P0)
-  ws = new WebSocket(
-    `${proto}://${location.host}/ws?session_id=${encodeURIComponent(sessionId)}${tokenQuery}`
-  );
-  ws.addEventListener('message', (ev) => {
-    try { renderEvent(JSON.parse(ev.data)); } catch (e) { console.warn('bad event', e); }
-  });
-}
-
-// Per-type presentation: an icon + a CSS class. Anything not listed falls back to a neutral dot.
-const EVENT_META = {
-  dispatch: { icon: '📤', cls: 'ev-info' },
-  agent_output: { icon: '💬', cls: 'ev-msg' },
-  stop: { icon: '✅', cls: 'ev-ok' },
-  error: { icon: '⚠️', cls: 'ev-err' },
-  briefing: { icon: '📰', cls: 'ev-info' },
-  approval: { icon: '⛔', cls: 'ev-warn' },
-  card: { icon: '🗂️', cls: 'ev-info' },
-  checkpoint: { icon: '📌', cls: 'ev-info' },
-  gate: { icon: '🚦', cls: 'ev-warn' },
-};
-
-// Pull readable text out of a claude/codex stream-json payload (many shapes — be tolerant). Returns
-// '' when there is nothing human-readable (e.g. a pure tool-call frame), so the row shows just its
-// header rather than a raw JSON blob. The full object is always available in the collapsible raw view.
-function extractAgentText(p) {
-  if (!p || typeof p !== 'object') return '';
-  if (typeof p.text === 'string') return p.text;          // codex line / non-JSON claude line
-  if (typeof p.result === 'string') return p.result;      // claude `result`
-  const msg = p.message;
-  if (msg && typeof msg === 'object') {
-    const content = msg.content;
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-      const parts = [];
-      for (const b of content) {
-        if (!b || typeof b !== 'object') continue;
-        if (typeof b.text === 'string') parts.push(b.text);
-        else if (b.type === 'tool_use') parts.push(`🔧 ${b.name || 'tool'}`);
-        else if (b.type === 'tool_result') {
-          const c = b.content;
-          if (typeof c === 'string') parts.push(c);
-          else if (Array.isArray(c)) parts.push(c.map((x) => (x && x.text) || '').join(''));
-        }
-      }
-      return parts.join('\n').trim();
-    }
-  }
-  return '';
-}
-
-function eventLabel(type) {
-  const dict = I18N[currentLang];
-  return dict[`ev_${type}`] || type;
-}
-
-// One readable summary line per event type — NEVER a raw JSON dump (that lives in the raw view).
-function summarizeEvent(e) {
-  const dict = I18N[currentLang];
-  const p = e.payload || {};
-  switch (e.type) {
-    case 'error':
-      return p.msg || p.error || dict.evError;
-    case 'dispatch': {
-      const extra = [p.agent, p.model, p.effort].filter(Boolean).join(' · ');
-      let t = `${p.goal || ''}${extra ? '  (' + extra + ')' : ''}`;
-      if (p.execution_deferred) t += `  — ${dict.evDeferred}`;
-      return t.trim();
-    }
-    case 'briefing':
-      return p.title || '';
-    case 'stop':
-      return extractAgentText(p) || dict.evDone;
-    case 'agent_output':
-      return extractAgentText(p);
-    default:
-      return extractAgentText(p);  // best-effort; '' falls through to a header-only row
-  }
-}
-
-// Build rows with textContent only — agent output is untrusted, never innerHTML it. Each event is a
-// typed, chat-style row: header (icon · label · source · time), a readable body, and a collapsible
-// raw payload for power users (the JSON is here, not dumped inline — issue #4).
-function renderEvent(e) {
-  const li = document.createElement('li');
-  const meta = EVENT_META[e.type] || { icon: '•', cls: 'ev-other' };
-  li.className = `event ${meta.cls}`;
-
-  const head = document.createElement('div');
-  head.className = 'ev-head';
-  const ico = document.createElement('span');
-  ico.className = 'ev-icon';
-  ico.textContent = meta.icon;
-  const label = document.createElement('span');
-  label.className = 'ev-label';
-  label.textContent = eventLabel(e.type);
-  const src = document.createElement('span');
-  src.className = 'ev-source';
-  src.textContent = e.source || '';
-  const ts = document.createElement('span');
-  ts.className = 'ev-ts';
-  ts.textContent = e.ts || '';
-  head.append(ico, label, src, ts);
-  li.appendChild(head);
-
-  const text = summarizeEvent(e);
-  if (text) {
-    const body = document.createElement('div');
-    body.className = 'ev-body';
-    body.textContent = text.length > 2000 ? text.slice(0, 2000) + '…' : text;
-    li.appendChild(body);
-  }
-
-  if (e.payload && typeof e.payload === 'object' && Object.keys(e.payload).length) {
-    const det = document.createElement('details');
-    det.className = 'ev-raw';
-    const sum = document.createElement('summary');
-    sum.textContent = I18N[currentLang].rawJson;
-    const pre = document.createElement('pre');
-    pre.textContent = JSON.stringify(e.payload, null, 2);
-    det.append(sum, pre);
-    li.appendChild(det);
-  }
-
-  eventListEl.appendChild(li);
-}
-
-// ── Approvals: the phone's approve/reject queue (T3.4, §6.6) ─────────────────────────────────
-const approvalListEl = document.getElementById('approval-list');
-let pendingApprovals = [];
-
-async function loadApprovals() {
-  if (!approvalListEl) return;
-  try {
-    const r = await fetch('/api/approvals');
-    if (!r.ok) { pendingApprovals = []; renderApprovals(); return; }
-    pendingApprovals = await r.json();
-    renderApprovals();
-  } catch (e) {
-    pendingApprovals = [];
-    renderApprovals();
-  }
-}
-
-// Build rows with textContent only — the held action is untrusted agent input, never innerHTML it.
-function renderApprovals() {
-  const dict = I18N[currentLang];
-  if (!pendingApprovals.length) {
-    approvalListEl.classList.add('empty');
-    approvalListEl.textContent = dict.noApprovals;
-    return;
-  }
-  approvalListEl.classList.remove('empty');
-  approvalListEl.replaceChildren();
-  for (const a of pendingApprovals) {
-    const card = document.createElement('article');
-    card.className = 'card approval';
-    const risk = document.createElement('p');
-    risk.className = 'card-summary';
-    risk.textContent = `⛔ ${a.risk_level || 'requires-approval'}`;
-    const action = document.createElement('p');
-    action.className = 'card-audit';
-    action.textContent = a.action || a.diff_summary || '';
-    const btns = document.createElement('div');
-    btns.className = 'card-actions';
-    btns.appendChild(makeDecisionBtn(a, 'approve', `✅ ${dict.approve}`));
-    btns.appendChild(makeDecisionBtn(a, 'reject', `⛔ ${dict.reject}`));
-    card.append(risk, action, btns);
-    approvalListEl.appendChild(card);
-  }
-}
-
-function makeDecisionBtn(approval, decision, label) {
-  const b = document.createElement('button');
-  b.className = 'option';
-  b.textContent = label;
-  b.addEventListener('click', () => decideApproval(approval.id, decision, approval.nonce));
-  return b;
-}
-
-async function decideApproval(id, decision, nonce) {
-  try {
-    const r = await fetch(`/api/approvals/${encodeURIComponent(id)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision, nonce: nonce || '' }),
-    });
-    if (!r.ok) console.warn('decide failed', r.status);
-  } catch (e) {
-    console.warn('decide error', e);
-  }
-  loadApprovals();  // refresh the queue (decided ones drop off)
-}
-
-// ── Definition editor (§11.2, T6.1): add/edit/delete 工作流/技能/规范/QA from the phone/web ─────
-const defnListEl = document.getElementById('defn-list');
-const defnForm = document.getElementById('defn-form');
-const KIND_LABEL = {
-  workflow: 'kindWorkflow', skill: 'kindSkill', code_standard: 'kindStandard', qa_rubric: 'kindQa',
-};
-
-async function loadDefinitions() {
-  if (!defnListEl) return;
-  const kind = document.getElementById('defn-filter')?.value || '';
-  try {
-    const url = kind ? `/api/definitions?kind=${encodeURIComponent(kind)}` : '/api/definitions';
-    const r = await fetch(url);
-    if (!r.ok) { renderDefinitions([]); return; }
-    renderDefinitions(await r.json());
-  } catch (e) {
-    renderDefinitions([]);
-  }
-}
-
-// textContent only — names/bodies are user-authored 秘方; treat as untrusted, never innerHTML.
-function renderDefinitions(defs) {
-  const dict = I18N[currentLang];
-  if (!defnListEl) return;
-  if (!defs.length) {
-    defnListEl.classList.add('empty');
-    defnListEl.textContent = dict.noDefinitions;
-    return;
-  }
-  defnListEl.classList.remove('empty');
-  defnListEl.replaceChildren();
-  for (const d of defs) {
-    const row = document.createElement('article');
-    row.className = 'card defn-item';
-    const head = document.createElement('p');
-    head.className = 'card-summary';
-    const kindTxt = dict[KIND_LABEL[d.kind]] || d.kind;
-    const live = d.is_active ? ' ✓' : '';
-    head.textContent = `${kindTxt} · ${d.name} v${d.version}${live}`;
-    const actions = document.createElement('div');
-    actions.className = 'card-actions';
-    actions.appendChild(defnBtn(dict.edit, () => openDefnForm(d)));
-    if (!d.is_active) actions.appendChild(defnBtn(dict.activate, () => activateDefn(d.id)));
-    actions.appendChild(defnBtn(dict.delete, () => deleteDefn(d.id)));
-    row.append(head, actions);
-    defnListEl.appendChild(row);
-  }
-}
-
-function defnBtn(label, onClick) {
-  const b = document.createElement('button');
-  b.className = 'option';
-  b.textContent = label;
-  b.addEventListener('click', onClick);
-  return b;
-}
-
-// Open the editor: blank for a new block, or pre-filled to edit an existing one. Editing locks
-// identity (kind/name) — a body change is an in-place edit; a new version is a fresh "+ New".
-async function openDefnForm(def) {
-  if (!defnForm) return;
-  defnForm.hidden = false;
-  const idEl = document.getElementById('defn-id');
-  const kindEl = document.getElementById('defn-kind');
-  const nameEl = document.getElementById('defn-name');
-  const scopeEl = document.getElementById('defn-scope');
-  const bodyEl = document.getElementById('defn-body');
-  const activateEl = document.getElementById('defn-activate');
-  hideDefnStatus();
-  if (def) {
-    idEl.value = def.id;
-    kindEl.value = def.kind; kindEl.disabled = true;
-    nameEl.value = def.name; nameEl.disabled = true;
-    scopeEl.value = def.scope_json || '{}';
-    bodyEl.value = def.body || '';
-    // "Activate on save" means "make THIS version the live one" — there is no deactivate (exactly
-    // one version is ever live, switched by activating another). So default it unchecked on edit:
-    // checking it makes this version live; leaving it just saves the body without changing which
-    // version is live. (Pre-checking an already-active row would be a no-op the user can't undo.)
-    activateEl.checked = false;
-  } else {
-    idEl.value = '';
-    kindEl.disabled = false; nameEl.disabled = false;
-    kindEl.value = document.getElementById('defn-filter')?.value || 'workflow';
-    nameEl.value = ''; scopeEl.value = '{}'; bodyEl.value = ''; activateEl.checked = true;
-  }
-  defnForm.scrollIntoView({ behavior: 'smooth' });
-}
-
-function showDefnStatus(text) {
-  const el = document.getElementById('defn-status');
-  if (!el) return;
-  el.textContent = text;
-  el.hidden = false;
-}
-function hideDefnStatus() {
-  const el = document.getElementById('defn-status');
-  if (el) el.hidden = true;
-}
-
-defnForm?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const dict = I18N[currentLang];
-  const id = document.getElementById('defn-id').value;
-  const scope = document.getElementById('defn-scope').value.trim() || '{}';
-  const body = document.getElementById('defn-body').value;
-  const activate = document.getElementById('defn-activate').checked;
-  try {
-    let r;
-    if (id) {
-      // Edit in place (identity is locked); activate separately if requested.
-      r = await fetch(`/api/definitions/${encodeURIComponent(id)}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body, scope_json: scope }),
-      });
-      if (r.ok && activate) {
-        await fetch(`/api/definitions/${encodeURIComponent(id)}/activate`, { method: 'POST' });
-      }
-    } else {
-      r = await fetch('/api/definitions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          kind: document.getElementById('defn-kind').value,
-          name: document.getElementById('defn-name').value.trim(),
-          body, scope_json: scope, activate,
-        }),
-      });
-    }
-    const data = await r.json().catch(() => ({}));
-    if (r.ok) {
-      defnForm.hidden = true;
-      loadDefinitions();
-    } else {
-      showDefnStatus(`${dict.saveFailed} (${data.detail || r.status})`);
-    }
-  } catch (err) {
-    showDefnStatus(dict.saveFailed);
-  }
-});
-
-document.getElementById('defn-new')?.addEventListener('click', () => openDefnForm(null));
-document.getElementById('defn-cancel')?.addEventListener('click', () => { defnForm.hidden = true; });
-document.getElementById('defn-filter')?.addEventListener('change', loadDefinitions);
-
-// ── Backup: export / import all 秘方 (T6.2, §765) ─────────────────────────────────────────────
-// Export downloads the bundle as a JSON file; import reads one back and POSTs it (merge — existing
-// rows are skipped, so re-import is idempotent and never clobbers live recipes).
-document.getElementById('defn-export')?.addEventListener('click', async () => {
-  try {
-    const r = await fetch('/api/definitions/export');
-    if (!r.ok) { showDefnStatus(I18N[currentLang].exportFailed); return; }
-    const bundle = await r.json();
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'foreman-definitions.json';
-    a.click();
-    URL.revokeObjectURL(a.href);
-  } catch (err) {
-    showDefnStatus(I18N[currentLang].exportFailed);
-  }
-});
-
-const defnImportFile = document.getElementById('defn-import-file');
-document.getElementById('defn-import')?.addEventListener('click', () => defnImportFile?.click());
-defnImportFile?.addEventListener('change', async () => {
-  const dict = I18N[currentLang];
-  const file = defnImportFile.files && defnImportFile.files[0];
-  defnImportFile.value = '';  // allow re-importing the same file
-  if (!file) return;
-  try {
-    const bundle = JSON.parse(await file.text());
-    const r = await fetch('/api/definitions/import', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bundle }),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (r.ok) {
-      showDefnStatus(`${dict.imported}: ${data.imported} (+${data.links_imported} links)`);
-      loadDefinitions();
-    } else {
-      showDefnStatus(`${dict.importFailed} (${data.detail || r.status})`);
-    }
-  } catch (err) {
-    showDefnStatus(dict.importFailed);
-  }
-});
-
-async function activateDefn(id) {
-  try {
-    const r = await fetch(`/api/definitions/${encodeURIComponent(id)}/activate`, { method: 'POST' });
-    if (!r.ok) console.warn('activate failed', r.status);
-  } catch (e) { console.warn('activate error', e); }
-  loadDefinitions();
-}
-
-async function deleteDefn(id) {
-  if (!confirm(I18N[currentLang].confirmDelete)) return;
-  try {
-    const r = await fetch(`/api/definitions/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    if (!r.ok) console.warn('delete failed', r.status);
-  } catch (e) { console.warn('delete error', e); }
-  loadDefinitions();
-}
-
-// ── i18n: UI language (zh/en) + sync to backend so LLM output language follows (§15) ─────────
-const I18N = {
-  zh: { sessions: '会话', decisions: '决策', approvals: '审批', timeline: '时间线', dispatch: '下发任务',
-        send: '发送', enablePush: '开启通知', stepDetail: '步骤详情', rawReturn: '原始返回',
-        codeDiff: '代码改动', noSessions: '暂无活动会话。', noDecisions: '暂无待决策。',
-        noApprovals: '没有待你处理的。', approve: '批准', reject: '驳回', viewDetail: '查看详情',
-        autonomy: '自治', langToggle: 'EN', briefings: '简报', generateBriefing: '生成简报',
-        noReports: '暂无简报。', dispatched: '已下发', dispatchFailed: '下发失败',
-        definitionsTitle: '规范库', filterKind: '类型', kindAll: '全部', kindWorkflow: '工作流',
-        kindSkill: '技能', kindStandard: '代码规范', kindQa: 'QA 标准', newDefinition: '+ 新建',
-        noDefinitions: '暂无规范。', defnKind: '类型', defnName: '名称', defnScope: '适用范围 (JSON)',
-        defnBody: '内容', defnActivate: '保存即启用', save: '保存', cancel: '取消', edit: '编辑',
-        activate: '启用', delete: '删除', confirmDelete: '确定删除这条规范？',
-        saveFailed: '保存失败', saved: '已保存', exportDefinitions: '⬇ 导出', importDefinitions: '⬆ 导入',
-        exportFailed: '导出失败', importFailed: '导入失败', imported: '已导入',
-        // Dispatch worker pickers (§5.1)
-        dispatchAgent: '代理', dispatchModel: '模型', dispatchEffort: '档位', agentDefault: '默认',
-        effortDefault: '默认', effortLow: '快速', effortMedium: '标准', effortHigh: '深度',
-        modelDefaultHint: '留空＝用配置默认',
-        // Timeline event rows (§6)
-        ev_dispatch: '已下发', ev_agent_output: '输出', ev_stop: '完成', ev_error: '错误',
-        ev_briefing: '简报', ev_approval: '待审批', ev_card: '决策卡', ev_checkpoint: '检查点',
-        ev_gate: '闸门', evError: '出错', evDeferred: '执行已挂起', evDone: '已完成', rawJson: '原始数据',
-        // Briefings (§5.5)
-        briefGenerating: '生成中…', briefFailed: '简报生成失败',
-        briefNoLlm: 'PM 大脑未配置（见下方「PM 大脑」设置与 .env）',
-        // PM brain settings (§15)
-        pmSettings: 'PM 大脑', pmProvider: '服务商', pmModel: '模型', pmBaseUrl: '接口地址',
-        pmKeyHint: 'API Key 从 .env 读取（FOREMAN_LLM_API_KEY），此处不可编辑。',
-        pmKeyMissing: '⚠️ 未检测到 API Key —— 请在 .env 设置 FOREMAN_LLM_API_KEY。',
-        // Push notifications (from main #13)
-        pushEnabled: '通知已开启', pushEnabledBody: '你将在这里收到决策与审批提醒。',
-        pushUnsupported: '此浏览器不支持通知', pushNotConfigured: '服务器未配置推送',
-        pushDenied: '通知权限被拒绝（请在浏览器设置中允许）', pushFailed: '开启通知失败' },
-  en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
-        dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
-        rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
-        noDecisions: 'No decisions waiting.', noApprovals: 'Nothing waiting on you.',
-        approve: 'Approve', reject: 'Reject', viewDetail: 'View detail',
-        autonomy: 'Autonomy', langToggle: '中', briefings: 'Briefings', generateBriefing: 'Generate briefing',
-        noReports: 'No briefings yet.', dispatched: 'Dispatched', dispatchFailed: 'Dispatch failed',
-        definitionsTitle: 'Playbook', filterKind: 'Kind', kindAll: 'All', kindWorkflow: 'Workflow',
-        kindSkill: 'Skill', kindStandard: 'Code standard', kindQa: 'QA rubric', newDefinition: '+ New',
-        noDefinitions: 'No rules yet.', defnKind: 'Kind', defnName: 'Name', defnScope: 'Scope (JSON)',
-        defnBody: 'Body', defnActivate: 'Activate on save', save: 'Save', cancel: 'Cancel', edit: 'Edit',
-        activate: 'Activate', delete: 'Delete', confirmDelete: 'Delete this rule?',
-        saveFailed: 'Save failed', saved: 'Saved', exportDefinitions: '⬇ Export', importDefinitions: '⬆ Import',
-        exportFailed: 'Export failed', importFailed: 'Import failed', imported: 'Imported',
-        // Dispatch worker pickers (§5.1)
-        dispatchAgent: 'Agent', dispatchModel: 'Model', dispatchEffort: 'Level', agentDefault: 'Default',
-        effortDefault: 'Default', effortLow: 'Fast', effortMedium: 'Standard', effortHigh: 'Deep',
-        modelDefaultHint: 'blank = configured default',
-        // Timeline event rows (§6)
-        ev_dispatch: 'Dispatched', ev_agent_output: 'Output', ev_stop: 'Done', ev_error: 'Error',
-        ev_briefing: 'Briefing', ev_approval: 'Approval', ev_card: 'Decision', ev_checkpoint: 'Checkpoint',
-        ev_gate: 'Gate', evError: 'Error', evDeferred: 'execution deferred', evDone: 'Done',
-        rawJson: 'Raw data',
-        // Briefings (§5.5)
-        briefGenerating: 'Generating…', briefFailed: 'Briefing failed',
-        briefNoLlm: 'PM brain not configured (see PM brain settings + .env)',
-        // PM brain settings (§15)
-        pmSettings: 'PM brain', pmProvider: 'Provider', pmModel: 'Model', pmBaseUrl: 'Base URL',
-        pmKeyHint: 'API key is read from .env (FOREMAN_LLM_API_KEY) — not editable here.',
-        pmKeyMissing: '⚠️ No API key detected — set FOREMAN_LLM_API_KEY in .env.',
-        // Push notifications (from main #13)
-        pushEnabled: 'Notifications enabled', pushEnabledBody: "You'll get decision & approval alerts here.",
-        pushUnsupported: 'Notifications not supported in this browser', pushNotConfigured: 'Push not configured on the server',
-        pushDenied: 'Notification permission denied (allow it in browser settings)', pushFailed: 'Could not enable notifications' },
-};
-let currentLang = 'zh';
-
-function applyI18n(lang) {
-  currentLang = lang === 'en' ? 'en' : 'zh';
-  const dict = I18N[currentLang];
-  document.querySelectorAll('[data-i18n]').forEach((el) => {
-    const k = el.getAttribute('data-i18n');
-    if (dict[k]) el.textContent = dict[k];
-  });
-  const ti = document.getElementById('task-input');
-  if (ti) ti.placeholder = currentLang === 'zh'
-    ? 'e.g. 重构 auth 模块，push 前问我' : 'e.g. refactor auth, ask me before push';
-  const tg = document.getElementById('lang-toggle');
-  if (tg) tg.textContent = dict.langToggle;  // shows the OTHER language to switch to
-  document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
-}
-
-async function initLang() {
-  let lang = localStorage.getItem('foreman.lang');
-  if (!lang) {
-    try { const r = await fetch('/api/settings/language'); if (r.ok) lang = (await r.json()).language; }
-    catch (e) { /* fall back to default below */ }
-  }
-  applyI18n(lang || 'zh');
-}
-
-async function setLang(lang) {
-  applyI18n(lang);
-  localStorage.setItem('foreman.lang', currentLang);
-  loadSessions();  // re-render the (dynamic) session list so its empty text follows the language
-  loadCards();  // re-render decision cards in the new language
-  loadReports();  // re-render briefings (empty text follows the language)
-  loadDefinitions();  // re-render the 规范库 list + labels in the new language
-  renderApprovals();  // re-label approve/reject + empty text in the new language
-  updateModelPlaceholder();  // dispatch model hint follows the language
-  try {
-    await fetch('/api/settings/language', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ language: currentLang }),
-    });
-  } catch (e) { /* offline / server mode — UI still switched locally */ }
-}
-
-document.getElementById('lang-toggle')?.addEventListener('click',
-  () => setLang(currentLang === 'zh' ? 'en' : 'zh'));
-
-// ── autonomy dial (0/1/2/3): how proactive Foreman is — capabilities stay full, only whether
-//    placing a move asks you first changes (DESIGN §6.4). Synced to the backend (config_kv). ───
-const autonomySelect = document.getElementById('autonomy-select');
-
-async function initAutonomy() {
-  if (!autonomySelect) return;
-  try {
-    const r = await fetch('/api/settings/autonomy');
-    if (r.ok) {
-      const { level, label } = await r.json();
-      autonomySelect.value = String(level);
-      if (label) autonomySelect.title = label;  // hover shows the level's meaning
-    }
-  } catch (e) { /* offline / server mode — leave default */ }
-}
-
-autonomySelect?.addEventListener('change', async () => {
-  const level = parseInt(autonomySelect.value, 10);
-  try {
-    const r = await fetch('/api/settings/autonomy', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ level }),
-    });
-    if (r.ok) {
-      const data = await r.json();
-      autonomySelect.value = String(data.level);  // reflect the server's clamp
-      if (data.label) autonomySelect.title = data.label;
-    }
-  } catch (e) { /* offline — selection still reflects intent locally */ }
-});
-
-// ── PM 大脑 settings (§15): switch the brain's provider/model/base_url at runtime. Takes effect on
-//    the next LLM call (briefings / decision loop) — no restart. The api key stays a .env secret. ──
-async function loadLlmSettings() {
-  const form = document.getElementById('llm-form');
-  if (!form) return;
-  try {
-    const r = await fetch('/api/settings/llm');
-    if (!r.ok) return;
-    const s = await r.json();
-    const provEl = document.getElementById('llm-provider');
-    const modelEl = document.getElementById('llm-model');
-    const baseEl = document.getElementById('llm-base-url');
-    if (provEl && s.provider) provEl.value = s.provider;
-    if (modelEl) modelEl.value = s.model || '';
-    if (baseEl) baseEl.value = s.base_url || '';
-    const hint = document.getElementById('llm-keyhint');
-    if (hint && !s.api_key_set) {
-      hint.textContent = I18N[currentLang].pmKeyMissing;
-      hint.classList.add('bad');
-    }
-  } catch (e) { /* offline / server mode — leave defaults */ }
-}
-
-function showLlmStatus(text) {
-  const el = document.getElementById('llm-status');
-  if (!el) return;
-  el.textContent = text;
-  el.hidden = false;
-}
-
-document.getElementById('llm-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const dict = I18N[currentLang];
-  const body = {
-    provider: document.getElementById('llm-provider')?.value || '',
-    model: document.getElementById('llm-model')?.value.trim() || '',
-    base_url: document.getElementById('llm-base-url')?.value.trim() || '',
+(function () {
+  "use strict";
+
+  const { useCallback, useEffect, useMemo, useRef, useState } = React;
+  const html = htm.bind(React.createElement);
+  const A = antd;
+  const Icons = window.icons || {};
+  const icon = (name) => (Icons[name] ? html`<${Icons[name]} />` : null);
+
+  const TOKEN_KEY = "foreman.token";
+  const LANG_KEY = "foreman.lang";
+  const WORKSPACE_KEY = "foreman.workspace";
+
+  const I18N = {
+    zh: {
+      productSubtitle: "本地工作台",
+      navWorkspace: "工作台",
+      navDecisions: "决策",
+      navBriefings: "简报",
+      navRules: "工作方式",
+      navSettings: "设置",
+      workspaceSubtitle: "选择工作区，给本机 agent 下发任务。",
+      decisionsSubtitle: "处理需要你确认的卡片和审批。",
+      briefingsSubtitle: "把当前进展整理成可读状态。",
+      rulesSubtitle: "维护工作流、技能、代码规范和验收标准。",
+      settingsSubtitle: "配置工作区、PM 大脑和界面偏好。",
+      sessions: "会话",
+      dispatch: "下发任务",
+      taskGoal: "任务",
+      workspace: "工作区",
+      send: "发送",
+      timeline: "时间线",
+      selectSessionHint: "从左侧选择一个会话。",
+      decisions: "决策",
+      approvals: "审批",
+      briefings: "简报",
+      generateBriefing: "生成简报",
+      noReports: "暂无简报。",
+      noSessions: "暂无活动会话。",
+      noDecisions: "暂无待决策。",
+      noApprovals: "没有待你处理的。",
+      refresh: "刷新",
+      back: "返回",
+      viewDetail: "查看详情",
+      stepDetail: "步骤详情",
+      rawReturn: "原始返回",
+      codeDiff: "代码改动",
+      enablePush: "开启通知",
+      autonomy: "自动执行权限",
+      dispatchAgent: "Agent",
+      dispatchModel: "模型",
+      dispatchEffort: "档位",
+      agentDefault: "默认",
+      effortDefault: "默认",
+      effortLow: "快速",
+      effortMedium: "标准",
+      effortHigh: "深度",
+      modelDefaultHint: "留空 = 使用配置默认模型",
+      dispatchNoWorkspace: "未配置工作区：请到设置页添加项目路径。",
+      dispatchFailed: "下发失败",
+      dispatched: "已下发",
+      workspaceNotAllowed: "这个工作区不在已配置的工作区列表里。",
+      unknownAgent: "这个 agent 没有启用。",
+      emptyGoal: "任务不能为空。",
+      noDispatcher: "当前服务不是本地 PC 工作台，不能下发任务。",
+      workspaceMissing: "没有可用工作区。",
+      workspaceEmpty: "没有配置工作区。",
+      workspaceSettings: "工作区",
+      workspacePath: "项目路径",
+      workspaceName: "显示名称",
+      workspacePathHint: "例如 E:\\AutoWorkAgent",
+      addWorkspace: "添加/更新工作区",
+      remove: "移除",
+      uiSettings: "界面",
+      pmSettings: "PM 大脑",
+      pmProvider: "服务商",
+      pmModel: "模型",
+      pmBaseUrl: "接口地址",
+      pmApiKey: "API Key",
+      pmKeyHint: "已配置 API Key。输入新 key 后保存可替换；留空不修改。",
+      pmKeyMissing: "未检测到 API Key。可在这里输入并保存。",
+      pmKeyPlaceholder: "留空不修改；输入新 key 后保存",
+      clearKey: "清空 Key",
+      save: "保存",
+      saved: "已保存",
+      saveFailed: "保存失败",
+      autonomyHelp: "决定 Foreman 在没有你确认时能自动执行多少动作。",
+      autonomy0: "0 只报告",
+      autonomy1: "1 安全动作自动",
+      autonomy2: "2 策略动作弹卡",
+      autonomy3: "3 只拦危险动作",
+      definitionsTitle: "工作方式",
+      kindAll: "全部",
+      kindWorkflow: "工作流步骤",
+      kindSkill: "任务技能",
+      kindStandard: "代码规范",
+      kindQa: "验收标准",
+      newDefinition: "新建",
+      exportDefinitions: "导出",
+      importDefinitions: "导入",
+      noDefinitions: "暂无工作方式。",
+      defnKind: "类型",
+      defnName: "名称",
+      defnScope: "适用范围 (JSON)",
+      defnBody: "内容",
+      defnActivate: "保存即启用",
+      cancel: "取消",
+      edit: "编辑",
+      activate: "启用",
+      delete: "删除",
+      confirmDelete: "确定删除这条工作方式？",
+      exportFailed: "导出失败",
+      importFailed: "导入失败",
+      imported: "已导入",
+      approve: "批准",
+      reject: "驳回",
+      rawJson: "原始数据",
+      ev_dispatch: "已下发",
+      ev_agent_output: "输出",
+      ev_stop: "完成",
+      ev_error: "错误",
+      ev_briefing: "简报",
+      ev_approval: "待审批",
+      ev_card: "决策卡",
+      ev_checkpoint: "检查点",
+      ev_gate: "闸门",
+      ev_action_executed: "已执行",
+      ev_action_undone: "已回退",
+      evError: "出错",
+      evDone: "已完成",
+      evDeferred: "已记录，等待执行层接管",
+      briefGenerating: "生成中...",
+      briefFailed: "简报生成失败",
+      briefNoLlm: "PM 大脑未配置。请检查 .env 和设置页。",
+      pushEnabled: "通知已开启",
+      pushEnabledBody: "你将在这里收到决策与审批提醒。",
+      pushUnsupported: "此浏览器不支持通知",
+      pushNotConfigured: "服务器未配置推送",
+      pushDenied: "通知权限被拒绝",
+      pushFailed: "开启通知失败",
+      active: "启用中",
+    },
+    en: {
+      productSubtitle: "Local workspace",
+      navWorkspace: "Workspace",
+      navDecisions: "Decisions",
+      navBriefings: "Briefings",
+      navRules: "Playbook",
+      navSettings: "Settings",
+      workspaceSubtitle: "Pick a workspace and dispatch work to the local agent.",
+      decisionsSubtitle: "Handle cards and approvals that need you.",
+      briefingsSubtitle: "Turn current progress into readable status.",
+      rulesSubtitle: "Maintain workflows, skills, code standards, and QA rubrics.",
+      settingsSubtitle: "Configure workspaces, PM brain, and UI preferences.",
+      sessions: "Sessions",
+      dispatch: "Dispatch",
+      taskGoal: "Task",
+      workspace: "Workspace",
+      send: "Send",
+      timeline: "Timeline",
+      selectSessionHint: "Select a session from the left.",
+      decisions: "Decisions",
+      approvals: "Approvals",
+      briefings: "Briefings",
+      generateBriefing: "Generate briefing",
+      noReports: "No briefings yet.",
+      noSessions: "No active sessions yet.",
+      noDecisions: "No decisions waiting.",
+      noApprovals: "Nothing waiting on you.",
+      refresh: "Refresh",
+      back: "Back",
+      viewDetail: "View detail",
+      stepDetail: "Step detail",
+      rawReturn: "Raw return",
+      codeDiff: "Code diff",
+      enablePush: "Enable notifications",
+      autonomy: "Auto-execution",
+      dispatchAgent: "Agent",
+      dispatchModel: "Model",
+      dispatchEffort: "Level",
+      agentDefault: "Default",
+      effortDefault: "Default",
+      effortLow: "Fast",
+      effortMedium: "Standard",
+      effortHigh: "Deep",
+      modelDefaultHint: "blank = configured default model",
+      dispatchNoWorkspace: "No workspace configured. Add a project path in Settings.",
+      dispatchFailed: "Dispatch failed",
+      dispatched: "Dispatched",
+      workspaceNotAllowed: "This workspace is not in the configured workspace list.",
+      unknownAgent: "This agent is not enabled.",
+      emptyGoal: "Task cannot be empty.",
+      noDispatcher: "This service is not the local PC workspace.",
+      workspaceMissing: "No workspace available.",
+      workspaceEmpty: "No workspaces configured.",
+      workspaceSettings: "Workspace",
+      workspacePath: "Project path",
+      workspaceName: "Display name",
+      workspacePathHint: "e.g. E:\\AutoWorkAgent",
+      addWorkspace: "Add/update workspace",
+      remove: "Remove",
+      uiSettings: "UI",
+      pmSettings: "PM brain",
+      pmProvider: "Provider",
+      pmModel: "Model",
+      pmBaseUrl: "Base URL",
+      pmApiKey: "API Key",
+      pmKeyHint: "API key is configured. Enter a new key and save to replace it; blank leaves it unchanged.",
+      pmKeyMissing: "No API key detected. You can enter and save one here.",
+      pmKeyPlaceholder: "blank = unchanged; enter a new key to save",
+      clearKey: "Clear key",
+      save: "Save",
+      saved: "Saved",
+      saveFailed: "Save failed",
+      autonomyHelp: "Controls how much Foreman may execute without asking you first.",
+      autonomy0: "0 report only",
+      autonomy1: "1 safe actions auto",
+      autonomy2: "2 strategy asks",
+      autonomy3: "3 only danger blocks",
+      definitionsTitle: "Playbook",
+      kindAll: "All",
+      kindWorkflow: "Workflow steps",
+      kindSkill: "Task skill",
+      kindStandard: "Code standard",
+      kindQa: "QA rubric",
+      newDefinition: "New",
+      exportDefinitions: "Export",
+      importDefinitions: "Import",
+      noDefinitions: "No playbook items yet.",
+      defnKind: "Kind",
+      defnName: "Name",
+      defnScope: "Scope (JSON)",
+      defnBody: "Body",
+      defnActivate: "Activate on save",
+      cancel: "Cancel",
+      edit: "Edit",
+      activate: "Activate",
+      delete: "Delete",
+      confirmDelete: "Delete this playbook item?",
+      exportFailed: "Export failed",
+      importFailed: "Import failed",
+      imported: "Imported",
+      approve: "Approve",
+      reject: "Reject",
+      rawJson: "Raw data",
+      ev_dispatch: "Dispatched",
+      ev_agent_output: "Output",
+      ev_stop: "Done",
+      ev_error: "Error",
+      ev_briefing: "Briefing",
+      ev_approval: "Approval",
+      ev_card: "Decision card",
+      ev_checkpoint: "Checkpoint",
+      ev_gate: "Gate",
+      ev_action_executed: "Executed",
+      ev_action_undone: "Undone",
+      evError: "Error",
+      evDone: "Done",
+      evDeferred: "recorded, waiting for execution layer",
+      briefGenerating: "Generating...",
+      briefFailed: "Briefing failed",
+      briefNoLlm: "PM brain is not configured. Check .env and Settings.",
+      pushEnabled: "Notifications enabled",
+      pushEnabledBody: "Decision and approval reminders will appear here.",
+      pushUnsupported: "Notifications are not supported in this browser",
+      pushNotConfigured: "Push is not configured on the server",
+      pushDenied: "Notification permission was denied",
+      pushFailed: "Could not enable notifications",
+      active: "Active",
+    },
   };
-  try {
-    const r = await fetch('/api/settings/llm', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await r.json().catch(() => ({}));
-    showLlmStatus(r.ok ? dict.saved : `${dict.saveFailed} (${data.detail || r.status})`);
-  } catch (err) {
-    showLlmStatus(dict.saveFailed);
-  }
-});
 
-init();
-initAutonomy();
+  const VIEW_META = {
+    workspace: ["navWorkspace", "workspaceSubtitle", "CodeOutlined"],
+    decisions: ["navDecisions", "decisionsSubtitle", "CheckCircleOutlined"],
+    briefings: ["navBriefings", "briefingsSubtitle", "FileTextOutlined"],
+    rules: ["navRules", "rulesSubtitle", "ProfileOutlined"],
+    settings: ["navSettings", "settingsSubtitle", "SettingOutlined"],
+  };
+
+  const KIND_LABEL = {
+    workflow: "kindWorkflow",
+    skill: "kindSkill",
+    code_standard: "kindStandard",
+    qa_rubric: "kindQa",
+  };
+
+  const EVENT_ICON = {
+    dispatch: "SendOutlined",
+    agent_output: "MessageOutlined",
+    stop: "CheckCircleOutlined",
+    error: "WarningOutlined",
+    briefing: "FileTextOutlined",
+    approval: "StopOutlined",
+    card: "ProfileOutlined",
+    checkpoint: "PushpinOutlined",
+    gate: "SafetyCertificateOutlined",
+    action_executed: "ThunderboltOutlined",
+    action_undone: "UndoOutlined",
+  };
+
+  const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
+  const setToken = (token) => token
+    ? localStorage.setItem(TOKEN_KEY, token)
+    : localStorage.removeItem(TOKEN_KEY);
+
+  let promptedForToken = false;
+  function promptForToken() {
+    if (promptedForToken) return;
+    promptedForToken = true;
+    const token = window.prompt("Access token required (FOREMAN_AUTH_TOKEN):", "");
+    if (token && token.trim()) {
+      setToken(token.trim());
+      location.reload();
+    }
+  }
+
+  const rawFetch = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === "string" ? input : (input && input.url) || "";
+    const sameOrigin = url.startsWith("/") || url.startsWith(location.origin);
+    const headers = new Headers(init.headers || {});
+    const token = getToken();
+    if (sameOrigin && token) headers.set("Authorization", `Bearer ${token}`);
+    const res = await rawFetch(input, { ...init, headers });
+    if (res.status === 401 && sameOrigin) promptForToken();
+    return res;
+  };
+
+  class ApiError extends Error {
+    constructor(message, status, data) {
+      super(message);
+      this.status = status;
+      this.data = data || {};
+    }
+  }
+
+  async function api(path, opts = {}) {
+    const headers = new Headers(opts.headers || {});
+    let body = opts.body;
+    if (body !== undefined && typeof body !== "string") {
+      headers.set("Content-Type", "application/json");
+      body = JSON.stringify(body);
+    }
+    const res = await fetch(path, { ...opts, headers, body });
+    const contentType = res.headers.get("content-type") || "";
+    let data = null;
+    if (contentType.includes("application/json")) data = await res.json().catch(() => null);
+    else data = await res.text().catch(() => "");
+    if (!res.ok) {
+      const detail = data && typeof data === "object" ? data.detail : "";
+      throw new ApiError(detail || res.statusText || `HTTP ${res.status}`, res.status, data);
+    }
+    return data;
+  }
+
+  function formatDateTime(value, lang) {
+    if (!value) return "-";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+  }
+
+  function shortPath(path, d) {
+    if (!path) return d.workspaceMissing;
+    const parts = String(path).replace(/\\/g, "/").split("/").filter(Boolean);
+    return parts[parts.length - 1] || path;
+  }
+
+  function friendlyError(error, d) {
+    const detail = String(error && error.message ? error.message : error || "");
+    const map = {
+      empty_goal: d.emptyGoal,
+      no_workspace: d.dispatchNoWorkspace,
+      workspace_not_allowed: d.workspaceNotAllowed,
+      unknown_agent: d.unknownAgent,
+      no_dispatcher: d.noDispatcher,
+      "no dispatcher": d.noDispatcher,
+      no_llm: d.briefNoLlm,
+    };
+    return map[detail] || detail || `${error.status || ""}`;
+  }
+
+  function extractAgentText(payload) {
+    if (!payload || typeof payload !== "object") return "";
+    if (typeof payload.text === "string") return payload.text;
+    if (typeof payload.result === "string") return payload.result;
+    const msg = payload.message;
+    if (!msg || typeof msg !== "object") return "";
+    const content = msg.content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    const parts = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      if (typeof block.text === "string") parts.push(block.text);
+      else if (block.type === "tool_use") parts.push(`[tool] ${block.name || "tool"}`);
+      else if (block.type === "tool_result") parts.push(String(block.content || ""));
+    }
+    return parts.join("\n").trim();
+  }
+
+  function summarizeEvent(event, d) {
+    const payload = event.payload || {};
+    switch (event.type) {
+      case "error":
+        return payload.msg || payload.error || d.evError;
+      case "dispatch": {
+        const extra = [payload.agent, payload.model, payload.effort].filter(Boolean).join(" / ");
+        const deferred = payload.execution_deferred ? ` - ${d.evDeferred}` : "";
+        return `${payload.goal || ""}${extra ? ` (${extra})` : ""}${deferred}`.trim();
+      }
+      case "briefing":
+        return payload.title || "";
+      case "stop":
+        return extractAgentText(payload) || d.evDone;
+      case "agent_output":
+        return extractAgentText(payload);
+      default:
+        return extractAgentText(payload);
+    }
+  }
+
+  function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(base64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  function renderDiff(diff, d) {
+    const files = (diff && diff.files) || [];
+    if (!files.length) {
+      return html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${(diff && diff.note) || (d.codeDiff + " -")} />`;
+    }
+    return html`
+      <div className="diff-view">
+        ${files.map((file) => html`
+          <div className="diff-file" key=${file.path}>
+            ${file.path} +${file.additions || 0} / -${file.deletions || 0}
+            ${(file.lines || []).map((line, idx) => {
+              const cls = `diff-line diff-${line.kind || "context"}`;
+              const sign = line.kind === "add" ? "+" : line.kind === "del" ? "-" : " ";
+              return html`<div className=${cls} key=${idx}>${sign}${line.text || ""}</div>`;
+            })}
+          </div>
+        `)}
+      </div>`;
+  }
+
+  function AppBridge({ onReady }) {
+    const app = A.App.useApp();
+    useEffect(() => { onReady(app); }, [app, onReady]);
+    return null;
+  }
+
+  function useLoader(fn) {
+    const [loading, setLoading] = useState(false);
+    const run = useCallback(async (...args) => {
+      setLoading(true);
+      try { return await fn(...args); }
+      finally { setLoading(false); }
+    }, [fn]);
+    return [loading, run];
+  }
+
+  function Shell() {
+    const storedLang = localStorage.getItem(LANG_KEY);
+    const [lang, setLangState] = useState(storedLang === "en" ? "en" : "zh");
+    const [languageLoaded, setLanguageLoaded] = useState(Boolean(storedLang));
+    const d = I18N[lang];
+    const [view, setView] = useState("workspace");
+    const [dark, setDark] = useState(
+      window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+    );
+    const [status, setStatus] = useState({ online: false, text: "..." });
+    const [workspaces, setWorkspaces] = useState([]);
+    const [agents, setAgents] = useState([]);
+    const [sessions, setSessions] = useState([]);
+    const [selectedSession, setSelectedSession] = useState("");
+    const [events, setEvents] = useState([]);
+    const [cards, setCards] = useState([]);
+    const [approvals, setApprovals] = useState([]);
+    const [reports, setReports] = useState([]);
+    const [definitions, setDefinitions] = useState([]);
+    const [defnFilter, setDefnFilter] = useState("");
+    const [workspace, setWorkspace] = useState(localStorage.getItem(WORKSPACE_KEY) || "");
+    const [workspaceDraft, setWorkspaceDraft] = useState({ path: "", name: "" });
+    const [task, setTask] = useState("");
+    const [agent, setAgent] = useState("");
+    const [model, setModel] = useState("");
+    const [effort, setEffort] = useState("");
+    const [dispatchStatus, setDispatchStatus] = useState("");
+    const [briefStatus, setBriefStatus] = useState("");
+    const [llm, setLlm] = useState({
+      provider: "openai", model: "", base_url: "", api_key_set: true, api_key: "",
+    });
+    const [llmStatus, setLlmStatus] = useState("");
+    const [autonomy, setAutonomyState] = useState(1);
+    const [detailOpen, setDetailOpen] = useState(false);
+    const [detail, setDetail] = useState({ raw: [], diff: { files: [] } });
+    const [defnOpen, setDefnOpen] = useState(false);
+    const [defnDraft, setDefnDraft] = useState(null);
+    const [ui, setUi] = useState(null);
+    const wsRef = useRef(null);
+    const fileRef = useRef(null);
+
+    const notifyError = useCallback((err) => {
+      const msg = friendlyError(err, I18N[lang]);
+      if (ui) ui.message.error(msg);
+    }, [lang, ui]);
+
+    const loadWorkspaces = useCallback(async () => {
+      try {
+        const rows = await api("/api/workspaces");
+        setWorkspaces(rows || []);
+        const paths = (rows || []).map((w) => w.path);
+        const chosen = paths.includes(localStorage.getItem(WORKSPACE_KEY))
+          ? localStorage.getItem(WORKSPACE_KEY)
+          : paths[0] || "";
+        setWorkspace(chosen);
+        if (chosen) localStorage.setItem(WORKSPACE_KEY, chosen);
+      } catch (e) { setWorkspaces([]); }
+    }, []);
+
+    const loadAgents = useCallback(async () => {
+      try { setAgents(await api("/api/agents") || []); }
+      catch (e) { setAgents([]); }
+    }, []);
+
+    const loadSessions = useCallback(async () => {
+      try {
+        try { setSessions(await api("/api/overview") || []); }
+        catch (e) { setSessions(await api("/api/sessions") || []); }
+      } catch (e) { setSessions([]); }
+    }, []);
+
+    const loadCards = useCallback(async () => {
+      try { setCards(await api("/api/cards") || []); }
+      catch (e) { setCards([]); }
+    }, []);
+
+    const loadApprovals = useCallback(async () => {
+      try { setApprovals(await api("/api/approvals") || []); }
+      catch (e) { setApprovals([]); }
+    }, []);
+
+    const loadReports = useCallback(async () => {
+      try { setReports(await api("/api/reports") || []); }
+      catch (e) { setReports([]); }
+    }, []);
+
+    const loadDefinitions = useCallback(async () => {
+      try {
+        const path = defnFilter ? `/api/definitions?kind=${encodeURIComponent(defnFilter)}` : "/api/definitions";
+        setDefinitions(await api(path) || []);
+      } catch (e) { setDefinitions([]); }
+    }, [defnFilter]);
+
+    const loadLlm = useCallback(async () => {
+      try { setLlm({ ...(await api("/api/settings/llm")), api_key: "" }); }
+      catch (e) { /* optional in server mode */ }
+    }, []);
+
+    const loadAutonomy = useCallback(async () => {
+      try {
+        const data = await api("/api/settings/autonomy");
+        setAutonomyState(data.level);
+      } catch (e) { /* keep default */ }
+    }, []);
+
+    const [dispatching, runDispatch] = useLoader(async () => {
+      if (!task.trim()) {
+        setDispatchStatus(d.emptyGoal);
+        return;
+      }
+      if (!workspace) {
+        setDispatchStatus(d.dispatchNoWorkspace);
+        setView("settings");
+        return;
+      }
+      const body = { goal: task.trim(), workspace };
+      if (agent) body.agent = agent;
+      if (model.trim()) body.model = model.trim();
+      if (effort) body.effort = effort;
+      try {
+        const res = await api("/api/tasks", { method: "POST", body });
+        setTask("");
+        const bits = [res.agent, res.model, res.effort].filter(Boolean).join(" / ");
+        setDispatchStatus(`${d.dispatched}${bits ? `: ${bits}` : ""}`);
+        await loadSessions();
+        if (res.session_id) openTimeline(res.session_id);
+      } catch (e) {
+        setDispatchStatus(`${d.dispatchFailed}: ${friendlyError(e, d)}`);
+      }
+    });
+
+    const [briefing, runBriefing] = useLoader(async () => {
+      setBriefStatus(d.briefGenerating);
+      try {
+        await api("/api/reports/generate", { method: "POST", body: { kind: "active-briefing" } });
+        setBriefStatus("");
+        await loadReports();
+      } catch (e) {
+        setBriefStatus(`${d.briefFailed}: ${friendlyError(e, d)}`);
+      }
+    });
+
+    const selectedSessionRow = useMemo(
+      () => sessions.find((s) => s.id === selectedSession),
+      [sessions, selectedSession]
+    );
+    const agentDefault = useMemo(() => {
+      const row = agents.find((a) => a.name === agent);
+      return (row && row.model) || d.modelDefaultHint;
+    }, [agent, agents, d.modelDefaultHint]);
+    const workspaceGroups = useMemo(() => {
+      const groups = new Map();
+      for (const s of sessions) {
+        const key = s.workspace || d.workspaceMissing;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(s);
+      }
+      return Array.from(groups.entries());
+    }, [sessions, d.workspaceMissing]);
+
+    useEffect(() => {
+      if (localStorage.getItem(LANG_KEY)) {
+        setLanguageLoaded(true);
+        return;
+      }
+      api("/api/settings/language")
+        .then((data) => setLangState(data && data.language === "en" ? "en" : "zh"))
+        .catch(() => {})
+        .finally(() => setLanguageLoaded(true));
+    }, []);
+
+    useEffect(() => {
+      document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+      if (!languageLoaded) return;
+      localStorage.setItem(LANG_KEY, lang);
+      api("/api/settings/language", { method: "POST", body: { language: lang } }).catch(() => {});
+    }, [lang, languageLoaded]);
+
+    useEffect(() => {
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
+      }
+      api("/health")
+        .then((health) => setStatus({ online: true, text: `v${health.version}` }))
+        .catch(() => setStatus({ online: false, text: "offline" }));
+      loadWorkspaces();
+      loadAgents();
+      loadSessions();
+      loadCards();
+      loadApprovals();
+      loadReports();
+      loadLlm();
+      loadAutonomy();
+    }, [loadAgents, loadApprovals, loadAutonomy, loadCards, loadLlm, loadReports, loadSessions, loadWorkspaces]);
+
+    useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
+
+    useEffect(() => {
+      const params = new URLSearchParams(location.search);
+      const id = params.get("approval");
+      const action = params.get("action");
+      if (id || action) history.replaceState(null, "", location.pathname);
+      if (!id || (action !== "approve" && action !== "reject")) return;
+      loadApprovals().then(() => {
+        const row = approvals.find((a) => a.id === id);
+        if (row) decideApproval(row.id, action, row.nonce);
+      });
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    function openTimeline(sessionId) {
+      setSelectedSession(sessionId);
+      setView("workspace");
+      setEvents([]);
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch (e) { /* ignore */ }
+      }
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const token = getToken();
+      const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : "";
+      const next = new WebSocket(
+        `${proto}://${location.host}/ws?session_id=${encodeURIComponent(sessionId)}${tokenQuery}`
+      );
+      next.addEventListener("message", (event) => {
+        try { setEvents((prev) => [...prev, JSON.parse(event.data)]); }
+        catch (e) { console.warn("bad event", e); }
+      });
+      next.addEventListener("error", () => ui && ui.message.error("WebSocket failed"));
+      wsRef.current = next;
+    }
+
+    async function chooseCard(cardId, option) {
+      if (!cardId || !option) return;
+      try {
+        await api(`/api/cards/${encodeURIComponent(cardId)}/choose`, {
+          method: "POST",
+          body: { option },
+        });
+        await loadCards();
+      } catch (e) { notifyError(e); }
+    }
+
+    async function openDetail(actionId) {
+      setDetailOpen(true);
+      setDetail({ raw: [], diff: { files: [] } });
+      try {
+        setDetail(await api(`/api/actions/${encodeURIComponent(actionId)}/detail`));
+      } catch (e) {
+        setDetail({ raw: [{ type: "error", source: "ui", payload: { error: friendlyError(e, d) } }], diff: { files: [] } });
+      }
+    }
+
+    async function decideApproval(id, decision, nonce) {
+      try {
+        await api(`/api/approvals/${encodeURIComponent(id)}`, {
+          method: "POST",
+          body: { decision, nonce: nonce || "" },
+        });
+        await loadApprovals();
+      } catch (e) { notifyError(e); }
+    }
+
+    async function saveDefinition() {
+      const draft = defnDraft || {};
+      try {
+        if (draft.id) {
+          await api(`/api/definitions/${encodeURIComponent(draft.id)}`, {
+            method: "PATCH",
+            body: { body: draft.body || "", scope_json: draft.scope_json || "{}" },
+          });
+          if (draft.activate) {
+            await api(`/api/definitions/${encodeURIComponent(draft.id)}/activate`, { method: "POST" });
+          }
+        } else {
+          await api("/api/definitions", {
+            method: "POST",
+            body: {
+              kind: draft.kind || "workflow",
+              name: (draft.name || "").trim(),
+              body: draft.body || "",
+              scope_json: draft.scope_json || "{}",
+              activate: draft.activate !== false,
+            },
+          });
+        }
+        setDefnOpen(false);
+        setDefnDraft(null);
+        await loadDefinitions();
+      } catch (e) { notifyError(e); }
+    }
+
+    async function activateDefinition(id) {
+      try {
+        await api(`/api/definitions/${encodeURIComponent(id)}/activate`, { method: "POST" });
+        await loadDefinitions();
+      } catch (e) { notifyError(e); }
+    }
+
+    async function deleteDefinition(id) {
+      if (!window.confirm(d.confirmDelete)) return;
+      try {
+        await api(`/api/definitions/${encodeURIComponent(id)}`, { method: "DELETE" });
+        await loadDefinitions();
+      } catch (e) { notifyError(e); }
+    }
+
+    async function exportDefinitions() {
+      try {
+        const bundle = await api("/api/definitions/export");
+        const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "foreman-definitions.json";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } catch (e) { notifyError(e); }
+    }
+
+    async function importDefinitions(event) {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+      try {
+        const bundle = JSON.parse(await file.text());
+        const res = await api("/api/definitions/import", { method: "POST", body: { bundle } });
+        ui && ui.message.success(`${d.imported}: ${res.imported || 0}`);
+        await loadDefinitions();
+      } catch (e) { notifyError(e); }
+    }
+
+    async function saveWorkspace() {
+      const path = (workspaceDraft.path || "").trim();
+      if (!path) {
+        notifyError(new Error(d.workspaceMissing));
+        return;
+      }
+      try {
+        const rows = await api("/api/workspaces", {
+          method: "POST",
+          body: { path, name: (workspaceDraft.name || "").trim() },
+        });
+        setWorkspaces(rows || []);
+        setWorkspace(path);
+        localStorage.setItem(WORKSPACE_KEY, path);
+        setWorkspaceDraft({ path: "", name: "" });
+        ui && ui.message.success(d.saved);
+      } catch (e) { notifyError(e); }
+    }
+
+    async function deleteWorkspace(path) {
+      try {
+        const rows = await api(`/api/workspaces?path=${encodeURIComponent(path)}`, {
+          method: "DELETE",
+        });
+        const next = rows || [];
+        setWorkspaces(next);
+        if (workspace === path) {
+          const chosen = (next[0] && next[0].path) || "";
+          setWorkspace(chosen);
+          if (chosen) localStorage.setItem(WORKSPACE_KEY, chosen);
+          else localStorage.removeItem(WORKSPACE_KEY);
+        }
+      } catch (e) { notifyError(e); }
+    }
+
+    async function saveLlm() {
+      try {
+        const body = {
+          provider: llm.provider || "openai",
+          model: (llm.model || "").trim(),
+          base_url: (llm.base_url || "").trim(),
+        };
+        if ((llm.api_key || "").trim()) body.api_key = llm.api_key.trim();
+        const data = await api("/api/settings/llm", { method: "POST", body });
+        setLlm({ ...data, api_key: "" });
+        setLlmStatus(d.saved);
+      } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
+    }
+
+    async function clearLlmKey() {
+      try {
+        const data = await api("/api/settings/llm", { method: "POST", body: { api_key: "" } });
+        setLlm({ ...data, api_key: "" });
+        setLlmStatus(d.saved);
+      } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
+    }
+
+    async function saveAutonomy(value) {
+      setAutonomyState(value);
+      try {
+        const data = await api("/api/settings/autonomy", { method: "POST", body: { level: value } });
+        setAutonomyState(data.level);
+      } catch (e) { notifyError(e); }
+    }
+
+    async function enablePush() {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+        ui && ui.message.error(d.pushUnsupported);
+        return;
+      }
+      try {
+        const { key, enabled } = await api("/api/push/vapid-public-key");
+        if (!enabled || !key) {
+          ui && ui.message.error(d.pushNotConfigured);
+          return;
+        }
+        const perm = await Notification.requestPermission();
+        if (perm !== "granted") {
+          ui && ui.message.error(d.pushDenied);
+          return;
+        }
+        const reg = await navigator.serviceWorker.ready;
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(key),
+          });
+        }
+        await api("/api/push/subscribe", { method: "POST", body: sub.toJSON ? sub.toJSON() : sub });
+        ui && ui.message.success(d.pushEnabled);
+        await reg.showNotification("Foreman", {
+          body: d.pushEnabledBody,
+          icon: "/icon-192.png",
+          badge: "/icon-192.png",
+          tag: "foreman-push-test",
+        });
+      } catch (e) {
+        ui && ui.message.error(`${d.pushFailed}: ${friendlyError(e, d)}`);
+      }
+    }
+
+    const menuItems = Object.keys(VIEW_META).map((key) => ({
+      key,
+      icon: icon(VIEW_META[key][2]),
+      label: d[VIEW_META[key][0]],
+    }));
+    const selectedTitle = d[VIEW_META[view][0]];
+    const selectedSubtitle = d[VIEW_META[view][1]];
+
+    return html`
+      <${A.ConfigProvider} theme=${{ algorithm: dark ? A.theme.darkAlgorithm : A.theme.defaultAlgorithm, token: { colorPrimary: "#2563eb", borderRadius: 8 } }}>
+        <${A.App}>
+          <${AppBridge} onReady=${setUi} />
+          <${A.Layout} className="app-shell">
+            <${A.Layout.Sider} width=${292} breakpoint="lg" collapsedWidth=${0} theme=${dark ? "dark" : "light"} className="sidebar">
+              <div className="brand">
+                <div>
+                  <strong>Foreman</strong>
+                  <span>${d.productSubtitle}</span>
+                </div>
+                <${A.Tag} color=${status.online ? "success" : "error"}>${status.text}</${A.Tag}>
+              </div>
+              <${A.Menu} theme=${dark ? "dark" : "light"} mode="inline" selectedKeys=${[view]} onClick=${({ key }) => setView(key)} items=${menuItems} />
+              <div className="session-panel">
+                <${A.Typography.Text} type="secondary" className="sidebar-label">${d.sessions}</${A.Typography.Text}>
+                <${SessionList}
+                  groups=${workspaceGroups}
+                  selected=${selectedSession}
+                  onSelect=${openTimeline}
+                  d=${d}
+                  lang=${lang}
+                />
+              </div>
+            </${A.Layout.Sider}>
+            <${A.Layout}>
+              <${A.Layout.Header} className="topbar">
+                <div>
+                  <${A.Typography.Title} level=${3} style=${{ margin: 0 }}>${selectedTitle}</${A.Typography.Title}>
+                  <${A.Typography.Text} type="secondary">${selectedSubtitle}</${A.Typography.Text}>
+                </div>
+                <${A.Space}>
+                  <${A.Button} icon=${icon(dark ? "BulbOutlined" : "BulbFilled")} onClick=${() => setDark(!dark)} />
+                  <${A.Button} onClick=${() => setLangState(lang === "zh" ? "en" : "zh")}>${lang === "zh" ? "EN" : "中"}</${A.Button}>
+                  <${A.Button} icon=${icon("BellOutlined")} onClick=${enablePush}>${d.enablePush}</${A.Button}>
+                </${A.Space}>
+              </${A.Layout.Header}>
+              <${A.Layout.Content} className="content">
+                ${view === "workspace" && html`
+                  <${WorkspaceView}
+                    d=${d}
+                    lang=${lang}
+                    workspaces=${workspaces}
+                    workspace=${workspace}
+                    setWorkspace=${(v) => { setWorkspace(v); if (v) localStorage.setItem(WORKSPACE_KEY, v); }}
+                    agents=${agents}
+                    agent=${agent}
+                    setAgent=${setAgent}
+                    model=${model}
+                    setModel=${setModel}
+                    effort=${effort}
+                    setEffort=${setEffort}
+                    task=${task}
+                    setTask=${setTask}
+                    agentDefault=${agentDefault}
+                    dispatching=${dispatching}
+                    runDispatch=${runDispatch}
+                    dispatchStatus=${dispatchStatus}
+                    selectedSessionRow=${selectedSessionRow}
+                    events=${events}
+                  />`}
+                ${view === "decisions" && html`
+                  <${DecisionsView}
+                    d=${d}
+                    lang=${lang}
+                    cards=${cards}
+                    approvals=${approvals}
+                    loadCards=${loadCards}
+                    loadApprovals=${loadApprovals}
+                    chooseCard=${chooseCard}
+                    openDetail=${openDetail}
+                    decideApproval=${decideApproval}
+                  />`}
+                ${view === "briefings" && html`
+                  <${BriefingsView}
+                    d=${d}
+                    lang=${lang}
+                    reports=${reports}
+                    briefing=${briefing}
+                    runBriefing=${runBriefing}
+                    briefStatus=${briefStatus}
+                  />`}
+                ${view === "rules" && html`
+                  <${RulesView}
+                    d=${d}
+                    lang=${lang}
+                    definitions=${definitions}
+                    defnFilter=${defnFilter}
+                    setDefnFilter=${setDefnFilter}
+                    openNew=${() => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }}
+                    openEdit=${(row) => { setDefnDraft({ ...row, activate: false }); setDefnOpen(true); }}
+                    activateDefinition=${activateDefinition}
+                    deleteDefinition=${deleteDefinition}
+                    exportDefinitions=${exportDefinitions}
+                    fileRef=${fileRef}
+                    importDefinitions=${importDefinitions}
+                  />`}
+                ${view === "settings" && html`
+                  <${SettingsView}
+                    d=${d}
+                    workspaces=${workspaces}
+                    loadWorkspaces=${loadWorkspaces}
+                    workspaceDraft=${workspaceDraft}
+                    setWorkspaceDraft=${setWorkspaceDraft}
+                    saveWorkspace=${saveWorkspace}
+                    deleteWorkspace=${deleteWorkspace}
+                    llm=${llm}
+                    setLlm=${setLlm}
+                    saveLlm=${saveLlm}
+                    clearLlmKey=${clearLlmKey}
+                    llmStatus=${llmStatus}
+                    autonomy=${autonomy}
+                    saveAutonomy=${saveAutonomy}
+                  />`}
+              </${A.Layout.Content}>
+            </${A.Layout}>
+          </${A.Layout}>
+          <${A.Modal}
+            title=${d.stepDetail}
+            open=${detailOpen}
+            onCancel=${() => setDetailOpen(false)}
+            footer=${html`<${A.Button} onClick=${() => setDetailOpen(false)}>${d.back}</${A.Button}>`}
+            width=${900}
+          >
+            <${DetailTabs} d=${d} lang=${lang} detail=${detail} />
+          </${A.Modal}>
+          <${A.Modal}
+            title=${defnDraft && defnDraft.id ? d.edit : d.newDefinition}
+            open=${defnOpen}
+            onCancel=${() => setDefnOpen(false)}
+            onOk=${saveDefinition}
+            okText=${d.save}
+            cancelText=${d.cancel}
+            width=${760}
+          >
+            <${DefinitionEditor} d=${d} draft=${defnDraft} setDraft=${setDefnDraft} />
+          </${A.Modal}>
+        </${A.App}>
+      </${A.ConfigProvider}>`;
+  }
+
+  function SessionList({ groups, selected, onSelect, d, lang }) {
+    if (!groups.length) {
+      return html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.noSessions} />`;
+    }
+    return html`
+      <div className="session-list">
+        ${groups.map(([workspace, rows]) => html`
+          <div className="workspace-group" key=${workspace}>
+            <${A.Typography.Text} type="secondary" className="workspace-title">${shortPath(workspace, d)}</${A.Typography.Text}>
+            ${rows.map((s) => html`
+              <${A.Button}
+                key=${s.id}
+                block
+                type=${s.id === selected ? "primary" : "default"}
+                className="session-item"
+                onClick=${() => onSelect(s.id)}
+              >
+                <span className="session-head">${s.goal || s.id}</span>
+                <span className="session-meta">
+                  ${s.status || "-"} / ${s.agent_type || "-"} / ${formatDateTime(s.updated_at || s.created_at || s.last_event_ts, lang)}
+                  ${s.events === undefined ? "" : ` / ${s.events} events`}
+                </span>
+              </${A.Button}>
+            `)}
+          </div>
+        `)}
+      </div>`;
+  }
+
+  function WorkspaceView(props) {
+    const {
+      d, lang, workspaces, workspace, setWorkspace, agents, agent, setAgent, model, setModel,
+      effort, setEffort, task, setTask, agentDefault, dispatching, runDispatch, dispatchStatus,
+      selectedSessionRow, events,
+    } = props;
+    return html`
+      <div className="view-grid">
+        <${A.Card} title=${d.dispatch} extra=${workspace ? html`<${A.Tag} color="blue">${shortPath(workspace, d)}</${A.Tag}>` : null}>
+          ${!workspaces.length && html`<${A.Alert} type="warning" showIcon message=${d.workspaceEmpty} description=${d.dispatchNoWorkspace} style=${{ marginBottom: 16 }} />`}
+          <${A.Form} layout="vertical" onFinish=${runDispatch}>
+            <${A.Form.Item} label=${d.taskGoal}>
+              <${A.Input.TextArea} rows=${4} value=${task} onChange=${(e) => setTask(e.target.value)} placeholder=${lang === "zh" ? "例如：重构 auth 模块，push 前问我" : "e.g. refactor auth, ask me before push"} />
+            </${A.Form.Item}>
+            <${A.Row} gutter=${12}>
+              <${A.Col} xs=${24} md=${8}>
+                <${A.Form.Item} label=${d.workspace}>
+                  <${A.Select}
+                    value=${workspace || ""}
+                    onChange=${setWorkspace}
+                    options=${workspaces.length ? workspaces.map((w) => ({ value: w.path, label: w.name ? `${w.name} - ${w.path}` : w.path })) : [{ value: "", label: d.workspaceEmpty }]}
+                  />
+                </${A.Form.Item}>
+              </${A.Col}>
+              <${A.Col} xs=${24} md=${5}>
+                <${A.Form.Item} label=${d.dispatchAgent}>
+                  <${A.Select}
+                    value=${agent}
+                    onChange=${setAgent}
+                    options=${[{ value: "", label: d.agentDefault }, ...agents.map((a) => ({ value: a.name, label: a.name }))]}
+                  />
+                </${A.Form.Item}>
+              </${A.Col}>
+              <${A.Col} xs=${24} md=${7}>
+                <${A.Form.Item} label=${d.dispatchModel}>
+                  <${A.Input} value=${model} onChange=${(e) => setModel(e.target.value)} placeholder=${agentDefault} />
+                </${A.Form.Item}>
+              </${A.Col}>
+              <${A.Col} xs=${24} md=${4}>
+                <${A.Form.Item} label=${d.dispatchEffort}>
+                  <${A.Select}
+                    value=${effort}
+                    onChange=${setEffort}
+                    options=${[
+                      { value: "", label: d.effortDefault },
+                      { value: "low", label: d.effortLow },
+                      { value: "medium", label: d.effortMedium },
+                      { value: "high", label: d.effortHigh },
+                    ]}
+                  />
+                </${A.Form.Item}>
+              </${A.Col}>
+            </${A.Row}>
+            <${A.Space}>
+              <${A.Button} type="primary" htmlType="submit" loading=${dispatching} icon=${icon("SendOutlined")}>${d.send}</${A.Button}>
+              ${dispatchStatus && html`<${A.Typography.Text} type=${dispatchStatus.includes(d.dispatchFailed) ? "danger" : "secondary"}>${dispatchStatus}</${A.Typography.Text}>`}
+            </${A.Space}>
+          </${A.Form}>
+        </${A.Card}>
+        <${A.Card}
+          title=${d.timeline}
+          extra=${selectedSessionRow ? html`<${A.Tag}>${formatDateTime(selectedSessionRow.updated_at || selectedSessionRow.created_at, lang)}</${A.Tag}>` : html`<${A.Typography.Text} type="secondary">${d.selectSessionHint}</${A.Typography.Text}>`}
+        >
+          <${Timeline} events=${events} d=${d} lang=${lang} />
+        </${A.Card}>
+      </div>`;
+  }
+
+  function Timeline({ events, d, lang }) {
+    if (!events.length) {
+      return html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.selectSessionHint} />`;
+    }
+    return html`
+      <${A.List}
+        itemLayout="vertical"
+        dataSource=${events}
+        renderItem=${(event) => {
+          const eventIcon = EVENT_ICON[event.type] || "InfoCircleOutlined";
+          const summary = summarizeEvent(event, d);
+          return html`
+            <${A.List.Item}>
+              <${A.Space} wrap>
+                ${icon(eventIcon)}
+                <strong>${d[`ev_${event.type}`] || event.type || "-"}</strong>
+                <${A.Typography.Text} type="secondary">${event.source || ""}</${A.Typography.Text}>
+                <${A.Typography.Text} type="secondary">${formatDateTime(event.ts, lang)}</${A.Typography.Text}>
+              </${A.Space}>
+              ${summary && html`<pre className="event-body">${summary.length > 2000 ? `${summary.slice(0, 2000)}...` : summary}</pre>`}
+              ${event.payload && Object.keys(event.payload).length > 0 && html`
+                <${A.Collapse}
+                  ghost
+                  items=${[{ key: "raw", label: d.rawJson, children: html`<pre className="raw-body">${JSON.stringify(event.payload, null, 2)}</pre>` }]}
+                />
+              `}
+            </${A.List.Item}>`;
+        }}
+      />`;
+  }
+
+  function DecisionsView({ d, lang, cards, approvals, loadCards, loadApprovals, chooseCard, openDetail, decideApproval }) {
+    return html`
+      <div className="view-grid">
+        <${A.Card} title=${d.decisions} extra=${html`<${A.Button} icon=${icon("ReloadOutlined")} onClick=${loadCards}>${d.refresh}</${A.Button}>`}>
+          ${!cards.length ? html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.noDecisions} />` : html`
+            <${A.List}
+              dataSource=${cards}
+              renderItem=${(card) => {
+                const actions = [
+                  card.action_id && html`<${A.Button} size="small" icon=${icon("SearchOutlined")} onClick=${() => openDetail(card.action_id)}>${d.viewDetail}</${A.Button}>`,
+                  ...(card.options || []).map((opt) => html`<${A.Button} size="small" key=${opt.action} onClick=${() => chooseCard(card.id, opt.action)}>${opt.label || opt.action}</${A.Button}>`),
+                ].filter(Boolean);
+                return html`
+                  <${A.List.Item} actions=${actions}>
+                    <${A.List.Item.Meta}
+                      title=${card.summary || ""}
+                      description=${html`
+                        <${A.Space} direction="vertical" size=${4}>
+                          <span>${card.audit_note || ""}</span>
+                          ${card.diff_stat && html`<${A.Tag}>${card.diff_stat}</${A.Tag}>`}
+                        </${A.Space}>`}
+                    />
+                  </${A.List.Item}>`;
+              }}
+            />`}
+        </${A.Card}>
+        <${A.Card} title=${d.approvals} extra=${html`<${A.Button} icon=${icon("ReloadOutlined")} onClick=${loadApprovals}>${d.refresh}</${A.Button}>`}>
+          ${!approvals.length ? html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.noApprovals} />` : html`
+            <${A.List}
+              dataSource=${approvals}
+              renderItem=${(approval) => html`
+                <${A.List.Item}
+                  actions=${[
+                    html`<${A.Button} type="primary" onClick=${() => decideApproval(approval.id, "approve", approval.nonce)}>${d.approve}</${A.Button}>`,
+                    html`<${A.Button} danger onClick=${() => decideApproval(approval.id, "reject", approval.nonce)}>${d.reject}</${A.Button}>`,
+                  ]}
+                >
+                  <${A.List.Item.Meta}
+                    title=${html`<${A.Tag} color="red">${approval.risk_level || "requires-approval"}</${A.Tag}>`}
+                    description=${approval.action || approval.diff_summary || ""}
+                  />
+                </${A.List.Item}>`}
+            />`}
+        </${A.Card}>
+      </div>`;
+  }
+
+  function DetailTabs({ d, lang, detail }) {
+    const raw = detail.raw || [];
+    return html`
+      <${A.Tabs}
+        items=${[
+          {
+            key: "raw",
+            label: d.rawReturn,
+            children: raw.length
+              ? html`<pre className="raw-body">${raw.map((e) => `[${formatDateTime(e.ts, lang)}] ${e.type || ""} (${e.source || ""})\n${JSON.stringify(e.payload || {}, null, 2)}`).join("\n\n")}</pre>`
+              : html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.rawReturn} />`,
+          },
+          { key: "diff", label: d.codeDiff, children: renderDiff(detail.diff || { files: [] }, d) },
+        ]}
+      />`;
+  }
+
+  function BriefingsView({ d, lang, reports, briefing, runBriefing, briefStatus }) {
+    return html`
+      <${A.Card} title=${d.briefings} extra=${html`<${A.Button} type="primary" icon=${icon("FileTextOutlined")} loading=${briefing} onClick=${runBriefing}>${d.generateBriefing}</${A.Button}>`}>
+        ${briefStatus && html`<${A.Alert} type=${briefStatus.includes(d.briefFailed) ? "error" : "info"} showIcon message=${briefStatus} style=${{ marginBottom: 16 }} />`}
+        ${!reports.length ? html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.noReports} />` : html`
+          <${A.List}
+            dataSource=${reports}
+            renderItem=${(report) => html`
+              <${A.List.Item}>
+                <${A.List.Item.Meta}
+                  title=${html`<${A.Space}>${report.title || report.kind || d.briefings}<${A.Tag}>${formatDateTime(report.ts, lang)}</${A.Tag}></${A.Space}>`}
+                  description=${html`<pre className="report-body">${report.body_md || ""}</pre>`}
+                />
+              </${A.List.Item}>`}
+          />`}
+      </${A.Card}>`;
+  }
+
+  function RulesView(props) {
+    const {
+      d, lang, definitions, defnFilter, setDefnFilter, openNew, openEdit, activateDefinition,
+      deleteDefinition, exportDefinitions, fileRef, importDefinitions,
+    } = props;
+    return html`
+      <${A.Card}
+        title=${d.definitionsTitle}
+        extra=${html`
+          <${A.Space} wrap>
+            <${A.Select}
+              value=${defnFilter}
+              onChange=${setDefnFilter}
+              style=${{ width: 160 }}
+              options=${[
+                { value: "", label: d.kindAll },
+                { value: "workflow", label: d.kindWorkflow },
+                { value: "skill", label: d.kindSkill },
+                { value: "code_standard", label: d.kindStandard },
+                { value: "qa_rubric", label: d.kindQa },
+              ]}
+            />
+            <${A.Button} type="primary" icon=${icon("PlusOutlined")} onClick=${openNew}>${d.newDefinition}</${A.Button}>
+            <${A.Button} icon=${icon("DownloadOutlined")} onClick=${exportDefinitions}>${d.exportDefinitions}</${A.Button}>
+            <${A.Button} icon=${icon("UploadOutlined")} onClick=${() => fileRef.current && fileRef.current.click()}>${d.importDefinitions}</${A.Button}>
+            <input ref=${fileRef} type="file" accept="application/json,.json" hidden onChange=${importDefinitions} />
+          </${A.Space}>`}
+      >
+        ${!definitions.length ? html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.noDefinitions} />` : html`
+          <${A.List}
+            dataSource=${definitions}
+            renderItem=${(row) => html`
+              <${A.List.Item}
+                actions=${[
+                  html`<${A.Button} size="small" onClick=${() => openEdit(row)}>${d.edit}</${A.Button}>`,
+                  !row.is_active && html`<${A.Button} size="small" onClick=${() => activateDefinition(row.id)}>${d.activate}</${A.Button}>`,
+                  html`<${A.Button} size="small" danger onClick=${() => deleteDefinition(row.id)}>${d.delete}</${A.Button}>`,
+                ].filter(Boolean)}
+              >
+                <${A.List.Item.Meta}
+                  title=${html`<${A.Space}>${d[KIND_LABEL[row.kind]] || row.kind}<${A.Typography.Text}>${row.name} v${row.version}</${A.Typography.Text}>${row.is_active && html`<${A.Tag} color="green">${d.active}</${A.Tag}>`}</${A.Space}>`}
+                  description=${formatDateTime(row.updated_at || row.created_at, lang)}
+                />
+              </${A.List.Item}>`}
+          />
+        `}
+      </${A.Card}>`;
+  }
+
+  function DefinitionEditor({ d, draft, setDraft }) {
+    const row = draft || {};
+    const update = (patch) => setDraft({ ...(draft || {}), ...patch });
+    return html`
+      <${A.Form} layout="vertical">
+        <${A.Row} gutter=${12}>
+          <${A.Col} span=${12}>
+            <${A.Form.Item} label=${d.defnKind}>
+              <${A.Select}
+                value=${row.kind || "workflow"}
+                disabled=${Boolean(row.id)}
+                onChange=${(v) => update({ kind: v })}
+                options=${[
+                  { value: "workflow", label: d.kindWorkflow },
+                  { value: "skill", label: d.kindSkill },
+                  { value: "code_standard", label: d.kindStandard },
+                  { value: "qa_rubric", label: d.kindQa },
+                ]}
+              />
+            </${A.Form.Item}>
+          </${A.Col}>
+          <${A.Col} span=${12}>
+            <${A.Form.Item} label=${d.defnName}>
+              <${A.Input} value=${row.name || ""} disabled=${Boolean(row.id)} onChange=${(e) => update({ name: e.target.value })} placeholder="add-feature" />
+            </${A.Form.Item}>
+          </${A.Col}>
+        </${A.Row}>
+        <${A.Form.Item} label=${d.defnScope}>
+          <${A.Input} value=${row.scope_json || "{}"} onChange=${(e) => update({ scope_json: e.target.value })} placeholder='{"lang":"py"}' />
+        </${A.Form.Item}>
+        <${A.Form.Item} label=${d.defnBody}>
+          <${A.Input.TextArea} rows=${10} value=${row.body || ""} onChange=${(e) => update({ body: e.target.value })} />
+        </${A.Form.Item}>
+        <${A.Checkbox} checked=${row.activate !== false} onChange=${(e) => update({ activate: e.target.checked })}>${d.defnActivate}</${A.Checkbox}>
+      </${A.Form}>`;
+  }
+
+  function SettingsView({
+    d, workspaces, loadWorkspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace,
+    deleteWorkspace, llm, setLlm, saveLlm, clearLlmKey, llmStatus, autonomy, saveAutonomy,
+  }) {
+    return html`
+      <div className="view-grid">
+        <${A.Card} title=${d.workspaceSettings} extra=${html`<${A.Button} icon=${icon("ReloadOutlined")} onClick=${loadWorkspaces}>${d.refresh}</${A.Button}>`}>
+          ${!workspaces.length ? html`<${A.Alert} type="warning" showIcon message=${d.workspaceEmpty} description=${d.dispatchNoWorkspace} />` : html`
+            <${A.List}
+              dataSource=${workspaces}
+              renderItem=${(w) => html`
+                <${A.List.Item}
+                  actions=${[
+                    html`<${A.Button} danger size="small" onClick=${() => deleteWorkspace(w.path)}>${d.remove}</${A.Button}>`,
+                  ]}
+                >
+                  <${A.List.Item.Meta} title=${w.name || shortPath(w.path, d)} description=${w.path} />
+                </${A.List.Item}>`}
+            />
+          `}
+          <${A.Form} layout="vertical" onFinish=${saveWorkspace} style=${{ marginTop: 16 }}>
+            <${A.Row} gutter=${12}>
+              <${A.Col} xs=${24} md=${16}>
+                <${A.Form.Item} label=${d.workspacePath}>
+                  <${A.Input}
+                    value=${workspaceDraft.path}
+                    onChange=${(e) => setWorkspaceDraft({ ...workspaceDraft, path: e.target.value })}
+                    placeholder=${d.workspacePathHint}
+                  />
+                </${A.Form.Item}>
+              </${A.Col}>
+              <${A.Col} xs=${24} md=${8}>
+                <${A.Form.Item} label=${d.workspaceName}>
+                  <${A.Input}
+                    value=${workspaceDraft.name}
+                    onChange=${(e) => setWorkspaceDraft({ ...workspaceDraft, name: e.target.value })}
+                    placeholder="Foreman"
+                  />
+                </${A.Form.Item}>
+              </${A.Col}>
+            </${A.Row}>
+            <${A.Button} type="primary" htmlType="submit">${d.addWorkspace}</${A.Button}>
+          </${A.Form}>
+        </${A.Card}>
+        <${A.Card} title=${d.pmSettings}>
+          <${A.Form} layout="vertical" onFinish=${saveLlm}>
+            <${A.Row} gutter=${12}>
+              <${A.Col} xs=${24} md=${8}>
+                <${A.Form.Item} label=${d.pmProvider}>
+                  <${A.Select}
+                    value=${llm.provider || "openai"}
+                    onChange=${(v) => setLlm({ ...llm, provider: v })}
+                    options=${[{ value: "openai", label: "OpenAI-compatible" }, { value: "anthropic", label: "Anthropic" }]}
+                  />
+                </${A.Form.Item}>
+              </${A.Col}>
+              <${A.Col} xs=${24} md=${16}>
+                <${A.Form.Item} label=${d.pmModel}>
+                  <${A.Input} value=${llm.model || ""} onChange=${(e) => setLlm({ ...llm, model: e.target.value })} />
+                </${A.Form.Item}>
+              </${A.Col}>
+            </${A.Row}>
+            <${A.Form.Item} label=${d.pmBaseUrl}>
+              <${A.Input} value=${llm.base_url || ""} onChange=${(e) => setLlm({ ...llm, base_url: e.target.value })} placeholder="https://api.openai.com/v1" />
+            </${A.Form.Item}>
+            <${A.Form.Item} label=${d.pmApiKey}>
+              <${A.Input.Password}
+                value=${llm.api_key || ""}
+                onChange=${(e) => setLlm({ ...llm, api_key: e.target.value })}
+                placeholder=${d.pmKeyPlaceholder}
+                autoComplete="off"
+              />
+            </${A.Form.Item}>
+            <${A.Alert} type=${llm.api_key_set ? "info" : "warning"} showIcon message=${llm.api_key_set ? d.pmKeyHint : d.pmKeyMissing} style=${{ marginBottom: 16 }} />
+            ${llmStatus && html`<${A.Alert} type=${llmStatus === d.saved ? "success" : "error"} showIcon message=${llmStatus} style=${{ marginBottom: 16 }} />`}
+            <${A.Space} wrap>
+              <${A.Button} type="primary" htmlType="submit">${d.save}</${A.Button}>
+              <${A.Button} danger htmlType="button" onClick=${clearLlmKey}>${d.clearKey}</${A.Button}>
+            </${A.Space}>
+          </${A.Form}>
+        </${A.Card}>
+        <${A.Card} title=${d.uiSettings}>
+          <${A.Form} layout="vertical">
+            <${A.Form.Item} label=${d.autonomy}>
+              <${A.Alert} type="info" showIcon message=${d.autonomyHelp} style=${{ marginBottom: 16 }} />
+              <${A.Slider}
+                min=${0}
+                max=${3}
+                step=${1}
+                marks=${{ 0: d.autonomy0, 1: d.autonomy1, 2: d.autonomy2, 3: d.autonomy3 }}
+                value=${autonomy}
+                onChangeComplete=${saveAutonomy}
+              />
+            </${A.Form.Item}>
+          </${A.Form}>
+        </${A.Card}>
+      </div>`;
+  }
+
+  const rootEl = document.getElementById("root");
+  ReactDOM.createRoot(rootEl).render(html`<${Shell} />`);
+})();

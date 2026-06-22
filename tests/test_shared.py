@@ -27,6 +27,21 @@ def test_config_loads_defaults(tmp_path):
     assert cfg.llm.provider in {"openai", "anthropic"}
 
 
+def test_config_loads_env_next_to_config(tmp_path, monkeypatch):
+    from foreman.shared.config import load_config
+
+    monkeypatch.delenv("FOREMAN_LLM_API_KEY", raising=False)
+    cfg_dir = tmp_path / "foreman"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("llm:\n  model: test-model\n", encoding="utf-8")
+    (cfg_dir / ".env").write_text("FOREMAN_LLM_API_KEY=adjacent-key\n", encoding="utf-8")
+
+    cfg = load_config(cfg_dir / "config.yaml")
+
+    assert cfg.llm.model == "test-model"
+    assert cfg.secrets.llm_api_key == "adjacent-key"
+
+
 def test_agent_event_and_bus():
     from foreman.shared.events import AgentEvent, EventBus
 

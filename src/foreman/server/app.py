@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from foreman.shared.autonomy import level_label, normalize_level
-from foreman.shared.config import Config
+from foreman.shared.config import Config, WorkspaceCfg
 from foreman.shared.events import AgentEvent, EventBus, utc_now_iso
 from foreman.shared.i18n import normalize as normalize_lang
 from foreman.shared.ratelimit import SlidingWindowLimiter
@@ -34,6 +34,8 @@ from .. import __version__
 # guessing impractical on top of the PBKDF2 per-attempt cost.
 _AUTH_RL_MAX_ATTEMPTS = 10
 _AUTH_RL_WINDOW_SECONDS = 300
+_WORKSPACES_SETTING = "workspaces.json"
+_LLM_KEY_ENV = "FOREMAN_LLM_API_KEY"
 
 
 class _LanguageBody(BaseModel):
@@ -48,11 +50,17 @@ class _AutonomyBody(BaseModel):
 
 class _LLMSettingsBody(BaseModel):
     """PM 大脑 settings (DESIGN §15): switch the brain's provider/model/base_url at runtime. The api
-    key stays a .env secret and is never sent through this. Empty field = clear that override."""
+    key is accepted for local save but never returned. Empty field = clear that override/key."""
 
     provider: str | None = None  # "openai" | "anthropic"
     model: str | None = None
     base_url: str | None = None
+    api_key: str | None = None
+
+
+class _WorkspaceBody(BaseModel):
+    path: str
+    name: str = ""
 
 
 class _PushKeys(BaseModel):
@@ -386,6 +394,86 @@ def create_app(
     auth_limiter = SlidingWindowLimiter(_AUTH_RL_MAX_ATTEMPTS, _AUTH_RL_WINDOW_SECONDS)
     app.state.auth_limiter = auth_limiter
 
+    def _workspace_key(path: str) -> str:
+        return path.strip().replace("\\", "/").rstrip("/").casefold()
+
+    def _clean_workspaces(items: list[Any]) -> list[WorkspaceCfg]:
+        out: list[WorkspaceCfg] = []
+        seen: set[str] = set()
+        for item in items:
+            if isinstance(item, WorkspaceCfg):
+                raw_path, raw_name = item.path, item.name
+            elif isinstance(item, dict):
+                raw_path, raw_name = item.get("path", ""), item.get("name", "")
+            else:
+                continue
+            path = str(raw_path or "").strip()
+            if not path:
+                continue
+            key = _workspace_key(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(WorkspaceCfg(path=path, name=str(raw_name or "").strip()))
+        return out
+
+    def _effective_workspaces() -> list[WorkspaceCfg]:
+        rows: list[WorkspaceCfg] | None = None
+        if store is not None and hasattr(store, "get_setting"):
+            raw = store.get_setting(_WORKSPACES_SETTING)
+            if raw is not None:
+                try:
+                    data = json.loads(raw or "[]")
+                except (TypeError, ValueError):
+                    data = None
+                if isinstance(data, list):
+                    rows = _clean_workspaces(data)
+        if rows is None:
+            rows = _clean_workspaces(list(cfg.workspaces))
+        cfg.workspaces = rows
+        return rows
+
+    def _workspace_dicts() -> list[dict]:
+        return [{"path": w.path, "name": w.name} for w in _effective_workspaces()]
+
+    def _save_workspaces(rows: list[WorkspaceCfg]) -> list[dict]:
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        cfg.workspaces = _clean_workspaces(rows)
+        data = [{"path": w.path, "name": w.name} for w in cfg.workspaces]
+        store.set_setting(_WORKSPACES_SETTING, json.dumps(data, ensure_ascii=False))
+        return data
+
+    def _env_path() -> Path:
+        return Path(getattr(cfg, "env_path", "") or ".env")
+
+    def _save_llm_api_key(value: str) -> None:
+        key = (value or "").strip()
+        cfg.secrets.llm_api_key = key
+        path = _env_path()
+        if not key and not path.exists():
+            return
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        next_lines: list[str] = []
+        written = False
+        for line in lines:
+            stripped = line.lstrip()
+            is_key = stripped.startswith(f"{_LLM_KEY_ENV}=") or stripped.startswith(
+                f"export {_LLM_KEY_ENV}="
+            )
+            if not is_key:
+                next_lines.append(line)
+                continue
+            if key and not written:
+                next_lines.append(f"{_LLM_KEY_ENV}={key}")
+                written = True
+        if key and not written:
+            next_lines.append(f"{_LLM_KEY_ENV}={key}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(next_lines) + ("\n" if next_lines else ""), encoding="utf-8")
+
+    _effective_workspaces()
+
     def _auth_bucket(request: Request, scope: str) -> str:
         ip = _client_ip(request, trust_proxy=cfg.server.trust_proxy_headers)
         return f"{scope}:{ip}"
@@ -512,6 +600,41 @@ def create_app(
             if a.enabled
         ]
 
+    @app.get("/api/workspaces")
+    async def list_workspaces() -> list[dict]:
+        """Effective workspace allowlist for the local UI's workspace menu."""
+        return _workspace_dicts()
+
+    @app.post("/api/workspaces")
+    async def save_workspace(body: _WorkspaceBody) -> list[dict]:
+        """Add/update one local workspace allowlist entry from the Settings page."""
+        path = body.path.strip()
+        if not path:
+            raise HTTPException(status_code=400, detail="bad_workspace")
+        rows = _effective_workspaces()
+        key = _workspace_key(path)
+        updated = False
+        next_rows: list[WorkspaceCfg] = []
+        for row in rows:
+            if _workspace_key(row.path) == key:
+                next_rows.append(WorkspaceCfg(path=path, name=body.name.strip()))
+                updated = True
+            else:
+                next_rows.append(row)
+        if not updated:
+            next_rows.append(WorkspaceCfg(path=path, name=body.name.strip()))
+        return _save_workspaces(next_rows)
+
+    @app.delete("/api/workspaces")
+    async def delete_workspace(path: str) -> list[dict]:
+        """Remove one local workspace allowlist entry from the Settings page."""
+        key = _workspace_key(path)
+        rows = _effective_workspaces()
+        next_rows = [row for row in rows if _workspace_key(row.path) != key]
+        if len(next_rows) == len(rows):
+            raise HTTPException(status_code=404, detail="workspace_not_found")
+        return _save_workspaces(next_rows)
+
     @app.get("/api/sessions")
     async def list_sessions() -> list[dict]:
         if store is None:
@@ -566,7 +689,7 @@ def create_app(
     @app.get("/api/settings/llm")
     async def get_llm_settings() -> dict:
         """Effective PM 大脑 brain settings: a config_kv override (if a store) else the config
-        default (§15). Never returns the api key (a .env secret); only whether one is configured."""
+        default (§15). Never returns the api key; only whether one is configured."""
         provider, model, base_url = cfg.llm.provider, cfg.llm.model, cfg.llm.base_url
         if store is not None and hasattr(store, "get_setting"):
             provider = store.get_setting("llm.provider") or provider
@@ -577,13 +700,13 @@ def create_app(
             "model": model,
             "base_url": base_url,
             "transport": cfg.llm.transport,  # wiring stays config-only (read-only hint for the UI)
-            "api_key_set": bool(cfg.secrets.llm_api_key),
+            "api_key_set": bool((cfg.secrets.llm_api_key or "").strip()),
         }
 
     @app.post("/api/settings/llm")
     async def set_llm_settings(body: _LLMSettingsBody) -> dict:
-        """Switch the brain's provider/model/base_url at runtime (§15). Each field: a non-empty value
-        sets the override, an empty string clears it (falls back to config), None leaves it as-is."""
+        """Switch the brain's provider/model/base_url/key at runtime (§15). Each field: a non-empty
+        value sets it, an empty string clears it, None leaves it as-is."""
         if store is None or not hasattr(store, "set_setting"):
             raise HTTPException(status_code=503, detail="no local store")
         if body.provider is not None:
@@ -595,6 +718,8 @@ def create_app(
             store.set_setting("llm.model", body.model.strip())
         if body.base_url is not None:
             store.set_setting("llm.base_url", body.base_url.strip())
+        if body.api_key is not None:
+            _save_llm_api_key(body.api_key)
         return await get_llm_settings()
 
     @app.get("/api/push/vapid-public-key")
@@ -705,6 +830,7 @@ def create_app(
         (e.g. team-cache server) → 503."""
         if dispatcher is None or not hasattr(dispatcher, "create"):
             raise HTTPException(status_code=503, detail="no dispatcher")
+        _effective_workspaces()
         res = await dispatcher.create(
             body.goal,
             workspace=body.workspace or None,

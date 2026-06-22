@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from foreman.server.app import create_app
-from foreman.shared.config import load_config
+from foreman.shared.config import WorkspaceCfg, load_config
 
 
 def test_index_served():
@@ -25,14 +25,17 @@ def test_app_js_wires_api_and_ws():
     assert js.status_code == 200
     assert "/api/sessions" in js.text
     assert "/ws?session_id=" in js.text
-    # agent output must be rendered safely (no innerHTML of event payloads)
-    assert "textContent" in js.text
+    assert "ReactDOM.createRoot" in js.text and "A.Layout" in js.text
+    # React renders agent output as text; never assign event payloads to raw HTML.
+    assert ".innerHTML" not in js.text
 
 
 def test_i18n_wired_in_page():
     c = TestClient(create_app(load_config()))
     html = c.get("/").text
-    assert "lang-toggle" in html and "data-i18n" in html
+    assert "/vendor/react.production.min.js" in html
+    assert "/vendor/antd.min.js" in html
+    assert "/vendor/htm.umd.js" in html
     js = c.get("/app.js").text
     assert "I18N" in js and "/api/settings/language" in js
 
@@ -40,22 +43,41 @@ def test_i18n_wired_in_page():
 def test_autonomy_dial_wired_in_page():
     """The PWA exposes the autonomy dial (0/1/2/3) and syncs it to the backend (T4.4 §6.4)."""
     c = TestClient(create_app(load_config()))
-    html = c.get("/").text
-    assert "autonomy-select" in html and 'data-i18n="autonomy"' in html
     js = c.get("/app.js").text
-    assert "/api/settings/autonomy" in js and "initAutonomy" in js
+    assert "/api/settings/autonomy" in js and "loadAutonomy" in js
+    assert "A.Slider" in js and "saveAutonomy" in js
+    assert "自动执行权限" in js and "autonomyHelp" in js
+
+
+def test_workspace_menu_endpoint_and_frontend_wired(tmp_path):
+    cfg = load_config(tmp_path / "none.yaml")
+    cfg.workspaces = [WorkspaceCfg(path="D:/proj", name="Project")]
+    c = TestClient(create_app(cfg))
+
+    assert c.get("/api/workspaces").json() == [{"path": "D:/proj", "name": "Project"}]
+    js = c.get("/app.js").text
+    assert "/api/workspaces" in js and "loadWorkspaces" in js
+    assert "saveWorkspace" in js and "deleteWorkspace" in js
+    assert "A.Select" in js and "setWorkspace" in js
+
+
+def test_llm_key_input_frontend_wired(tmp_path):
+    c = TestClient(create_app(load_config(tmp_path / "none.yaml")))
+    js = c.get("/app.js").text
+    assert "A.Input.Password" in js
+    assert "api_key" in js and "clearLlmKey" in js
 
 
 def test_decision_card_and_detail_wired(tmp_path):
     """The PWA fetches cards + drills into step detail, and renders the diff safely (T4.3 §6.3)."""
     c = TestClient(create_app(load_config()))
     html = c.get("/").text
-    assert "card-template" in html and "view-detail" in html and 'data-tab="diff"' in html
+    assert '<div id="root">' in html and "/app.js" in html
     js = c.get("/app.js").text
     assert "/api/cards" in js and "/api/actions/" in js and "/detail" in js
     assert "chooseCard" in js and "/choose" in js  # one-tap card decision wired
-    # diff + raw output are untrusted → rendered via textContent, never assigned to innerHTML.
-    assert "renderDiff" in js and "textContent" in js and ".innerHTML" not in js
+    # diff + raw output are untrusted -> rendered through React, never assigned to innerHTML.
+    assert "renderDiff" in js and ".innerHTML" not in js
 
 
 def test_admin_console_spa_ships_and_wires(tmp_path):

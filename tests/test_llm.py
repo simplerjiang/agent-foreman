@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from foreman.shared.config import Config
-from foreman.shared.llm import LLMClient, Message
+from foreman.shared.llm import LLMClient, LLMConfigError, Message
 
 
 def _client(provider: str, captured: dict) -> LLMClient:
@@ -31,6 +31,24 @@ def _client(provider: str, captured: dict) -> LLMClient:
         return httpx.Response(200, json={"choices": [{"message": {"content": "hi-openai"}}]})
 
     return LLMClient(cfg, transport=httpx.MockTransport(handler))
+
+
+async def test_missing_api_key_fails_before_http_request():
+    cfg = Config()
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.secrets.llm_api_key = "  "
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    with pytest.raises(LLMConfigError, match="FOREMAN_LLM_API_KEY"):
+        await c.complete([Message("user", "hello")])
+    await c.aclose()
+    assert called is False
 
 
 async def test_openai_request_and_parse():
@@ -71,6 +89,24 @@ async def test_settings_resolver_overrides_model_and_base_url():
     await c.aclose()
     assert cap["url"] == "https://runtime.test/v2/chat/completions"
     assert cap["json"]["model"] == "runtime-model"
+
+
+async def test_settings_resolver_overrides_api_key_without_restart():
+    cfg = Config()
+    cfg.llm.base_url = "https://config.test/v1"
+    cfg.llm.model = "config-model"
+    cfg.secrets.llm_api_key = ""
+    state = {"api_key": "runtime-key"}
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["auth"] = request.headers["authorization"]
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler), settings_resolver=lambda: state)
+    await c.complete([Message("user", "hi")])
+    await c.aclose()
+    assert cap["auth"] == "Bearer runtime-key"
 
 
 async def test_settings_resolver_falls_back_to_config_on_empty():

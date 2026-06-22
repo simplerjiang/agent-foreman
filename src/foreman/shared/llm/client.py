@@ -31,6 +31,10 @@ class Message:
     content: str
 
 
+class LLMConfigError(RuntimeError):
+    """Raised before a request when the PM brain is not configured enough to call."""
+
+
 def _messages_to_responses_input(messages: list[Message]) -> tuple[str, list[dict]]:
     """Map chat messages onto the Responses API shape: system text → ``instructions``; each other
     turn → an ``input`` message item (user/system → input_text, assistant → output_text)."""
@@ -76,12 +80,12 @@ class LLMClient:
         settings_resolver: Callable[[], dict] | None = None,
     ) -> None:
         # Construction-time defaults from config. `settings_resolver` (optional) lets a runtime
-        # settings page override provider/model/base_url WITHOUT a restart: it's called per request
-        # and may return any subset of {"provider", "model", "base_url"} (DESIGN §15 settings page).
+        # settings page override provider/model/base_url/key WITHOUT a restart: it's called per
+        # request and may return any subset of {"provider", "model", "base_url", "api_key"}.
         self.provider = cfg.llm.provider
         self.base_url = cfg.llm.base_url.rstrip("/")
         self.model = cfg.llm.model
-        self.api_key = cfg.secrets.llm_api_key
+        self.api_key = (cfg.secrets.llm_api_key or "").strip()
         self.max_tokens = cfg.llm.max_tokens
         self.timeout = cfg.llm.request_timeout_s
         self.mode = (cfg.llm.transport or "http").strip().lower()
@@ -93,7 +97,7 @@ class LLMClient:
 
     def _resolve(self) -> tuple[str, str, str]:
         """Effective (provider, base_url, model) for this request: a settings-page override (if any)
-        wins over the config default. The api key / transport stay config-only (secret + wiring)."""
+        wins over the config default. Transport stays config-only wiring."""
         provider, base_url, model = self.provider, self.base_url, self.model
         if self._settings_resolver is not None:
             try:
@@ -104,6 +108,19 @@ class LLMClient:
             base_url = ((ov.get("base_url") or base_url or "").strip() or base_url).rstrip("/")
             model = (ov.get("model") or model or "").strip() or model
         return provider, base_url, model
+
+    def _api_key(self) -> str:
+        key = self.api_key
+        if self._settings_resolver is not None:
+            try:
+                ov = self._settings_resolver() or {}
+            except Exception:  # noqa: BLE001 — a broken resolver must never leak/break defaults
+                ov = {}
+            if "api_key" in ov:
+                key = (ov.get("api_key") or "").strip()
+        if not key:
+            raise LLMConfigError("missing FOREMAN_LLM_API_KEY")
+        return key
 
     async def complete(self, messages: list[Message], *, json_mode: bool = False) -> str:
         """Return the assistant's text. Set json_mode=True to nudge structured JSON output.
@@ -129,7 +146,7 @@ class LLMClient:
             payload["response_format"] = {"type": "json_object"}
         r = await self._client.post(
             f"{base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            headers={"Authorization": f"Bearer {self._api_key()}"},
             json=payload,
         )
         r.raise_for_status()
@@ -147,7 +164,7 @@ class LLMClient:
             payload["system"] = system
         r = await self._client.post(
             f"{base_url}/messages",
-            headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01"},
+            headers={"x-api-key": self._api_key(), "anthropic-version": "2023-06-01"},
             json=payload,
         )
         r.raise_for_status()
@@ -169,7 +186,7 @@ class LLMClient:
         }
         if instructions:
             request["instructions"] = instructions
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = {"Authorization": f"Bearer {self._api_key()}"}
         buf: list[str] = []
         async with self._ws_connect(_ws_url(base_url), headers, self.timeout) as ws:
             await ws.send(json.dumps(request))

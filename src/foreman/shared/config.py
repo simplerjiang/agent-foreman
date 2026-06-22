@@ -210,6 +210,10 @@ class Config(BaseModel):
 
     # Populated from .env, not from config.yaml.
     secrets: Secrets = Field(default_factory=Secrets)
+    # Runtime bookkeeping: where load_config read structure/secrets from. Used by the local UI when
+    # it writes secrets back to the same sibling .env file.
+    config_path: str = ""
+    env_path: str = ""
 
 
 def load_config(path: str | Path = "config.yaml") -> Config:
@@ -219,5 +223,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     if p.exists():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     cfg = Config(**data)
-    cfg.secrets = Secrets()  # re-read env/.env
+    cfg.config_path = str(p)
+    cfg.env_path = str(p.with_name(".env"))
+    cfg.secrets = Secrets(_env_file=cfg.env_path)  # re-read env / sibling .env
     return cfg
