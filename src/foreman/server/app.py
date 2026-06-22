@@ -224,7 +224,9 @@ def _ensure_safe_exposure(cfg: Config, host: str | None = None) -> None:
     (e.g. `foreman app`) that bind a host of their own. Raises RuntimeError when unsafe."""
     if (cfg.server.mode or "personal").strip().lower() == "team":
         return
-    if cfg.secrets.auth_token or cfg.server.allow_insecure_bind:
+    # Strip before testing: create_app() also strips, so a whitespace-only token would otherwise
+    # pass this gate here yet leave the request-layer guard wide open (codex acceptance finding).
+    if (cfg.secrets.auth_token or "").strip() or cfg.server.allow_insecure_bind:
         return
     bind = (host if host is not None else cfg.server.host or "").strip().lower()
     exposed = bind not in _LOOPBACK_HOSTS or bool((cfg.server.public_base_url or "").strip())

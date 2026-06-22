@@ -136,6 +136,31 @@ def test_login_lockout_does_not_leak_account_existence(tmp_path):
     assert m.login("ghost", "x") == {"error": "locked"}
 
 
+def test_login_failure_map_is_bounded_under_username_scan(tmp_path):
+    # A credential-stuffing scan over many distinct usernames must not grow the throttle map
+    # without bound (codex finding): the hard cap evicts the oldest-seen entries.
+    clock = {"t": "2026-06-21T00:00:00+00:00"}
+    m = AuthManager(_store(tmp_path), now=lambda: clock["t"],
+                    max_login_failures=5, login_lockout_seconds=600,
+                    max_tracked_login_usernames=8)
+    for i in range(200):
+        m._record_login_failure(f"user{i}", clock["t"])
+    assert len(m._login_failures) <= 8
+
+
+def test_login_failure_entries_expire_by_time(tmp_path):
+    # A still-counting entry idle longer than the lockout window is pruned (sliding window), so a
+    # slow scan doesn't accumulate stale entries either.
+    clock = {"t": "2026-06-21T00:00:00+00:00"}
+    m = AuthManager(_store(tmp_path), now=lambda: clock["t"],
+                    max_login_failures=5, login_lockout_seconds=600)
+    m._record_login_failure("alice", clock["t"])
+    assert "alice" in m._login_failures
+    clock["t"] = "2026-06-21T00:11:00+00:00"  # 11 min later, past the 10-min window
+    m._record_login_failure("bob", clock["t"])  # triggers a prune
+    assert "alice" not in m._login_failures and "bob" in m._login_failures
+
+
 def test_resolve_token_valid_and_logout(tmp_path):
     m = _mgr(tmp_path)
     m.create_account("alice", "pw")

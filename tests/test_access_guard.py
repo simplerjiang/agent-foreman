@@ -135,6 +135,16 @@ def test_build_serve_app_ok_public_bind_with_token():
     assert build_serve_app(cfg) is not None  # token protects it → allowed
 
 
+def test_build_serve_app_refuses_public_bind_with_whitespace_token():
+    # A whitespace-only token is stripped to "" by the request-layer guard, so it provides no
+    # protection — the startup check must treat it as absent and fail closed (codex finding).
+    cfg = Config()
+    cfg.server.host = "0.0.0.0"
+    cfg.secrets.auth_token = "   "
+    with pytest.raises(RuntimeError):
+        build_serve_app(cfg)
+
+
 def test_build_serve_app_ok_with_insecure_opt_in():
     cfg = Config()
     cfg.server.host = "0.0.0.0"

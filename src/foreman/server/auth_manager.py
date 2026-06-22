@@ -49,6 +49,10 @@ MIN_PASSWORD_LEN = 8
 # the count resets on a successful login or once the window passes.
 DEFAULT_MAX_LOGIN_FAILURES = 10
 DEFAULT_LOGIN_LOCKOUT_SECONDS = 15 * 60
+# Hard cap on how many distinct submitted usernames the throttle tracks at once. A credential-
+# stuffing scan rotates usernames, so without a bound _login_failures would grow forever; stale
+# entries are pruned by time first, and this cap evicts the oldest as a backstop (codex finding).
+DEFAULT_MAX_TRACKED_LOGIN_USERNAMES = 4096
 
 # A throwaway hash used to spend the same PBKDF2 time on the missing/disabled-user login path,
 # so response timing can't be used to enumerate valid usernames (computed once at import).
@@ -86,6 +90,7 @@ class AuthManager:
         invite_ttl_seconds: int = DEFAULT_INVITE_TTL_SECONDS,
         max_login_failures: int = DEFAULT_MAX_LOGIN_FAILURES,
         login_lockout_seconds: int = DEFAULT_LOGIN_LOCKOUT_SECONDS,
+        max_tracked_login_usernames: int = DEFAULT_MAX_TRACKED_LOGIN_USERNAMES,
     ) -> None:
         self.store = store
         self._now = now
@@ -97,9 +102,12 @@ class AuthManager:
         self._invite_ttl = invite_ttl_seconds
         self._max_login_failures = max_login_failures
         self._login_lockout_seconds = login_lockout_seconds
-        # submitted-username -> {"count": int, "locked_until": iso}. In-memory by design: a process
-        # restart clears it, which only ever *loosens* the throttle (never a lockout that outlives a
-        # restart), and PBKDF2 already makes each attempt expensive. Cleared on a successful login.
+        self._max_tracked_login_usernames = max_tracked_login_usernames
+        # submitted-username -> {"count": int, "locked_until": iso, "seen_at": iso}. In-memory by
+        # design: a process restart clears it, which only ever *loosens* the throttle (never a
+        # lockout that outlives a restart), and PBKDF2 already makes each attempt expensive. Pruned
+        # by time (a sliding window) and hard-capped in size so a stuffing scan can't grow it
+        # without bound; cleared for a username on its successful login.
         self._login_failures: dict[str, dict] = {}
 
     # ── accounts (admin op — DESIGN §8.2: no self-signup) ────────────────────────────────────
@@ -278,9 +286,37 @@ class AuthManager:
             return  # throttle disabled
         rec = self._login_failures.setdefault(username, {"count": 0, "locked_until": ""})
         rec["count"] = int(rec.get("count", 0)) + 1
+        rec["seen_at"] = now
         if rec["count"] >= self._max_login_failures:
             rec["locked_until"] = _iso_plus_seconds(now, self._login_lockout_seconds)
             rec["count"] = 0  # reset the counter; the window now governs access
+        # Prune AFTER inserting so the map never exceeds the cap (the just-touched entry is newest,
+        # so the oldest-first eviction never drops it).
+        self._prune_login_failures(now)
+
+    def _prune_login_failures(self, now: str) -> None:
+        """Keep _login_failures bounded (codex finding): drop entries whose window has lapsed — a
+        locked entry past its lockout, or a still-counting entry idle longer than the lockout window
+        (a sliding window) — then, as a backstop against a burst within the window, evict the
+        oldest-seen entries above the hard cap."""
+        stale = []
+        for uname, rec in self._login_failures.items():
+            locked_until = rec.get("locked_until", "")
+            if locked_until:
+                if _is_expired(locked_until, now):
+                    stale.append(uname)
+            else:
+                seen = rec.get("seen_at", "")
+                window_end = _iso_plus_seconds(seen, self._login_lockout_seconds) if seen else ""
+                if not window_end or _is_expired(window_end, now):
+                    stale.append(uname)
+        for uname in stale:
+            self._login_failures.pop(uname, None)
+        overflow = len(self._login_failures) - self._max_tracked_login_usernames
+        if overflow > 0:
+            oldest = sorted(self._login_failures.items(), key=lambda kv: kv[1].get("seen_at", ""))
+            for uname, _rec in oldest[:overflow]:
+                self._login_failures.pop(uname, None)
 
     def _issue_login_token(self, account: Account) -> dict:
         """Mint + persist a bearer token (only its hash) and return the login result. Shared by
