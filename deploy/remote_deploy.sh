@@ -30,6 +30,8 @@ if [ -z "${CUR_TOKEN:-}" ]; then
   echo "== seeding missing FOREMAN_AUTH_TOKEN =="
   NEW_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
   [ -f "$APP/.env" ] && sed -i '/^FOREMAN_AUTH_TOKEN=/d' "$APP/.env"   # drop any blank entry first
+  # ensure a trailing newline so we don't concatenate onto an existing secret line (codex finding)
+  [ -s "$APP/.env" ] && [ -n "$(tail -c1 "$APP/.env")" ] && printf '\n' >> "$APP/.env"
   echo "FOREMAN_AUTH_TOKEN=$NEW_TOKEN" >> "$APP/.env"
   chmod 600 "$APP/.env"
 fi

@@ -56,8 +56,10 @@ jobs:
   # ── deploy: only after the gate is green ──────────────────────────────────────────────────────
   deploy:
     needs: test
-    # Don't deploy on pull_request events — only on a real push to main (or manual dispatch).
-    if: github.event_name != 'pull_request'
+    # Deploy ONLY for main: a push to main, or a manual dispatch ON the main ref. This bars a
+    # workflow_dispatch from a feature branch (which would otherwise pin that branch's SHA and push
+    # an unmerged ref to production — codex finding) and never runs on pull_request.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Serialize deploys so two never race; queue (don't cancel) a pending one.
     concurrency:
@@ -94,6 +96,9 @@ jobs:
             echo "== seeding missing FOREMAN_AUTH_TOKEN (pre-deploy) =="
             TOK=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
             [ -f "$ENV" ] && sed -i '/^FOREMAN_AUTH_TOKEN=/d' "$ENV" || true
+            # ensure a trailing newline so the token starts on its own line (don't corrupt an
+            # existing secret on a file with no final newline — codex finding)
+            [ -s "$ENV" ] && [ -n "$(tail -c1 "$ENV")" ] && printf '\n' >> "$ENV"
             echo "FOREMAN_AUTH_TOKEN=$TOK" >> "$ENV"
             chmod 600 "$ENV"
           fi
