@@ -12,6 +12,10 @@ llm:
   provider: openai
   base_url: https://api.openai.com/v1   # or your proxy / self-hosted endpoint
   model: gpt-4o                          # model used by PM Brain / Reviewer / Briefing
+  # Transport: "http" (default, POST /chat/completions) or "ws" (Responses API over a WebSocket,
+  # GET {base_url}/responses — for gateways like CLIProxyAPI). base_url stays http(s); it's swapped
+  # to ws(s) for the upgrade automatically.
+  transport: http
   # api_key comes from .env (FOREMAN_LLM_API_KEY)
   request_timeout_s: 60
   max_tokens: 2048

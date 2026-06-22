@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from foreman.shared.config import Config
 from foreman.shared.llm import LLMClient, Message
@@ -67,3 +68,84 @@ async def test_anthropic_request_and_parse():
     # system is split out of messages; turns exclude system
     assert cap["json"]["system"] == "sys"
     assert cap["json"]["messages"] == [{"role": "user", "content": "hello"}]
+
+
+# ── ws transport: Responses API over WebSocket ───────────────────────────────────────────────────
+class _FakeWS:
+    """A scripted WebSocket: records what was sent, replays `frames` on each recv()."""
+
+    def __init__(self, frames, sent):
+        self._frames = list(frames)
+        self._sent = sent
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def send(self, data):
+        self._sent.append(data)
+
+    async def recv(self):
+        if not self._frames:
+            raise AssertionError("recv past end of script")
+        return self._frames.pop(0)
+
+
+def _ws_client(frames, sent):
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "gpt-5.5"
+    cfg.llm.transport = "ws"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def connect(url, headers, timeout):
+        cap.update(url=url, headers=headers, timeout=timeout)
+        return _FakeWS(frames, sent)
+
+    return LLMClient(cfg, ws_connect=connect), cap
+
+
+async def test_ws_responses_accumulates_deltas_and_builds_request():
+    sent: list = []
+    frames = [
+        json.dumps({"type": "codex.rate_limits"}),                       # info frame, ignored
+        json.dumps({"type": "response.created"}),
+        json.dumps({"type": "response.output_text.delta", "delta": "He"}),
+        json.dumps({"type": "response.output_text.delta", "delta": "llo"}),
+        json.dumps({"type": "response.completed"}),
+    ]
+    c, cap = _ws_client(frames, sent)
+    out = await c.complete([Message("system", "be terse"), Message("user", "hi")])
+    await c.aclose()
+    assert out == "Hello"                                                # deltas accumulated
+    assert cap["url"] == "wss://example.test/v1/responses"              # http base -> wss /responses
+    assert cap["headers"]["Authorization"] == "Bearer secret-key"
+    req = json.loads(sent[0])                                            # the response.create frame
+    assert req["type"] == "response.create" and req["model"] == "gpt-5.5" and req["stream"] is True
+    assert req["instructions"] == "be terse"                            # system -> instructions
+    assert req["input"] == [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+    ]
+
+
+async def test_ws_responses_raises_on_error_frame():
+    c, _ = _ws_client([json.dumps({"type": "error", "error": {"message": "bad"}})], [])
+    with pytest.raises(RuntimeError):
+        await c.complete([Message("user", "x")])
+    await c.aclose()
+
+
+async def test_ws_responses_ignores_non_json_marker():
+    frames = [
+        "[DONE]",                                                       # non-JSON keepalive/marker
+        json.dumps({"type": "response.output_text.delta", "delta": "ok"}),
+        json.dumps({"type": "response.completed"}),
+    ]
+    c, _ = _ws_client(frames, [])
+    out = await c.complete([Message("user", "x")])
+    await c.aclose()
+    assert out == "ok"
