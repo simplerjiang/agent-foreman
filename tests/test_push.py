@@ -193,3 +193,9 @@ def test_pwa_assets_wire_push():
     mani = c.get("/manifest.webmanifest").json()
     assert mani["display"] == "standalone" and mani["scope"] == "/"
     assert any(i["sizes"] == "512x512" for i in mani["icons"])
+    # Every icon the manifest declares must actually be served (sw.js + the push-enabled
+    # notification reference these too) — a 404 here means a blank PWA/notification icon.
+    for icon in mani["icons"]:
+        r = c.get(icon["src"])
+        assert r.status_code == 200, icon["src"]
+        assert r.headers["content-type"] == "image/png"
