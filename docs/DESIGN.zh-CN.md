@@ -275,6 +275,8 @@ class AgentAdapter(Protocol):
 - 用于 **PM Brain / Operator / Auditor / Reviewer / Briefing** 等 Foreman 自身的 LLM 调用。
 - 注意区分：**Foreman 的「大脑」用你的 API；被驱动的 claude/codex CLI 用它们各自的登录/额度**。
   两者解耦，互不影响。
+- 被驱动 CLI 的模型单独配置：`agents.<agent>.model` 可为 `claude-code` / `codex` 设默认模型；
+  单次下发任务可用 `foreman dispatch --model ...` 或 `/api/tasks` 的 `model` 字段覆盖。
 
 ### 4.5 Store（SQLite）
 

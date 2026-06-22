@@ -21,12 +21,15 @@ class AgentHandle:
     session_id: str
     pid: int | None = None
     native_session_id: str | None = None  # e.g. Claude Code --resume id
+    model: str = ""
 
 
 class AgentAdapter(Protocol):
     name: str  # "claude-code" | "codex"
 
-    async def start(self, instruction: str, workspace: Path, session_id: str) -> AgentHandle:
+    async def start(
+        self, instruction: str, workspace: Path, session_id: str, model: str = ""
+    ) -> AgentHandle:
         """Launch the agent in `workspace` with the initial instruction."""
         ...
 

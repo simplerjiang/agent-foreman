@@ -47,6 +47,7 @@ async def run_dispatch(
     task: str,
     workspace: str,
     agent: str,
+    model: str = "",
     *,
     store: Store | None = None,
     bus: EventBus | None = None,
@@ -62,6 +63,6 @@ async def run_dispatch(
     bus = bus or EventBus()
     runner = runner or Runner(cfg, bus, store)
     session, _task = build_session_task(store, task, workspace, agent)
-    handle = await runner.launch(agent, task, Path(workspace), session.id)
+    handle = await runner.launch(agent, task, Path(workspace), session.id, model=model)
     await runner.wait(handle)
     return session.id, len(store.get_events(session.id))

@@ -32,7 +32,9 @@ class AgentEvent:
 
 class AgentAdapter(Protocol):
     name: str
-    async def start(self, task: "Task", workspace: Path) -> "AgentHandle": ...
+    async def start(
+        self, instruction: str, workspace: Path, session_id: str, model: str = ""
+    ) -> "AgentHandle": ...
     async def send(self, handle: "AgentHandle", text: str) -> None: ...
     async def stream(self, handle: "AgentHandle") -> AsyncIterator[AgentEvent]: ...
     async def interrupt(self, handle: "AgentHandle") -> None: ...
@@ -64,7 +66,7 @@ class Gate(Protocol):
 ## API surface (FastAPI, P3+)
 ```
 GET  /health
-POST /api/tasks                  # dispatch a task (also used by phone)
+POST /api/tasks                  # dispatch a task; body may include agent/workspace/model
 GET  /api/sessions               # list sessions
 GET  /api/sessions/{id}/events   # timeline (paginated)
 GET  /api/cards?status=pending   # decision cards awaiting a tap

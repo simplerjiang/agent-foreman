@@ -26,21 +26,29 @@ class SubprocessCliAdapter:
     name = "subprocess"
 
     def __init__(self, cfg: AgentCfg) -> None:
-        self.cfg = cfg  # command, mode
+        self.cfg = cfg  # command, mode, model
         self._procs: dict[str, asyncio.subprocess.Process] = {}
         # Remember each handle's workspace so a resume (`send`) re-spawns in the same cwd.
         self._workspaces: dict[str, Path] = {}
 
-    def _build_cmd(self, instruction: str) -> list[str]:
+    def _model_args(self, model: str) -> list[str]:
+        return ["--model", model] if model else []
+
+    def _effective_model(self, model: str = "") -> str:
+        return (model or self.cfg.model or "").strip()
+
+    def _build_cmd(self, instruction: str, model: str = "") -> list[str]:
         raise NotImplementedError
 
-    def _build_resume_cmd(self, instruction: str, native_session_id: str) -> list[str]:
+    def _build_resume_cmd(
+        self, instruction: str, native_session_id: str, model: str = ""
+    ) -> list[str]:
         """Command that resumes a prior session with a follow-up instruction (two-way control).
 
         Subclasses override to add their CLI's resume flag (claude `--resume`, codex `exec resume`).
         Default: a plain re-run (no session continuity) so `send` still works on an adapter that
         has no resume concept. See docs/DESIGN.zh-CN.md §4.2 ("会话续接用 --resume / --continue")."""
-        return self._build_cmd(instruction)
+        return self._build_cmd(instruction, model)
 
     async def _spawn(self, cmd: list[str], workspace: Path) -> asyncio.subprocess.Process:
         """Spawn the agent process. Overridable seam so tests can inject a fake process."""
@@ -55,9 +63,17 @@ class SubprocessCliAdapter:
             **kwargs,
         )
 
-    async def start(self, instruction: str, workspace: Path, session_id: str) -> AgentHandle:
-        proc = await self._spawn(self._build_cmd(instruction), workspace)
-        handle = AgentHandle(id=f"{session_id}:{proc.pid}", session_id=session_id, pid=proc.pid)
+    async def start(
+        self, instruction: str, workspace: Path, session_id: str, model: str = ""
+    ) -> AgentHandle:
+        effective_model = self._effective_model(model)
+        proc = await self._spawn(self._build_cmd(instruction, effective_model), workspace)
+        handle = AgentHandle(
+            id=f"{session_id}:{proc.pid}",
+            session_id=session_id,
+            pid=proc.pid,
+            model=effective_model,
+        )
         self._procs[handle.id] = proc
         self._workspaces[handle.id] = Path(workspace)
         return handle
@@ -102,10 +118,10 @@ class SubprocessCliAdapter:
         under the same handle id so the Runner can re-pump its output to store+bus.
         """
         if handle.native_session_id:
-            cmd = self._build_resume_cmd(text, handle.native_session_id)
+            cmd = self._build_resume_cmd(text, handle.native_session_id, handle.model)
         else:
             # No captured session id yet → fall back to a fresh run with the follow-up text.
-            cmd = self._build_cmd(text)
+            cmd = self._build_cmd(text, handle.model)
         proc = await self._spawn(cmd, self._workspaces.get(handle.id, Path(".")))
         self._procs[handle.id] = proc
         handle.pid = proc.pid

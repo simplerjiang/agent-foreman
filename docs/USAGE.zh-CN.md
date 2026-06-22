@@ -161,7 +161,7 @@ server:
 |---|---|
 | `foreman app` | 启动 PC 应用：引擎 + 原生窗口 + 托盘（个人模式，开窗=在线） |
 | `foreman serve` | 启动后端（个人或团队，长驻、阻塞） |
-| `foreman dispatch "<任务>" --workspace <路径> [--agent claude-code\|codex]` | 建会话、把任务交给 agent 跑到完成 |
+| `foreman dispatch "<任务>" --workspace <路径> [--agent claude-code\|codex] [--model <模型>]` | 建会话、把任务交给 agent 跑到完成 |
 | `foreman seed-examples` | 把内置的起步「秘方」种进本地库（幂等） |
 | `foreman version` | 看版本 |
 | `foreman token --rotate` | ⚠️ 还没实现（路线图 P3） |

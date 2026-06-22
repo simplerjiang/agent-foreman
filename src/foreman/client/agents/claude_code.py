@@ -15,11 +15,19 @@ from ._subprocess import SubprocessCliAdapter
 class ClaudeCodeAdapter(SubprocessCliAdapter):
     name = "claude-code"
 
-    def _build_cmd(self, instruction: str) -> list[str]:
-        return [self.cfg.command, "-p", instruction,
-                "--output-format", "stream-json", "--verbose"]
+    def _build_cmd(self, instruction: str, model: str = "") -> list[str]:
+        return [
+            self.cfg.command, "-p", instruction,
+            *self._model_args(model),
+            "--output-format", "stream-json", "--verbose",
+        ]
 
-    def _build_resume_cmd(self, instruction: str, native_session_id: str) -> list[str]:
+    def _build_resume_cmd(
+        self, instruction: str, native_session_id: str, model: str = ""
+    ) -> list[str]:
         """Resume the captured session with a follow-up (two-way control, DESIGN §4.2)."""
-        return [self.cfg.command, "-p", instruction, "--resume", native_session_id,
-                "--output-format", "stream-json", "--verbose"]
+        return [
+            self.cfg.command, "-p", instruction, "--resume", native_session_id,
+            *self._model_args(model),
+            "--output-format", "stream-json", "--verbose",
+        ]

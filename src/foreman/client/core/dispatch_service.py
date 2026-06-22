@@ -61,18 +61,24 @@ class DispatchService:
         self.cfg = cfg
         self.store = store
         self.bus = bus
-        # launcher(session_id, goal, workspace, agent) -> awaitable; None = launch deferred (P4 live).
+        # launcher(session_id, goal, workspace, agent, model) -> awaitable; None = launch deferred.
         self.launcher = launcher
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
 
     # ── create a session (下发任务, §5.1) ─────────────────────────────────────────────────────
     async def create(
-        self, goal: str, *, workspace: str | None = None, agent: str | None = None
+        self,
+        goal: str,
+        *,
+        workspace: str | None = None,
+        agent: str | None = None,
+        model: str | None = None,
     ) -> dict:
         """Validate + persist a new Root Session/Task; emit ``dispatch``; optionally launch.
 
-        Returns ``{"ok": True, session_id, task_id, goal, workspace, agent, execution_deferred}``
+        Returns ``{"ok": True, session_id, task_id, goal, workspace, agent, model,
+        execution_deferred}``
         or ``{"ok": False, "error": ...}`` with error ∈ {empty_goal, no_store, unknown_agent,
         no_workspace}. Launching the agent (when a launcher is wired) happens in the background so a
         phone tap returns immediately and several sessions can run at once.
@@ -88,16 +94,19 @@ class DispatchService:
         ws, err = self._resolve_workspace(workspace)
         if err:
             return {"ok": False, "error": err}
+        resolved_model = self._resolve_model(resolved_agent, model)
 
         session, task = build_session_task(self.store, goal, ws, resolved_agent)
         deferred = self.launcher is None
-        await self._emit_dispatch(session.id, task.id, goal, ws, resolved_agent, deferred)
+        await self._emit_dispatch(
+            session.id, task.id, goal, ws, resolved_agent, resolved_model, deferred
+        )
         if self.launcher is not None:
             # Fire-and-forget: a phone dispatch returns immediately; the agent runs in the
             # background (Runner pumps its events to store+bus, T1.7). Failures emit an `error`.
             # Keep a strong ref (discarded on completion) so the task isn't GC'd mid-flight.
             launch_task = asyncio.create_task(
-                self._safe_launch(session.id, goal, ws, resolved_agent)
+                self._safe_launch(session.id, goal, ws, resolved_agent, resolved_model)
             )
             self._tasks.add(launch_task)
             launch_task.add_done_callback(self._tasks.discard)
@@ -108,6 +117,7 @@ class DispatchService:
             "goal": goal,
             "workspace": ws,
             "agent": resolved_agent,
+            "model": resolved_model,
             "execution_deferred": deferred,
         }
 
@@ -126,6 +136,13 @@ class DispatchService:
         if enabled:
             return enabled[0], ""
         return "claude-code", ""
+
+    def _resolve_model(self, agent: str, model: str | None) -> str:
+        override = (model or "").strip()
+        if override:
+            return override
+        cfg = self.cfg.agents.get(agent)
+        return (cfg.model if cfg else "").strip()
 
     def _resolve_workspace(self, workspace: str | None) -> tuple[str, str]:
         """Resolve the workspace; an explicit one must sit inside an approved root (§6.6 白名单).
@@ -147,7 +164,14 @@ class DispatchService:
         return "", "no_workspace"
 
     async def _emit_dispatch(
-        self, session_id: str, task_id: str, goal: str, workspace: str, agent: str, deferred: bool
+        self,
+        session_id: str,
+        task_id: str,
+        goal: str,
+        workspace: str,
+        agent: str,
+        model: str,
+        deferred: bool,
     ) -> None:
         event = make_event(
             "dispatch",
@@ -157,6 +181,7 @@ class DispatchService:
             payload={
                 "goal": goal,
                 "agent": agent,
+                "model": model,
                 "workspace": workspace,
                 # launching the agent is the two-way control layer (P4) when no launcher is wired.
                 "execution_deferred": deferred,
@@ -164,10 +189,12 @@ class DispatchService:
         )
         await self._persist_then_publish(event)
 
-    async def _safe_launch(self, session_id: str, goal: str, workspace: str, agent: str) -> None:
+    async def _safe_launch(
+        self, session_id: str, goal: str, workspace: str, agent: str, model: str
+    ) -> None:
         """Run the injected launcher; an agent that can't start records an `error` event, not a crash."""
         try:
-            await self.launcher(session_id, goal, workspace, agent)
+            await self.launcher(session_id, goal, workspace, agent, model)
         except Exception as exc:  # noqa: BLE001 — a launch failure must not take down the server loop
             event = make_event(
                 "error",

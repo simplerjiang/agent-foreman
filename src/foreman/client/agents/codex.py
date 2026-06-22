@@ -15,9 +15,15 @@ from ._subprocess import SubprocessCliAdapter
 class CodexAdapter(SubprocessCliAdapter):
     name = "codex"
 
-    def _build_cmd(self, instruction: str) -> list[str]:
-        return [self.cfg.command, "exec", instruction]
+    def _build_cmd(self, instruction: str, model: str = "") -> list[str]:
+        return [self.cfg.command, "exec", *self._model_args(model), instruction]
 
-    def _build_resume_cmd(self, instruction: str, native_session_id: str) -> list[str]:
+    def _build_resume_cmd(
+        self, instruction: str, native_session_id: str, model: str = ""
+    ) -> list[str]:
         """Resume the prior session with a follow-up (two-way control, DESIGN §4.2)."""
-        return [self.cfg.command, "exec", "resume", native_session_id, instruction]
+        return [
+            self.cfg.command, "exec", "resume",
+            *self._model_args(model),
+            native_session_id, instruction,
+        ]

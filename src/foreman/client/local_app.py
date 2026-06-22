@@ -105,8 +105,10 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     cards.executor = loop.on_card_decision
     # DispatchService creates Root Sessions from the phone (§5.1); its launcher drives the real
     # Runner so a phone tap actually starts an agent (multiple sessions run concurrently, T1.7).
-    async def _launcher(session_id: str, goal: str, workspace: str, agent: str) -> None:
-        await runner.launch(agent, goal, Path(workspace), session_id)
+    async def _launcher(
+        session_id: str, goal: str, workspace: str, agent: str, model: str
+    ) -> None:
+        await runner.launch(agent, goal, Path(workspace), session_id, model=model)
 
     dispatcher = DispatchService(cfg, store, bus=bus, launcher=_launcher)
     # BriefingService summarizes a session's activity with YOUR LLM → reports table + Web Push

@@ -11,8 +11,8 @@ from foreman.client.agents.claude_code import ClaudeCodeAdapter
 from foreman.shared.config import AgentCfg
 
 
-def _cfg() -> AgentCfg:
-    return AgentCfg(command="claude")
+def _cfg(model: str = "") -> AgentCfg:
+    return AgentCfg(command="claude", model=model)
 
 
 def test_build_cmd():
@@ -20,12 +20,20 @@ def test_build_cmd():
     assert a._build_cmd("do X") == [
         "claude", "-p", "do X", "--output-format", "stream-json", "--verbose",
     ]
+    assert a._build_cmd("do X", "sonnet") == [
+        "claude", "-p", "do X", "--model", "sonnet",
+        "--output-format", "stream-json", "--verbose",
+    ]
 
 
 def test_build_resume_cmd():
     a = ClaudeCodeAdapter(_cfg())
     assert a._build_resume_cmd("do Y", "sess-1") == [
         "claude", "-p", "do Y", "--resume", "sess-1", "--output-format", "stream-json", "--verbose",
+    ]
+    assert a._build_resume_cmd("do Y", "sess-1", "sonnet") == [
+        "claude", "-p", "do Y", "--resume", "sess-1", "--model", "sonnet",
+        "--output-format", "stream-json", "--verbose",
     ]
 
 
@@ -37,6 +45,14 @@ async def test_start_registers_and_returns_handle(tmp_path):
     assert a._procs[h.id] is proc
     assert a.spawned_cmd[:2] == ["claude", "-p"]
     assert a.spawned_cwd == tmp_path
+
+
+async def test_start_uses_config_model(tmp_path):
+    proc = FakeProc(pid=4321)
+    a = fake_adapter(ClaudeCodeAdapter, _cfg("sonnet"), proc)
+    h = await a.start("do X", tmp_path, "sess1")
+    assert h.model == "sonnet"
+    assert "--model" in a.spawned_cmd and "sonnet" in a.spawned_cmd
 
 
 async def test_stop_terminates_and_deregisters(tmp_path):

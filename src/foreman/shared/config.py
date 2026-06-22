@@ -103,6 +103,7 @@ class AgentCfg(BaseModel):
     enabled: bool = True
     command: str
     mode: str = "headless"  # "headless" | "pty"
+    model: str = ""  # Optional model for the driven CLI agent; empty = CLI default.
 
 
 class MonitorCfg(BaseModel):

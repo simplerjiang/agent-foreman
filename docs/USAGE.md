@@ -149,7 +149,7 @@ edit → git push to main → GitHub Actions SSHes into the server
 |---|---|
 | `foreman app` | Start the PC app: engine + native window + tray (personal mode) |
 | `foreman serve` | Start the backend (personal or team; long-running) |
-| `foreman dispatch "<task>" --workspace <path> [--agent claude-code\|codex]` | Create a session and run a task to completion |
+| `foreman dispatch "<task>" --workspace <path> [--agent claude-code\|codex] [--model <model>]` | Create a session and run a task to completion |
 | `foreman seed-examples` | Seed the built-in starter recipes into the local DB (idempotent) |
 | `foreman version` | Print version |
 | `foreman token --rotate` | ⚠️ not implemented yet (roadmap P3) |

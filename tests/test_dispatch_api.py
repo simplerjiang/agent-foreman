@@ -58,6 +58,14 @@ def test_dispatch_task_creates_session(tmp_path):
     assert row["goal"] == "refactor auth" and row["events"] >= 1  # the dispatch event
 
 
+def test_dispatch_task_accepts_model(tmp_path):
+    app, _ = _app(tmp_path)
+    c = TestClient(app)
+    r = c.post("/api/tasks", json={"goal": "refactor auth", "model": "gpt-5"})
+    assert r.status_code == 200
+    assert r.json()["model"] == "gpt-5"
+
+
 def test_dispatch_empty_goal_400(tmp_path):
     app, _ = _app(tmp_path)
     assert TestClient(app).post("/api/tasks", json={"goal": "  "}).status_code == 400

@@ -119,6 +119,7 @@ class _DispatchBody(BaseModel):
     goal: str
     workspace: str = ""
     agent: str = ""
+    model: str = ""
 
 
 class _BriefBody(BaseModel):
@@ -630,7 +631,10 @@ def create_app(
         if dispatcher is None or not hasattr(dispatcher, "create"):
             raise HTTPException(status_code=503, detail="no dispatcher")
         res = await dispatcher.create(
-            body.goal, workspace=body.workspace or None, agent=body.agent or None
+            body.goal,
+            workspace=body.workspace or None,
+            agent=body.agent or None,
+            model=body.model or None,
         )
         if res.get("ok"):
             return res

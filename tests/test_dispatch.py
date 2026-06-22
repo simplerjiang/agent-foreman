@@ -47,10 +47,16 @@ def test_cli_dispatch_wires(monkeypatch, tmp_path):
     import foreman.client.dispatch as dmod
     from foreman.__main__ import app
 
+    seen = {}
+
     async def fake_run(cfg, task, workspace, agent, **kw):
+        seen.update(kw)
         return "sid123", 5
 
     monkeypatch.setattr(dmod, "run_dispatch", fake_run)
-    r = CliRunner().invoke(app, ["dispatch", "do X", "--workspace", str(tmp_path)])
+    r = CliRunner().invoke(
+        app, ["dispatch", "do X", "--workspace", str(tmp_path), "--model", "gpt-5"]
+    )
     assert r.exit_code == 0
     assert "sid123" in r.output and "5 events" in r.output
+    assert seen["model"] == "gpt-5"

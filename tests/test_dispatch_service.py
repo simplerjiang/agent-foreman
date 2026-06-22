@@ -7,6 +7,7 @@ store is a real client SQLite Store so persistence + the `dispatch` event are ex
 from __future__ import annotations
 
 import asyncio
+import json
 
 from foreman.client.core.dispatch_service import DispatchService
 from foreman.client.store import Store
@@ -68,7 +69,7 @@ async def test_create_persists_session_task_and_event(tmp_path):
     store = _store(tmp_path)
     bus = EventBus()
     cfg = _cfg(
-        agents={"claude-code": AgentCfg(command="claude", enabled=True)},
+        agents={"claude-code": AgentCfg(command="claude", enabled=True, model="sonnet")},
         workspaces=[WorkspaceCfg(path="D:/proj")],
     )
     svc = DispatchService(cfg, store, bus=bus)  # no launcher → execution deferred
@@ -76,6 +77,7 @@ async def test_create_persists_session_task_and_event(tmp_path):
 
     assert res["ok"] is True
     assert res["agent"] == "claude-code"  # defaulted to the only enabled agent
+    assert res["model"] == "sonnet"  # defaulted to the agent config model
     assert res["workspace"] == "D:/proj"  # defaulted to the configured workspace
     assert res["execution_deferred"] is True
 
@@ -85,20 +87,22 @@ async def test_create_persists_session_task_and_event(tmp_path):
     dispatch_events = [e for e in events if e.type == "dispatch"]
     assert len(dispatch_events) == 1
     assert dispatch_events[0].task_id == res["task_id"]
+    assert json.loads(dispatch_events[0].payload_json)["model"] == "sonnet"
 
 
 async def test_create_runs_launcher_in_background(tmp_path):
     calls: list[tuple] = []
 
-    async def launcher(session_id, goal, workspace, agent):
-        calls.append((session_id, goal, workspace, agent))
+    async def launcher(session_id, goal, workspace, agent, model):
+        calls.append((session_id, goal, workspace, agent, model))
 
     cfg = _cfg(workspaces=[WorkspaceCfg(path="D:/p")])
     svc = DispatchService(cfg, _store(tmp_path), launcher=launcher)
-    res = await svc.create("do x")
+    res = await svc.create("do x", model="run-model")
     assert res["execution_deferred"] is False
     await asyncio.sleep(0.02)  # let the fire-and-forget launch run
     assert calls and calls[0][0] == res["session_id"] and calls[0][1] == "do x"
+    assert calls[0][4] == "run-model"
 
 
 async def test_launcher_failure_records_error_event(tmp_path):

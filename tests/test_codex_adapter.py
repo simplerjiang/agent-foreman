@@ -11,18 +11,22 @@ from foreman.client.agents.codex import CodexAdapter
 from foreman.shared.config import AgentCfg
 
 
-def _cfg() -> AgentCfg:
-    return AgentCfg(command="codex")
+def _cfg(model: str = "") -> AgentCfg:
+    return AgentCfg(command="codex", model=model)
 
 
 def test_build_cmd():
     a = CodexAdapter(_cfg())
     assert a._build_cmd("do Y") == ["codex", "exec", "do Y"]
+    assert a._build_cmd("do Y", "gpt-5") == ["codex", "exec", "--model", "gpt-5", "do Y"]
 
 
 def test_build_resume_cmd():
     a = CodexAdapter(_cfg())
     assert a._build_resume_cmd("more", "sess-9") == ["codex", "exec", "resume", "sess-9", "more"]
+    assert a._build_resume_cmd("more", "sess-9", "gpt-5") == [
+        "codex", "exec", "resume", "--model", "gpt-5", "sess-9", "more",
+    ]
 
 
 async def test_start_registers_and_returns_handle(tmp_path):
@@ -33,6 +37,14 @@ async def test_start_registers_and_returns_handle(tmp_path):
     assert a._procs[h.id] is proc
     assert a.spawned_cmd == ["codex", "exec", "do Y"]
     assert a.spawned_cwd == tmp_path
+
+
+async def test_start_model_override_wins(tmp_path):
+    proc = FakeProc(pid=999)
+    a = fake_adapter(CodexAdapter, _cfg("cfg-model"), proc)
+    h = await a.start("do Y", tmp_path, "sx", model="run-model")
+    assert h.model == "run-model"
+    assert a.spawned_cmd == ["codex", "exec", "--model", "run-model", "do Y"]
 
 
 async def test_stream_parses_lines(tmp_path):
