@@ -64,9 +64,11 @@ exe = EXE(
     strip=False,
     upx=True,
     runtime_tmpdir=None,
-    # console=True so `serve`/`version` print and errors surface; the window/tray still open on
-    # top for `app`. Flip to False once the desktop UX is finalized to suppress the console flash.
-    console=True,
+    # Windowed app (no console): the exe is double-clicked by end users, so `app` opens just the
+    # native window + tray — no console flash. In this mode sys.stdout/stderr are None, so the
+    # launcher (packaging/foreman_app.py) redirects them to a log file before anything prints.
+    # Trade-off: CLI subcommands (`serve`/`version`) no longer write to a terminal.
+    console=False,
     disable_windowed_traceback=False,
     icon="packaging/foreman.ico",
 )
