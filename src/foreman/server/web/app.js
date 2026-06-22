@@ -397,6 +397,13 @@
     return map[detail] || detail || `${error.status || ""}`;
   }
 
+  function modelChoiceOptions(rows) {
+    return (rows || []).map((m) => ({
+      value: m.id,
+      label: m.source ? `${m.id} (${m.source})` : m.id,
+    }));
+  }
+
   function extractAgentText(payload) {
     if (!payload || typeof payload !== "object") return "";
     if (typeof payload.text === "string") return payload.text;
@@ -507,6 +514,8 @@
     const [agents, setAgents] = useState([]);
     const [modelOptions, setModelOptions] = useState([]);
     const [modelLoading, setModelLoading] = useState(false);
+    const [pmModelOptions, setPmModelOptions] = useState([]);
+    const [pmModelLoading, setPmModelLoading] = useState(false);
     const [sessions, setSessions] = useState([]);
     const [selectedSession, setSelectedSession] = useState("");
     const [events, setEvents] = useState([]);
@@ -565,17 +574,32 @@
       try {
         const suffix = name ? `?agent=${encodeURIComponent(name)}` : "";
         const data = await api(`/api/models${suffix}`);
-        const rows = (data && data.models) || [];
-        setModelOptions(rows.map((m) => ({
-          value: m.id,
-          label: m.source ? `${m.id} (${m.source})` : m.id,
-        })));
+        setModelOptions(modelChoiceOptions(data && data.models));
       } catch (e) {
         setModelOptions([]);
       } finally {
         setModelLoading(false);
       }
     }, [agent]);
+
+    const loadPmModels = useCallback(async (draft) => {
+      const current = draft || {};
+      const body = {
+        provider: current.provider || "openai",
+        model: (current.model || "").trim(),
+        base_url: (current.base_url || "").trim(),
+      };
+      if ((current.api_key || "").trim()) body.api_key = current.api_key.trim();
+      setPmModelLoading(true);
+      try {
+        const data = await api("/api/models/preview", { method: "POST", body });
+        setPmModelOptions(modelChoiceOptions(data && data.models));
+      } catch (e) {
+        setPmModelOptions([]);
+      } finally {
+        setPmModelLoading(false);
+      }
+    }, []);
 
     const loadSessions = useCallback(async () => {
       try {
@@ -607,9 +631,13 @@
     }, [defnFilter]);
 
     const loadLlm = useCallback(async () => {
-      try { setLlm({ ...(await api("/api/settings/llm")), api_key: "" }); }
+      try {
+        const next = { ...(await api("/api/settings/llm")), api_key: "" };
+        setLlm(next);
+        await loadPmModels(next);
+      }
       catch (e) { /* optional in server mode */ }
-    }, []);
+    }, [loadPmModels]);
 
     const loadAutonomy = useCallback(async () => {
       try {
@@ -908,8 +936,10 @@
         };
         if ((llm.api_key || "").trim()) body.api_key = llm.api_key.trim();
         const data = await api("/api/settings/llm", { method: "POST", body });
-        setLlm({ ...data, api_key: "" });
+        const next = { ...data, api_key: "" };
+        setLlm(next);
         setLlmStatus(d.saved);
+        await loadPmModels(next);
         await loadModels(agent);
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
     }
@@ -917,8 +947,10 @@
     async function clearLlmKey() {
       try {
         const data = await api("/api/settings/llm", { method: "POST", body: { api_key: "" } });
-        setLlm({ ...data, api_key: "" });
+        const next = { ...data, api_key: "" };
+        setLlm(next);
         setLlmStatus(d.saved);
+        await loadPmModels(next);
         await loadModels(agent);
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
     }
@@ -1088,6 +1120,9 @@
                     deleteWorkspace=${deleteWorkspace}
                     llm=${llm}
                     setLlm=${setLlm}
+                    pmModelOptions=${pmModelOptions}
+                    pmModelLoading=${pmModelLoading}
+                    refreshPmModels=${() => loadPmModels(llm)}
                     saveLlm=${saveLlm}
                     clearLlmKey=${clearLlmKey}
                     llmStatus=${llmStatus}
@@ -1435,8 +1470,8 @@
 
   function SettingsView({
     d, workspaces, loadWorkspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace,
-    browseWorkspaceFolder, deleteWorkspace, llm, setLlm, saveLlm, clearLlmKey, llmStatus,
-    autonomy, saveAutonomy,
+    browseWorkspaceFolder, deleteWorkspace, llm, setLlm, pmModelOptions, pmModelLoading,
+    refreshPmModels, saveLlm, clearLlmKey, llmStatus, autonomy, saveAutonomy,
   }) {
     return html`
       <div className="view-grid">
@@ -1499,7 +1534,22 @@
               </${A.Col}>
               <${A.Col} xs=${24} md=${16}>
                 <${A.Form.Item} label=${d.pmModel}>
-                  <${A.Input} value=${llm.model || ""} onChange=${(e) => setLlm({ ...llm, model: e.target.value })} />
+                  <${A.Space.Compact} block>
+                    <${A.AutoComplete}
+                      style=${{ width: "100%" }}
+                      value=${llm.model || ""}
+                      onChange=${(v) => setLlm({ ...llm, model: v })}
+                      options=${pmModelOptions}
+                      filterOption=${(input, option) => String(option.value || "").toLowerCase().includes(input.toLowerCase())}
+                    />
+                    <${A.Button}
+                      htmlType="button"
+                      loading=${pmModelLoading}
+                      icon=${icon("ReloadOutlined")}
+                      onClick=${refreshPmModels}
+                      title=${d.modelRefresh}
+                    />
+                  </${A.Space.Compact}>
                 </${A.Form.Item}>
               </${A.Col}>
             </${A.Row}>

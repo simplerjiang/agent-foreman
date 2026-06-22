@@ -85,6 +85,29 @@ def test_api_models_returns_configured_defaults_without_key():
     assert "LLMConfigError" in data["error"]
 
 
+def test_api_models_preview_uses_unsaved_settings_without_persisting(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    cfg.llm.model = "saved-model"
+    cfg.secrets.llm_api_key = ""
+    c = TestClient(create_app(cfg, store, EventBus()))
+
+    data = c.post(
+        "/api/models/preview",
+        json={
+            "provider": "anthropic",
+            "model": "draft-model",
+            "base_url": "https://example.invalid/v1",
+        },
+    ).json()
+
+    assert data["models"] == [{"id": "draft-model", "source": "pm"}]
+    assert data["default"] == "draft-model"
+    assert "LLMConfigError" in data["error"]
+    assert c.get("/api/settings/llm").json()["model"] == "saved-model"
+
+
 # ── /api/workspaces: local UI can edit the workspace allowlist ──────────────────────────────────
 
 

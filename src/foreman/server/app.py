@@ -485,6 +485,51 @@ def create_app(
             "api_key": cfg.secrets.llm_api_key,
         }
 
+    def _preview_llm_settings(body: _LLMSettingsBody) -> dict:
+        settings = _runtime_llm_settings()
+        if body.provider is not None and body.provider.strip():
+            settings["provider"] = body.provider.strip()
+        if body.model is not None:
+            settings["model"] = body.model.strip()
+        if body.base_url is not None and body.base_url.strip():
+            settings["base_url"] = body.base_url.strip()
+        if body.api_key is not None and body.api_key.strip():
+            settings["api_key"] = body.api_key.strip()
+        return settings
+
+    async def _list_model_choices(agent: str | None = None, settings: dict | None = None) -> dict:
+        from foreman.shared.llm import LLMClient
+
+        models: list[dict] = []
+        seen: set[str] = set()
+
+        def add(model_id: str, source: str) -> None:
+            mid = (model_id or "").strip()
+            if mid and mid not in seen:
+                seen.add(mid)
+                models.append({"id": mid, "source": source})
+
+        agent_cfg = cfg.agents.get((agent or "").strip())
+        if agent_cfg is not None:
+            add(agent_cfg.model, "agent")
+        effective = settings or _runtime_llm_settings()
+        add(effective.get("model", ""), "pm")
+        error = ""
+        client = LLMClient(cfg, settings_resolver=lambda: effective)
+        try:
+            for model_id in await client.list_models():
+                add(model_id, "provider")
+        except Exception as exc:  # noqa: BLE001 - optional UI discovery must not block the form
+            error = f"{type(exc).__name__}: {str(exc)[:160]}"
+        finally:
+            await client.aclose()
+        return {
+            "models": models,
+            "default": (agent_cfg.model if agent_cfg is not None else "")
+            or effective.get("model", ""),
+            "error": error,
+        }
+
     _effective_workspaces()
 
     def _auth_bucket(request: Request, scope: str) -> str:
@@ -617,36 +662,14 @@ def create_app(
     async def list_models(agent: str | None = None) -> dict:
         """Model choices for the dispatch form. Provider discovery is best-effort; configured
         defaults are returned even when `/models` is unavailable or no PM API key is set."""
-        from foreman.shared.llm import LLMClient
+        return await _list_model_choices(agent=agent)
 
-        models: list[dict] = []
-        seen: set[str] = set()
-
-        def add(model_id: str, source: str) -> None:
-            mid = (model_id or "").strip()
-            if mid and mid not in seen:
-                seen.add(mid)
-                models.append({"id": mid, "source": source})
-
-        agent_cfg = cfg.agents.get((agent or "").strip())
-        if agent_cfg is not None:
-            add(agent_cfg.model, "agent")
-        settings = _runtime_llm_settings()
-        add(settings.get("model", ""), "pm")
-        error = ""
-        client = LLMClient(cfg, settings_resolver=_runtime_llm_settings)
-        try:
-            for model_id in await client.list_models():
-                add(model_id, "provider")
-        except Exception as exc:  # noqa: BLE001 — optional UI discovery must never break dispatch
-            error = f"{type(exc).__name__}: {str(exc)[:160]}"
-        finally:
-            await client.aclose()
-        return {
-            "models": models,
-            "default": (agent_cfg.model if agent_cfg is not None else "") or settings.get("model", ""),
-            "error": error,
-        }
+    @app.post("/api/models/preview")
+    async def preview_models(body: _LLMSettingsBody) -> dict:
+        """Model choices for the settings form using unsaved provider/base URL/key fields."""
+        if body.provider is not None and body.provider.strip() not in ("openai", "anthropic"):
+            raise HTTPException(status_code=400, detail="bad_provider")
+        return await _list_model_choices(settings=_preview_llm_settings(body))
 
     @app.get("/api/workspaces")
     async def list_workspaces() -> list[dict]:
