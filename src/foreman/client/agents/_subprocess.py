@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -60,6 +61,20 @@ class SubprocessCliAdapter:
         (it has no CLI flag for it), while codex carries effort in the command instead (§4.2)."""
         return {}
 
+    def _resolve_argv(self, cmd: list[str]) -> list[str]:
+        """Resolve argv[0] via PATHEXT so a Windows shim is found (the issue-#3 launch failure).
+
+        ``asyncio.create_subprocess_exec`` → Windows ``CreateProcess``, which does NOT search PATHEXT
+        for ``.cmd``/``.bat`` (it only auto-appends ``.exe``). So a bare ``"claude"`` raises
+        ``FileNotFoundError [WinError 2]`` even when ``claude.CMD`` is installed and works in the
+        shell (npm installs CLIs as ``.CMD`` shims). ``shutil.which`` respects PATHEXT — we spawn the
+        resolved absolute path. If it can't be resolved we keep the original name so it still errors
+        as genuinely-not-installed. POSIX is unaffected (which finds the same executable)."""
+        if not cmd:
+            return cmd
+        resolved = shutil.which(cmd[0])
+        return [resolved, *cmd[1:]] if resolved else cmd
+
     async def _spawn(
         self, cmd: list[str], workspace: Path, env: dict[str, str] | None = None
     ) -> asyncio.subprocess.Process:
@@ -73,7 +88,7 @@ class SubprocessCliAdapter:
         if env:
             kwargs["env"] = {**os.environ, **env}
         return await asyncio.create_subprocess_exec(
-            *cmd,
+            *self._resolve_argv(cmd),
             cwd=str(workspace),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

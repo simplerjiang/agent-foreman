@@ -5,6 +5,8 @@ Lifecycle is inherited from SubprocessCliAdapter; shared fakes live in _fakes.py
 
 from __future__ import annotations
 
+import shutil
+
 from _fakes import FakeProc, fake_adapter
 
 from foreman.client.agents.claude_code import ClaudeCodeAdapter
@@ -70,6 +72,22 @@ async def test_no_effort_no_env(tmp_path):
     a = fake_adapter(ClaudeCodeAdapter, _cfg(), proc)
     await a.start("do X", tmp_path, "sess1")
     assert not a.spawned_env  # empty → no env override (inherit parent only)
+
+
+def test_resolve_argv_uses_pathext_shim(monkeypatch):
+    # Windows installs npm CLIs as claude.CMD; create_subprocess_exec("claude") → WinError 2 (issue
+    # #3). We resolve argv[0] via shutil.which (PATHEXT-aware) and spawn the absolute path instead.
+    a = ClaudeCodeAdapter(_cfg())
+    monkeypatch.setattr(shutil, "which",
+                        lambda name: r"C:\npm\claude.CMD" if name == "claude" else None)
+    assert a._resolve_argv(["claude", "-p", "x"]) == [r"C:\npm\claude.CMD", "-p", "x"]
+
+
+def test_resolve_argv_keeps_original_when_unresolved(monkeypatch):
+    # Genuinely-not-installed: which returns None → keep the bare name so it still errors as missing.
+    a = ClaudeCodeAdapter(_cfg())
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert a._resolve_argv(["claude", "-p", "x"]) == ["claude", "-p", "x"]
 
 
 async def test_stop_terminates_and_deregisters(tmp_path):
