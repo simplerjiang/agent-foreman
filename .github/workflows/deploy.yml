@@ -69,6 +69,7 @@ jobs:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           if [ -z "${SSH_KEY:-}" ] || [ -z "${HOST:-}" ] || [ -z "${USER:-}" ]; then
@@ -79,6 +80,22 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -T 15 "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          # Drive the deploy via a remote script over stdin so the token-seeding runs INDEPENDENTLY
+          # of whichever remote_deploy.sh version is on disk. The first rollout after this change
+          # still runs the OLD on-disk script, which would otherwise restart the new fail-closed
+          # server before its own seeding block exists (codex finding). $1 = the gated commit SHA.
           ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
             -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "$USER@$HOST" \
-            'bash -lc "/opt/foreman/app/deploy/remote_deploy.sh"'
+            'bash -s' "$DEPLOY_SHA" <<'REMOTE'
+          set -euo pipefail
+          ENV=/opt/foreman/app/.env
+          CUR=$(grep -E '^FOREMAN_AUTH_TOKEN=' "$ENV" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '[:space:]' || true)
+          if [ -z "${CUR:-}" ]; then
+            echo "== seeding missing FOREMAN_AUTH_TOKEN (pre-deploy) =="
+            TOK=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
+            [ -f "$ENV" ] && sed -i '/^FOREMAN_AUTH_TOKEN=/d' "$ENV" || true
+            echo "FOREMAN_AUTH_TOKEN=$TOK" >> "$ENV"
+            chmod 600 "$ENV"
+          fi
+          DEPLOY_SHA="$1" /opt/foreman/app/deploy/remote_deploy.sh
+          REMOTE
