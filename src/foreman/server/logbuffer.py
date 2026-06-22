@@ -27,6 +27,13 @@ class RingBufferHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            # Dedup across the logger hierarchy: the SAME LogRecord object is passed to this
+            # handler at each ancestor it's attached to (e.g. `uvicorn.error` propagates up to
+            # `uvicorn`, both tapped), which would buffer it twice. Tagging the record on first
+            # sight and skipping repeats guarantees exactly one entry regardless of overlap.
+            if getattr(record, "_foreman_buffered", False):
+                return
+            record._foreman_buffered = True  # type: ignore[attr-defined]
             self._buf.append(
                 {
                     "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
@@ -53,10 +60,12 @@ class RingBufferHandler(logging.Handler):
         self._buf.clear()
 
 
-# Loggers we tap: root (catches the app's own ``foreman.*`` loggers, which propagate) plus
-# uvicorn's (which set ``propagate=False``, so they'd otherwise bypass root — these carry the
-# request/access + error lines the operator most wants to see).
-_TAP_LOGGERS = ("", "uvicorn", "uvicorn.error", "uvicorn.access")
+# Loggers we tap: root (catches the app's own ``foreman.*`` loggers, which propagate) plus the two
+# uvicorn loggers that uvicorn configures with ``propagate=False`` (so they'd otherwise bypass
+# root): ``uvicorn`` (general + error — ``uvicorn.error`` propagates UP into it, so tapping the
+# child too would just double-log) and ``uvicorn.access`` (the request lines). emit() also dedups
+# by record identity as a belt-and-suspenders against any hierarchy overlap.
+_TAP_LOGGERS = ("", "uvicorn", "uvicorn.access")
 
 # Module singleton: one buffer shared by every app instance. Using a singleton (rather than
 # per-app) avoids stacking a fresh handler each time create_app() runs (e.g. across many

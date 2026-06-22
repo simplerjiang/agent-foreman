@@ -104,3 +104,14 @@ def test_logs_captures_recent_records(tmp_path):
     # level filter narrows it
     errs = client.get("/api/admin/logs?level=ERROR", headers=h).json()["records"]
     assert all(r["level"] == "ERROR" for r in errs)
+
+
+def test_logs_no_duplicate_across_logger_hierarchy(tmp_path):
+    """A record on a child logger (e.g. uvicorn.error → uvicorn → root) must be buffered ONCE,
+    even though the same handler is attached at multiple levels of the chain (codex finding)."""
+    client, auth, _ = _setup(tmp_path)
+    h = _login(client, auth, "boss", "sup3rsecret", "admin")
+    logging.getLogger("uvicorn.error").warning("dup-check-marker-7f3a")
+    recs = client.get("/api/admin/logs?limit=300", headers=h).json()["records"]
+    matches = [r for r in recs if "dup-check-marker-7f3a" in r["msg"]]
+    assert len(matches) == 1, f"expected exactly one buffered copy, got {len(matches)}"
