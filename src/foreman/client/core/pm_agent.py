@@ -17,6 +17,7 @@ from foreman.shared.llm import LLMClient, Message
 VALID_AGENTS = {"claude-code", "codex"}
 VALID_EFFORTS = {"low", "medium", "high"}
 MAX_EVENT_CHARS = 20000
+MAX_COMPACT_CHARS = 12000
 
 PLAN_SYSTEM = (
     "You are the PM agent for Foreman. Analyze the user's task before any coding CLI is launched. "
@@ -35,6 +36,13 @@ REVIEW_SYSTEM = (
     "send to the same agent. Be strict: missing tests, unverified behavior, obvious errors, or partial "
     "implementation means done=false. Respond with ONLY JSON: "
     '{"done": bool, "summary": str, "reason": str, "follow_up": str}.'
+)
+
+COMPACT_SYSTEM = (
+    "You are the PM agent compacting a Foreman coding session. Compress the timeline into a concise "
+    "working context for future user follow-ups. Keep durable facts: user intent, decisions made, "
+    "files or commands changed, verification results, unresolved risks, and exact next context. "
+    "Drop repetitive raw logs. Do not invent completion. Return plain text only."
 )
 
 
@@ -130,11 +138,16 @@ def build_plan_prompt(
     requested_agent: str,
     requested_model: str,
     requested_effort: str,
+    context: str = "",
 ) -> str:
-    return "\n\n".join(
+    parts = [
+        f"# User task\n{goal}",
+        f"# Workspace\n{workspace}",
+    ]
+    if context:
+        parts.append(f"# Existing session context\n{context}")
+    parts.extend(
         [
-            f"# User task\n{goal}",
-            f"# Workspace\n{workspace}",
             "# Enabled agents\n" + json.dumps(available_agents, ensure_ascii=False),
             "# User dispatch preference\n"
             + json.dumps(
@@ -147,6 +160,7 @@ def build_plan_prompt(
             ),
         ]
     )
+    return "\n\n".join(parts)
 
 
 def events_to_text(rows: list[Any], *, max_chars: int = MAX_EVENT_CHARS) -> str:
@@ -196,10 +210,15 @@ def build_review_prompt(
     *,
     run_count: int,
     max_runs: int,
+    context: str = "",
 ) -> str:
-    return "\n\n".join(
+    parts = [
+        f"# Original user task\n{goal}",
+    ]
+    if context:
+        parts.append(f"# Existing session context\n{context}")
+    parts.extend(
         [
-            f"# Original user task\n{goal}",
             "# PM plan\n"
             + json.dumps(
                 {
@@ -215,6 +234,15 @@ def build_review_prompt(
             f"# Captured timeline\n{timeline or '(no agent output captured)'}",
         ]
     )
+    return "\n\n".join(parts)
+
+
+def build_compact_prompt(goal: str, timeline: str, *, existing_context: str = "") -> str:
+    parts = [f"# Session goal\n{goal}"]
+    if existing_context:
+        parts.append(f"# Prior compacted context\n{existing_context}")
+    parts.append(f"# Timeline to compact\n{timeline}")
+    return "\n\n".join(parts)
 
 
 class PMAgent:
@@ -233,6 +261,7 @@ class PMAgent:
         requested_model: str,
         requested_effort: str,
         fallback_instruction: str,
+        context: str = "",
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_plan_prompt(
@@ -242,6 +271,7 @@ class PMAgent:
             requested_agent=requested_agent,
             requested_model=requested_model,
             requested_effort=requested_effort,
+            context=context,
         )
         raw = await self.llm.complete(
             [Message("system", system), Message("user", prompt)], json_mode=True
@@ -263,15 +293,26 @@ class PMAgent:
         timeline: str,
         *,
         run_count: int,
+        context: str = "",
     ) -> PMReview:
         system = REVIEW_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_review_prompt(
-            goal, plan, timeline, run_count=run_count, max_runs=self.max_runs
+            goal, plan, timeline, run_count=run_count, max_runs=self.max_runs, context=context
         )
         raw = await self.llm.complete(
             [Message("system", system), Message("user", prompt)], json_mode=True
         )
         return parse_review(raw)
+
+    async def compact(
+        self, goal: str, timeline: str, *, existing_context: str = ""
+    ) -> str:
+        system = COMPACT_SYSTEM + "\n" + language_directive(self.language)
+        prompt = build_compact_prompt(goal, timeline, existing_context=existing_context)
+        raw = await self.llm.complete(
+            [Message("system", system), Message("user", prompt)], json_mode=False
+        )
+        return _as_str(raw)[:MAX_COMPACT_CHARS]
 
 
 __all__ = [
@@ -283,4 +324,5 @@ __all__ = [
     "events_to_text",
     "build_plan_prompt",
     "build_review_prompt",
+    "build_compact_prompt",
 ]

@@ -88,7 +88,55 @@ async def test_create_persists_session_task_and_event(tmp_path):
     dispatch_events = [e for e in events if e.type == "dispatch"]
     assert len(dispatch_events) == 1
     assert dispatch_events[0].task_id == res["task_id"]
+    assert dispatch_events[0].source == "api"
     assert json.loads(dispatch_events[0].payload_json)["model"] == "sonnet"
+
+
+async def test_create_can_continue_existing_session_with_source(tmp_path):
+    store = _store(tmp_path)
+    cfg = _cfg(workspaces=[WorkspaceCfg(path="D:/proj")])
+    svc = DispatchService(cfg, store)
+    first = await svc.create("first task", source="desktop")
+    second = await svc.create(
+        "follow up", session_id=first["session_id"], source="desktop"
+    )
+
+    assert second["ok"] is True
+    assert second["continued"] is True
+    assert second["session_id"] == first["session_id"]
+    assert second["task_id"] != first["task_id"]
+    assert store.get_session(first["session_id"]).goal == "first task"
+    dispatch_events = [e for e in store.get_events(first["session_id"]) if e.type == "dispatch"]
+    assert [e.source for e in dispatch_events] == ["desktop", "desktop"]
+    assert json.loads(dispatch_events[-1].payload_json)["continued"] is True
+
+
+async def test_continue_missing_session_errors(tmp_path):
+    svc = DispatchService(_cfg(workspaces=[WorkspaceCfg(path="D:/proj")]), _store(tmp_path))
+    res = await svc.create("follow up", session_id="missing")
+    assert res["error"] == "session_not_found"
+
+
+async def test_compact_stores_context_and_emits_event(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        async def compact(self, goal, timeline, *, existing_context=""):
+            assert goal == "first task"
+            assert "agent said x" in timeline
+            return "short context"
+
+    cfg = _cfg(workspaces=[WorkspaceCfg(path="D:/proj")])
+    svc = DispatchService(cfg, store, bus=EventBus(), pm_agent=FakePM())
+    res = await svc.create("first task")
+    store.add_event(make_event("agent_output", "claude-code", res["session_id"], payload={"text": "agent said x"}))
+
+    compacted = await svc.compact(res["session_id"])
+
+    assert compacted["ok"] is True
+    assert store.get_session(res["session_id"]).plan == "short context"
+    events = store.get_events(res["session_id"])
+    assert any(e.type == "context_compact" for e in events)
 
 
 async def test_create_runs_launcher_in_background(tmp_path):
@@ -129,7 +177,7 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
                 summary="use codex",
             )
 
-        async def review(self, goal, plan, timeline, *, run_count):
+        async def review(self, goal, plan, timeline, *, run_count, context=""):
             self.reviews += 1
             assert "PM planned instruction" in plan.instruction
             if self.reviews == 1:

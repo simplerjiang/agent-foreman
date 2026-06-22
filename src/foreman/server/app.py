@@ -139,13 +139,15 @@ class _RedeemBody(BaseModel):
 
 
 class _DispatchBody(BaseModel):
-    """A task dispatched from the phone (DESIGN §5.1). workspace/agent fall back to config."""
+    """A task dispatched from the web/API. workspace/agent fall back to config/session."""
 
     goal: str
     workspace: str = ""
     agent: str = ""
     model: str = ""
     effort: str = ""  # reasoning level / 速度档位: low | medium | high ("" = the CLI default)
+    session_id: str = ""  # when set, append a new task to an existing conversation
+    source: str = ""  # desktop | phone | api
 
 
 class _BriefBody(BaseModel):
@@ -718,6 +720,21 @@ def create_app(
             raise HTTPException(status_code=503, detail="no local store")
         return [_row_to_dict(e) for e in store.get_events(session_id)]
 
+    @app.post("/api/sessions/{session_id}/compact")
+    async def compact_session(session_id: str) -> dict:
+        """Compact a session timeline into a stored context summary for later follow-ups."""
+        if dispatcher is None or not hasattr(dispatcher, "compact"):
+            raise HTTPException(status_code=503, detail="no dispatcher")
+        res = await dispatcher.compact(session_id)
+        if res.get("ok"):
+            return res
+        status = {
+            "session_not_found": 404,
+            "no_context": 400,
+            "no_store": 503,
+        }.get(res.get("error", ""), 400)
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
     @app.get("/api/settings/language")
     async def get_language() -> dict:
         """Effective UI/output language: config_kv override (if a store) else the config default."""
@@ -904,6 +921,8 @@ def create_app(
             agent=body.agent or None,
             model=body.model or None,
             effort=body.effort or None,
+            session_id=body.session_id or None,
+            source=body.source or None,
         )
         if res.get("ok"):
             return res
@@ -912,6 +931,7 @@ def create_app(
             "unknown_agent": 400,
             "no_workspace": 400,
             "workspace_not_allowed": 400,
+            "session_not_found": 404,
             "no_store": 503,
         }.get(res.get("error", ""), 400)
         raise HTTPException(status_code=status, detail=res.get("error", "decline"))

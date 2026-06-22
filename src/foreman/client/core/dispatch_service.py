@@ -17,6 +17,7 @@ convention used across P2–P4: the intake + persistence + event are delivered a
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from foreman.shared.config import Config
 from foreman.shared.events import make_event, utc_now_iso
 
 from ..dispatch import build_session_task
+from ..store.models import Task
 from .pm_agent import PMPlan, events_to_text
 
 # Bound the goal so a multi-megabyte string can't inflate every later briefing's token cost (and
@@ -34,6 +36,8 @@ MAX_GOAL_CHARS = 8000
 # (claude CLAUDE_CODE_EFFORT_LEVEL / codex model_reasoning_effort) so a level can never make codex
 # reject the run. Anything else (incl. "") → "" = the CLI/model default. (DESIGN §4.2.)
 VALID_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high"})
+VALID_SOURCES: frozenset[str] = frozenset({"desktop", "phone", "api"})
+MAX_CONTEXT_CHARS = 12000
 
 
 def _within_any(path: str, roots: list[str]) -> bool:
@@ -85,6 +89,8 @@ class DispatchService:
         agent: str | None = None,
         model: str | None = None,
         effort: str | None = None,
+        session_id: str | None = None,
+        source: str | None = None,
     ) -> dict:
         """Validate + persist a new Root Session/Task; emit ``dispatch``; optionally launch.
 
@@ -99,16 +105,31 @@ class DispatchService:
             return {"ok": False, "error": "empty_goal"}
         if self.store is None or not hasattr(self.store, "add_session"):
             return {"ok": False, "error": "no_store"}
-        resolved_agent, err = self._resolve_agent(agent)
+        existing_session = self._get_existing_session(session_id)
+        if session_id and existing_session is None:
+            return {"ok": False, "error": "session_not_found"}
+        resolved_agent, err = self._resolve_agent(
+            agent or (existing_session.agent_type if existing_session else "")
+        )
         if err:
             return {"ok": False, "error": err}
-        ws, err = self._resolve_workspace(workspace)
+        ws, err = self._resolve_workspace(
+            workspace or (existing_session.workspace if existing_session else "")
+        )
         if err:
             return {"ok": False, "error": err}
         resolved_model = self._resolve_model(resolved_agent, model)
         resolved_effort = self._resolve_effort(resolved_agent, effort)
 
-        session, task = build_session_task(self.store, goal, ws, resolved_agent)
+        if existing_session is None:
+            session, task = build_session_task(self.store, goal, ws, resolved_agent)
+            continued = False
+        else:
+            session = existing_session
+            task = self._append_task(session.id, goal)
+            continued = True
+            if hasattr(self.store, "update_session"):
+                self.store.update_session(session.id, status="running", updated_at=self._clock())
         pm_enabled = self.pm_agent is not None and self.runner is not None
         deferred = self.launcher is None and not pm_enabled
         await self._emit_dispatch(
@@ -121,6 +142,8 @@ class DispatchService:
             resolved_effort,
             deferred,
             pm_enabled,
+            self._resolve_source(source),
+            continued,
         )
         if pm_enabled:
             launch_task = asyncio.create_task(
@@ -158,6 +181,50 @@ class DispatchService:
             "effort": resolved_effort,
             "execution_deferred": deferred,
             "pm_agent": pm_enabled,
+            "continued": continued,
+        }
+
+    async def compact(self, session_id: str) -> dict:
+        """Compact a session's event timeline into ``Session.plan`` for later follow-up prompts."""
+        if self.store is None or not hasattr(self.store, "get_session"):
+            return {"ok": False, "error": "no_store"}
+        session = self.store.get_session(session_id)
+        if session is None:
+            return {"ok": False, "error": "session_not_found"}
+        rows = self.store.get_events(session_id) if hasattr(self.store, "get_events") else []
+        timeline = events_to_text(rows)
+        if not timeline:
+            return {"ok": False, "error": "no_context"}
+        existing = (session.plan or "").strip()
+        if self.pm_agent is not None and hasattr(self.pm_agent, "compact"):
+            summary = await self.pm_agent.compact(
+                session.goal, timeline, existing_context=existing
+            )
+        else:
+            summary = _fallback_compact(timeline, existing)
+        summary = (summary or "").strip()[:MAX_CONTEXT_CHARS]
+        if not summary:
+            return {"ok": False, "error": "no_context"}
+        if hasattr(self.store, "update_session"):
+            self.store.update_session(session_id, plan=summary, updated_at=self._clock())
+        await self._persist_then_publish(
+            make_event(
+                "context_compact",
+                "pm-agent" if self.pm_agent is not None else "foreman",
+                session_id,
+                payload={
+                    "summary": summary,
+                    "original_chars": len(timeline),
+                    "summary_chars": len(summary),
+                },
+            )
+        )
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "summary": summary,
+            "original_chars": len(timeline),
+            "summary_chars": len(summary),
         }
 
     def _resolve_agent(self, agent: str | None) -> tuple[str, str]:
@@ -175,6 +242,30 @@ class DispatchService:
         if enabled:
             return enabled[0], ""
         return "claude-code", ""
+
+    def _get_existing_session(self, session_id: str | None):
+        sid = (session_id or "").strip()
+        if not sid:
+            return None
+        if self.store is None or not hasattr(self.store, "get_session"):
+            return None
+        return self.store.get_session(sid)
+
+    def _append_task(self, session_id: str, instruction: str) -> Task:
+        now = self._clock()
+        task = Task(
+            id=uuid.uuid4().hex,
+            session_id=session_id,
+            instruction=instruction,
+            status="running",
+            created_at=now,
+            updated_at=now,
+        )
+        return self.store.add_task(task)
+
+    def _resolve_source(self, source: str | None) -> str:
+        value = (source or "").strip().lower()
+        return value if value in VALID_SOURCES else "api"
 
     def _resolve_model(self, agent: str, model: str | None) -> str:
         override = (model or "").strip()
@@ -223,10 +314,12 @@ class DispatchService:
         effort: str,
         deferred: bool,
         pm_enabled: bool = False,
+        source: str = "api",
+        continued: bool = False,
     ) -> None:
         event = make_event(
             "dispatch",
-            "phone",
+            source,
             session_id,
             task_id=task_id,
             payload={
@@ -238,6 +331,7 @@ class DispatchService:
                 # launching the agent is the two-way control layer (P4) when no launcher is wired.
                 "execution_deferred": deferred,
                 "pm_agent": pm_enabled,
+                "continued": continued,
             },
         )
         await self._persist_then_publish(event)
@@ -279,6 +373,7 @@ class DispatchService:
             for name, cfg in sorted(self.cfg.agents.items())
             if cfg.enabled
         ] or [{"name": agent, "model": model, "effort": effort}]
+        context = self._session_context(session_id)
         plan = await self.pm_agent.plan(
             goal,
             workspace=workspace,
@@ -286,7 +381,8 @@ class DispatchService:
             requested_agent=agent,
             requested_model=model,
             requested_effort=effort,
-            fallback_instruction=_fallback_instruction(goal),
+            fallback_instruction=_fallback_instruction(goal, context),
+            context=context,
         )
         await self._emit_pm_plan(session_id, task_id, plan)
         handle = await self.runner.launch(
@@ -297,7 +393,9 @@ class DispatchService:
         await self.runner.wait(handle)
         while True:
             timeline = events_to_text(self.store.get_events(session_id))
-            review = await self.pm_agent.review(goal, plan, timeline, run_count=run_count)
+            review = await self.pm_agent.review(
+                goal, plan, timeline, run_count=run_count, context=context
+            )
             await self._emit_pm_review(session_id, task_id, review, run_count)
             if review.done:
                 return
@@ -372,6 +470,12 @@ class DispatchService:
             )
             await self._persist_then_publish(event)
 
+    def _session_context(self, session_id: str) -> str:
+        if self.store is None or not hasattr(self.store, "get_session"):
+            return ""
+        session = self.store.get_session(session_id)
+        return (session.plan or "").strip()[:MAX_CONTEXT_CHARS] if session else ""
+
     async def _persist_then_publish(self, event) -> None:
         """Persist-first (so a late UI can backfill) then publish — mirrors Runner/Gate."""
         if self.store is not None and hasattr(self.store, "add_event"):
@@ -423,9 +527,19 @@ class DispatchService:
 __all__ = ["DispatchService"]
 
 
-def _fallback_instruction(goal: str) -> str:
-    return (
+def _fallback_instruction(goal: str, context: str = "") -> str:
+    parts = [
         "You are working under Foreman's PM supervision. Complete the user task, verify the result, "
-        "and report honestly what changed and what could not be verified.\n\n"
-        f"User task:\n{goal}"
-    )
+        "and report honestly what changed and what could not be verified.",
+    ]
+    if context:
+        parts.append(f"Existing session context:\n{context}")
+    parts.append(f"User task:\n{goal}")
+    return "\n\n".join(parts)
+
+
+def _fallback_compact(timeline: str, existing: str = "") -> str:
+    text = "\n".join(part for part in [existing, timeline] if part).strip()
+    if len(text) <= MAX_CONTEXT_CHARS:
+        return text
+    return "...[context compacted to latest events]...\n" + text[-MAX_CONTEXT_CHARS:]

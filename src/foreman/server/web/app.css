@@ -133,6 +133,26 @@ body {
   background: transparent;
 }
 
+.topbar-main {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.mobile-menu-button {
+  display: none;
+}
+
+.drawer-sidebar {
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.nav-drawer .ant-drawer-body {
+  padding: 0;
+}
+
 .content {
   width: min(1180px, 100%);
   margin: 0 auto;
@@ -200,6 +220,15 @@ body {
   .sidebar {
     position: static !important;
     height: auto;
+  }
+
+  .mobile-menu-button {
+    display: inline-flex;
+  }
+
+  .drawer-sidebar .session-panel {
+    height: calc(100vh - 178px);
+    max-height: none;
   }
 
   .session-panel {

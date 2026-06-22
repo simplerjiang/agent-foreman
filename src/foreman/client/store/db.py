@@ -81,6 +81,28 @@ class Store:
         with self.session() as s:
             return s.get(Session, session_id)
 
+    def update_session(
+        self,
+        session_id: str,
+        *,
+        plan: str | None = None,
+        status: str | None = None,
+        updated_at: str | None = None,
+    ) -> Session | None:
+        with self.session() as s:
+            row = s.get(Session, session_id)
+            if row is None:
+                return None
+            if plan is not None:
+                row.plan = plan
+            if status is not None:
+                row.status = status
+            if updated_at is not None:
+                row.updated_at = updated_at
+            s.add(row)
+            s.commit()
+        return row
+
     def add_task(self, task: Task) -> Task:
         with self.session() as s:
             s.add(task)

@@ -72,7 +72,7 @@ class SubprocessCliAdapter:
         as genuinely-not-installed. POSIX is unaffected (which finds the same executable)."""
         if not cmd:
             return cmd
-        resolved = shutil.which(cmd[0])
+        resolved = _which_spawnable(cmd[0])
         return [resolved, *cmd[1:]] if resolved else cmd
 
     async def _spawn(
@@ -201,3 +201,26 @@ class SubprocessCliAdapter:
             proc.kill()
         except ProcessLookupError:
             pass  # already gone
+
+
+def _which_spawnable(name: str) -> str | None:
+    """Resolve a command to a path that ``create_subprocess_exec`` can launch directly."""
+    if os.name != "nt":
+        return shutil.which(name)
+    found = shutil.which(name)
+    if found and Path(found).suffix.lower() in {".exe", ".cmd", ".bat", ".com"}:
+        return found
+    path = Path(name)
+    if path.suffix.lower() in {".exe", ".cmd", ".bat", ".com"}:
+        return str(path) if path.exists() or path.parent == Path(".") else found
+    if path.suffix:
+        return None
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        base = Path(directory) / name
+        for ext in (".cmd", ".exe", ".bat", ".com"):
+            candidate = base.with_suffix(ext)
+            if candidate.is_file():
+                return str(candidate)
+    return None

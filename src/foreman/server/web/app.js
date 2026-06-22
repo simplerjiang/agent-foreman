@@ -61,6 +61,15 @@
       dispatchNoWorkspace: "未配置工作区：请到设置页添加项目路径。",
       dispatchFailed: "下发失败",
       dispatched: "已下发",
+      continued: "已发送到当前会话",
+      continueSession: "继续当前会话",
+      newSession: "新会话",
+      compactContext: "压缩上下文",
+      compacting: "压缩中...",
+      compactDone: "上下文已压缩",
+      compactFailed: "压缩失败",
+      sessionNotFound: "会话不存在。",
+      noContext: "没有可压缩的上下文。",
       workspaceNotAllowed: "这个工作区不在已配置的工作区列表里。",
       unknownAgent: "这个 agent 没有启用。",
       emptyGoal: "任务不能为空。",
@@ -133,6 +142,7 @@
       ev_gate: "闸门",
       ev_action_executed: "已执行",
       ev_action_undone: "已回退",
+      ev_context_compact: "上下文压缩",
       evError: "出错",
       evDone: "已完成",
       evDeferred: "已记录，等待执行层接管",
@@ -195,6 +205,15 @@
       dispatchNoWorkspace: "No workspace configured. Add a project path in Settings.",
       dispatchFailed: "Dispatch failed",
       dispatched: "Dispatched",
+      continued: "Sent to current session",
+      continueSession: "Continue current session",
+      newSession: "New session",
+      compactContext: "Compact context",
+      compacting: "Compacting...",
+      compactDone: "Context compacted",
+      compactFailed: "Compact failed",
+      sessionNotFound: "Session not found.",
+      noContext: "No context to compact.",
       workspaceNotAllowed: "This workspace is not in the configured workspace list.",
       unknownAgent: "This agent is not enabled.",
       emptyGoal: "Task cannot be empty.",
@@ -267,6 +286,7 @@
       ev_gate: "Gate",
       ev_action_executed: "Executed",
       ev_action_undone: "Undone",
+      ev_context_compact: "Context compacted",
       evError: "Error",
       evDone: "Done",
       evDeferred: "recorded, waiting for execution layer",
@@ -310,6 +330,7 @@
     gate: "SafetyCertificateOutlined",
     action_executed: "ThunderboltOutlined",
     action_undone: "UndoOutlined",
+    context_compact: "CompressOutlined",
   };
 
   const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
@@ -393,11 +414,18 @@
       no_workspace: d.dispatchNoWorkspace,
       workspace_not_allowed: d.workspaceNotAllowed,
       unknown_agent: d.unknownAgent,
+      session_not_found: d.sessionNotFound,
+      no_context: d.noContext,
       no_dispatcher: d.noDispatcher,
       "no dispatcher": d.noDispatcher,
       no_llm: d.briefNoLlm,
     };
     return map[detail] || detail || `${error.status || ""}`;
+  }
+
+  function clientSource() {
+    const ua = navigator.userAgent || "";
+    return /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(ua) ? "phone" : "desktop";
   }
 
   function modelChoiceOptions(rows) {
@@ -444,6 +472,8 @@
           payload.reason,
           payload.follow_up,
         ].filter(Boolean).join("\n");
+      case "context_compact":
+        return payload.summary || "";
       case "briefing":
         return payload.title || "";
       case "stop":
@@ -517,6 +547,7 @@
     const [languageLoaded, setLanguageLoaded] = useState(Boolean(storedLang));
     const d = I18N[lang];
     const [view, setView] = useState("workspace");
+    const [navOpen, setNavOpen] = useState(false);
     const [dark, setDark] = useState(
       window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
     );
@@ -543,6 +574,7 @@
     const [model, setModel] = useState("");
     const [effort, setEffort] = useState("");
     const [dispatchStatus, setDispatchStatus] = useState("");
+    const [compactStatus, setCompactStatus] = useState("");
     const [briefStatus, setBriefStatus] = useState("");
     const [llm, setLlm] = useState({
       provider: "openai", model: "", base_url: "", api_key_set: true, api_key: "",
@@ -663,19 +695,22 @@
         setDispatchStatus(d.emptyGoal);
         return;
       }
-      if (!workspace) {
+      const activeSession = sessions.find((s) => s.id === selectedSession);
+      const targetWorkspace = activeSession ? (activeSession.workspace || workspace) : workspace;
+      if (!targetWorkspace) {
         setDispatchStatus(d.dispatchNoWorkspace);
         setView("settings");
         return;
       }
-      const body = { goal: task.trim(), workspace };
+      const body = { goal: task.trim(), workspace: targetWorkspace, source: clientSource() };
+      if (activeSession) body.session_id = activeSession.id;
       if (agent) body.agent = agent;
       if (model.trim()) body.model = model.trim();
       if (effort) body.effort = effort;
       try {
         const res = await api("/api/tasks", { method: "POST", body });
         setTask("");
-        setDispatchStatus(d.dispatched);
+        setDispatchStatus(activeSession ? d.continued : d.dispatched);
         await loadSessions();
         if (res.session_id) openTimeline(res.session_id);
       } catch (e) {
@@ -691,6 +726,22 @@
         await loadReports();
       } catch (e) {
         setBriefStatus(`${d.briefFailed}: ${friendlyError(e, d)}`);
+      }
+    });
+
+    const [compacting, runCompact] = useLoader(async () => {
+      if (!selectedSession) {
+        setCompactStatus(d.selectSessionHint);
+        return;
+      }
+      setCompactStatus(d.compacting);
+      try {
+        await api(`/api/sessions/${encodeURIComponent(selectedSession)}/compact`, { method: "POST" });
+        setCompactStatus(d.compactDone);
+        await loadSessions();
+        await openTimeline(selectedSession);
+      } catch (e) {
+        setCompactStatus(`${d.compactFailed}: ${friendlyError(e, d)}`);
       }
     });
 
@@ -1030,30 +1081,27 @@
           <${AppBridge} onReady=${setUi} />
           <${A.Layout} className="app-shell">
             <${A.Layout.Sider} width=${292} breakpoint="lg" collapsedWidth=${0} theme=${dark ? "dark" : "light"} className="sidebar">
-              <div className="brand">
-                <div>
-                  <strong>Foreman</strong>
-                  <span>${d.productSubtitle}</span>
-                </div>
-                <${A.Tag} color=${status.online ? "success" : "error"}>${status.text}</${A.Tag}>
-              </div>
-              <${A.Menu} theme=${dark ? "dark" : "light"} mode="inline" selectedKeys=${[view]} onClick=${({ key }) => setView(key)} items=${menuItems} />
-              <div className="session-panel">
-                <${A.Typography.Text} type="secondary" className="sidebar-label">${d.sessions}</${A.Typography.Text}>
-                <${SessionList}
-                  groups=${workspaceGroups}
-                  selected=${selectedSession}
-                  onSelect=${openTimeline}
-                  d=${d}
-                  lang=${lang}
-                />
-              </div>
+              <${NavContent}
+                dark=${dark}
+                status=${status}
+                d=${d}
+                menuItems=${menuItems}
+                view=${view}
+                onView=${setView}
+                groups=${workspaceGroups}
+                selected=${selectedSession}
+                onSelect=${openTimeline}
+                lang=${lang}
+              />
             </${A.Layout.Sider}>
             <${A.Layout}>
               <${A.Layout.Header} className="topbar">
-                <div>
-                  <${A.Typography.Title} level=${3} style=${{ margin: 0 }}>${selectedTitle}</${A.Typography.Title}>
-                  <${A.Typography.Text} type="secondary">${selectedSubtitle}</${A.Typography.Text}>
+                <div className="topbar-main">
+                  <${A.Button} className="mobile-menu-button" icon=${icon("MenuOutlined")} onClick=${() => setNavOpen(true)} />
+                  <div>
+                    <${A.Typography.Title} level=${3} style=${{ margin: 0 }}>${selectedTitle}</${A.Typography.Title}>
+                    <${A.Typography.Text} type="secondary">${selectedSubtitle}</${A.Typography.Text}>
+                  </div>
                 </div>
                 <${A.Space}>
                   <${A.Button} icon=${icon(dark ? "BulbOutlined" : "BulbFilled")} onClick=${() => setDark(!dark)} />
@@ -1086,6 +1134,10 @@
                     runDispatch=${runDispatch}
                     dispatchStatus=${dispatchStatus}
                     selectedSessionRow=${selectedSessionRow}
+                    clearSession=${() => { setSelectedSession(""); setEvents([]); setCompactStatus(""); }}
+                    compacting=${compacting}
+                    runCompact=${runCompact}
+                    compactStatus=${compactStatus}
                     events=${events}
                     debugMode=${debugMode}
                   />`}
@@ -1151,6 +1203,22 @@
               </${A.Layout.Content}>
             </${A.Layout}>
           </${A.Layout}>
+          <${A.Drawer} placement="left" open=${navOpen} onClose=${() => setNavOpen(false)} width=${292} closable=${false} className="nav-drawer">
+            <div className="drawer-sidebar">
+              <${NavContent}
+                dark=${dark}
+                status=${status}
+                d=${d}
+                menuItems=${menuItems}
+                view=${view}
+                onView=${(key) => { setView(key); setNavOpen(false); }}
+                groups=${workspaceGroups}
+                selected=${selectedSession}
+                onSelect=${(id) => { openTimeline(id); setNavOpen(false); }}
+                lang=${lang}
+              />
+            </div>
+          </${A.Drawer}>
           <${A.Modal}
             title=${d.stepDetail}
             open=${detailOpen}
@@ -1173,6 +1241,34 @@
           </${A.Modal}>
         </${A.App}>
       </${A.ConfigProvider}>`;
+  }
+
+  function NavContent({ dark, status, d, menuItems, view, onView, groups, selected, onSelect, lang }) {
+    return html`
+      <div className="brand">
+        <div>
+          <strong>Foreman</strong>
+          <span>${d.productSubtitle}</span>
+        </div>
+        <${A.Tag} color=${status.online ? "success" : "error"}>${status.text}</${A.Tag}>
+      </div>
+      <${A.Menu}
+        theme=${dark ? "dark" : "light"}
+        mode="inline"
+        selectedKeys=${[view]}
+        onClick=${({ key }) => onView(key)}
+        items=${menuItems}
+      />
+      <div className="session-panel">
+        <${A.Typography.Text} type="secondary" className="sidebar-label">${d.sessions}</${A.Typography.Text}>
+        <${SessionList}
+          groups=${groups}
+          selected=${selected}
+          onSelect=${onSelect}
+          d=${d}
+          lang=${lang}
+        />
+      </div>`;
   }
 
   function SessionList({ groups, selected, onSelect, d, lang }) {
@@ -1208,11 +1304,17 @@
     const {
       d, lang, workspaces, workspace, setWorkspace, agents, agent, setAgent, model, setModel,
       modelOptions, modelLoading, refreshModels, effort, setEffort, task, setTask, agentDefault,
-      dispatching, runDispatch, dispatchStatus, selectedSessionRow, events, debugMode,
+      dispatching, runDispatch, dispatchStatus, selectedSessionRow, clearSession, compacting,
+      runCompact, compactStatus, events, debugMode,
     } = props;
     return html`
       <div className="view-grid">
-        <${A.Card} title=${d.dispatch} extra=${workspace ? html`<${A.Tag} color="blue">${shortPath(workspace, d)}</${A.Tag}>` : null}>
+        <${A.Card} title=${d.dispatch} extra=${html`
+          <${A.Space} wrap>
+            ${selectedSessionRow && html`<${A.Tag} color="green">${d.continueSession}</${A.Tag}>`}
+            ${(selectedSessionRow && selectedSessionRow.workspace) || workspace ? html`<${A.Tag} color="blue">${shortPath(selectedSessionRow && selectedSessionRow.workspace ? selectedSessionRow.workspace : workspace, d)}</${A.Tag}>` : null}
+            ${selectedSessionRow && html`<${A.Button} size="small" onClick=${clearSession}>${d.newSession}</${A.Button}>`}
+          </${A.Space}>`}>
           ${!workspaces.length && html`<${A.Alert} type="warning" showIcon message=${d.workspaceEmpty} description=${d.dispatchNoWorkspace} style=${{ marginBottom: 16 }} />`}
           <${A.Form} layout="vertical" onFinish=${runDispatch}>
             <${A.Form.Item} label=${d.taskGoal}>
@@ -1281,8 +1383,13 @@
         </${A.Card}>
         <${A.Card}
           title=${d.timeline}
-          extra=${selectedSessionRow ? html`<${A.Tag}>${formatDateTime(selectedSessionRow.updated_at || selectedSessionRow.created_at, lang)}</${A.Tag}>` : html`<${A.Typography.Text} type="secondary">${d.selectSessionHint}</${A.Typography.Text}>`}
+          extra=${selectedSessionRow ? html`
+            <${A.Space} wrap>
+              <${A.Button} size="small" loading=${compacting} icon=${icon("CompressOutlined")} onClick=${runCompact}>${d.compactContext}</${A.Button}>
+              <${A.Tag}>${formatDateTime(selectedSessionRow.updated_at || selectedSessionRow.created_at, lang)}</${A.Tag}>
+            </${A.Space}>` : html`<${A.Typography.Text} type="secondary">${d.selectSessionHint}</${A.Typography.Text}>`}
         >
+          ${compactStatus && html`<${A.Alert} type=${compactStatus.includes(d.compactFailed) ? "error" : "info"} showIcon message=${compactStatus} style=${{ marginBottom: 12 }} />`}
           <${Timeline} events=${events} d=${d} lang=${lang} debugMode=${debugMode} />
         </${A.Card}>
       </div>`;

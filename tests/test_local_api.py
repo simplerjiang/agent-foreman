@@ -123,9 +123,24 @@ def test_workspace_settings_can_dispatch_without_restart(tmp_path):
     assert rows == [{"path": path, "name": "Project"}]
     assert cfg.workspaces[0].path == path
 
-    res = c.post("/api/tasks", json={"goal": "do x", "workspace": path})
+    res = c.post("/api/tasks", json={"goal": "do x", "workspace": path, "source": "desktop"})
     assert res.status_code == 200
     assert res.json()["workspace"] == path
+    session_id = res.json()["session_id"]
+    events = c.get(f"/api/sessions/{session_id}/events").json()
+    assert events[-1]["source"] == "desktop"
+
+    follow = c.post(
+        "/api/tasks",
+        json={"goal": "do y", "workspace": path, "session_id": session_id, "source": "desktop"},
+    )
+    assert follow.status_code == 200
+    assert follow.json()["session_id"] == session_id
+    assert follow.json()["continued"] is True
+
+    compact = c.post(f"/api/sessions/{session_id}/compact")
+    assert compact.status_code == 200
+    assert compact.json()["summary"]
 
     assert c.delete("/api/workspaces", params={"path": path}).json() == []
     assert c.get("/api/workspaces").json() == []

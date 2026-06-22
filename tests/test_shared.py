@@ -25,6 +25,9 @@ def test_config_loads_defaults(tmp_path):
     cfg = load_config(tmp_path / "does-not-exist.yaml")
     assert cfg.server.port == 8787
     assert cfg.llm.provider in {"openai", "anthropic"}
+    assert sorted(cfg.agents) == ["claude-code", "codex"]
+    assert cfg.agents["claude-code"].command == "claude"
+    assert cfg.agents["codex"].command == "codex"
 
 
 def test_config_loads_env_next_to_config(tmp_path, monkeypatch):

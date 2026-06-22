@@ -9,6 +9,7 @@ import shutil
 
 from _fakes import FakeProc, fake_adapter
 
+from foreman.client.agents import _subprocess as subproc
 from foreman.client.agents.claude_code import ClaudeCodeAdapter
 from foreman.shared.config import AgentCfg
 
@@ -83,10 +84,23 @@ def test_resolve_argv_uses_pathext_shim(monkeypatch):
     assert a._resolve_argv(["claude", "-p", "x"]) == [r"C:\npm\claude.CMD", "-p", "x"]
 
 
+def test_resolve_argv_prefers_cmd_when_powershell_shim_exists(monkeypatch, tmp_path):
+    cmd = tmp_path / "claude.cmd"
+    ps1 = tmp_path / "claude.ps1"
+    cmd.write_text("@echo off\n", encoding="utf-8")
+    ps1.write_text("Write-Output nope\n", encoding="utf-8")
+    a = ClaudeCodeAdapter(_cfg())
+    monkeypatch.setattr(subproc.os, "name", "nt", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: str(ps1) if name == "claude" else None)
+    assert a._resolve_argv(["claude", "-p", "x"]) == [str(cmd), "-p", "x"]
+
+
 def test_resolve_argv_keeps_original_when_unresolved(monkeypatch):
     # Genuinely-not-installed: which returns None → keep the bare name so it still errors as missing.
     a = ClaudeCodeAdapter(_cfg())
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setenv("PATH", "")
     assert a._resolve_argv(["claude", "-p", "x"]) == ["claude", "-p", "x"]
 
 

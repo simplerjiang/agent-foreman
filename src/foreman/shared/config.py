@@ -112,6 +112,14 @@ class AgentCfg(BaseModel):
     effort: str = ""
 
 
+def default_agents() -> dict[str, AgentCfg]:
+    """Local exe defaults: usable even when no config.yaml is found beside the process."""
+    return {
+        "claude-code": AgentCfg(command="claude", enabled=True, mode="headless"),
+        "codex": AgentCfg(command="codex", enabled=True, mode="headless"),
+    }
+
+
 class MonitorCfg(BaseModel):
     hooks_enabled: bool = True
     git_watch: bool = True
@@ -223,6 +231,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     if p.exists():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     cfg = Config(**data)
+    if not cfg.agents:
+        cfg.agents = default_agents()
     cfg.config_path = str(p)
     cfg.env_path = str(p.with_name(".env"))
     cfg.secrets = Secrets(_env_file=cfg.env_path)  # re-read env / sibling .env
