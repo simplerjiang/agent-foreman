@@ -530,11 +530,18 @@ def test_build_serve_app_team_mode_wires_relay_and_auth(tmp_path):
     assert app.state.store is None  # no client-style local store on the relay box
     c = TestClient(app)
     assert c.get("/health").status_code == 200
-    assert c.get("/api/sessions").status_code == 503  # personal session endpoint: no local store
-    # the team display-cache endpoint exists but is account-scoped → 401 without a login token
-    assert c.get("/api/cache/sessions").status_code == 401
+    # In team mode every operational endpoint requires a valid account token at the guard, so an
+    # unauthenticated request is blocked (401) before reaching the handler (issue #1 P0 / codex).
+    assert c.get("/api/sessions").status_code == 401
+    assert c.get("/api/cache/sessions").status_code == 401  # account-scoped → 401 without a token
     # auth IS configured, so bad creds are a 401 (not the 503 "auth not configured" of personal mode)
     assert c.post("/api/auth/login", json={"username": "x", "password": "y"}).status_code == 401
+    # WITH a valid token, the personal session endpoint still 503s — the relay box has no local store
+    app.state.auth.create_account("boss", "password1", role="admin")
+    tok = c.post("/api/auth/login", json={"username": "boss", "password": "password1"}).json()[
+        "token"
+    ]
+    assert c.get("/api/sessions", headers={"Authorization": f"Bearer {tok}"}).status_code == 503
 
 
 def test_team_relay_multiple_processes_dial_in_routed_by_account(tmp_path):

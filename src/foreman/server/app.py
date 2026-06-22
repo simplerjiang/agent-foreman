@@ -237,13 +237,16 @@ def _is_operational_path(path: str) -> bool:
     return path.startswith("/api/") or path == "/hooks"
 
 
-def _effective_scheme(request: Request) -> str:
-    """Client-facing scheme, trusting a proxy's X-Forwarded-Proto (Cloudflare terminates TLS, so
-    request.url.scheme is http on the proxy→app hop). Used for the http→https redirect so it does
-    not loop behind a TLS-terminating proxy."""
-    fwd = request.headers.get("x-forwarded-proto", "")
-    if fwd:
-        return fwd.split(",")[0].strip().lower()
+def _effective_scheme(request: Request, *, trust_proxy: bool = False) -> str:
+    """Client-facing scheme. X-Forwarded-Proto is consulted ONLY when ``trust_proxy`` is set (a
+    trusted proxy like the Cloudflare tunnel fronts the app and terminates TLS, so request.url.scheme
+    is http on the proxy→app hop). That header is client-spoofable, so on a directly-reachable app an
+    attacker could otherwise send `X-Forwarded-Proto: https` to skip the http→https redirect (codex
+    finding). Without trust_proxy, use the socket scheme."""
+    if trust_proxy:
+        fwd = request.headers.get("x-forwarded-proto", "")
+        if fwd:
+            return fwd.split(",")[0].strip().lower()
     return (request.url.scheme or "http").lower()
 
 
@@ -375,7 +378,10 @@ def create_app(
 
     def _access_authorized(request: Request) -> bool:
         if auth is not None:
-            return True  # team mode: per-route account guards enforce auth
+            # Team mode: require a VALID account token at the middleware. Most routes also call
+            # require_account, but a few (e.g. GET /api/settings/language|autonomy) don't — gating
+            # here closes that gap so no operational endpoint answers unauthenticated (codex finding).
+            return auth.resolve_token(_bearer_token(request)) is not None
         if not _shared_token:
             return True  # personal local mode (exposure blocked at startup)
         return _secrets.compare_digest(_bearer_token(request), _shared_token)
@@ -404,7 +410,9 @@ def create_app(
     @app.middleware("http")
     async def _guard(request: Request, call_next):
         # 1) optional http→https redirect (defense-in-depth; prefer doing this at the proxy — P2).
-        if cfg.server.force_https and _effective_scheme(request) == "http":
+        # Only trust X-Forwarded-Proto behind a trusted proxy, else a direct client could spoof it.
+        scheme = _effective_scheme(request, trust_proxy=cfg.server.trust_proxy_headers)
+        if cfg.server.force_https and scheme == "http":
             target = request.url.replace(scheme="https")
             resp: Response = RedirectResponse(str(target), status_code=308)
             _security_headers(resp)

@@ -231,9 +231,10 @@ def test_hsts_emitted_only_when_enabled(tmp_path):
     assert "Strict-Transport-Security" in TestClient(create_app(cfg)).get("/health").headers
 
 
-def test_force_https_redirects_http(tmp_path):
+def test_force_https_redirects_http_behind_trusted_proxy(tmp_path):
     cfg = load_config(tmp_path / "none.yaml")
     cfg.server.force_https = True
+    cfg.server.trust_proxy_headers = True  # a trusted proxy fronts the app
     c = TestClient(create_app(cfg))
     # X-Forwarded-Proto: http → redirect to https; don't follow (TestClient can't reach https).
     r = c.get("/health", headers={"X-Forwarded-Proto": "http"}, follow_redirects=False)
@@ -241,9 +242,20 @@ def test_force_https_redirects_http(tmp_path):
     assert r.headers["location"].startswith("https://")
 
 
-def test_force_https_passthrough_when_already_https(tmp_path):
+def test_force_https_passthrough_when_already_https_behind_trusted_proxy(tmp_path):
     cfg = load_config(tmp_path / "none.yaml")
     cfg.server.force_https = True
+    cfg.server.trust_proxy_headers = True
     c = TestClient(create_app(cfg))
     r = c.get("/health", headers={"X-Forwarded-Proto": "https"})
     assert r.status_code == 200  # no redirect loop behind a TLS-terminating proxy
+
+
+def test_force_https_ignores_spoofed_proto_from_direct_client(tmp_path):
+    # Without a trusted proxy, X-Forwarded-Proto is attacker-spoofable and must be ignored — a
+    # direct http client can't send `X-Forwarded-Proto: https` to skip the redirect (codex finding).
+    cfg = load_config(tmp_path / "none.yaml")
+    cfg.server.force_https = True  # trust_proxy_headers stays False (direct exposure)
+    c = TestClient(create_app(cfg))
+    r = c.get("/health", headers={"X-Forwarded-Proto": "https"}, follow_redirects=False)
+    assert r.status_code == 308  # socket scheme is http → still redirected, spoof ignored

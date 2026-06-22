@@ -264,6 +264,20 @@ def _client(tmp_path, with_auth=True, **auth_kw):
     return TestClient(app), auth
 
 
+def test_team_mode_unguarded_api_route_still_requires_token(tmp_path):
+    # In team mode the middleware must require a valid account token for EVERY operational route,
+    # including ones that don't call require_account themselves (GET /api/settings/autonomy) —
+    # otherwise they'd answer unauthenticated on a public team server (codex finding).
+    client, auth = _client(tmp_path)
+    assert client.get("/api/settings/autonomy").status_code == 401  # no token → blocked
+    auth.create_account("alice", "pw")
+    token = client.post("/api/auth/login", json={"username": "alice", "password": "pw"}).json()[
+        "token"
+    ]
+    r = client.get("/api/settings/autonomy", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200  # valid token → allowed
+
+
 def test_login_endpoint_429_after_lockout(tmp_path):
     client, auth = _client(tmp_path, max_login_failures=2, login_lockout_seconds=900)
     auth.create_account("alice", "pw")
