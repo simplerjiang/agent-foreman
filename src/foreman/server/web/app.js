@@ -137,10 +137,35 @@ function urlBase64ToUint8Array(base64String) {
   return out;
 }
 
+// ── Toast: transient feedback for actions with no inline UI (e.g. enable-push) ──────────────
+// The host is created lazily so index.html needs no extra markup. role=alert for errors so
+// screen readers announce failures; status for the rest.
+function toast(message, type = 'info') {
+  let host = document.getElementById('toast-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toast-host';
+    document.body.appendChild(host);
+  }
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  el.textContent = message;
+  host.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));  // animate in after layout
+  setTimeout(() => {
+    el.classList.remove('show');
+    el.addEventListener('transitionend', () => el.remove(), { once: true });
+    setTimeout(() => el.remove(), 400);  // fallback if transitionend never fires
+  }, 3200);
+}
+
 async function enablePush() {
   const btn = document.getElementById('enable-push');
+  const dict = I18N[currentLang];
   if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
     console.warn('Web Push not supported in this browser');
+    toast(dict.pushUnsupported, 'error');
     return;
   }
   try {
@@ -148,11 +173,13 @@ async function enablePush() {
     const { key, enabled } = await r.json();
     if (!enabled || !key) {
       console.warn('Web Push not configured on the server (no VAPID key)');
+      toast(dict.pushNotConfigured, 'error');
       return;
     }
     const perm = await Notification.requestPermission();
     if (perm !== 'granted') {
       console.warn('Notification permission not granted:', perm);
+      toast(dict.pushDenied, 'error');
       return;
     }
     const reg = await navigator.serviceWorker.ready;
@@ -163,14 +190,33 @@ async function enablePush() {
         applicationServerKey: urlBase64ToUint8Array(key),
       });
     }
-    await fetch('/api/push/subscribe', {
+    const resp = await fetch('/api/push/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sub.toJSON ? sub.toJSON() : sub),
     });
+    if (!resp.ok) {
+      console.warn('push subscribe rejected by server:', resp.status);
+      toast(dict.pushFailed, 'error');
+      return;
+    }
     if (btn) { btn.textContent = '🔔 ✓'; btn.disabled = true; }
+    toast(dict.pushEnabled, 'success');
+    // Fire a real system notification right now: it both confirms success and proves the
+    // OS-level pipeline works, which a banner alone can't. Missing icon degrades gracefully.
+    try {
+      await reg.showNotification('Foreman', {
+        body: dict.pushEnabledBody,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        tag: 'foreman-push-test',
+      });
+    } catch (e) {
+      console.warn('test notification failed (subscription still active)', e);
+    }
   } catch (e) {
     console.warn('enable push failed', e);
+    toast(dict.pushFailed, 'error');
   }
 }
 
@@ -747,7 +793,10 @@ const I18N = {
         defnBody: '内容', defnActivate: '保存即启用', save: '保存', cancel: '取消', edit: '编辑',
         activate: '启用', delete: '删除', confirmDelete: '确定删除这条秘方？',
         saveFailed: '保存失败', exportDefinitions: '⬇ 导出', importDefinitions: '⬆ 导入',
-        exportFailed: '导出失败', importFailed: '导入失败', imported: '已导入' },
+        exportFailed: '导出失败', importFailed: '导入失败', imported: '已导入',
+        pushEnabled: '通知已开启', pushEnabledBody: '你将在这里收到决策与审批提醒。',
+        pushUnsupported: '此浏览器不支持通知', pushNotConfigured: '服务器未配置推送',
+        pushDenied: '通知权限被拒绝（请在浏览器设置中允许）', pushFailed: '开启通知失败' },
   en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
         dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
         rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
@@ -761,7 +810,10 @@ const I18N = {
         defnBody: 'Body', defnActivate: 'Activate on save', save: 'Save', cancel: 'Cancel', edit: 'Edit',
         activate: 'Activate', delete: 'Delete', confirmDelete: 'Delete this recipe?',
         saveFailed: 'Save failed', exportDefinitions: '⬇ Export', importDefinitions: '⬆ Import',
-        exportFailed: 'Export failed', importFailed: 'Import failed', imported: 'Imported' },
+        exportFailed: 'Export failed', importFailed: 'Import failed', imported: 'Imported',
+        pushEnabled: 'Notifications enabled', pushEnabledBody: "You'll get decision & approval alerts here.",
+        pushUnsupported: 'Notifications not supported in this browser', pushNotConfigured: 'Push not configured on the server',
+        pushDenied: 'Notification permission denied (allow it in browser settings)', pushFailed: 'Could not enable notifications' },
 };
 let currentLang = 'zh';
 

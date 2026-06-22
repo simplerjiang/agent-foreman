@@ -210,6 +210,40 @@ input:focus, select:focus, textarea:focus {
   border-radius: var(--radius-sm);
 }
 
+/* ── Toast: transient action feedback, stacked above the floating push button ──────────── */
+#toast-host {
+  position: fixed;
+  bottom: 3.6rem;
+  right: 1.1rem;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: flex-end;
+  pointer-events: none;
+}
+.toast {
+  max-width: min(20rem, calc(100vw - 2.2rem));
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 0.82rem;
+  line-height: 1.3;
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast-success { border-color: transparent; background: var(--ok-bg); color: var(--ok); }
+.toast-error   { border-color: transparent; background: var(--bad-bg); color: var(--bad); }
+@media (prefers-reduced-motion: reduce) {
+  .toast { transition: opacity 0.18s ease; transform: none; }
+  .toast.show { transform: none; }
+}
+
 /* ── Header right cluster + autonomy/language ──────────────────────────── */
 .header-right { display: flex; gap: 0.45rem; align-items: center; }
 #autonomy { gap: 0.4rem; }
