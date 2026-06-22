@@ -35,7 +35,7 @@
 
 3. **自测**：跑 pytest + ruff + 类型检查 + import 检查；确保 app 能起（`foreman serve` 起 `/health`、各包能 import）。全绿再往下。
 
-4. **部署**（仅 server 侧任务）：`git push` 到 main → GitHub Actions 自动部署 → `curl -fsS https://foreman.kongsites.com/health` 验证 200。⚠️ **绝不碰 :80 的 LLM 网关（cliproxy.service），只动 foreman.service**。
+4. **部署**（仅 server 侧任务）：`git push` 到 main → GitHub Actions 自动部署 → `curl -fsS https://<你的域名>/health` 验证 200。⚠️ **只动 `foreman.service`，绝不碰同机的其它服务**。
 
 5. **浏览器验收**（产出 UI 时）：Playwright headless 或浏览器 MCP 打开 app，**实操**复现该任务验收标准，截图 + 读控制台确认。
 

@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0b0e14" />
+  <meta name="theme-color" content="#F7F8FA" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0E0E10" media="(prefers-color-scheme: dark)" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>Foreman</title>
-  <link rel="stylesheet" href="/app.css" />
+  <link rel="stylesheet" href="/app.css?v=__VER__" />
 </head>
 <body>
   <header>
@@ -142,6 +143,6 @@
   <button id="enable-push" class="floating" data-i18n="enablePush">Enable notifications</button>
 
   <!-- P0 placeholder UI. P3/P4 wires this to /ws, /api/*, and Web Push. -->
-  <script src="/app.js" type="module"></script>
+  <script src="/app.js?v=__VER__" type="module"></script>
 </body>
 </html>

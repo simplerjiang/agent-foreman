@@ -10,11 +10,12 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets as _secrets
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -22,8 +23,15 @@ from foreman.shared.autonomy import level_label, normalize_level
 from foreman.shared.config import Config
 from foreman.shared.events import AgentEvent, EventBus
 from foreman.shared.i18n import normalize as normalize_lang
+from foreman.shared.ratelimit import SlidingWindowLimiter
 
 from .. import __version__
+
+# Auth brute-force speed bump (DESIGN §8.2): at most N login/redeem attempts per client IP per
+# window, then 429. Generous enough never to bite a real user; tight enough to make online password
+# guessing impractical on top of the PBKDF2 per-attempt cost.
+_AUTH_RL_MAX_ATTEMPTS = 10
+_AUTH_RL_WINDOW_SECONDS = 300
 
 
 class _LanguageBody(BaseModel):
@@ -149,6 +157,30 @@ class _DefinitionImportBody(BaseModel):
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
+def _compute_asset_ver() -> str:
+    """Cache-busting token stamped into the PWA's ``?v=…`` asset URLs. Changes every deploy so
+    Cloudflare's edge cache (and browsers) refetch the CSS/JS instead of serving a stale copy.
+    Prefers the deployed git commit (the server deploy does ``git reset --hard origin/main``),
+    falling back to the package version if git isn't available (e.g. a non-repo install)."""
+    repo = Path(__file__).resolve().parents[3]
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(repo), capture_output=True, text=True, timeout=3, check=True,
+        )
+        sha = out.stdout.strip()
+        if sha:
+            return sha
+    except Exception:  # noqa: BLE001 — git missing / not a repo / timeout → fall back
+        pass
+    return __version__
+
+
+# Computed once at import (server start). The deploy restarts the service after the git reset,
+# so this reflects the just-deployed commit.
+ASSET_VER = _compute_asset_ver()
+
+
 def _session_to_dict(s) -> dict:
     return {
         "id": s.id, "goal": s.goal, "status": s.status, "workspace": s.workspace,
@@ -246,6 +278,34 @@ def _ensure_safe_exposure(
         )
 
 
+def _client_ip(request: Request, *, trust_proxy: bool = False) -> str:
+    """Client IP for rate-limit bucketing. Only consult CF-Connecting-IP / X-Forwarded-For when
+    ``trust_proxy`` is set (a trusted proxy like the Cloudflare tunnel fronts the app) — those
+    headers are client-spoofable, so an attacker on a directly-reachable server could otherwise
+    rotate them to evade the limiter and bloat its key map. Otherwise use the socket peer."""
+    if trust_proxy:
+        cf = request.headers.get("cf-connecting-ip", "").strip()
+        if cf:
+            return cf
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            return xff.split(",")[0].strip()
+    client = request.client
+    return client.host if client else "unknown"
+
+
+def _event_visible_to(ev: AgentEvent, *, session_id: str | None, account_id: str | None) -> bool:
+    """Whether a bus event should be streamed to a /ws subscriber.
+
+    ``session_id`` (optional) narrows to one session. ``account_id`` is set only in team mode, where
+    the relay box's bus carries cross-tenant ``health`` events: it HARD-scopes the stream to the
+    caller's account — an event must be tagged with that account_id to be forwarded — so one tenant
+    never sees another's machine/health frames (DESIGN §8.4)."""
+    if account_id is not None and (ev.payload or {}).get("account_id") != account_id:
+        return False
+    return session_id is None or ev.session_id == session_id
+
+
 def create_app(
     cfg: Config,
     store: Any = None,
@@ -279,6 +339,30 @@ def create_app(
     app.state.briefings = briefings
     app.state.definitions = definitions
     app.state.cache = cache
+    # One limiter per app instance, shared across requests (team-mode brute-force speed bump, §8.2).
+    auth_limiter = SlidingWindowLimiter(_AUTH_RL_MAX_ATTEMPTS, _AUTH_RL_WINDOW_SECONDS)
+    app.state.auth_limiter = auth_limiter
+
+    def _auth_bucket(request: Request, scope: str) -> str:
+        ip = _client_ip(request, trust_proxy=cfg.server.trust_proxy_headers)
+        return f"{scope}:{ip}"
+
+    def _guard_auth(request: Request, scope: str) -> str:
+        """429 if this client IP is over the recent-FAILURE budget for ``scope`` (login/redeem);
+        otherwise return the bucket key. Peeks only — the check itself never counts, and only
+        failures are recorded (by the caller), so a correct credential is never pre-blocked unless
+        the IP already failed too many times, and personal-mode 503s never accrue toward the limit.
+
+        POLICY (intentional, not an oversight): once an IP exceeds the failure budget it is locked for
+        the rest of the window — a *correct* credential from that IP is also 429'd until the window
+        rolls off. Checking the credential first instead would (a) re-enable unbounded PBKDF2 CPU
+        burn per guess and (b) make the throttle pointless against online guessing. We keep it
+        per-IP (never per-account) so an attacker can't lock a victim out by guessing their username;
+        reset-on-success + failure-only counting keep the blast radius to a genuinely abusive IP."""
+        bucket = _auth_bucket(request, scope)
+        if auth_limiter.over_limit(bucket):
+            raise HTTPException(status_code=429, detail="too many attempts")
+        return bucket
 
     # ── access guard (issue #1 P0): no operational endpoint is reachable unauthenticated ───────
     # Personal mode (no AuthManager injected): a configured shared token (FOREMAN_AUTH_TOKEN) gates
@@ -687,16 +771,24 @@ def create_app(
         )
 
     @app.post("/api/auth/login")
-    async def auth_login(body: _LoginBody) -> dict:
+    async def auth_login(body: _LoginBody, request: Request) -> dict:
         """PWA user login → bearer token (DESIGN §8.2). 401 on bad credentials (generic, no
-        leak of which field was wrong); 503 if no auth manager (personal mode)."""
+        leak of which field was wrong); 429 when a client IP exceeds the attempt budget (brute-force
+        guard, §8.2); 503 if no auth manager (personal mode)."""
+        bucket = _guard_auth(request, "login")
         if auth is None:
             raise HTTPException(status_code=503, detail="auth not configured")
         res = auth.login(body.username, body.password)
         if res.get("ok"):
+            # A successful login clears this IP's bucket, so a legitimate user (incl. a shared
+            # NAT/egress IP) isn't throttled by their own earlier failures — only consecutive
+            # failures accumulate.
+            auth_limiter.reset(bucket)
             return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
+        auth_limiter.record(bucket)  # count the failure toward the per-IP budget (main #11)
         if res.get("error") == "locked":
-            # Brute-force throttle tripped — uniform per submitted username, so no enumeration leak.
+            # Per-USERNAME lockout tripped (defense-in-depth alongside the per-IP limiter): uniform
+            # per submitted username, so no enumeration leak (issue #1 follow-up).
             raise HTTPException(status_code=429, detail="too many attempts, try again later")
         raise HTTPException(status_code=401, detail="invalid credentials")
 
@@ -831,15 +923,19 @@ def create_app(
         return auth.system_health()
 
     @app.post("/api/auth/redeem")
-    async def auth_redeem(body: _RedeemBody) -> dict:
+    async def auth_redeem(body: _RedeemBody, request: Request) -> dict:
         """Redeem an admin's invite (NO auth — this is how a new user bootstraps): set the
         password, activate the account, and get logged straight in (§8.2). 400 on a bad/spent/
-        expired code or a too-short password; 503 if no auth manager (personal mode)."""
+        expired code or a too-short password; 429 when a client IP exceeds the attempt budget
+        (brute-force guard, §8.2); 503 if no auth manager (personal mode)."""
+        bucket = _guard_auth(request, "redeem")
         if auth is None:
             raise HTTPException(status_code=503, detail="auth not configured")
         res = auth.redeem_invite(body.code, body.password)
         if res.get("ok"):
+            auth_limiter.reset(bucket)  # a good redemption clears this IP's bucket
             return {"token": res["token"], "account_id": res["account_id"], "role": res["role"]}
+        auth_limiter.record(bucket)  # count only the failed redemption
         raise HTTPException(status_code=400, detail=res.get("error", "decline"))
 
     @app.post("/hooks")
@@ -868,19 +964,36 @@ def create_app(
 
     @app.websocket("/ws")
     async def ws_endpoint(
-        websocket: WebSocket, session_id: str | None = None, token: str = ""
+        websocket: WebSocket, session_id: str | None = None, token: str | None = None
     ) -> None:
         """Stream events: backlog for ?session_id (from the store), then live from the bus.
 
-        Authorized like the REST surface (issue #1 P0): the access token rides a ?token= query
-        param since browsers can't set an Authorization header on a WebSocket. Unauthorized →
-        accept-then-close(1008) rather than a bare upgrade refusal."""
-        if not _ws_authorized(token):
+        Authorized like the REST surface — the access token rides a ?token= query param since
+        browsers can't set an Authorization header on a WebSocket; unauthorized → accept-then-
+        close(1008). Two layers (defense-in-depth):
+          • Team mode (auth manager injected): the relay box's bus carries cross-tenant ``health``
+            events, so the token MUST resolve to an account and the stream is hard-filtered to it —
+            never an open firehose (§8.4, main #11).
+          • Personal mode (no auth manager): the shared access token gates the connection when one
+            is configured (issue #1 P0)."""
+        caller_account_id: str | None = None
+        if auth is not None:
+            account = auth.resolve_token(token or "")
+            if account is None:
+                await websocket.accept()
+                await websocket.close(code=1008)  # policy violation: unauthenticated
+                return
+            caller_account_id = account.id
+        elif not _ws_authorized(token or ""):
             await websocket.accept()
-            await websocket.close(code=1008)
+            await websocket.close(code=1008)  # personal-mode shared-token guard (issue #1 P0)
             return
         await websocket.accept()
-        if store is not None and session_id:
+        # Backlog replay is personal-mode only: team-mode events aren't account-tagged at the row
+        # level, so replaying a store here couldn't be account-scoped. In team mode `store` is None
+        # anyway; gating on caller_account_id is None makes that a hard invariant, not a coincidence
+        # (defence-in-depth against a future auth+store combo — §8.4).
+        if store is not None and session_id and caller_account_id is None:
             for e in store.get_events(session_id):
                 await websocket.send_json(_row_to_dict(e))
         q = bus.subscribe_queue()
@@ -888,7 +1001,9 @@ def create_app(
         async def pump() -> None:
             while True:
                 ev = await q.get()
-                if session_id is None or ev.session_id == session_id:
+                if _event_visible_to(
+                    ev, session_id=session_id, account_id=caller_account_id
+                ):
                     await websocket.send_json(_event_to_dict(ev))
 
         async def watch_disconnect() -> None:
@@ -917,8 +1032,27 @@ def create_app(
             return
         await relay.serve(websocket)
 
-    # Serve the PWA if present (mounted last so it doesn't shadow API routes).
+    # Serve the PWA if present (mounted last so it doesn't shadow API routes). The HTML entry
+    # pages go through a thin wrapper that stamps ASSET_VER into their ``?v=__VER__`` asset tokens
+    # so every deploy busts Cloudflare's edge cache for the CSS/JS. HTML itself is served dynamically
+    # (never edge-cached), so the new tokens reach browsers immediately. Other assets (css/js/icons)
+    # fall through to StaticFiles below.
     if WEB_DIR.exists():
+        def _render_page(name: str) -> HTMLResponse:
+            html = (WEB_DIR / name).read_text(encoding="utf-8").replace("__VER__", ASSET_VER)
+            return HTMLResponse(html)
+
+        async def _serve_root() -> HTMLResponse:
+            return _render_page("index.html")
+
+        app.add_api_route("/", _serve_root, include_in_schema=False)
+        for _page in ("index.html", "admin.html", "keys.html", "redeem.html"):
+            def _make(name: str):
+                async def _handler() -> HTMLResponse:
+                    return _render_page(name)
+                return _handler
+            app.add_api_route(f"/{_page}", _make(_page), include_in_schema=False)
+
         app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
     return app

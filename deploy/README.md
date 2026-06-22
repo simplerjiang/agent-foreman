@@ -31,14 +31,14 @@ Auto-deploy: push to `main` → GitHub Actions SSHes in as the unprivileged `for
 
 ## Isolation guarantees
 - Runs as a dedicated **unprivileged** `foreman` user, in `/opt/foreman/app`, in a venv.
-- Listens on **:8787** only. **Does not touch port 80 / the LLM gateway / any other service.**
+- Listens on **:8787** only. **Does not touch any other service that may share the box.**
 - `foreman` may `sudo systemctl` **only** the `foreman` service (narrow sudoers rule).
 
 ## One-time server setup (done via `deploy/bootstrap.sh`, run as root)
 1. Create the `foreman` user; install the CI deploy **public** key into its `authorized_keys`.
 2. Clone this repo to `/opt/foreman/app`; create a venv; `pip install -e .`.
-3. Write `/opt/foreman/app/config.yaml` (server-side LLM uses `http://127.0.0.1/v1` — the gateway is
-   on this same box, so it's an internal/loopback call) and `.env` (auth token).
+3. Write `/opt/foreman/app/config.yaml` (if an LLM gateway runs on the same box, the server-side LLM
+   can reach it over loopback, e.g. `http://127.0.0.1/v1`) and `.env` (auth token).
 4. Install `foreman.service`; `ufw allow 8787/tcp`; enable + start.
 
 ## GitHub Actions secrets (set these in the repo — never committed)
@@ -59,30 +59,32 @@ Set them at: **GitHub repo → Settings → Secrets and variables → Actions �
 
 ---
 
-## Live deployment facts (as of 2026-06-18)
+## Deployment shape
+
+> This repo is **public** — the concrete host / IP / domain are **not committed**. Keep the real
+> values in the git-ignored `ServerInfo.txt` and in the GitHub Actions secrets. The shape below is
+> generic on purpose.
 
 | Thing | Value |
 |-------|-------|
-| Server | `165.232.161.99` (DigitalOcean Singapore, Ubuntu 24.04, 2 GB) |
+| Server | a small Ubuntu VPS (≈1–2 GB), reachable over SSH for the deploy user |
 | Foreman service | systemd `foreman.service`, user `foreman`, dir `/opt/foreman/app`, port **:8787** |
-| Public URL | **https://foreman.kongsites.com** via a Cloudflare named tunnel (`cloudflared` service) |
-| Domain | `kongsites.com` on Cloudflare |
-| ⚠️ Co-tenant | The LLM gateway `cli-proxy-api` runs on **:80** (`cliproxy.service`) on the **same box**. Foreman never touches it. |
+| Public URL | your HTTPS URL via a Cloudflare named tunnel (`cloudflared` service) |
+| ⚠️ Co-tenant | If another service shares the box, Foreman never touches it — its sudoers rule only lets it manage `foreman.service`. |
 
 The public URL is served by Cloudflare's tunnel → `127.0.0.1:8787`, so **no inbound port besides the
-tunnel needs to be open** for phone access. (8787 is also `ufw allow`ed for direct/LAN testing.)
+tunnel needs to be open** for phone access. (8787 may also be `ufw allow`ed for direct/LAN testing.)
 
-## How to deploy (push) — and how to stay clear of the gateway
+## How to deploy (push) — and how to stay clear of co-tenant services
 
 1. **Push to `main`.** That's the whole trigger — GitHub Actions does the rest (SSH as `foreman` →
    `remote_deploy.sh` → `git reset --hard origin/main` → `pip install -e .` → `sudo systemctl restart foreman`).
 2. **Watch the run:** `gh run watch` (or repo → Actions). It's green when `systemctl is-active foreman`
    prints `active`.
-3. **Verify the app is live:** `curl -fsS https://foreman.kongsites.com/health`.
-4. **Confirm the gateway was untouched** (do this before/after any server-side change): the gateway is a
-   *separate* service on a *separate* port owned by a *separate* user. A push only ever restarts
-   `foreman.service` (the sudoers rule allows nothing else). If you ever SSH in manually, never
-   `systemctl` anything but `foreman`, and never bind/free port 80.
+3. **Verify the app is live:** `curl -fsS https://<your-domain>/health`.
+4. **Confirm any co-tenant service was untouched** (before/after any server-side change): a push only
+   ever restarts `foreman.service` (the sudoers rule allows nothing else). If you ever SSH in manually,
+   never `systemctl` anything but `foreman`, and never bind/free a port another service owns.
 
 > The PM Core itself runs on each person's **local machine**, not here — this server only hosts the
 > server-side surface (today the PWA + `/health`; later the relay hub). Pushing to `main` redeploys the
@@ -98,14 +100,14 @@ tunnel needs to be open** for phone access. (8787 is also `ufw allow`ed for dire
   `X-Content-Type-Options`, `X-Frame-Options`, and `Referrer-Policy` on every response.
 - **/health** no longer leaks the DB path by default (`server.health_show_db: false`).
 
-## Open security follow-ups (not yet done)
+## Security hardening checklist
 
-These were created when wiring up CI and are tracked here so they aren't forgotten:
+Recommended before real multi-user data lives on the box:
 
-- **Port 22 is world-open.** It was IP-restricted (DO Cloud Firewall) but opened so the GitHub-hosted
-  runner could SSH in. Tighten it back to a deploy source, or move deploys to a self-hosted/pinned egress.
-- **Root still allows password login.** Recommend key-only auth (`PasswordAuthentication no`) + `fail2ban`.
+- **Restrict SSH (port 22)** to known sources (cloud firewall / `ufw`), or deploy from a pinned egress
+  rather than a world-open GitHub-hosted runner.
+- **Key-only SSH** — disable root password login (`PasswordAuthentication no`) and add `fail2ban`.
 - **App-level access gate is now enforced** (issue #1 P0): operational endpoints require the bearer
   token in personal mode, or a per-account login in team mode. Cloudflare Access (Zero-Trust email
   gate) is still recommended as an additional outer layer before real multi-user data lives here.
-- **Rotate the Cloudflare API token** that was used for tunnel setup (it was pasted in a chat).
+- **Rotate any tokens** (e.g. the Cloudflare tunnel/API token) that may have been exposed during setup.
