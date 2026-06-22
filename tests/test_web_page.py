@@ -49,6 +49,16 @@ def test_autonomy_dial_wired_in_page():
     assert "自动执行权限" in js and "autonomyHelp" in js
 
 
+def test_debug_mode_gates_raw_data_and_event_meta_chips():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "foreman.debug" in js and "debugMode" in js and "setDebugMode" in js
+    assert "A.Switch" in js and "调试模式" in js
+    assert "debugMode && event.payload" in js and "debugMode=${debugMode}" in js
+    assert "eventMetaChips" in js and "RobotOutlined" in js and "ApiOutlined" in js
+    assert "payload.summary, payload.instruction" in js
+
+
 def test_workspace_menu_endpoint_and_frontend_wired(tmp_path):
     cfg = load_config(tmp_path / "none.yaml")
     cfg.workspaces = [WorkspaceCfg(path="D:/proj", name="Project")]

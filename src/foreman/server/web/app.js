@@ -10,6 +10,7 @@
   const TOKEN_KEY = "foreman.token";
   const LANG_KEY = "foreman.lang";
   const WORKSPACE_KEY = "foreman.workspace";
+  const DEBUG_KEY = "foreman.debug";
 
   const I18N = {
     zh: {
@@ -75,6 +76,7 @@
       addWorkspace: "添加/更新工作区",
       remove: "移除",
       uiSettings: "界面",
+      debugMode: "调试模式",
       pmSettings: "PM 大脑",
       pmProvider: "服务商",
       pmModel: "模型",
@@ -208,6 +210,7 @@
       addWorkspace: "Add/update workspace",
       remove: "Remove",
       uiSettings: "UI",
+      debugMode: "Debug mode",
       pmSettings: "PM brain",
       pmProvider: "Provider",
       pmModel: "Model",
@@ -429,14 +432,11 @@
       case "error":
         return payload.msg || payload.error || d.evError;
       case "dispatch": {
-        const extra = [payload.agent, payload.model, payload.effort].filter(Boolean).join(" / ");
         const deferred = payload.execution_deferred ? ` - ${d.evDeferred}` : "";
-        const pm = payload.pm_agent ? " / PM" : "";
-        return `${payload.goal || ""}${extra ? ` (${extra}${pm})` : pm}${deferred}`.trim();
+        return `${payload.goal || ""}${deferred}`.trim();
       }
       case "pm_plan":
-        return [payload.summary, payload.agent, payload.model, payload.effort, payload.instruction]
-          .filter(Boolean).join("\n");
+        return [payload.summary, payload.instruction].filter(Boolean).join("\n");
       case "pm_review":
         return [
           payload.done ? "done" : "needs follow-up",
@@ -453,6 +453,17 @@
       default:
         return extractAgentText(payload);
     }
+  }
+
+  function eventMetaChips(event) {
+    const payload = event.payload || {};
+    if (!["dispatch", "pm_plan"].includes(event.type)) return [];
+    return [
+      payload.pm_agent && { key: "pm", value: "PM", icon: "TeamOutlined", color: "purple" },
+      payload.agent && { key: "agent", value: payload.agent, icon: "RobotOutlined", color: "blue" },
+      payload.model && { key: "model", value: payload.model, icon: "ApiOutlined", color: "geekblue" },
+      payload.effort && { key: "effort", value: payload.effort, icon: "ThunderboltOutlined", color: "gold" },
+    ].filter(Boolean);
   }
 
   function urlBase64ToUint8Array(base64String) {
@@ -509,6 +520,7 @@
     const [dark, setDark] = useState(
       window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
     );
+    const [debugMode, setDebugMode] = useState(localStorage.getItem(DEBUG_KEY) === "1");
     const [status, setStatus] = useState({ online: false, text: "..." });
     const [workspaces, setWorkspaces] = useState([]);
     const [agents, setAgents] = useState([]);
@@ -663,8 +675,7 @@
       try {
         const res = await api("/api/tasks", { method: "POST", body });
         setTask("");
-        const bits = [res.agent, res.model, res.effort].filter(Boolean).join(" / ");
-        setDispatchStatus(`${d.dispatched}${bits ? `: ${bits}` : ""}`);
+        setDispatchStatus(d.dispatched);
         await loadSessions();
         if (res.session_id) openTimeline(res.session_id);
       } catch (e) {
@@ -719,6 +730,11 @@
       localStorage.setItem(LANG_KEY, lang);
       api("/api/settings/language", { method: "POST", body: { language: lang } }).catch(() => {});
     }, [lang, languageLoaded]);
+
+    useEffect(() => {
+      if (debugMode) localStorage.setItem(DEBUG_KEY, "1");
+      else localStorage.removeItem(DEBUG_KEY);
+    }, [debugMode]);
 
     useEffect(() => {
       if ("serviceWorker" in navigator) {
@@ -1071,6 +1087,7 @@
                     dispatchStatus=${dispatchStatus}
                     selectedSessionRow=${selectedSessionRow}
                     events=${events}
+                    debugMode=${debugMode}
                   />`}
                 ${view === "decisions" && html`
                   <${DecisionsView}
@@ -1128,6 +1145,8 @@
                     llmStatus=${llmStatus}
                     autonomy=${autonomy}
                     saveAutonomy=${saveAutonomy}
+                    debugMode=${debugMode}
+                    setDebugMode=${setDebugMode}
                   />`}
               </${A.Layout.Content}>
             </${A.Layout}>
@@ -1139,7 +1158,7 @@
             footer=${html`<${A.Button} onClick=${() => setDetailOpen(false)}>${d.back}</${A.Button}>`}
             width=${900}
           >
-            <${DetailTabs} d=${d} lang=${lang} detail=${detail} />
+            <${DetailTabs} d=${d} lang=${lang} detail=${detail} debugMode=${debugMode} />
           </${A.Modal}>
           <${A.Modal}
             title=${defnDraft && defnDraft.id ? d.edit : d.newDefinition}
@@ -1189,7 +1208,7 @@
     const {
       d, lang, workspaces, workspace, setWorkspace, agents, agent, setAgent, model, setModel,
       modelOptions, modelLoading, refreshModels, effort, setEffort, task, setTask, agentDefault,
-      dispatching, runDispatch, dispatchStatus, selectedSessionRow, events,
+      dispatching, runDispatch, dispatchStatus, selectedSessionRow, events, debugMode,
     } = props;
     return html`
       <div className="view-grid">
@@ -1264,12 +1283,12 @@
           title=${d.timeline}
           extra=${selectedSessionRow ? html`<${A.Tag}>${formatDateTime(selectedSessionRow.updated_at || selectedSessionRow.created_at, lang)}</${A.Tag}>` : html`<${A.Typography.Text} type="secondary">${d.selectSessionHint}</${A.Typography.Text}>`}
         >
-          <${Timeline} events=${events} d=${d} lang=${lang} />
+          <${Timeline} events=${events} d=${d} lang=${lang} debugMode=${debugMode} />
         </${A.Card}>
       </div>`;
   }
 
-  function Timeline({ events, d, lang }) {
+  function Timeline({ events, d, lang, debugMode }) {
     if (!events.length) {
       return html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.selectSessionHint} />`;
     }
@@ -1280,6 +1299,7 @@
         renderItem=${(event) => {
           const eventIcon = EVENT_ICON[event.type] || "InfoCircleOutlined";
           const summary = summarizeEvent(event, d);
+          const chips = eventMetaChips(event);
           return html`
             <${A.List.Item}>
               <${A.Space} wrap>
@@ -1288,8 +1308,15 @@
                 <${A.Typography.Text} type="secondary">${event.source || ""}</${A.Typography.Text}>
                 <${A.Typography.Text} type="secondary">${formatDateTime(event.ts, lang)}</${A.Typography.Text}>
               </${A.Space}>
+              ${chips.length > 0 && html`
+                <${A.Space} className="event-meta" wrap size=${[4, 4]}>
+                  ${chips.map((chip) => html`
+                    <${A.Tag} key=${chip.key} color=${chip.color} icon=${icon(chip.icon)}>${chip.value}</${A.Tag}>
+                  `)}
+                </${A.Space}>
+              `}
               ${summary && html`<pre className="event-body">${summary.length > 2000 ? `${summary.slice(0, 2000)}...` : summary}</pre>`}
-              ${event.payload && Object.keys(event.payload).length > 0 && html`
+              ${debugMode && event.payload && Object.keys(event.payload).length > 0 && html`
                 <${A.Collapse}
                   ghost
                   items=${[{ key: "raw", label: d.rawJson, children: html`<pre className="raw-body">${JSON.stringify(event.payload, null, 2)}</pre>` }]}
@@ -1347,20 +1374,23 @@
       </div>`;
   }
 
-  function DetailTabs({ d, lang, detail }) {
+  function DetailTabs({ d, lang, detail, debugMode }) {
     const raw = detail.raw || [];
+    const items = [
+      { key: "diff", label: d.codeDiff, children: renderDiff(detail.diff || { files: [] }, d) },
+    ];
+    if (debugMode) {
+      items.unshift({
+        key: "raw",
+        label: d.rawReturn,
+        children: raw.length
+          ? html`<pre className="raw-body">${raw.map((e) => `[${formatDateTime(e.ts, lang)}] ${e.type || ""} (${e.source || ""})\n${JSON.stringify(e.payload || {}, null, 2)}`).join("\n\n")}</pre>`
+          : html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.rawReturn} />`,
+      });
+    }
     return html`
       <${A.Tabs}
-        items=${[
-          {
-            key: "raw",
-            label: d.rawReturn,
-            children: raw.length
-              ? html`<pre className="raw-body">${raw.map((e) => `[${formatDateTime(e.ts, lang)}] ${e.type || ""} (${e.source || ""})\n${JSON.stringify(e.payload || {}, null, 2)}`).join("\n\n")}</pre>`
-              : html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.rawReturn} />`,
-          },
-          { key: "diff", label: d.codeDiff, children: renderDiff(detail.diff || { files: [] }, d) },
-        ]}
+        items=${items}
       />`;
   }
 
@@ -1472,6 +1502,7 @@
     d, workspaces, loadWorkspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace,
     browseWorkspaceFolder, deleteWorkspace, llm, setLlm, pmModelOptions, pmModelLoading,
     refreshPmModels, saveLlm, clearLlmKey, llmStatus, autonomy, saveAutonomy,
+    debugMode, setDebugMode,
   }) {
     return html`
       <div className="view-grid">
@@ -1584,6 +1615,9 @@
                 value=${autonomy}
                 onChangeComplete=${saveAutonomy}
               />
+            </${A.Form.Item}>
+            <${A.Form.Item} label=${d.debugMode}>
+              <${A.Switch} checked=${debugMode} onChange=${setDebugMode} />
             </${A.Form.Item}>
           </${A.Form}>
         </${A.Card}>

@@ -159,6 +159,10 @@ body {
   line-height: 1.6;
 }
 
+.event-meta {
+  margin-top: 8px;
+}
+
 .report-body {
   max-height: 420px;
 }
