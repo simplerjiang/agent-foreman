@@ -60,8 +60,12 @@ class ServerCfg(BaseModel):
     hsts_max_age: int = 31536000
     # Content-Security-Policy for the PWA (conservative default — the front-end has no inline
     # script/style, so 'self' is sufficient). Empty string disables the header (issue #1 P2).
+    # connect-src lists ws:/wss: explicitly: the live timeline opens a same-origin WebSocket, and
+    # not every browser treats `'self'` as covering the ws/wss schemes — without this the /ws
+    # stream is blocked under the default hardening header (codex acceptance finding). script-src is
+    # still locked to 'self' with no inline script, so only first-party code can open a connection.
     csp: str = (
-        "default-src 'self'; img-src 'self' data:; connect-src 'self'; "
+        "default-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; "
         "base-uri 'none'; frame-ancestors 'none'"
     )
     # Include the DB path in /health. Off by default so the public readiness probe doesn't leak the

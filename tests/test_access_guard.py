@@ -153,7 +153,11 @@ def test_security_headers_present(tmp_path):
     r = c.get("/health")
     assert r.headers.get("X-Content-Type-Options") == "nosniff"
     assert r.headers.get("X-Frame-Options") == "DENY"
-    assert "default-src 'self'" in r.headers.get("Content-Security-Policy", "")
+    csp = r.headers.get("Content-Security-Policy", "")
+    assert "default-src 'self'" in csp
+    # the live timeline opens a same-origin WebSocket — the default CSP must not block ws/wss
+    # (codex acceptance finding: 'self' alone isn't honored for ws in every browser).
+    assert "ws:" in csp and "wss:" in csp
 
 
 def test_health_does_not_leak_db_path_by_default(tmp_path):
