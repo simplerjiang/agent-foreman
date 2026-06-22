@@ -19,6 +19,7 @@ wires store + bus + pusher in.
 
 from __future__ import annotations
 
+import re
 import secrets
 import uuid
 
@@ -27,6 +28,60 @@ from foreman.shared.config import GatesCfg
 from foreman.shared.events import make_event, utc_now_iso
 
 from ..store.models import Approval
+
+# Whitespace/flag-robust backstop for irreversible commands the plain substring denylist
+# (config.GatesCfg.requires_approval) misses. The deterministic Gate is the red line (§6.7①), so it
+# must not be defeated by trivial reformatting (`rm  -rf`, `rm -fr`, `rm -i -rf`, `git -C <path>
+# push`) nor be blind to the Windows/PowerShell verbs absent from the Unix-centric default list.
+#
+# Matched against the lowercased text with runs of spaces/tabs collapsed to one space but NEWLINES
+# PRESERVED, so `[^|&;\n]*` genuinely keeps a match inside a single command segment (a later pipe /
+# `;` / `&` / newline stage can't smuggle a false hit across it). This is a *backstop*, not a
+# complete parser: it deliberately errs toward over-blocking (fail-closed, §6.7 从严默认) — a spurious
+# approval card costs one tap, a missed irreversible command may be unrecoverable. It does NOT
+# replace the Auditor LLM (the gray-area judge) or per-step checkpoints; novel obfuscations
+# (encoded payloads, custom aliases) remain the Auditor's job by design.
+_IRREVERSIBLE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p)
+    for p in (
+        # rm with a -r/-f flag ANYWHERE in the segment (so `rm -i -rf`, `rm --verbose -rf` count);
+        # the flag must be a space-led token so a filename like `report-final.txt` isn't a false hit.
+        r"\brm\b[^|&;\n]*\s-\S*[rf]",
+        r"\brm\b[^|&;\n]*\s--(?:recursive|force)\b",             # rm --recursive / --force
+        # PowerShell Remove-Item / its `ri` alias with a -Recurse/-Force flag (incl. abbreviations
+        # like -rec / -for that PowerShell accepts as unambiguous prefixes).
+        r"\b(?:remove-item|ri)\b[^|&;\n]*\s-(?:rec\w*|for\w*|r|f|fo)\b",
+        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s/[sq]\b",        # cmd recursive/quiet delete
+        r"\b(?:del|erase|rd|rmdir)\b[^|&;\n]*\s-(?:rec\w*|for\w*)\b",  # PowerShell-style flags
+        r"\bgit\b[^|&;\n]*\bpush\b",                             # git ... push (incl. -C <path>)
+        r"\bgit\b[^|&;\n]*\breset\b[^|&;\n]*--hard\b",           # discards committed/working state
+        r"\bgit\b[^|&;\n]*\bclean\b[^|&;\n]*(?:\s-\S*f|--force)",  # deletes untracked files
+        r"\bgit\b[^|&;\n]*\bcheckout\b[^|&;\n]*\s--(?:\s|$)",    # discards worktree changes
+        r"\b(?:stop-computer|restart-computer)\b",              # PowerShell shutdown/reboot
+        r"\bformat\b\s+[a-z]:",                                  # format C:
+        r"\b(?:mkfs|diskpart|format-volume|clear-disk)\b",      # filesystem/disk destroyers
+        r"\binvoke-expression\b",                               # iex: pipe-fetched code → execute
+        r"\biex\b",
+        # powershell -EncodedCommand (and its accepted abbreviations -enc … -encodedcommand),
+        # without snagging the benign -Encoding parameter.
+        r"\s-enc(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?)?)?)?)?)?(?=\s|$)",
+    )
+)
+
+
+def _matches_irreversible(low_text: str) -> bool:
+    """True if the (already-lowercased) action text trips a built-in irreversible pattern.
+
+    Normalization, in order: (0) fold CRLF/CR to LF so Windows line endings are handled like Unix;
+    (1) splice line-continuations (a backslash or PowerShell backtick right before a newline) so a
+    command split across lines is screened as one (a common bypass); (2) collapse runs of spaces/tabs
+    so 'rm  -rf' can't slip past a spacing-sensitive match; (3) KEEP remaining newlines as real segment
+    separators, so the per-segment patterns still bound each match to one command. The red line stays
+    robust to reformatting yet segment-aware (DESIGN §6.7①)."""
+    unix = low_text.replace("\r\n", "\n").replace("\r", "\n")  # CRLF/CR → LF (Windows)
+    spliced = re.sub(r"[`\\][ \t]*\n", " ", unix)              # join backslash/backtick continuations
+    norm = re.sub(r"[ \t]+", " ", spliced)
+    return any(p.search(norm) for p in _IRREVERSIBLE_PATTERNS)
 
 
 class Gate:
@@ -50,9 +105,17 @@ class Gate:
         self._clock = clock or utc_now_iso
 
     def classify(self, action_text: str) -> str:
-        """Return safe | needs-strategy | requires-approval based on configured patterns."""
+        """Return safe | needs-strategy | requires-approval.
+
+        Two layers decide requires-approval: ① the configured substring denylist (user-extensible
+        via config.yaml) and ② a built-in whitespace/flag-robust regex set that catches irreversible
+        commands the plain list misses (Windows/PowerShell verbs + spacing/order bypasses of the Unix
+        ones). The deterministic Gate is the red line (§6.7①), so it can't be defeated by trivial
+        reformatting or by running on Windows."""
         low = action_text.lower()
         if any(p.lower() in low for p in self.cfg.requires_approval):
+            return "requires-approval"
+        if _matches_irreversible(low):
             return "requires-approval"
         if any(p.lower() in low for p in self.cfg.needs_strategy):
             return "needs-strategy"
