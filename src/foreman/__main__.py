@@ -82,6 +82,7 @@ def dispatch(
     task: str = typer.Argument(..., help="The task instruction"),
     agent: str = typer.Option("claude-code", help="Agent to use: claude-code | codex"),
     model: str = typer.Option("", help="Override the driven agent model for this dispatch"),
+    effort: str = typer.Option("", help="Reasoning level for this dispatch: low | medium | high"),
     workspace: str = typer.Option(..., help="Workspace path the agent runs in"),
     config: str = typer.Option("config.yaml", help="Path to config.yaml"),
 ) -> None:
@@ -92,7 +93,9 @@ def dispatch(
 
     cfg = load_config(config)
     try:
-        session_id, n_events = asyncio.run(run_dispatch(cfg, task, workspace, agent, model=model))
+        session_id, n_events = asyncio.run(
+            run_dispatch(cfg, task, workspace, agent, model=model, effort=effort)
+        )
     except ValueError as e:
         rprint(f"[red]{e}[/]")
         raise typer.Exit(code=1) from e

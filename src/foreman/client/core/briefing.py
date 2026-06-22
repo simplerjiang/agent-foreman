@@ -181,7 +181,16 @@ class BriefingService:
                 [Message("system", system), Message("user", prompt)], json_mode=True
             )
         except Exception as exc:  # noqa: BLE001 — a phone "generate" tap shouldn't error out
-            return BriefingResult(title="简报", body_md=f"（简报生成失败：{type(exc).__name__}）")
+            # The common cause is a misconfigured PM brain (missing key / wrong base_url / model), so
+            # point the human at the fix rather than surfacing a bare exception name (issue #2).
+            return BriefingResult(
+                title="简报生成失败",
+                body_md=(
+                    f"调用 PM 大脑失败（{type(exc).__name__}）。请检查：\n"
+                    "1. `.env` 里的 `FOREMAN_LLM_API_KEY`\n"
+                    "2. 「PM 大脑」设置页的 服务商 / 模型 / 接口地址\n"
+                ),
+            )
         return parse_brief(raw)
 
     def _gather_activity(self, session_id: str | None) -> tuple[str, str]:

@@ -46,6 +46,8 @@ async function init() {
   loadCards();
   loadReports();
   loadDefinitions();
+  loadAgents();        // populate the dispatch agent/model pickers
+  loadLlmSettings();   // PM brain provider/model/base_url
   await loadApprovals();
   maybeActOnDeepLink();  // a cold one-tap (notification → openWindow with ?approval=&action=)
 }
@@ -100,16 +102,26 @@ document.getElementById('dispatch-form')?.addEventListener('submit', async (e) =
   const input = document.getElementById('task-input');
   const goal = input.value.trim();
   if (!goal) return;
+  // Optional worker pickers — only include a field when the user picked something (empty = config
+  // default, resolved server-side). The PM model is configured separately (PM brain settings).
+  const body = { goal };
+  const agent = document.getElementById('dispatch-agent')?.value || '';
+  const model = document.getElementById('dispatch-model')?.value.trim() || '';
+  const effort = document.getElementById('dispatch-effort')?.value || '';
+  if (agent) body.agent = agent;
+  if (model) body.model = model;
+  if (effort) body.effort = effort;
   try {
     const r = await fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ goal }),
+      body: JSON.stringify(body),
     });
     const data = await r.json().catch(() => ({}));
     if (r.ok) {
       input.value = '';
-      showDispatchStatus(`${I18N[currentLang].dispatched} · ${data.agent || ''}`);
+      const bits = [data.agent, data.model, data.effort].filter(Boolean).join(' · ');
+      showDispatchStatus(`${I18N[currentLang].dispatched}${bits ? ' · ' + bits : ''}`);
       loadSessions();  // a new session appears in the multi-session list
     } else {
       showDispatchStatus(`${I18N[currentLang].dispatchFailed} (${data.detail || r.status})`);
@@ -118,6 +130,40 @@ document.getElementById('dispatch-form')?.addEventListener('submit', async (e) =
     showDispatchStatus(I18N[currentLang].dispatchFailed);
   }
 });
+
+// Populate the agent picker from /api/agents (enabled CLIs + their configured model). Choosing an
+// agent prefills the model placeholder with that agent's configured default, so an empty model box
+// clearly means "use the configured default" rather than "no model".
+let agentDefaults = {};
+async function loadAgents() {
+  const sel = document.getElementById('dispatch-agent');
+  if (!sel) return;
+  try {
+    const r = await fetch('/api/agents');
+    if (!r.ok) return;
+    const agents = await r.json();
+    agentDefaults = {};
+    // Keep the leading "Default" option; append one per enabled agent.
+    for (const a of agents) {
+      agentDefaults[a.name] = a.model || '';
+      const opt = document.createElement('option');
+      opt.value = a.name;
+      opt.textContent = a.name;
+      sel.appendChild(opt);
+    }
+    updateModelPlaceholder();
+  } catch (e) { /* offline / server mode — leave just the Default option */ }
+}
+
+function updateModelPlaceholder() {
+  const sel = document.getElementById('dispatch-agent');
+  const modelEl = document.getElementById('dispatch-model');
+  if (!sel || !modelEl) return;
+  const def = agentDefaults[sel.value] || '';
+  modelEl.placeholder = def || I18N[currentLang].modelDefaultHint;
+}
+
+document.getElementById('dispatch-agent')?.addEventListener('change', updateModelPlaceholder);
 
 function showDispatchStatus(text) {
   const el = document.getElementById('dispatch-status');
@@ -408,18 +454,39 @@ function renderReports(reports) {
   }
 }
 
+function showBriefStatus(text) {
+  const el = document.getElementById('brief-status');
+  if (!el) return;
+  el.textContent = text;
+  el.hidden = false;
+}
+function hideBriefStatus() {
+  const el = document.getElementById('brief-status');
+  if (el) el.hidden = true;
+}
+
 async function generateReport() {
+  const dict = I18N[currentLang];
   const btn = document.getElementById('generate-brief');
   if (btn) btn.disabled = true;
+  hideBriefStatus();
+  showBriefStatus(dict.briefGenerating);
   try {
     const r = await fetch('/api/reports/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: 'active-briefing' }),
     });
-    if (!r.ok) console.warn('generate briefing failed', r.status);
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      // 503 no_llm is the common cause: the PM brain isn't configured (see PM brain settings + .env).
+      hideBriefStatus();
+    } else {
+      const reason = data.detail === 'no_llm' ? dict.briefNoLlm : (data.detail || r.status);
+      showBriefStatus(`${dict.briefFailed} (${reason})`);
+    }
   } catch (e) {
-    console.warn('generate briefing error', e);
+    showBriefStatus(dict.briefFailed);
   }
   if (btn) btn.disabled = false;
   loadReports();
@@ -442,22 +509,121 @@ function openTimeline(sessionId) {
   });
 }
 
-// Build rows with textContent only — agent output is untrusted, never innerHTML it.
+// Per-type presentation: an icon + a CSS class. Anything not listed falls back to a neutral dot.
+const EVENT_META = {
+  dispatch: { icon: '📤', cls: 'ev-info' },
+  agent_output: { icon: '💬', cls: 'ev-msg' },
+  stop: { icon: '✅', cls: 'ev-ok' },
+  error: { icon: '⚠️', cls: 'ev-err' },
+  briefing: { icon: '📰', cls: 'ev-info' },
+  approval: { icon: '⛔', cls: 'ev-warn' },
+  card: { icon: '🗂️', cls: 'ev-info' },
+  checkpoint: { icon: '📌', cls: 'ev-info' },
+  gate: { icon: '🚦', cls: 'ev-warn' },
+};
+
+// Pull readable text out of a claude/codex stream-json payload (many shapes — be tolerant). Returns
+// '' when there is nothing human-readable (e.g. a pure tool-call frame), so the row shows just its
+// header rather than a raw JSON blob. The full object is always available in the collapsible raw view.
+function extractAgentText(p) {
+  if (!p || typeof p !== 'object') return '';
+  if (typeof p.text === 'string') return p.text;          // codex line / non-JSON claude line
+  if (typeof p.result === 'string') return p.result;      // claude `result`
+  const msg = p.message;
+  if (msg && typeof msg === 'object') {
+    const content = msg.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      const parts = [];
+      for (const b of content) {
+        if (!b || typeof b !== 'object') continue;
+        if (typeof b.text === 'string') parts.push(b.text);
+        else if (b.type === 'tool_use') parts.push(`🔧 ${b.name || 'tool'}`);
+        else if (b.type === 'tool_result') {
+          const c = b.content;
+          if (typeof c === 'string') parts.push(c);
+          else if (Array.isArray(c)) parts.push(c.map((x) => (x && x.text) || '').join(''));
+        }
+      }
+      return parts.join('\n').trim();
+    }
+  }
+  return '';
+}
+
+function eventLabel(type) {
+  const dict = I18N[currentLang];
+  return dict[`ev_${type}`] || type;
+}
+
+// One readable summary line per event type — NEVER a raw JSON dump (that lives in the raw view).
+function summarizeEvent(e) {
+  const dict = I18N[currentLang];
+  const p = e.payload || {};
+  switch (e.type) {
+    case 'error':
+      return p.msg || p.error || dict.evError;
+    case 'dispatch': {
+      const extra = [p.agent, p.model, p.effort].filter(Boolean).join(' · ');
+      let t = `${p.goal || ''}${extra ? '  (' + extra + ')' : ''}`;
+      if (p.execution_deferred) t += `  — ${dict.evDeferred}`;
+      return t.trim();
+    }
+    case 'briefing':
+      return p.title || '';
+    case 'stop':
+      return extractAgentText(p) || dict.evDone;
+    case 'agent_output':
+      return extractAgentText(p);
+    default:
+      return extractAgentText(p);  // best-effort; '' falls through to a header-only row
+  }
+}
+
+// Build rows with textContent only — agent output is untrusted, never innerHTML it. Each event is a
+// typed, chat-style row: header (icon · label · source · time), a readable body, and a collapsible
+// raw payload for power users (the JSON is here, not dumped inline — issue #4).
 function renderEvent(e) {
   const li = document.createElement('li');
-  li.className = 'event';
-  const cells = [
-    ['ev-type', e.type],
-    ['ev-source', e.source || ''],
-    ['ev-ts', e.ts || ''],
-    ['ev-payload', e.payload ? JSON.stringify(e.payload) : ''],
-  ];
-  for (const [cls, val] of cells) {
-    const span = document.createElement('span');
-    span.className = cls;
-    span.textContent = String(val).slice(0, 300);
-    li.appendChild(span);
+  const meta = EVENT_META[e.type] || { icon: '•', cls: 'ev-other' };
+  li.className = `event ${meta.cls}`;
+
+  const head = document.createElement('div');
+  head.className = 'ev-head';
+  const ico = document.createElement('span');
+  ico.className = 'ev-icon';
+  ico.textContent = meta.icon;
+  const label = document.createElement('span');
+  label.className = 'ev-label';
+  label.textContent = eventLabel(e.type);
+  const src = document.createElement('span');
+  src.className = 'ev-source';
+  src.textContent = e.source || '';
+  const ts = document.createElement('span');
+  ts.className = 'ev-ts';
+  ts.textContent = e.ts || '';
+  head.append(ico, label, src, ts);
+  li.appendChild(head);
+
+  const text = summarizeEvent(e);
+  if (text) {
+    const body = document.createElement('div');
+    body.className = 'ev-body';
+    body.textContent = text.length > 2000 ? text.slice(0, 2000) + '…' : text;
+    li.appendChild(body);
   }
+
+  if (e.payload && typeof e.payload === 'object' && Object.keys(e.payload).length) {
+    const det = document.createElement('details');
+    det.className = 'ev-raw';
+    const sum = document.createElement('summary');
+    sum.textContent = I18N[currentLang].rawJson;
+    const pre = document.createElement('pre');
+    pre.textContent = JSON.stringify(e.payload, null, 2);
+    det.append(sum, pre);
+    li.appendChild(det);
+  }
+
   eventListEl.appendChild(li);
 }
 
@@ -741,13 +907,28 @@ const I18N = {
         noApprovals: '没有待你处理的。', approve: '批准', reject: '驳回', viewDetail: '查看详情',
         autonomy: '自治', langToggle: 'EN', briefings: '简报', generateBriefing: '生成简报',
         noReports: '暂无简报。', dispatched: '已下发', dispatchFailed: '下发失败',
-        definitionsTitle: '秘方', filterKind: '类型', kindAll: '全部', kindWorkflow: '工作流',
+        definitionsTitle: '规范库', filterKind: '类型', kindAll: '全部', kindWorkflow: '工作流',
         kindSkill: '技能', kindStandard: '代码规范', kindQa: 'QA 标准', newDefinition: '+ 新建',
-        noDefinitions: '暂无秘方。', defnKind: '类型', defnName: '名称', defnScope: '适用范围 (JSON)',
+        noDefinitions: '暂无规范。', defnKind: '类型', defnName: '名称', defnScope: '适用范围 (JSON)',
         defnBody: '内容', defnActivate: '保存即启用', save: '保存', cancel: '取消', edit: '编辑',
-        activate: '启用', delete: '删除', confirmDelete: '确定删除这条秘方？',
-        saveFailed: '保存失败', exportDefinitions: '⬇ 导出', importDefinitions: '⬆ 导入',
-        exportFailed: '导出失败', importFailed: '导入失败', imported: '已导入' },
+        activate: '启用', delete: '删除', confirmDelete: '确定删除这条规范？',
+        saveFailed: '保存失败', saved: '已保存', exportDefinitions: '⬇ 导出', importDefinitions: '⬆ 导入',
+        exportFailed: '导出失败', importFailed: '导入失败', imported: '已导入',
+        // Dispatch worker pickers (§5.1)
+        dispatchAgent: '代理', dispatchModel: '模型', dispatchEffort: '档位', agentDefault: '默认',
+        effortDefault: '默认', effortLow: '快速', effortMedium: '标准', effortHigh: '深度',
+        modelDefaultHint: '留空＝用配置默认',
+        // Timeline event rows (§6)
+        ev_dispatch: '已下发', ev_agent_output: '输出', ev_stop: '完成', ev_error: '错误',
+        ev_briefing: '简报', ev_approval: '待审批', ev_card: '决策卡', ev_checkpoint: '检查点',
+        ev_gate: '闸门', evError: '出错', evDeferred: '执行已挂起', evDone: '已完成', rawJson: '原始数据',
+        // Briefings (§5.5)
+        briefGenerating: '生成中…', briefFailed: '简报生成失败',
+        briefNoLlm: 'PM 大脑未配置（见下方「PM 大脑」设置与 .env）',
+        // PM brain settings (§15)
+        pmSettings: 'PM 大脑', pmProvider: '服务商', pmModel: '模型', pmBaseUrl: '接口地址',
+        pmKeyHint: 'API Key 从 .env 读取（FOREMAN_LLM_API_KEY），此处不可编辑。',
+        pmKeyMissing: '⚠️ 未检测到 API Key —— 请在 .env 设置 FOREMAN_LLM_API_KEY。' },
   en: { sessions: 'Sessions', decisions: 'Decisions', approvals: 'Approvals', timeline: 'Timeline',
         dispatch: 'Dispatch', send: 'Send', enablePush: 'Enable notifications', stepDetail: 'Step detail',
         rawReturn: 'Raw return', codeDiff: 'Code diff', noSessions: 'No active sessions yet.',
@@ -755,13 +936,29 @@ const I18N = {
         approve: 'Approve', reject: 'Reject', viewDetail: 'View detail',
         autonomy: 'Autonomy', langToggle: '中', briefings: 'Briefings', generateBriefing: 'Generate briefing',
         noReports: 'No briefings yet.', dispatched: 'Dispatched', dispatchFailed: 'Dispatch failed',
-        definitionsTitle: 'Recipes', filterKind: 'Kind', kindAll: 'All', kindWorkflow: 'Workflow',
+        definitionsTitle: 'Playbook', filterKind: 'Kind', kindAll: 'All', kindWorkflow: 'Workflow',
         kindSkill: 'Skill', kindStandard: 'Code standard', kindQa: 'QA rubric', newDefinition: '+ New',
-        noDefinitions: 'No recipes yet.', defnKind: 'Kind', defnName: 'Name', defnScope: 'Scope (JSON)',
+        noDefinitions: 'No rules yet.', defnKind: 'Kind', defnName: 'Name', defnScope: 'Scope (JSON)',
         defnBody: 'Body', defnActivate: 'Activate on save', save: 'Save', cancel: 'Cancel', edit: 'Edit',
-        activate: 'Activate', delete: 'Delete', confirmDelete: 'Delete this recipe?',
-        saveFailed: 'Save failed', exportDefinitions: '⬇ Export', importDefinitions: '⬆ Import',
-        exportFailed: 'Export failed', importFailed: 'Import failed', imported: 'Imported' },
+        activate: 'Activate', delete: 'Delete', confirmDelete: 'Delete this rule?',
+        saveFailed: 'Save failed', saved: 'Saved', exportDefinitions: '⬇ Export', importDefinitions: '⬆ Import',
+        exportFailed: 'Export failed', importFailed: 'Import failed', imported: 'Imported',
+        // Dispatch worker pickers (§5.1)
+        dispatchAgent: 'Agent', dispatchModel: 'Model', dispatchEffort: 'Level', agentDefault: 'Default',
+        effortDefault: 'Default', effortLow: 'Fast', effortMedium: 'Standard', effortHigh: 'Deep',
+        modelDefaultHint: 'blank = configured default',
+        // Timeline event rows (§6)
+        ev_dispatch: 'Dispatched', ev_agent_output: 'Output', ev_stop: 'Done', ev_error: 'Error',
+        ev_briefing: 'Briefing', ev_approval: 'Approval', ev_card: 'Decision', ev_checkpoint: 'Checkpoint',
+        ev_gate: 'Gate', evError: 'Error', evDeferred: 'execution deferred', evDone: 'Done',
+        rawJson: 'Raw data',
+        // Briefings (§5.5)
+        briefGenerating: 'Generating…', briefFailed: 'Briefing failed',
+        briefNoLlm: 'PM brain not configured (see PM brain settings + .env)',
+        // PM brain settings (§15)
+        pmSettings: 'PM brain', pmProvider: 'Provider', pmModel: 'Model', pmBaseUrl: 'Base URL',
+        pmKeyHint: 'API key is read from .env (FOREMAN_LLM_API_KEY) — not editable here.',
+        pmKeyMissing: '⚠️ No API key detected — set FOREMAN_LLM_API_KEY in .env.' },
 };
 let currentLang = 'zh';
 
@@ -795,8 +992,9 @@ async function setLang(lang) {
   loadSessions();  // re-render the (dynamic) session list so its empty text follows the language
   loadCards();  // re-render decision cards in the new language
   loadReports();  // re-render briefings (empty text follows the language)
-  loadDefinitions();  // re-render the 秘方 list + labels in the new language
+  loadDefinitions();  // re-render the 规范库 list + labels in the new language
   renderApprovals();  // re-label approve/reject + empty text in the new language
+  updateModelPlaceholder();  // dispatch model hint follows the language
   try {
     await fetch('/api/settings/language', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -837,6 +1035,56 @@ autonomySelect?.addEventListener('change', async () => {
       if (data.label) autonomySelect.title = data.label;
     }
   } catch (e) { /* offline — selection still reflects intent locally */ }
+});
+
+// ── PM 大脑 settings (§15): switch the brain's provider/model/base_url at runtime. Takes effect on
+//    the next LLM call (briefings / decision loop) — no restart. The api key stays a .env secret. ──
+async function loadLlmSettings() {
+  const form = document.getElementById('llm-form');
+  if (!form) return;
+  try {
+    const r = await fetch('/api/settings/llm');
+    if (!r.ok) return;
+    const s = await r.json();
+    const provEl = document.getElementById('llm-provider');
+    const modelEl = document.getElementById('llm-model');
+    const baseEl = document.getElementById('llm-base-url');
+    if (provEl && s.provider) provEl.value = s.provider;
+    if (modelEl) modelEl.value = s.model || '';
+    if (baseEl) baseEl.value = s.base_url || '';
+    const hint = document.getElementById('llm-keyhint');
+    if (hint && !s.api_key_set) {
+      hint.textContent = I18N[currentLang].pmKeyMissing;
+      hint.classList.add('bad');
+    }
+  } catch (e) { /* offline / server mode — leave defaults */ }
+}
+
+function showLlmStatus(text) {
+  const el = document.getElementById('llm-status');
+  if (!el) return;
+  el.textContent = text;
+  el.hidden = false;
+}
+
+document.getElementById('llm-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const dict = I18N[currentLang];
+  const body = {
+    provider: document.getElementById('llm-provider')?.value || '',
+    model: document.getElementById('llm-model')?.value.trim() || '',
+    base_url: document.getElementById('llm-base-url')?.value.trim() || '',
+  };
+  try {
+    const r = await fetch('/api/settings/llm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json().catch(() => ({}));
+    showLlmStatus(r.ok ? dict.saved : `${dict.saveFailed} (${data.detail || r.status})`);
+  } catch (err) {
+    showLlmStatus(dict.saveFailed);
+  }
 });
 
 init();

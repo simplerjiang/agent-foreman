@@ -39,14 +39,16 @@ class FakeProc:
 
 
 def fake_adapter(adapter_cls, cfg, proc: FakeProc):
-    """Build an adapter whose _spawn returns `proc` (and records the spawned cmd/cwd)."""
+    """Build an adapter whose _spawn returns `proc` (and records the spawned cmd/cwd/env)."""
     a = adapter_cls(cfg)
     a.spawned_cmd = None
     a.spawned_cwd = None
+    a.spawned_env = None
 
-    async def _spawn(cmd, workspace):
+    async def _spawn(cmd, workspace, env=None):
         a.spawned_cmd = cmd
         a.spawned_cwd = workspace
+        a.spawned_env = env
         return proc
 
     a._spawn = _spawn  # instance attribute: not bound, so self isn't passed

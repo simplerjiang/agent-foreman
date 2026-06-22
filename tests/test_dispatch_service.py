@@ -93,16 +93,26 @@ async def test_create_persists_session_task_and_event(tmp_path):
 async def test_create_runs_launcher_in_background(tmp_path):
     calls: list[tuple] = []
 
-    async def launcher(session_id, goal, workspace, agent, model):
-        calls.append((session_id, goal, workspace, agent, model))
+    async def launcher(session_id, goal, workspace, agent, model, effort):
+        calls.append((session_id, goal, workspace, agent, model, effort))
 
     cfg = _cfg(workspaces=[WorkspaceCfg(path="D:/p")])
     svc = DispatchService(cfg, _store(tmp_path), launcher=launcher)
-    res = await svc.create("do x", model="run-model")
+    res = await svc.create("do x", model="run-model", effort="high")
     assert res["execution_deferred"] is False
+    assert res["effort"] == "high"
     await asyncio.sleep(0.02)  # let the fire-and-forget launch run
     assert calls and calls[0][0] == res["session_id"] and calls[0][1] == "do x"
     assert calls[0][4] == "run-model"
+    assert calls[0][5] == "high"  # reasoning level threads to the launcher
+
+
+async def test_create_ignores_bad_effort(tmp_path):
+    # An unrecognized level is dropped (never passed to the CLI), falling back to the default ("").
+    cfg = _cfg(workspaces=[WorkspaceCfg(path="D:/p")])
+    svc = DispatchService(cfg, _store(tmp_path))
+    res = await svc.create("do x", effort="turbo")
+    assert res["effort"] == ""
 
 
 async def test_launcher_failure_records_error_event(tmp_path):

@@ -72,8 +72,30 @@
     <section id="dispatch" aria-label="Dispatch a task">
       <h2 data-i18n="dispatch">Dispatch</h2>
       <form id="dispatch-form">
-        <input id="task-input" placeholder="e.g. 重构 auth 模块，push 前问我" autocomplete="off" />
-        <button type="submit" data-i18n="send">Send</button>
+        <div class="dispatch-main">
+          <input id="task-input" placeholder="e.g. 重构 auth 模块，push 前问我" autocomplete="off" />
+          <button type="submit" data-i18n="send">Send</button>
+        </div>
+        <!-- Worker pickers (§5.1): which CLI agent, its model, and the reasoning/速度档位. All
+             optional — left blank/default, each falls back to config. -->
+        <div class="dispatch-opts">
+          <label><span data-i18n="dispatchAgent">Agent</span>
+            <select id="dispatch-agent" aria-label="agent">
+              <option value="" data-i18n="agentDefault">Default</option>
+            </select>
+          </label>
+          <label><span data-i18n="dispatchModel">Model</span>
+            <input id="dispatch-model" autocomplete="off" placeholder="" />
+          </label>
+          <label><span data-i18n="dispatchEffort">Level</span>
+            <select id="dispatch-effort" aria-label="reasoning level">
+              <option value="" data-i18n="effortDefault">Default</option>
+              <option value="low" data-i18n="effortLow">Fast</option>
+              <option value="medium" data-i18n="effortMedium">Standard</option>
+              <option value="high" data-i18n="effortHigh">Deep</option>
+            </select>
+          </label>
+        </div>
       </form>
       <p id="dispatch-status" class="hint" hidden></p>
     </section>
@@ -81,7 +103,37 @@
     <section id="briefings" aria-label="Briefings">
       <h2 data-i18n="briefings">Briefings</h2>
       <button id="generate-brief" class="pill" type="button" data-i18n="generateBriefing">Generate briefing</button>
+      <p id="brief-status" class="hint" hidden></p>
       <div id="report-list" class="empty" data-i18n="noReports">No briefings yet.</div>
+    </section>
+
+    <!-- PM 大脑 settings (§15): switch the brain's provider/model/base_url at runtime. The API key
+         stays a .env secret and is never shown or editable here. -->
+    <section id="pm-settings" aria-label="PM brain settings">
+      <h2 data-i18n="pmSettings">PM brain</h2>
+      <form id="llm-form">
+        <div class="defn-row">
+          <label><span data-i18n="pmProvider">Provider</span>
+            <select id="llm-provider">
+              <option value="openai">OpenAI-compatible</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </label>
+          <label><span data-i18n="pmModel">Model</span>
+            <input id="llm-model" autocomplete="off" placeholder="gpt-4o" />
+          </label>
+        </div>
+        <label><span data-i18n="pmBaseUrl">Base URL</span>
+          <input id="llm-base-url" autocomplete="off" placeholder="https://api.openai.com/v1" />
+        </label>
+        <p id="llm-keyhint" class="hint" data-i18n="pmKeyHint">
+          API key is read from .env (FOREMAN_LLM_API_KEY) — not editable here.
+        </p>
+        <p id="llm-status" class="hint" hidden></p>
+        <div class="defn-row">
+          <button type="submit" data-i18n="save">Save</button>
+        </div>
+      </form>
     </section>
 
     <!-- Definition editor (§11.2, T6.1): add/edit/delete the four 秘方 blocks from the phone/web. -->

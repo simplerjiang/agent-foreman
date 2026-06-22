@@ -68,7 +68,7 @@ def _multi_spawn_adapter(adapter_cls, cfg, procs):
     a.spawned_cmds = []
     queue = list(procs)
 
-    async def _spawn(cmd, workspace):
+    async def _spawn(cmd, workspace, env=None):
         a.spawned_cmds.append(cmd)
         return queue.pop(0)
 

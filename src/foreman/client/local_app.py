@@ -85,13 +85,29 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # chosen path. Output language follows ui.language (§15). The Operator's "hands" are the
     # Toolbelt (shell/screenshot/mouse/keyboard, §4.7); the Gate classifies its shell commands.
     language = normalize_lang(store.get_setting("ui.language") or cfg.ui.language)
+
+    # PM 大脑 settings page (§15): provider/model/base_url can be switched at runtime from the UI
+    # (stored in config_kv). The resolver is read per LLM request so a change takes effect WITHOUT
+    # restarting the app. The api key stays in .env (a secret never surfaced in the UI).
+    def _llm_settings() -> dict:
+        if not hasattr(store, "get_setting"):
+            return {}
+        return {
+            "provider": store.get_setting("llm.provider") or "",
+            "model": store.get_setting("llm.model") or "",
+            "base_url": store.get_setting("llm.base_url") or "",
+        }
+
+    def _llm() -> LLMClient:
+        return LLMClient(cfg, settings_resolver=_llm_settings)
+
     toolbelt = Toolbelt(gate=gate)
     loop = DecisionLoop(
         store=store,
         gate=gate,
         cards=cards,
-        operator=Operator(LLMClient(cfg), language=language),
-        auditor=Auditor(LLMClient(cfg), language=language),
+        operator=Operator(_llm(), language=language),
+        auditor=Auditor(_llm(), language=language),
         bus=bus,
         runner=runner,
         toolbelt=toolbelt,
@@ -106,15 +122,15 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # DispatchService creates Root Sessions from the phone (§5.1); its launcher drives the real
     # Runner so a phone tap actually starts an agent (multiple sessions run concurrently, T1.7).
     async def _launcher(
-        session_id: str, goal: str, workspace: str, agent: str, model: str
+        session_id: str, goal: str, workspace: str, agent: str, model: str, effort: str = ""
     ) -> None:
-        await runner.launch(agent, goal, Path(workspace), session_id, model=model)
+        await runner.launch(agent, goal, Path(workspace), session_id, model=model, effort=effort)
 
     dispatcher = DispatchService(cfg, store, bus=bus, launcher=_launcher)
     # BriefingService summarizes a session's activity with YOUR LLM → reports table + Web Push
     # (§5.5). Output language follows the runtime ui.language setting (§15, resolved above).
     briefings = BriefingService(
-        LLMClient(cfg), store, bus=bus, pusher=pusher, language=language
+        _llm(), store, bus=bus, pusher=pusher, language=language
     )
     # DefinitionService is the UI editor for the four 秘方 blocks (workflow/skill/code_standard/
     # qa_rubric, §11.2). Injected like the Gate/CardService so app.py stays shared-only; definitions

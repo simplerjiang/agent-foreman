@@ -55,6 +55,23 @@ async def test_start_uses_config_model(tmp_path):
     assert "--model" in a.spawned_cmd and "sonnet" in a.spawned_cmd
 
 
+async def test_effort_maps_to_env_not_cmd(tmp_path):
+    # Claude has no headless flag for reasoning level — it rides the CLAUDE_CODE_EFFORT_LEVEL env var.
+    proc = FakeProc(pid=4321)
+    a = fake_adapter(ClaudeCodeAdapter, _cfg(), proc)
+    h = await a.start("do X", tmp_path, "sess1", effort="high")
+    assert h.effort == "high"
+    assert "high" not in a.spawned_cmd  # NOT a command flag
+    assert a.spawned_env == {"CLAUDE_CODE_EFFORT_LEVEL": "high"}
+
+
+async def test_no_effort_no_env(tmp_path):
+    proc = FakeProc(pid=4321)
+    a = fake_adapter(ClaudeCodeAdapter, _cfg(), proc)
+    await a.start("do X", tmp_path, "sess1")
+    assert not a.spawned_env  # empty → no env override (inherit parent only)
+
+
 async def test_stop_terminates_and_deregisters(tmp_path):
     proc = FakeProc()
     a = fake_adapter(ClaudeCodeAdapter, _cfg(), proc)

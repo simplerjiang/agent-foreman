@@ -44,6 +44,15 @@ class _AutonomyBody(BaseModel):
     level: int
 
 
+class _LLMSettingsBody(BaseModel):
+    """PM 大脑 settings (DESIGN §15): switch the brain's provider/model/base_url at runtime. The api
+    key stays a .env secret and is never sent through this. Empty field = clear that override."""
+
+    provider: str | None = None  # "openai" | "anthropic"
+    model: str | None = None
+    base_url: str | None = None
+
+
 class _PushKeys(BaseModel):
     p256dh: str = ""
     auth: str = ""
@@ -120,6 +129,7 @@ class _DispatchBody(BaseModel):
     workspace: str = ""
     agent: str = ""
     model: str = ""
+    effort: str = ""  # reasoning level / 速度档位: low | medium | high ("" = the CLI default)
 
 
 class _BriefBody(BaseModel):
@@ -471,6 +481,16 @@ def create_app(
             out["db"] = cfg.store.db_path
         return out
 
+    @app.get("/api/agents")
+    async def list_agents() -> list[dict]:
+        """Enabled CLI agents + their configured model/effort defaults — the dispatch form's pickers
+        (DESIGN §5.1). Shared-only: reads cfg, like /health (never touches the store)."""
+        return [
+            {"name": name, "model": a.model, "effort": getattr(a, "effort", "")}
+            for name, a in sorted(cfg.agents.items())
+            if a.enabled
+        ]
+
     @app.get("/api/sessions")
     async def list_sessions() -> list[dict]:
         if store is None:
@@ -521,6 +541,40 @@ def create_app(
         level = normalize_level(body.level)
         store.set_setting("autonomy.level", str(level))
         return {"level": level, "label": level_label(level, _effective_lang())}
+
+    @app.get("/api/settings/llm")
+    async def get_llm_settings() -> dict:
+        """Effective PM 大脑 brain settings: a config_kv override (if a store) else the config
+        default (§15). Never returns the api key (a .env secret); only whether one is configured."""
+        provider, model, base_url = cfg.llm.provider, cfg.llm.model, cfg.llm.base_url
+        if store is not None and hasattr(store, "get_setting"):
+            provider = store.get_setting("llm.provider") or provider
+            model = store.get_setting("llm.model") or model
+            base_url = store.get_setting("llm.base_url") or base_url
+        return {
+            "provider": provider,
+            "model": model,
+            "base_url": base_url,
+            "transport": cfg.llm.transport,  # wiring stays config-only (read-only hint for the UI)
+            "api_key_set": bool(cfg.secrets.llm_api_key),
+        }
+
+    @app.post("/api/settings/llm")
+    async def set_llm_settings(body: _LLMSettingsBody) -> dict:
+        """Switch the brain's provider/model/base_url at runtime (§15). Each field: a non-empty value
+        sets the override, an empty string clears it (falls back to config), None leaves it as-is."""
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        if body.provider is not None:
+            provider = body.provider.strip().lower()
+            if provider and provider not in ("openai", "anthropic"):
+                raise HTTPException(status_code=400, detail="bad_provider")
+            store.set_setting("llm.provider", provider)
+        if body.model is not None:
+            store.set_setting("llm.model", body.model.strip())
+        if body.base_url is not None:
+            store.set_setting("llm.base_url", body.base_url.strip())
+        return await get_llm_settings()
 
     @app.get("/api/push/vapid-public-key")
     async def push_public_key() -> dict:
@@ -635,6 +689,7 @@ def create_app(
             workspace=body.workspace or None,
             agent=body.agent or None,
             model=body.model or None,
+            effort=body.effort or None,
         )
         if res.get("ok"):
             return res

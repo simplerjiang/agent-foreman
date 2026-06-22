@@ -104,6 +104,10 @@ class AgentCfg(BaseModel):
     command: str
     mode: str = "headless"  # "headless" | "pty"
     model: str = ""  # Optional model for the driven CLI agent; empty = CLI default.
+    # Default reasoning level / 速度档位 for this agent: low | medium | high ("" = CLI default).
+    # A per-dispatch override (phone/web) wins over this. claude maps it to CLAUDE_CODE_EFFORT_LEVEL;
+    # codex to `-c model_reasoning_effort=` (DESIGN §4.2).
+    effort: str = ""
 
 
 class MonitorCfg(BaseModel):

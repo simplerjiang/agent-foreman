@@ -22,13 +22,22 @@ class AgentHandle:
     pid: int | None = None
     native_session_id: str | None = None  # e.g. Claude Code --resume id
     model: str = ""
+    # Reasoning effort/速度档位 for this run (low|medium|high; "" = the CLI default). Remembered on
+    # the handle so a resume (`send`) re-spawns with the same level. How it reaches the CLI differs
+    # per adapter: codex passes a `-c model_reasoning_effort=` flag; claude sets an env var (§4.2).
+    effort: str = ""
 
 
 class AgentAdapter(Protocol):
     name: str  # "claude-code" | "codex"
 
     async def start(
-        self, instruction: str, workspace: Path, session_id: str, model: str = ""
+        self,
+        instruction: str,
+        workspace: Path,
+        session_id: str,
+        model: str = "",
+        effort: str = "",
     ) -> AgentHandle:
         """Launch the agent in `workspace` with the initial instruction."""
         ...

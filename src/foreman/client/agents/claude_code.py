@@ -15,7 +15,7 @@ from ._subprocess import SubprocessCliAdapter
 class ClaudeCodeAdapter(SubprocessCliAdapter):
     name = "claude-code"
 
-    def _build_cmd(self, instruction: str, model: str = "") -> list[str]:
+    def _build_cmd(self, instruction: str, model: str = "", effort: str = "") -> list[str]:
         return [
             self.cfg.command, "-p", instruction,
             *self._model_args(model),
@@ -23,7 +23,7 @@ class ClaudeCodeAdapter(SubprocessCliAdapter):
         ]
 
     def _build_resume_cmd(
-        self, instruction: str, native_session_id: str, model: str = ""
+        self, instruction: str, native_session_id: str, model: str = "", effort: str = ""
     ) -> list[str]:
         """Resume the captured session with a follow-up (two-way control, DESIGN §4.2)."""
         return [
@@ -31,3 +31,8 @@ class ClaudeCodeAdapter(SubprocessCliAdapter):
             *self._model_args(model),
             "--output-format", "stream-json", "--verbose",
         ]
+
+    def _env_overrides(self, model: str = "", effort: str = "") -> dict[str, str]:
+        """Claude Code has no headless flag for reasoning level — it reads the effort from the
+        ``CLAUDE_CODE_EFFORT_LEVEL`` env var (low|medium|high|xhigh|max). Empty → CLI default."""
+        return {"CLAUDE_CODE_EFFORT_LEVEL": effort} if effort else {}

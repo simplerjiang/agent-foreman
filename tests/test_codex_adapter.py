@@ -21,6 +21,17 @@ def test_build_cmd():
     assert a._build_cmd("do Y", "gpt-5") == ["codex", "exec", "--model", "gpt-5", "do Y"]
 
 
+def test_build_cmd_with_effort():
+    # Codex carries reasoning level as a `-c model_reasoning_effort=` config override.
+    a = CodexAdapter(_cfg())
+    assert a._build_cmd("do Y", "gpt-5", "high") == [
+        "codex", "exec", "--model", "gpt-5", "-c", "model_reasoning_effort=high", "do Y",
+    ]
+    assert a._build_cmd("do Y", "", "low") == [
+        "codex", "exec", "-c", "model_reasoning_effort=low", "do Y",
+    ]
+
+
 def test_build_resume_cmd():
     a = CodexAdapter(_cfg())
     assert a._build_resume_cmd("more", "sess-9") == ["codex", "exec", "resume", "sess-9", "more"]

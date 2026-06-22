@@ -38,13 +38,19 @@ class Runner:
         self._handle_by_session: dict[str, AgentHandle] = {}
 
     async def launch(
-        self, agent: str, instruction: str, workspace: Path, session_id: str, model: str = ""
+        self,
+        agent: str,
+        instruction: str,
+        workspace: Path,
+        session_id: str,
+        model: str = "",
+        effort: str = "",
     ) -> AgentHandle:
         """Start an agent; stream its events to store+bus in the background. Returns immediately."""
         adapter = self.adapters.get(agent)
         if adapter is None:
             raise ValueError(f"agent not enabled: {agent!r} (enabled: {sorted(self.adapters)})")
-        handle = await adapter.start(instruction, workspace, session_id, model=model)
+        handle = await adapter.start(instruction, workspace, session_id, model=model, effort=effort)
         self.handles[handle.id] = handle
         self._adapter_by_handle[handle.id] = adapter
         self._handle_by_session[session_id] = handle

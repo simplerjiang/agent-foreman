@@ -48,6 +48,52 @@ async def test_openai_request_and_parse():
     ]
 
 
+async def test_settings_resolver_overrides_model_and_base_url():
+    # A runtime settings page (config_kv) can switch model/base_url WITHOUT restarting — the resolver
+    # is consulted per request (DESIGN §15 PM brain settings).
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://config.test/v1"
+    cfg.llm.model = "config-model"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["url"] = str(request.url)
+        cap["json"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    override = {"model": "runtime-model", "base_url": "https://runtime.test/v2"}
+    c = LLMClient(
+        cfg, transport=httpx.MockTransport(handler), settings_resolver=lambda: override
+    )
+    await c.complete([Message("user", "hi")])
+    await c.aclose()
+    assert cap["url"] == "https://runtime.test/v2/chat/completions"
+    assert cap["json"]["model"] == "runtime-model"
+
+
+async def test_settings_resolver_falls_back_to_config_on_empty():
+    # An empty/blank override leaves the config default in place (never blanks the model/url).
+    cfg = Config()
+    cfg.llm.base_url = "https://config.test/v1"
+    cfg.llm.model = "config-model"
+    cfg.secrets.llm_api_key = "k"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["json"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    c = LLMClient(
+        cfg, transport=httpx.MockTransport(handler),
+        settings_resolver=lambda: {"model": "", "base_url": ""},
+    )
+    await c.complete([Message("user", "hi")])
+    await c.aclose()
+    assert cap["json"]["model"] == "config-model"
+
+
 async def test_openai_json_mode_sets_response_format():
     cap: dict = {}
     c = _client("openai", cap)

@@ -29,6 +29,11 @@ from ..dispatch import build_session_task
 # keeps the argv passed to the agent CLI sane). Truncated, not rejected, to stay friendly.
 MAX_GOAL_CHARS = 8000
 
+# Reasoning levels accepted from the phone/web (速度档位). Constrained to the set BOTH CLIs support
+# (claude CLAUDE_CODE_EFFORT_LEVEL / codex model_reasoning_effort) so a level can never make codex
+# reject the run. Anything else (incl. "") → "" = the CLI/model default. (DESIGN §4.2.)
+VALID_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high"})
+
 
 def _within_any(path: str, roots: list[str]) -> bool:
     """True if ``path`` is one of ``roots`` or nested under one (workspace allowlist, §6.6)."""
@@ -61,7 +66,7 @@ class DispatchService:
         self.cfg = cfg
         self.store = store
         self.bus = bus
-        # launcher(session_id, goal, workspace, agent, model) -> awaitable; None = launch deferred.
+        # launcher(session_id, goal, workspace, agent, model, effort) -> awaitable; None = deferred.
         self.launcher = launcher
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
@@ -74,10 +79,11 @@ class DispatchService:
         workspace: str | None = None,
         agent: str | None = None,
         model: str | None = None,
+        effort: str | None = None,
     ) -> dict:
         """Validate + persist a new Root Session/Task; emit ``dispatch``; optionally launch.
 
-        Returns ``{"ok": True, session_id, task_id, goal, workspace, agent, model,
+        Returns ``{"ok": True, session_id, task_id, goal, workspace, agent, model, effort,
         execution_deferred}``
         or ``{"ok": False, "error": ...}`` with error ∈ {empty_goal, no_store, unknown_agent,
         no_workspace}. Launching the agent (when a launcher is wired) happens in the background so a
@@ -95,18 +101,21 @@ class DispatchService:
         if err:
             return {"ok": False, "error": err}
         resolved_model = self._resolve_model(resolved_agent, model)
+        resolved_effort = self._resolve_effort(resolved_agent, effort)
 
         session, task = build_session_task(self.store, goal, ws, resolved_agent)
         deferred = self.launcher is None
         await self._emit_dispatch(
-            session.id, task.id, goal, ws, resolved_agent, resolved_model, deferred
+            session.id, task.id, goal, ws, resolved_agent, resolved_model, resolved_effort, deferred
         )
         if self.launcher is not None:
             # Fire-and-forget: a phone dispatch returns immediately; the agent runs in the
             # background (Runner pumps its events to store+bus, T1.7). Failures emit an `error`.
             # Keep a strong ref (discarded on completion) so the task isn't GC'd mid-flight.
             launch_task = asyncio.create_task(
-                self._safe_launch(session.id, goal, ws, resolved_agent, resolved_model)
+                self._safe_launch(
+                    session.id, goal, ws, resolved_agent, resolved_model, resolved_effort
+                )
             )
             self._tasks.add(launch_task)
             launch_task.add_done_callback(self._tasks.discard)
@@ -118,6 +127,7 @@ class DispatchService:
             "workspace": ws,
             "agent": resolved_agent,
             "model": resolved_model,
+            "effort": resolved_effort,
             "execution_deferred": deferred,
         }
 
@@ -143,6 +153,16 @@ class DispatchService:
             return override
         cfg = self.cfg.agents.get(agent)
         return (cfg.model if cfg else "").strip()
+
+    def _resolve_effort(self, agent: str, effort: str | None) -> str:
+        """Pick the reasoning level: a valid per-dispatch override wins; else the agent config's
+        default; else "" (the CLI default). An unrecognized value is ignored, never passed through."""
+        override = (effort or "").strip().lower()
+        if override in VALID_EFFORTS:
+            return override
+        cfg = self.cfg.agents.get(agent)
+        cfg_effort = (getattr(cfg, "effort", "") if cfg else "").strip().lower()
+        return cfg_effort if cfg_effort in VALID_EFFORTS else ""
 
     def _resolve_workspace(self, workspace: str | None) -> tuple[str, str]:
         """Resolve the workspace; an explicit one must sit inside an approved root (§6.6 白名单).
@@ -171,6 +191,7 @@ class DispatchService:
         workspace: str,
         agent: str,
         model: str,
+        effort: str,
         deferred: bool,
     ) -> None:
         event = make_event(
@@ -182,6 +203,7 @@ class DispatchService:
                 "goal": goal,
                 "agent": agent,
                 "model": model,
+                "effort": effort,
                 "workspace": workspace,
                 # launching the agent is the two-way control layer (P4) when no launcher is wired.
                 "execution_deferred": deferred,
@@ -190,11 +212,11 @@ class DispatchService:
         await self._persist_then_publish(event)
 
     async def _safe_launch(
-        self, session_id: str, goal: str, workspace: str, agent: str, model: str
+        self, session_id: str, goal: str, workspace: str, agent: str, model: str, effort: str
     ) -> None:
         """Run the injected launcher; an agent that can't start records an `error` event, not a crash."""
         try:
-            await self.launcher(session_id, goal, workspace, agent, model)
+            await self.launcher(session_id, goal, workspace, agent, model, effort)
         except Exception as exc:  # noqa: BLE001 — a launch failure must not take down the server loop
             event = make_event(
                 "error",

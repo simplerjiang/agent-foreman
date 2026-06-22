@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -37,24 +38,40 @@ class SubprocessCliAdapter:
     def _effective_model(self, model: str = "") -> str:
         return (model or self.cfg.model or "").strip()
 
-    def _build_cmd(self, instruction: str, model: str = "") -> list[str]:
+    def _effective_effort(self, effort: str = "") -> str:
+        """Reasoning level for this run: explicit arg, else the agent's config default ("")."""
+        return (effort or getattr(self.cfg, "effort", "") or "").strip()
+
+    def _build_cmd(self, instruction: str, model: str = "", effort: str = "") -> list[str]:
         raise NotImplementedError
 
     def _build_resume_cmd(
-        self, instruction: str, native_session_id: str, model: str = ""
+        self, instruction: str, native_session_id: str, model: str = "", effort: str = ""
     ) -> list[str]:
         """Command that resumes a prior session with a follow-up instruction (two-way control).
 
         Subclasses override to add their CLI's resume flag (claude `--resume`, codex `exec resume`).
         Default: a plain re-run (no session continuity) so `send` still works on an adapter that
         has no resume concept. See docs/DESIGN.zh-CN.md §4.2 ("会话续接用 --resume / --continue")."""
-        return self._build_cmd(instruction, model)
+        return self._build_cmd(instruction, model, effort)
 
-    async def _spawn(self, cmd: list[str], workspace: Path) -> asyncio.subprocess.Process:
-        """Spawn the agent process. Overridable seam so tests can inject a fake process."""
+    def _env_overrides(self, model: str = "", effort: str = "") -> dict[str, str]:
+        """Extra environment for the child process. Default none; claude maps effort → an env var
+        (it has no CLI flag for it), while codex carries effort in the command instead (§4.2)."""
+        return {}
+
+    async def _spawn(
+        self, cmd: list[str], workspace: Path, env: dict[str, str] | None = None
+    ) -> asyncio.subprocess.Process:
+        """Spawn the agent process. Overridable seam so tests can inject a fake process.
+
+        ``env`` (when given) is merged onto the parent environment — never replaces it, so the CLI
+        still finds PATH / its own credentials."""
         kwargs: dict = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # hide the child console window
+        if env:
+            kwargs["env"] = {**os.environ, **env}
         return await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(workspace),
@@ -64,15 +81,26 @@ class SubprocessCliAdapter:
         )
 
     async def start(
-        self, instruction: str, workspace: Path, session_id: str, model: str = ""
+        self,
+        instruction: str,
+        workspace: Path,
+        session_id: str,
+        model: str = "",
+        effort: str = "",
     ) -> AgentHandle:
         effective_model = self._effective_model(model)
-        proc = await self._spawn(self._build_cmd(instruction, effective_model), workspace)
+        effective_effort = self._effective_effort(effort)
+        proc = await self._spawn(
+            self._build_cmd(instruction, effective_model, effective_effort),
+            workspace,
+            self._env_overrides(effective_model, effective_effort),
+        )
         handle = AgentHandle(
             id=f"{session_id}:{proc.pid}",
             session_id=session_id,
             pid=proc.pid,
             model=effective_model,
+            effort=effective_effort,
         )
         self._procs[handle.id] = proc
         self._workspaces[handle.id] = Path(workspace)
@@ -118,11 +146,17 @@ class SubprocessCliAdapter:
         under the same handle id so the Runner can re-pump its output to store+bus.
         """
         if handle.native_session_id:
-            cmd = self._build_resume_cmd(text, handle.native_session_id, handle.model)
+            cmd = self._build_resume_cmd(
+                text, handle.native_session_id, handle.model, handle.effort
+            )
         else:
             # No captured session id yet → fall back to a fresh run with the follow-up text.
-            cmd = self._build_cmd(text, handle.model)
-        proc = await self._spawn(cmd, self._workspaces.get(handle.id, Path(".")))
+            cmd = self._build_cmd(text, handle.model, handle.effort)
+        proc = await self._spawn(
+            cmd,
+            self._workspaces.get(handle.id, Path(".")),
+            self._env_overrides(handle.model, handle.effort),
+        )
         self._procs[handle.id] = proc
         handle.pid = proc.pid
 

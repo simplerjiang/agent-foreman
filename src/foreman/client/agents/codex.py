@@ -15,15 +15,24 @@ from ._subprocess import SubprocessCliAdapter
 class CodexAdapter(SubprocessCliAdapter):
     name = "codex"
 
-    def _build_cmd(self, instruction: str, model: str = "") -> list[str]:
-        return [self.cfg.command, "exec", *self._model_args(model), instruction]
+    def _effort_args(self, effort: str) -> list[str]:
+        """Codex carries reasoning level as a config override: `-c model_reasoning_effort=<level>`
+        (low|medium|high). Empty → omit, so the model/profile default applies (DESIGN §4.2)."""
+        return ["-c", f"model_reasoning_effort={effort}"] if effort else []
+
+    def _build_cmd(self, instruction: str, model: str = "", effort: str = "") -> list[str]:
+        return [
+            self.cfg.command, "exec",
+            *self._model_args(model), *self._effort_args(effort),
+            instruction,
+        ]
 
     def _build_resume_cmd(
-        self, instruction: str, native_session_id: str, model: str = ""
+        self, instruction: str, native_session_id: str, model: str = "", effort: str = ""
     ) -> list[str]:
         """Resume the prior session with a follow-up (two-way control, DESIGN §4.2)."""
         return [
             self.cfg.command, "exec", "resume",
-            *self._model_args(model),
+            *self._model_args(model), *self._effort_args(effort),
             native_session_id, instruction,
         ]

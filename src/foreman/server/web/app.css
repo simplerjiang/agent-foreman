@@ -184,7 +184,18 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .link:hover { background: none; color: var(--accent-hover); text-decoration: underline; text-underline-offset: 2px; }
 
 /* ── Dispatch + inputs ─────────────────────────────────────────────────── */
-#dispatch-form { display: flex; gap: 0.55rem; }
+#dispatch-form { display: flex; flex-direction: column; gap: 0.6rem; }
+.dispatch-main { display: flex; gap: 0.55rem; }
+.dispatch-opts { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: end; }
+.dispatch-opts label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+.dispatch-opts select, .dispatch-opts input { padding: 0.32rem 0.5rem; font-size: 0.84rem; }
+#dispatch-model { min-width: 11rem; }
 input, select, textarea {
   font: inherit;
   color: var(--fg);
@@ -293,19 +304,55 @@ input:focus, select:focus, textarea:focus {
 .session-head { font-weight: 600; }
 .session-meta { color: var(--muted); font-size: 0.78rem; font-weight: 400; }
 
-#event-list { list-style: decimal; margin: 0; padding-left: 1.5rem; }
+#event-list { list-style: none; margin: 0; padding: 0; }
 #event-list li.event {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  padding: 0.38rem 0;
+  padding: 0.5rem 0;
   border-bottom: 1px solid var(--border);
-  font-size: 0.84rem;
+  font-size: 0.86rem;
 }
-.ev-type { color: var(--accent); font-weight: 600; }
-.ev-source { color: var(--muted); }
-.ev-ts { color: var(--faint); font-variant-numeric: tabular-nums; }
-.ev-payload { color: var(--fg); opacity: 0.82; word-break: break-all; }
+.ev-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.ev-icon { font-size: 0.92rem; }
+.ev-label { font-weight: 600; color: var(--accent); }
+.ev-source { color: var(--muted); font-size: 0.8rem; }
+.ev-ts { color: var(--faint); font-size: 0.76rem; font-variant-numeric: tabular-nums; margin-left: auto; }
+/* The readable line — a chat-style bubble; agent output is textContent only (never innerHTML). */
+.ev-body {
+  margin: 0.35rem 0 0;
+  padding: 0.5rem 0.7rem;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+  line-height: 1.45;
+}
+/* Per-type accents — the icon/label carry the meaning; bodies stay readable. */
+.event.ev-err .ev-label { color: var(--bad); }
+.event.ev-err .ev-body { background: var(--bad-bg); border-color: var(--bad-bg); }
+.event.ev-ok .ev-label { color: var(--ok); }
+.event.ev-warn .ev-label { color: #B45309; }
+.event.ev-msg .ev-label { color: var(--muted); }
+/* Collapsible raw payload — the JSON lives here, not dumped into the timeline (issue #4). */
+.ev-raw { margin-top: 0.3rem; }
+.ev-raw summary {
+  cursor: pointer;
+  color: var(--faint);
+  font-size: 0.76rem;
+  list-style: revert;
+}
+.ev-raw pre {
+  margin: 0.3rem 0 0;
+  padding: 0.55rem 0.7rem;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.76rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--muted);
+}
 
 /* ── Briefings (T4.6) ──────────────────────────────────────────────────── */
 .report-body {

@@ -34,11 +34,13 @@ agents:
     enabled: true
     command: claude            # resolved on PATH (claude.cmd on Windows)
     model: ""                  # optional: e.g. sonnet; empty = Claude Code default
+    effort: ""                 # optional reasoning level: low|medium|high; empty = CLI default
     mode: headless             # headless | pty
   codex:
     enabled: true
     command: codex
     model: ""                  # optional: e.g. gpt-5; empty = Codex CLI default
+    effort: ""                 # optional reasoning level: low|medium|high; empty = CLI default
     mode: headless
 
 # Monitoring sources.
