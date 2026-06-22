@@ -1,0 +1,8 @@
+# Files that execute on the Linux server MUST keep LF line endings regardless of the contributor's
+# OS / core.autocrlf. CRLF breaks a shell script's shebang (`#!/usr/bin/env bash\r` → bad
+# interpreter) and a heredoc delimiter (`REMOTE\r` never closes), which would take the deploy down
+# (issue #1). Scoped narrowly so the rest of the repo isn't mass-renormalized.
+*.sh text eol=lf
+*.service text eol=lf
+.github/workflows/*.yml text eol=lf
+deploy/** text eol=lf
