@@ -205,7 +205,7 @@ class SubprocessCliAdapter:
 
 def _which_spawnable(name: str) -> str | None:
     """Resolve a command to a path that ``create_subprocess_exec`` can launch directly."""
-    if os.name != "nt":
+    if not _is_windows():
         return shutil.which(name)
     found = shutil.which(name)
     if found and Path(found).suffix.lower() in {".exe", ".cmd", ".bat", ".com"}:
@@ -224,3 +224,7 @@ def _which_spawnable(name: str) -> str | None:
             if candidate.is_file():
                 return str(candidate)
     return None
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
