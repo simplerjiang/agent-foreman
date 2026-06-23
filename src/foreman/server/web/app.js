@@ -100,6 +100,9 @@
       pmSettings: "PM 大脑",
       pmProvider: "服务商",
       pmModel: "模型",
+      pmTransport: "连接",
+      pmTransportHttp: "HTTP",
+      pmTransportWs: "WebSocket",
       pmBaseUrl: "接口地址",
       pmApiKey: "API Key",
       pmKeyHint: "已配置 API Key。输入新 key 后保存可替换；留空不修改。",
@@ -143,7 +146,10 @@
       ev_dispatch: "已下发",
       ev_pm_plan: "PM 计划",
       ev_pm_review: "PM 复查",
+      ev_pm_output: "PM 输出",
+      ev_pm_reasoning: "PM 思维",
       ev_agent_output: "输出",
+      ev_agent_reasoning: "思维",
       ev_stop: "完成",
       ev_error: "错误",
       ev_briefing: "简报",
@@ -255,6 +261,9 @@
       pmSettings: "PM brain",
       pmProvider: "Provider",
       pmModel: "Model",
+      pmTransport: "Transport",
+      pmTransportHttp: "HTTP",
+      pmTransportWs: "WebSocket",
       pmBaseUrl: "Base URL",
       pmApiKey: "API Key",
       pmKeyHint: "API key is configured. Enter a new key and save to replace it; blank leaves it unchanged.",
@@ -298,7 +307,10 @@
       ev_dispatch: "Dispatched",
       ev_pm_plan: "PM plan",
       ev_pm_review: "PM review",
+      ev_pm_output: "PM output",
+      ev_pm_reasoning: "PM reasoning",
       ev_agent_output: "Output",
+      ev_agent_reasoning: "Reasoning",
       ev_stop: "Done",
       ev_error: "Error",
       ev_briefing: "Briefing",
@@ -343,6 +355,9 @@
   const EVENT_ICON = {
     dispatch: "SendOutlined",
     agent_output: "MessageOutlined",
+    agent_reasoning: "BulbOutlined",
+    pm_output: "RobotOutlined",
+    pm_reasoning: "BulbOutlined",
     stop: "CheckCircleOutlined",
     error: "WarningOutlined",
     briefing: "FileTextOutlined",
@@ -636,7 +651,11 @@
   function extractAgentText(payload) {
     if (!payload || typeof payload !== "object") return "";
     if (typeof payload.text === "string") return payload.text;
+    if (typeof payload.delta === "string") return payload.delta;
     if (typeof payload.result === "string") return payload.result;
+    if (typeof payload.thinking === "string") return payload.thinking;
+    if (typeof payload.reasoning === "string") return payload.reasoning;
+    if (typeof payload.summary === "string") return payload.summary;
     const msg = payload.message;
     if (!msg || typeof msg !== "object") return "";
     const content = msg.content;
@@ -646,6 +665,9 @@
     for (const block of content) {
       if (!block || typeof block !== "object") continue;
       if (typeof block.text === "string") parts.push(block.text);
+      else if (typeof block.thinking === "string") parts.push(block.thinking);
+      else if (typeof block.reasoning === "string") parts.push(block.reasoning);
+      else if (typeof block.summary === "string") parts.push(block.summary);
       else if (block.type === "tool_use") parts.push(`[tool] ${block.name || "tool"}`);
       else if (block.type === "tool_result") parts.push(String(block.content || ""));
     }
@@ -670,6 +692,10 @@
           payload.reason,
           payload.follow_up,
         ].filter(Boolean).join("\n");
+      case "pm_output":
+      case "pm_reasoning":
+      case "agent_reasoning":
+        return extractAgentText(payload);
       case "context_compact":
         return payload.summary || "";
       case "briefing":
@@ -685,14 +711,52 @@
 
   function eventMetaChips(event) {
     const payload = event.payload || {};
-    if (!["dispatch", "pm_plan"].includes(event.type)) return [];
+    if (!["dispatch", "pm_plan", "pm_output", "pm_reasoning"].includes(event.type)) return [];
     const showAgent = event.type === "dispatch" && !payload.pm_agent;
     return [
       payload.pm_agent && { key: "pm", value: "PM", icon: "TeamOutlined", color: "purple" },
       showAgent && payload.agent && { key: "agent", value: payload.agent, icon: "RobotOutlined", color: "blue" },
       payload.model && { key: "model", value: payload.model, icon: "ApiOutlined", color: "geekblue" },
       payload.effort && { key: "effort", value: payload.effort, icon: "ThunderboltOutlined", color: "gold" },
+      payload.phase && { key: "phase", value: payload.phase, icon: "BranchesOutlined", color: "cyan" },
     ].filter(Boolean);
+  }
+
+  function mergeStreamEvent(rows, item) {
+    const payload = item.payload || {};
+    if (!["pm_output", "pm_reasoning"].includes(item.type) || !payload.stream_id) {
+      return [...rows, item];
+    }
+    const idx = rows.findIndex((row) => (
+      row.type === item.type
+      && row.source === item.source
+      && row.payload
+      && row.payload.stream_id === payload.stream_id
+    ));
+    const delta = typeof payload.delta === "string" ? payload.delta : "";
+    if (idx < 0) {
+      return [
+        ...rows,
+        { ...item, _streamEventIds: item.id ? [item.id] : [], payload: { ...payload, text: payload.text || delta } },
+      ];
+    }
+    const next = [...rows];
+    const prev = next[idx];
+    const seen = new Set(prev._streamEventIds || (prev.id ? [prev.id] : []));
+    if (item.id && seen.has(item.id)) return rows;
+    if (item.id) seen.add(item.id);
+    const prevPayload = prev.payload || {};
+    next[idx] = {
+      ...prev,
+      ts: item.ts || prev.ts,
+      _streamEventIds: Array.from(seen),
+      payload: {
+        ...prevPayload,
+        ...payload,
+        text: `${prevPayload.text || ""}${delta}`,
+      },
+    };
+    return next;
   }
 
   function eventSignature(event) {
@@ -1055,7 +1119,7 @@
               const sig = eventSignature(item);
               if (prev.some((row) => !row.id && eventSignature(row) === sig)) return prev;
             }
-            return [...prev, item];
+            return mergeStreamEvent(prev, item);
           });
         }
         catch (e) { console.warn("bad event", e); }
@@ -1238,6 +1302,7 @@
           provider: llm.provider || "openai",
           model: (llm.model || "").trim(),
           base_url: (llm.base_url || "").trim(),
+          transport: llm.transport || "http",
         };
         if ((llm.api_key || "").trim()) body.api_key = llm.api_key.trim();
         const data = await api("/api/settings/llm", { method: "POST", body });
@@ -1942,7 +2007,19 @@
                   />
                 </${A.Form.Item}>
               </${A.Col}>
-              <${A.Col} xs=${24} md=${16}>
+              <${A.Col} xs=${24} md=${8}>
+                <${A.Form.Item} label=${d.pmTransport}>
+                  <${A.Select}
+                    value=${llm.transport || "http"}
+                    onChange=${(v) => setLlm({ ...llm, transport: v })}
+                    options=${[
+                      { value: "http", label: d.pmTransportHttp },
+                      { value: "ws", label: d.pmTransportWs },
+                    ]}
+                  />
+                </${A.Form.Item}>
+              </${A.Col}>
+              <${A.Col} xs=${24} md=${8}>
                 <${A.Form.Item} label=${d.pmModel}>
                   <${A.Space.Compact} block>
                     <${A.AutoComplete}

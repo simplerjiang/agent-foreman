@@ -215,16 +215,25 @@ def test_llm_settings_default_and_override(tmp_path):
     cfg = Config()
     cfg.llm.provider = "openai"
     cfg.llm.model = "gpt-4o"
+    cfg.llm.transport = "http"
     cfg.secrets.llm_api_key = "k"
     c = TestClient(create_app(cfg, store, EventBus()))
 
     got = c.get("/api/settings/llm").json()
     assert got["provider"] == "openai" and got["model"] == "gpt-4o" and got["api_key_set"] is True
+    assert got["transport"] == "http"
 
-    saved = c.post("/api/settings/llm", json={"model": "gpt-5", "provider": "anthropic"}).json()
+    saved = c.post(
+        "/api/settings/llm",
+        json={"model": "gpt-5", "provider": "anthropic", "transport": "ws"},
+    ).json()
     assert saved["model"] == "gpt-5" and saved["provider"] == "anthropic"
+    assert saved["transport"] == "ws"
+    assert cfg.llm.transport == "ws"
     # persisted as a config_kv override (survives a fresh GET)
-    assert c.get("/api/settings/llm").json()["model"] == "gpt-5"
+    got = c.get("/api/settings/llm").json()
+    assert got["model"] == "gpt-5"
+    assert got["transport"] == "ws"
 
 
 def test_llm_settings_blank_key_is_not_configured(tmp_path):
@@ -260,6 +269,13 @@ def test_llm_settings_rejects_bad_provider(tmp_path):
     store.init()
     c = TestClient(create_app(Config(), store, EventBus()))
     assert c.post("/api/settings/llm", json={"provider": "groq"}).status_code == 400
+
+
+def test_llm_settings_rejects_bad_transport(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    c = TestClient(create_app(Config(), store, EventBus()))
+    assert c.post("/api/settings/llm", json={"transport": "sse"}).status_code == 400
 
 
 def test_llm_settings_503_without_store():

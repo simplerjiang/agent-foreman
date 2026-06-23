@@ -60,6 +60,7 @@ class _LLMSettingsBody(BaseModel):
     provider: str | None = None  # "openai" | "anthropic"
     model: str | None = None
     base_url: str | None = None
+    transport: str | None = None  # "http" | "ws"
     api_key: str | None = None
 
 
@@ -640,15 +641,20 @@ def create_app(
         path.write_text("\n".join(next_lines) + ("\n" if next_lines else ""), encoding="utf-8")
 
     def _runtime_llm_settings() -> dict:
-        provider, model, base_url = cfg.llm.provider, cfg.llm.model, cfg.llm.base_url
+        provider = cfg.llm.provider
+        model = cfg.llm.model
+        base_url = cfg.llm.base_url
+        transport = cfg.llm.transport
         if store is not None and hasattr(store, "get_setting"):
             provider = store.get_setting("llm.provider") or provider
             model = store.get_setting("llm.model") or model
             base_url = store.get_setting("llm.base_url") or base_url
+            transport = store.get_setting("llm.transport") or transport
         return {
             "provider": provider,
             "model": model,
             "base_url": base_url,
+            "transport": transport,
             "api_key": cfg.secrets.llm_api_key,
         }
 
@@ -660,6 +666,8 @@ def create_app(
             settings["model"] = body.model.strip()
         if body.base_url is not None and body.base_url.strip():
             settings["base_url"] = body.base_url.strip()
+        if body.transport is not None and body.transport.strip():
+            settings["transport"] = body.transport.strip().lower()
         if body.api_key is not None and body.api_key.strip():
             settings["api_key"] = body.api_key.strip()
         return settings
@@ -960,7 +968,7 @@ def create_app(
             "provider": settings["provider"],
             "model": settings["model"],
             "base_url": settings["base_url"],
-            "transport": cfg.llm.transport,  # wiring stays config-only (read-only hint for the UI)
+            "transport": settings["transport"],
             "api_key_set": bool((cfg.secrets.llm_api_key or "").strip()),
         }
 
@@ -979,6 +987,13 @@ def create_app(
             store.set_setting("llm.model", body.model.strip())
         if body.base_url is not None:
             store.set_setting("llm.base_url", body.base_url.strip())
+        if body.transport is not None:
+            transport = body.transport.strip().lower()
+            if transport and transport not in ("http", "ws"):
+                raise HTTPException(status_code=400, detail="bad_transport")
+            store.set_setting("llm.transport", transport)
+            if transport:
+                cfg.llm.transport = transport
         if body.api_key is not None:
             _save_llm_api_key(body.api_key)
         return await get_llm_settings()

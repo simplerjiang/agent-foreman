@@ -154,3 +154,16 @@ async def test_stream_captures_native_session_id(tmp_path):
     assert h.native_session_id is None
     _ = [e async for e in a.stream(h)]
     assert h.native_session_id == "claude-abc"
+
+
+async def test_stream_classifies_thinking_blocks(tmp_path):
+    lines = [
+        b'{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan"}]}}\n',
+        b'{"type":"result","result":"done"}\n',
+    ]
+    a = fake_adapter(ClaudeCodeAdapter, _cfg(), FakeProc(stdout_lines=lines))
+    h = await a.start("x", tmp_path, "s")
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_reasoning", "stop"]
+    assert events[0].source == "claude-code"

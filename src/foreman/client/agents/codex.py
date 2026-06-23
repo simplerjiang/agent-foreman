@@ -22,7 +22,7 @@ class CodexAdapter(SubprocessCliAdapter):
 
     def _build_cmd(self, instruction: str, model: str = "", effort: str = "") -> list[str]:
         return [
-            self.cfg.command, "exec",
+            self.cfg.command, "exec", "--json",
             *self._model_args(model), *self._effort_args(effort),
             instruction,
         ]
@@ -32,7 +32,7 @@ class CodexAdapter(SubprocessCliAdapter):
     ) -> list[str]:
         """Resume the prior session with a follow-up (two-way control, DESIGN §4.2)."""
         return [
-            self.cfg.command, "exec", "resume",
+            self.cfg.command, "exec", "--json", "resume",
             *self._model_args(model), *self._effort_args(effort),
             native_session_id, instruction,
         ]
