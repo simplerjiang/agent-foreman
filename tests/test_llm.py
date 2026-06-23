@@ -160,14 +160,22 @@ async def test_list_models_openai_compatible():
         cap["auth"] = request.headers["authorization"]
         return httpx.Response(
             200,
-            json={"data": [{"id": "gpt-5"}, {"id": "gpt-5"}, {"id": "gpt-5-mini"}]},
+            json={
+                "data": [
+                    {"id": "gpt-5", "context_length": 272000, "max_completion_tokens": 128000},
+                    {"id": "gpt-5"},
+                    {"id": "gpt-5-mini"},
+                ]
+            },
         )
 
     c = LLMClient(cfg, transport=httpx.MockTransport(handler))
     models = await c.list_models()
+    infos = await c.list_model_infos()
     await c.aclose()
     assert cap == {"url": "https://example.test/v1/models", "auth": "Bearer secret-key"}
     assert models == ["gpt-5", "gpt-5-mini"]
+    assert infos[0] == {"id": "gpt-5", "context_length": 272000, "max_tokens": 128000}
 
 
 async def test_list_models_anthropic_shape():
@@ -194,6 +202,60 @@ async def test_openai_json_mode_sets_response_format():
     await c.complete([Message("user", "x")], json_mode=True)
     await c.aclose()
     assert cap["json"]["response_format"] == {"type": "json_object"}
+
+
+async def test_openai_reasoning_effort_is_optional_and_configured():
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "reasoning-model"
+    cfg.llm.reasoning_effort = "high"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["json"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    await c.complete([Message("user", "x")])
+    await c.aclose()
+
+    assert cap["json"]["reasoning_effort"] == "high"
+
+
+async def test_openai_stream_callback_receives_output_and_reasoning():
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "stream-model"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["json"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            text="\n\n".join(
+                [
+                    'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}',
+                    'data: {"choices":[{"delta":{"content":"Hi"}}]}',
+                    "data: [DONE]",
+                ]
+            ),
+        )
+
+    chunks: list[dict] = []
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    out = await c.complete([Message("user", "x")], on_stream=lambda chunk: chunks.append(chunk))
+    await c.aclose()
+
+    assert cap["json"]["stream"] is True
+    assert out == "Hi"
+    assert [(c["kind"], c["delta"]) for c in chunks] == [
+        ("reasoning", "think"),
+        ("output", "Hi"),
+    ]
 
 
 async def test_anthropic_request_and_parse():
@@ -272,6 +334,66 @@ async def test_ws_responses_accumulates_deltas_and_builds_request():
     assert req["input"] == [
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
     ]
+
+
+async def test_ws_responses_state_key_reuses_previous_response_id():
+    sent: list[str] = []
+    scripts = [
+        [
+            json.dumps({"type": "response.created", "response": {"id": "resp_1"}}),
+            json.dumps({"type": "response.output_text.delta", "delta": "one"}),
+            json.dumps({"type": "response.completed", "response": {"id": "resp_1"}}),
+        ],
+        [
+            json.dumps({"type": "response.created", "response": {"id": "resp_2"}}),
+            json.dumps({"type": "response.output_text.delta", "delta": "two"}),
+            json.dumps({"type": "response.completed", "response": {"id": "resp_2"}}),
+        ],
+    ]
+
+    def connect(_url, _headers, _timeout):
+        return _FakeWS(scripts.pop(0), sent)
+
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "gpt-5.5"
+    cfg.llm.transport = "ws"
+    cfg.secrets.llm_api_key = "secret-key"
+    c = LLMClient(cfg, ws_connect=connect)
+
+    assert await c.complete([Message("user", "first")], state_key="pm-review") == "one"
+    assert await c.complete([Message("user", "delta")], state_key="pm-review") == "two"
+    await c.aclose()
+
+    first = json.loads(sent[0])
+    second = json.loads(sent[1])
+    assert "previous_response_id" not in first
+    assert second["previous_response_id"] == "resp_1"
+    assert second["input"] == [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "delta"}]}
+    ]
+
+
+async def test_ws_responses_reasoning_effort_is_optional_and_configured():
+    sent: list = []
+    frames = [
+        json.dumps({"type": "response.output_text.delta", "delta": "ok"}),
+        json.dumps({"type": "response.completed"}),
+    ]
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "gpt-5.5"
+    cfg.llm.transport = "ws"
+    cfg.llm.reasoning_effort = "max"
+    cfg.secrets.llm_api_key = "secret-key"
+
+    c = LLMClient(cfg, ws_connect=lambda _url, _headers, _timeout: _FakeWS(frames, sent))
+    await c.complete([Message("user", "x")])
+    await c.aclose()
+
+    assert json.loads(sent[0])["reasoning"] == {"summary": "auto", "effort": "max"}
 
 
 async def test_ws_responses_stream_callback_receives_output_and_reasoning():

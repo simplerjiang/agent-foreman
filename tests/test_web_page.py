@@ -105,6 +105,8 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert "effort" in js and 'setEffort("low")' in js and 'setEffort("high")' in js
     # context meter + compact action
     assert "ctx-meter" in js and "/compact" in js and "runCompact" in js
+    assert "contextLimitFor" in js and "context_length" in js and "max_tokens" in js
+    assert "contextLength - outputReserve" in js
     assert ".ctx-meter" in css and ".seg" in css
 
 
@@ -125,6 +127,14 @@ def test_pm_review_rendered_in_thread():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     assert 't === "pm_review"' in js and "follow_up" in js
+    assert "todo_status" in js and "mergeTodoRows" in js
+
+
+def test_pm_settings_exposes_transport_picker():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "llm.transport" in js and 'value="ws"' in js and "WS stream" in js
+    assert "llm.reasoning_effort" in js and "reasoningEffort" in js and 'value="max"' in js
 
 
 def test_mobile_shell_drawer_and_bottom_tabs_wired():

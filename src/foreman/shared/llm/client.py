@@ -91,6 +91,7 @@ class LLMClient:
         self.model = cfg.llm.model
         self.api_key = (cfg.secrets.llm_api_key or "").strip()
         self.max_tokens = cfg.llm.max_tokens
+        self.reasoning_effort = (getattr(cfg.llm, "reasoning_effort", "") or "").strip().lower()
         self.timeout = cfg.llm.request_timeout_s
         self.mode = (cfg.llm.transport or "http").strip().lower()
         self._settings_resolver = settings_resolver
@@ -98,6 +99,7 @@ class LLMClient:
         self._client = httpx.AsyncClient(timeout=cfg.llm.request_timeout_s, transport=transport)
         # `ws_connect(url, headers, timeout) -> async-context-manager` lets tests inject a fake socket.
         self._ws_connect = ws_connect or _default_ws_connect
+        self._response_state: dict[str, str] = {}
 
     def _resolve(self, model_override: str = "") -> tuple[str, str, str]:
         """Effective (provider, base_url, model) for this request: a settings-page override (if any)
@@ -139,6 +141,18 @@ class LLMClient:
                 mode = override
         return mode
 
+    def _reasoning_effort(self) -> str:
+        effort = self.reasoning_effort
+        if self._settings_resolver is not None:
+            try:
+                ov = self._settings_resolver() or {}
+            except Exception:  # noqa: BLE001 - a broken resolver must never break defaults
+                ov = {}
+            override = str(ov.get("reasoning_effort") or "").strip().lower()
+            if override:
+                effort = override
+        return effort if effort in {"low", "medium", "high", "max"} else ""
+
     async def complete(
         self,
         messages: list[Message],
@@ -146,6 +160,7 @@ class LLMClient:
         json_mode: bool = False,
         model: str = "",
         on_stream: StreamCallback | None = None,
+        state_key: str = "",
     ) -> str:
         """Return the assistant's text. Set json_mode=True to nudge structured JSON output.
 
@@ -153,10 +168,12 @@ class LLMClient:
         already instruct the model to emit JSON and parse tolerantly)."""
         provider, base_url, model = self._resolve(model)
         if self._transport_mode() == "ws":
-            return await self._responses_ws(messages, base_url, model, on_stream=on_stream)
+            return await self._responses_ws(
+                messages, base_url, model, on_stream=on_stream, state_key=state_key
+            )
         if provider == "anthropic":
             return await self._anthropic(messages, json_mode, base_url, model)
-        return await self._openai(messages, json_mode, base_url, model)
+        return await self._openai(messages, json_mode, base_url, model, on_stream=on_stream)
 
     async def list_models(self) -> list[str]:
         """Return model ids from the configured PM provider's `/models` endpoint.
@@ -165,6 +182,10 @@ class LLMClient:
         and fall back to configured defaults. The API key still goes through `_api_key()`, so a
         missing key fails before any network request.
         """
+        return [item["id"] for item in await self.list_model_infos()]
+
+    async def list_model_infos(self) -> list[dict]:
+        """Return model metadata from `/models`, preserving context-window fields when present."""
         provider, base_url, _model = self._resolve()
         headers = {"Authorization": f"Bearer {self._api_key()}"}
         if provider == "anthropic":
@@ -174,10 +195,16 @@ class LLMClient:
             }
         r = await self._client.get(f"{base_url}/models", headers=headers)
         r.raise_for_status()
-        return _model_ids(r.json())
+        return _model_infos(r.json())
 
     async def _openai(
-        self, messages: list[Message], json_mode: bool, base_url: str, model: str
+        self,
+        messages: list[Message],
+        json_mode: bool,
+        base_url: str,
+        model: str,
+        *,
+        on_stream: StreamCallback | None = None,
     ) -> str:
         payload: dict = {
             "model": model,
@@ -186,6 +213,12 @@ class LLMClient:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        effort = self._reasoning_effort()
+        if effort:
+            payload["reasoning_effort"] = effort
+        if on_stream is not None:
+            payload["stream"] = True
+            return await self._openai_stream(payload, base_url, on_stream)
         r = await self._client.post(
             f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key()}"},
@@ -193,6 +226,33 @@ class LLMClient:
         )
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
+
+    async def _openai_stream(
+        self, payload: dict, base_url: str, on_stream: StreamCallback
+    ) -> str:
+        buf: list[str] = []
+        async with self._client.stream(
+            "POST",
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self._api_key()}"},
+            json=payload,
+        ) as r:
+            r.raise_for_status()
+            async for line in r.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(data)
+                except (TypeError, ValueError):
+                    continue
+                for chunk in _openai_stream_chunks(obj):
+                    if chunk["kind"] == "output":
+                        buf.append(chunk["delta"])
+                    await _call_stream(on_stream, chunk)
+        return "".join(buf)
 
     async def _anthropic(
         self, messages: list[Message], json_mode: bool, base_url: str, model: str
@@ -220,26 +280,58 @@ class LLMClient:
         model: str,
         *,
         on_stream: StreamCallback | None = None,
+        state_key: str = "",
     ) -> str:
         """Run one turn over the Responses-API WebSocket and return the accumulated assistant text.
 
         Sends a `response.create` frame; accumulates `response.output_text.delta` deltas; stops at
         `response.completed`; raises on an `error` frame or if the stream closes early. Each receive
         is bounded by the configured request timeout so a stalled upstream can't hang the loop."""
+        previous_id = self._response_state.get(state_key, "") if state_key else ""
+        try:
+            return await self._responses_ws_once(
+                messages, base_url, model, on_stream=on_stream, state_key=state_key,
+                previous_response_id=previous_id,
+            )
+        except RuntimeError as exc:
+            if not previous_id or "previous_response" not in str(exc).lower():
+                raise
+            self._response_state.pop(state_key, None)
+            return await self._responses_ws_once(
+                messages, base_url, model, on_stream=on_stream, state_key=state_key
+            )
+
+    async def _responses_ws_once(
+        self,
+        messages: list[Message],
+        base_url: str,
+        model: str,
+        *,
+        on_stream: StreamCallback | None = None,
+        state_key: str = "",
+        previous_response_id: str = "",
+    ) -> str:
         instructions, items = _messages_to_responses_input(messages)
         request: dict = {
             "type": "response.create",
             "model": model,
             "stream": True,
             "store": False,
-            "reasoning": {"summary": "auto"},
             "input": items,
         }
+        reasoning = {"summary": "auto"}
+        effort = self._reasoning_effort()
+        if effort:
+            reasoning["effort"] = effort
+        request["reasoning"] = reasoning
+        if previous_response_id:
+            request["previous_response_id"] = previous_response_id
         if instructions:
             request["instructions"] = instructions
         headers = {"Authorization": f"Bearer {self._api_key()}"}
         buf: list[str] = []
         reasoning_streamed = False
+        response_id = ""
         async with self._ws_connect(_ws_url(base_url), headers, self.timeout) as ws:
             await ws.send(json.dumps(request))
             while True:
@@ -249,6 +341,7 @@ class LLMClient:
                 except (TypeError, ValueError):
                     continue  # ignore a non-JSON keepalive/marker frame
                 etype = obj.get("type")
+                response_id = _response_id(obj) or response_id
                 chunk = _stream_chunk(obj)
                 if chunk is not None and on_stream is not None:
                     if chunk["kind"] == "reasoning":
@@ -270,6 +363,8 @@ class LLMClient:
                     break
                 elif etype == "error":
                     raise RuntimeError(f"responses ws error: {obj.get('error')}")
+        if state_key and response_id:
+            self._response_state[state_key] = response_id
         return "".join(buf)
 
     async def aclose(self) -> None:
@@ -292,6 +387,60 @@ def _stream_chunk(obj: dict) -> dict | None:
     if not delta:
         delta = _string_part(obj.get("text") or obj.get("summary"))
     return {"kind": "reasoning", "delta": delta, "event_type": etype} if delta else None
+
+
+def _response_id(obj: dict) -> str:
+    response = obj.get("response")
+    if isinstance(response, dict):
+        rid = str(response.get("id") or "").strip()
+        if rid:
+            return rid
+    rid = str(obj.get("response_id") or "").strip()
+    if rid:
+        return rid
+    etype = str(obj.get("type") or "")
+    if etype in {"response.created", "response.in_progress", "response.completed"}:
+        return str(obj.get("id") or "").strip()
+    return ""
+
+
+def _openai_stream_chunks(obj: dict) -> list[dict]:
+    out: list[dict] = []
+    choices = obj.get("choices", [])
+    if not isinstance(choices, list):
+        return out
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        raw_delta = choice.get("delta")
+        delta = raw_delta if isinstance(raw_delta, dict) else {}
+        content = _string_part(delta.get("content"))
+        if content:
+            out.append({"kind": "output", "delta": content, "event_type": "chat.completion.chunk"})
+        reasoning = (
+            _string_part(delta.get("reasoning_content"))
+            or _string_part(delta.get("reasoning"))
+            or _string_part(delta.get("thinking"))
+        )
+        if reasoning:
+            out.append(
+                {"kind": "reasoning", "delta": reasoning, "event_type": "chat.completion.chunk"}
+            )
+        details = delta.get("reasoning_details") or choice.get("reasoning_details")
+        if isinstance(details, list):
+            for detail in details:
+                if not isinstance(detail, dict):
+                    continue
+                text = _string_part(detail.get("text") or detail.get("summary"))
+                if text:
+                    out.append(
+                        {
+                            "kind": "reasoning",
+                            "delta": text,
+                            "event_type": str(detail.get("type") or "reasoning_details"),
+                        }
+                    )
+    return out
 
 
 def _completed_reasoning_summaries(obj: dict) -> list[str]:
@@ -332,20 +481,66 @@ def _string_part(value: object) -> str:
 
 def _model_ids(data: object) -> list[str]:
     """Extract model ids from common OpenAI/Anthropic-compatible shapes."""
+    return [str(item["id"]) for item in _model_infos(data)]
+
+
+def _model_infos(data: object) -> list[dict[str, object]]:
+    """Extract model ids and optional token-window metadata from common provider shapes."""
     if isinstance(data, dict):
         items = data.get("data", data.get("models", []))
     else:
         items = data
-    out: list[str] = []
+    out: list[dict[str, object]] = []
+    seen: set[str] = set()
     if not isinstance(items, list):
         return out
     for item in items:
         if isinstance(item, str):
             mid = item.strip()
+            info: dict[str, object] = {"id": mid}
         elif isinstance(item, dict):
             mid = str(item.get("id") or item.get("name") or "").strip()
+            info = {"id": mid}
+            context_length = _positive_int(
+                item.get("context_length")
+                or item.get("contextLength")
+                or item.get("context_window")
+                or item.get("input_token_limit")
+                or item.get("inputTokenLimit")
+                or item.get("maxInputTokens")
+            )
+            max_tokens = _positive_int(
+                item.get("max_completion_tokens")
+                or item.get("max_tokens")
+                or item.get("output_token_limit")
+                or item.get("outputTokenLimit")
+                or item.get("maxOutputTokens")
+            )
+            if context_length is not None:
+                info["context_length"] = context_length
+            if max_tokens is not None:
+                info["max_tokens"] = max_tokens
         else:
             mid = ""
-        if mid and mid not in out:
-            out.append(mid)
+            info = {"id": mid}
+        if mid and mid not in seen:
+            seen.add(mid)
+            out.append(info)
     return out
+
+
+def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        out = value
+    elif isinstance(value, float):
+        out = int(value)
+    elif isinstance(value, str):
+        try:
+            out = int(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return out if out > 0 else None
