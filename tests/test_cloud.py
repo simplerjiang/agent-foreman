@@ -12,7 +12,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from foreman.client.core.cloud import CloudManager
+from foreman.client.core.cloud import CloudManager, normalize_relay_url
 from foreman.client.relay import RelayConnector
 from foreman.server.app import create_app
 from foreman.shared.config import load_config
@@ -53,14 +53,34 @@ class _FakeConn:
 
 
 def _factory(ack_ok: bool = True):
-    def make(*, url, access_key, process_id, name, on_status):
+    def make(*, url, access_key, process_id, name, on_status, on_error=None):
         async def connect(_u):
             return _FakeConn(ack_ok=ack_ok)
         return RelayConnector(
             url, access_key, process_id=process_id, name=name, on_status=on_status,
-            connect=connect, heartbeat_interval=0, backoff_base=0.05,
+            on_error=on_error, connect=connect, heartbeat_interval=0, backoff_base=0.05,
         )
     return make
+
+
+def _factory_unreachable():
+    def make(*, url, access_key, process_id, name, on_status, on_error=None):
+        async def connect(_u):
+            raise ConnectionError("connection refused")
+        return RelayConnector(
+            url, access_key, process_id=process_id, name=name, on_status=on_status,
+            on_error=on_error, connect=connect, heartbeat_interval=0,
+            backoff_base=0.05, backoff_cap=0.1,
+        )
+    return make
+
+
+def test_normalize_relay_url():
+    assert normalize_relay_url("https://foreman.team.dev") == "wss://foreman.team.dev/relay"
+    assert normalize_relay_url("http://host:8787") == "ws://host:8787/relay"
+    assert normalize_relay_url("foreman.team.dev") == "wss://foreman.team.dev/relay"
+    assert normalize_relay_url("wss://host/relay") == "wss://host/relay"
+    assert normalize_relay_url("") == ""
 
 
 def test_cloud_manager_not_configured():
@@ -103,6 +123,19 @@ def test_cloud_manager_auth_denied_surfaces_error():
         time.sleep(0.05)
     assert mgr.status()["connected"] is False
     assert mgr.status()["error"] == "auth"
+    mgr.disconnect()
+
+
+def test_cloud_manager_unreachable_surfaces_error():
+    store = FakeStore()
+    store.set_setting("cloud.url", "wss://relay.example/relay")
+    cfg = load_config()
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    mgr = CloudManager(store=store, cfg=cfg, connector_factory=_factory_unreachable())
+    state = mgr.connect(wait=1.0)
+    # a relay that never answers must not show an indefinite "connecting": an error is surfaced
+    assert state["connected"] is False
+    assert state["error"]  # non-empty (the dial error, or the connect-wait "timeout")
     mgr.disconnect()
 
 

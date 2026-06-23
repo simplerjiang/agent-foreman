@@ -180,6 +180,24 @@ def test_cloud_connection_frontend_wired(tmp_path):
     assert "connectCloud" in js and "disconnectCloud" in js and "saveCloud" in js
     assert "cloudConn" in js and "云端连接" in js
     assert "access_key" in js
+    # the field asks for the wss relay endpoint the connector actually needs (codex review)
+    assert "wss://foreman.yourteam.dev/relay" in js
+
+
+def test_boot_does_not_block_on_model_discovery():
+    """Launch must not hang on a slow provider /models: model/agent discovery runs outside the
+    boot barrier (codex review finding)."""
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    # the boot barrier ends with the essential loaders — no loadModels()/loadLlm() inside it
+    assert "loadReports(), loadAutonomy(), loadCloud()])" in js
+
+
+def test_mobile_drawer_has_session_picker():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    # MobileShell is handed the session list + selector so a phone can open an existing session
+    assert "sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline}" in js
 
 
 def test_launch_splash_present(tmp_path):

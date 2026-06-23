@@ -26,6 +26,30 @@ from typing import Any, Callable
 from foreman.client.relay import RelayAuthError, RelayConnector
 
 
+def normalize_relay_url(url: str) -> str:
+    """Coerce a user-entered cloud address into the wss relay endpoint the connector expects.
+
+    The Settings field is friendly (users paste ``foreman.team.dev`` or an ``https://`` origin),
+    but ``websockets.connect`` needs ``wss://<host>/relay`` (DESIGN §8.5). Map http→ws / https→wss,
+    assume wss:// when no scheme is given, and append ``/relay`` when no path is present. An empty
+    string stays empty."""
+    from urllib.parse import urlparse
+
+    u = (url or "").strip()
+    if not u:
+        return u
+    if u.startswith("http://"):
+        u = "ws://" + u[len("http://"):]
+    elif u.startswith("https://"):
+        u = "wss://" + u[len("https://"):]
+    elif not (u.startswith("ws://") or u.startswith("wss://")):
+        u = "wss://" + u
+    parsed = urlparse(u)
+    if not parsed.path or parsed.path == "/":
+        u = u.rstrip("/") + "/relay"
+    return u
+
+
 class CloudManager:
     def __init__(
         self,
@@ -89,14 +113,20 @@ class CloudManager:
             self._error = ""
             self._connected_event.set()
 
+    def _on_error(self, exc: Exception) -> None:
+        # Surface the last dial/read error so the UI shows "connection failed: ..." instead of an
+        # indefinite "connecting" when the relay is offline/unreachable (codex review finding).
+        self._error = str(exc)[:160] or "unreachable"
+
     def _build_connector(self, url: str, key: str) -> RelayConnector:
         if self._connector_factory is not None:
             return self._connector_factory(
                 url=url, access_key=key, process_id=self._process_id(),
-                name=self._name, on_status=self._on_status,
+                name=self._name, on_status=self._on_status, on_error=self._on_error,
             )
         return RelayConnector(
-            url, key, process_id=self._process_id(), name=self._name, on_status=self._on_status,
+            url, key, process_id=self._process_id(), name=self._name,
+            on_status=self._on_status, on_error=self._on_error,
         )
 
     def connect(self, *, wait: float = 3.0) -> dict:
@@ -112,7 +142,7 @@ class CloudManager:
             self._want = True
             self._error = ""
             self._connected_event.clear()
-            url, key = self._url(), self._key()
+            url, key = normalize_relay_url(self._url()), self._key()
 
             def _run() -> None:
                 loop = asyncio.new_event_loop()
@@ -150,6 +180,10 @@ class CloudManager:
             thread.start()
 
         self._connected_event.wait(timeout=max(0.0, wait))
+        if not self._connected and not self._error:
+            # No handshake yet and no error reported — the relay is slow/unreachable. Report a
+            # status the UI can show instead of an indefinite "connecting" (the loop keeps retrying).
+            self._error = "timeout"
         return self.status()
 
     def disconnect(self) -> dict:

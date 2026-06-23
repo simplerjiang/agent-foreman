@@ -999,7 +999,7 @@
         </div>
         <div className="card-sub">${d.cloudSub}</div>
         ${!cloudAvailable ? html`<div className="alert warn" style=${{ marginBottom: 14 }}>⚠ ${d.cloudUnavailable}</div>` : null}
-        <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.cloudUrl}</span><input className="input mono" value=${cloud.url || ""} onChange=${(e) => setCloud({ ...cloud, url: e.target.value })} placeholder="https://foreman.yourteam.dev" disabled=${!cloudAvailable} /></div>
+        <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.cloudUrl}</span><input className="input mono" value=${cloud.url || ""} onChange=${(e) => setCloud({ ...cloud, url: e.target.value })} placeholder="wss://foreman.yourteam.dev/relay" disabled=${!cloudAvailable} /></div>
         <div className="field" style=${{ marginBottom: 11 }}><span className="field-label">${d.accessKey}</span><input className="input mono" type="password" value=${cloud.access_key || ""} onChange=${(e) => setCloud({ ...cloud, access_key: e.target.value })} placeholder=${cloud.access_key_set ? "••••••••••••" : "fk_live_…"} disabled=${!cloudAvailable} /></div>
         <div className="alert info" style=${{ marginBottom: 14 }}>ⓘ ${d.accessKeyHint}</div>
         ${cloudStatus ? html`<div className=${`alert ${cloudStatus.includes(d.connFailed) ? "error" : "ok"}`} style=${{ marginBottom: 14 }}>${cloudStatus}</div>` : null}
@@ -1075,7 +1075,7 @@
   // ===========================================================================
   function MobileShell(props) {
     const { d, lang, view, setView, mTab, setMTab, drawerOpen, setDrawerOpen, counts, sessionRow,
-      dig, mainProps } = props;
+      dig, mainProps, sessions, selected, onSelect } = props;
     const titles = { workspace: sessionRow ? (sessionRow.goal || d.navWorkspace) : d.navWorkspace, decisions: d.navDecisions, briefings: d.navBriefings, rules: d.navRules, settings: d.navSettings };
     const live = sessionRow && (sessionRow.status || "").toLowerCase().match(/run|active/);
     return html`<div className="mobile">
@@ -1088,6 +1088,11 @@
         <div className="m-drawer">
           <div className="sb-brand"><div className="name">Foreman</div><div className="sub">${d.productSubtitle}</div></div>
           <${NavList} d=${d} view=${view} onView=${(k) => { setView(k); setDrawerOpen(false); }} counts=${counts} />
+          <div className="sb-section" style=${{ marginTop: 18 }}><span>${d.sessions}</span></div>
+          <div className="sb-sessions" style=${{ flex: "0 1 auto", maxHeight: "40vh" }}>
+            ${!(sessions || []).length ? html`<${Empty} icon="✉" text=${d.noActiveSession} />` :
+              sessions.map((s) => html`<${SessionItem} key=${s.id} s=${s} d=${d} lang=${lang} active=${s.id === selected} onClick=${() => { onSelect(s.id); setDrawerOpen(false); }} />`)}
+          </div>
           <div className="sb-user" style=${{ marginTop: "auto" }}><div className="avatar">J</div><div><div className="uname">jiang</div><div className="urole">${d.personalMode}</div></div></div>
         </div>` : null}
       <div className="m-body">
@@ -1235,11 +1240,18 @@
     useEffect(() => {
       if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
       api("/health").then((h) => setStatus({ online: true, version: h.version })).catch(() => setStatus({ online: false, version: "offline" }));
-      Promise.allSettled([loadWorkspaces(), loadAgentSettings(), loadSessions(), loadCards(), loadApprovals(), loadReports(), loadLlm(), loadAutonomy(), loadCloud(), loadModels()]).then(() => {
+      // Boot on the essentials only. Model + agent discovery hit the provider's /models (or run a
+      // CLI --version per agent) and can take the backend request timeout if a key is set but the
+      // endpoint is slow — keeping them out of this barrier stops the launch overlay from hanging
+      // (codex review finding). They populate the Settings page shortly after, non-blocking.
+      Promise.allSettled([loadWorkspaces(), loadSessions(), loadCards(), loadApprovals(), loadReports(), loadAutonomy(), loadCloud()]).then(() => {
         setBooted(true);
         setTimeout(() => setHidingLaunch(true), 350);
       });
-    }, [loadWorkspaces, loadAgentSettings, loadSessions, loadCards, loadApprovals, loadReports, loadLlm, loadAutonomy, loadCloud, loadModels]);
+      loadAgentSettings();
+      loadLlm();
+      loadModels();
+    }, [loadWorkspaces, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadAgentSettings, loadLlm, loadModels]);
     useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
 
     // polling for cards/approvals/sessions
@@ -1497,7 +1509,7 @@
       <!-- mobile -->
       <${MobileShell} d=${d} lang=${lang} view=${view} setView=${setView} mTab=${mTab} setMTab=${setMTab}
         drawerOpen=${drawerOpen} setDrawerOpen=${setDrawerOpen} counts=${counts} sessionRow=${sessionRow}
-        dig=${dig} mainProps=${mainProps} />
+        dig=${dig} mainProps=${mainProps} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} />
 
       ${detailOpen ? html`<${DetailModal} d=${d} lang=${lang} detail=${detail} onClose=${() => setDetailOpen(false)} />` : null}
       ${defnOpen ? html`<${Modal} title=${defnDraft && defnDraft.id ? d.edit : d.newBtn} onClose=${() => setDefnOpen(false)} footer=${html`<><button className="btn" onClick=${() => setDefnOpen(false)}>${d.cancel}</button><button className="btn primary" onClick=${saveDefinition}>${d.save}</button></>`}>

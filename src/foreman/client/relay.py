@@ -56,6 +56,7 @@ class RelayConnector:
         connect: Callable[[str], Awaitable[object]] | None = None,
         on_frame: Callable[[Envelope], Awaitable[None]] | None = None,
         on_status: Callable[[bool], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
         backoff_base: float = 1.0,
         backoff_cap: float = 60.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -73,6 +74,9 @@ class RelayConnector:
         # ends) so a supervising CloudManager can surface "connected" in the UI without reaching
         # into the connector's internals. Must never raise.
         self._on_status = on_status
+        # Optional error observer: the dial/read errors run() otherwise swallows are reported here
+        # so the UI can show "connection failed: ..." instead of an indefinite "connecting".
+        self._on_error = on_error
         self._backoff_base = backoff_base
         self._backoff_cap = backoff_cap
         self._sleep = sleep
@@ -90,6 +94,15 @@ class RelayConnector:
             return
         try:
             self._on_status(connected)
+        except Exception:  # noqa: BLE001 — a buggy observer must not kill the relay loop
+            pass
+
+    def _notify_error(self, exc: Exception) -> None:
+        """Report a dial/read error to the optional observer, swallowing observer errors."""
+        if self._on_error is None:
+            return
+        try:
+            self._on_error(exc)
         except Exception:  # noqa: BLE001 — a buggy observer must not kill the relay loop
             pass
 
@@ -178,8 +191,8 @@ class RelayConnector:
                 await self.run_once(conn)
             except RelayAuthError:
                 raise  # key needs fixing — retrying a revoked/unknown key is pointless
-            except Exception:
-                pass  # transport/connect/read error -> back off and retry below
+            except Exception as exc:  # noqa: BLE001
+                self._notify_error(exc)  # surface the dial/read error; still back off and retry
             finally:
                 if self._handshook:
                     self._notify_status(False)
