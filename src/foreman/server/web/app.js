@@ -675,7 +675,7 @@
       case "briefing":
         return payload.title || "";
       case "stop":
-        return extractAgentText(payload) || d.evDone;
+        return d.evDone;
       case "agent_output":
         return extractAgentText(payload);
       default:
@@ -693,6 +693,17 @@
       payload.model && { key: "model", value: payload.model, icon: "ApiOutlined", color: "geekblue" },
       payload.effort && { key: "effort", value: payload.effort, icon: "ThunderboltOutlined", color: "gold" },
     ].filter(Boolean);
+  }
+
+  function eventSignature(event) {
+    return [
+      event.session_id || "",
+      event.task_id || "",
+      event.type || "",
+      event.source || "",
+      event.ts || "",
+      JSON.stringify(event.payload || {}),
+    ].join("\u001f");
   }
 
   function urlBase64ToUint8Array(base64String) {
@@ -1036,7 +1047,17 @@
         `${proto}://${location.host}/ws?session_id=${encodeURIComponent(sessionId)}${tokenQuery}`
       );
       next.addEventListener("message", (event) => {
-        try { setEvents((prev) => [...prev, JSON.parse(event.data)]); }
+        try {
+          const item = JSON.parse(event.data);
+          setEvents((prev) => {
+            if (item.id && prev.some((row) => row.id === item.id)) return prev;
+            if (!item.id) {
+              const sig = eventSignature(item);
+              if (prev.some((row) => !row.id && eventSignature(row) === sig)) return prev;
+            }
+            return [...prev, item];
+          });
+        }
         catch (e) { console.warn("bad event", e); }
       });
       next.addEventListener("error", () => ui && ui.message.error("WebSocket failed"));

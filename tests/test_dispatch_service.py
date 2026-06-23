@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from foreman.client.core.dispatch_service import DispatchService
+from foreman.client.core.dispatch_service import DispatchService, _explicit_agent_targets
 from foreman.client.core.pm_agent import PMPlan, PMReview
 from foreman.client.store import Store
 from foreman.client.store.models import (
@@ -349,6 +349,63 @@ async def test_pm_model_override_is_not_passed_to_coding_agent(tmp_path):
     assert runner.launched == [("claude-code", "", "high")]
     pm_plan = [e for e in store.get_events(res["session_id"]) if e.type == "pm_plan"][0]
     assert json.loads(pm_plan.payload_json)["model"] == ""
+
+
+async def test_explicit_multi_agent_request_directly_launches_named_agents(tmp_path):
+    store = _store(tmp_path)
+
+    class ExplodingPM:
+        async def plan(self, *_a, **_kw):
+            raise AssertionError("direct agent request should not call PM planning")
+
+    class FakeHandle:
+        session_id = ""
+
+    class FakeRunner:
+        def __init__(self):
+            self.launched = []
+            self.handle = FakeHandle()
+
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            self.handle.session_id = session_id
+            self.launched.append((agent, instruction, str(workspace), model, effort))
+            store.add_event(make_event("stop", agent, session_id, payload={"result": agent}))
+            return self.handle
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={
+            "claude-code": AgentCfg(command="claude", enabled=True),
+            "codex": AgentCfg(command="codex", enabled=True),
+        },
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    runner = FakeRunner()
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=ExplodingPM())
+
+    res = await svc.create("\u53ebcodex\u548cclaude\u7ed9\u6211\u62a5\u4e2a\u5230", model="gpt-5.5")
+    assert res["agent"] == "codex+claude-code"
+    assert res["model"] == ""
+    assert res["direct_agents"] == ["codex", "claude-code"]
+    assert store.get_session(res["session_id"]).agent_type == "codex+claude-code"
+    await asyncio.gather(*list(svc._tasks))
+
+    assert [call[0] for call in runner.launched] == ["codex", "claude-code"]
+    assert [call[3] for call in runner.launched] == ["", ""]  # PM model is not a CLI model
+    assert all("Do not invoke another coding agent" in call[1] for call in runner.launched)
+    plans = [json.loads(e.payload_json) for e in store.get_events(res["session_id"]) if e.type == "pm_plan"]
+    assert [p["agent"] for p in plans] == ["codex", "claude-code"]
+
+
+def test_explicit_agent_target_detection_is_conservative():
+    enabled = ["claude-code", "codex"]
+    assert _explicit_agent_targets("\u53ebcodex\u548cclaude\u7ed9\u6211\u62a5\u4e2a\u5230", enabled) == [
+        "codex", "claude-code",
+    ]
+    assert _explicit_agent_targets("use codex to report status", enabled) == ["codex"]
+    assert _explicit_agent_targets("fix Codex adapter bug", enabled) == []
 
 
 async def test_create_ignores_bad_effort(tmp_path):

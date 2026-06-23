@@ -39,6 +39,7 @@ class AgentEvent:
     task_id: str | None = None
     payload: dict = field(default_factory=dict)
     ts: str = ""       # UTC ISO8601; set by the publisher (use utc_now_iso / make_event)
+    id: str = ""       # store row id, filled when persisted; empty for transient live-only events
 
 
 def utc_now_iso() -> str:

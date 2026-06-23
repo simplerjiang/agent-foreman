@@ -114,8 +114,9 @@ class Store:
     # ── events ─────────────────────────────────────────────────────────────────────────────
     def add_event(self, event: AgentEvent) -> Event:
         """Persist an AgentEvent as an Event row (payload serialized to JSON)."""
+        event_id = event.id or uuid.uuid4().hex
         row = Event(
-            id=uuid.uuid4().hex,
+            id=event_id,
             session_id=event.session_id,
             task_id=event.task_id,
             type=event.type,
@@ -126,6 +127,8 @@ class Store:
         with self.session() as s:
             s.add(row)
             s.commit()
+        event.id = event_id
+        event.ts = row.ts
         return row
 
     def get_events(self, session_id: str) -> list[Event]:

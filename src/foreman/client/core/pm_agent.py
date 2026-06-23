@@ -30,7 +30,8 @@ PLAN_SYSTEM = (
     "high effort by default unless the task is clearly trivial. If no coding-agent model is "
     "configured, leave model empty so the CLI uses its own default/profile. Keep the instruction "
     "actionable, include acceptance checks, and tell the agent not to push, merge, or deploy unless "
-    "the user explicitly requested it. Respond with ONLY JSON: "
+    "the user explicitly requested it. Never tell one coding agent to launch or shell out to another "
+    "coding agent; Foreman owns all Claude Code and Codex process launches. Respond with ONLY JSON: "
     '{"summary": str, "agent": "claude-code|codex", "model": str, "effort": "low|medium|high|", '
     '"instruction": str}.'
 )

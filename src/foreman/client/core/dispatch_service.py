@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,16 @@ MAX_GOAL_CHARS = 8000
 VALID_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high"})
 VALID_SOURCES: frozenset[str] = frozenset({"desktop", "phone", "api"})
 MAX_CONTEXT_CHARS = 12000
+AGENT_ALIASES: dict[str, tuple[str, ...]] = {
+    "claude-code": ("claude-code", "claude code", "claude"),
+    "codex": ("codex",),
+}
+CJK_AGENT_DISPATCH_TRIGGERS: tuple[str, ...] = (
+    "\u7528", "\u53eb", "\u8ba9", "\u555f\u52d5", "\u542f\u52a8",
+    "\u5524\u8d77", "\u904b\u884c", "\u8fd0\u884c", "\u8dd1",
+    "\u8c03\u7528", "\u8abf\u7528", "\u6d3e", "\u4ea4\u7ed9",
+    "\u4ea4\u7d66", "\u62a5\u5230", "\u5831\u5230",
+)
 
 
 def _within_any(path: str, roots: list[str]) -> bool:
@@ -122,13 +133,18 @@ class DispatchService:
         if err:
             return {"ok": False, "error": err}
         pm_enabled = self.pm_agent is not None and self.runner is not None
-        resolved_model = (model or "").strip() if pm_enabled else self._resolve_model(
-            resolved_agent, model
+        enabled_agents = sorted(k for k, a in self.cfg.agents.items() if a.enabled)
+        direct_agents = _explicit_agent_targets(goal, enabled_agents) if pm_enabled else []
+        resolved_model = (
+            ""
+            if direct_agents
+            else (model or "").strip() if pm_enabled else self._resolve_model(resolved_agent, model)
         )
         resolved_effort = "" if pm_enabled else self._resolve_effort(resolved_agent, effort)
 
+        session_agent = "+".join(direct_agents) if direct_agents else resolved_agent
         if existing_session is None:
-            session, task = build_session_task(self.store, goal, ws, resolved_agent)
+            session, task = build_session_task(self.store, goal, ws, session_agent)
             continued = False
         else:
             session = existing_session
@@ -142,15 +158,30 @@ class DispatchService:
             task.id,
             goal,
             ws,
-            resolved_agent,
+            session_agent,
             resolved_model,
             resolved_effort,
             deferred,
             pm_enabled,
             self._resolve_source(source),
             continued,
+            direct_agents,
         )
-        if pm_enabled:
+        if direct_agents:
+            launch_task = asyncio.create_task(
+                self._safe_direct_launch(
+                    session.id,
+                    task.id,
+                    goal,
+                    ws,
+                    direct_agents,
+                    None,
+                    effort,
+                )
+            )
+            self._tasks.add(launch_task)
+            launch_task.add_done_callback(self._tasks.discard)
+        elif pm_enabled:
             launch_task = asyncio.create_task(
                 self._safe_pm_launch(
                     session.id,
@@ -181,11 +212,12 @@ class DispatchService:
             "task_id": task.id,
             "goal": goal,
             "workspace": ws,
-            "agent": resolved_agent,
+            "agent": session_agent,
             "model": resolved_model,
             "effort": resolved_effort,
             "execution_deferred": deferred,
             "pm_agent": pm_enabled,
+            "direct_agents": direct_agents,
             "continued": continued,
         }
 
@@ -325,6 +357,7 @@ class DispatchService:
         pm_enabled: bool = False,
         source: str = "api",
         continued: bool = False,
+        direct_agents: list[str] | None = None,
     ) -> None:
         event = make_event(
             "dispatch",
@@ -341,6 +374,7 @@ class DispatchService:
                 "execution_deferred": deferred,
                 "pm_agent": pm_enabled,
                 "continued": continued,
+                "direct_agents": direct_agents or [],
             },
         )
         await self._persist_then_publish(event)
@@ -366,6 +400,61 @@ class DispatchService:
                 payload={"msg": f"{type(exc).__name__}: {str(exc)[:200]}"},
             )
             await self._persist_then_publish(event)
+
+    async def _safe_direct_launch(
+        self,
+        session_id: str,
+        task_id: str,
+        goal: str,
+        workspace: str,
+        agents: list[str],
+        model_override: str | None,
+        effort_override: str | None,
+    ) -> None:
+        try:
+            await self._direct_launch(
+                session_id, task_id, goal, workspace, agents, model_override, effort_override
+            )
+        except Exception as exc:  # noqa: BLE001 - visible background failure, not a server crash
+            event = make_event(
+                "error",
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload={"msg": f"{type(exc).__name__}: {str(exc)[:200]}"},
+            )
+            await self._persist_then_publish(event)
+
+    async def _direct_launch(
+        self,
+        session_id: str,
+        task_id: str,
+        goal: str,
+        workspace: str,
+        agents: list[str],
+        model_override: str | None,
+        effort_override: str | None,
+    ) -> None:
+        multi = len(agents) > 1
+        for agent in agents:
+            model = self._resolve_model(agent, model_override)
+            effort = self._resolve_effort(agent, effort_override)
+            instruction = _direct_agent_instruction(goal, agent, multi=multi)
+            await self._emit_pm_plan(
+                session_id,
+                task_id,
+                PMPlan(
+                    agent=agent,
+                    model=model,
+                    effort=effort,
+                    instruction=instruction,
+                    summary=f"Foreman direct dispatch to {agent}.",
+                ),
+            )
+            handle = await self.runner.launch(
+                agent, instruction, Path(workspace), session_id, model=model, effort=effort
+            )
+            await self.runner.wait(handle)
 
     async def _pm_launch(
         self,
@@ -614,6 +703,58 @@ def _fallback_compact(timeline: str, existing: str = "") -> str:
     if len(text) <= MAX_CONTEXT_CHARS:
         return text
     return "...[context compacted to latest events]...\n" + text[-MAX_CONTEXT_CHARS:]
+
+
+def _explicit_agent_targets(goal: str, enabled_agents: list[str]) -> list[str]:
+    text = (goal or "").casefold()
+    if not text:
+        return []
+    enabled = set(enabled_agents)
+    found: list[tuple[int, str]] = []
+    for agent, aliases in AGENT_ALIASES.items():
+        if agent not in enabled:
+            continue
+        hits = [text.find(alias) for alias in aliases if text.find(alias) >= 0]
+        if hits:
+            found.append((min(hits), agent))
+    if not found:
+        return []
+    found.sort()
+    ordered = [agent for _, agent in found]
+    if len(ordered) > 1:
+        return ordered if _looks_like_agent_dispatch(text) else []
+    return ordered if _looks_like_single_agent_dispatch(text, found[0][0], ordered[0]) else []
+
+
+def _looks_like_agent_dispatch(text: str) -> bool:
+    triggers = (
+        *CJK_AGENT_DISPATCH_TRIGGERS,
+        "use ", "run ", "launch ", "start ", "ask ", "have ", "dispatch ",
+        "report", "check in", "say hi",
+    )
+    return any(trigger in text for trigger in triggers)
+
+
+def _looks_like_single_agent_dispatch(text: str, index: int, agent: str) -> bool:
+    window = text[max(0, index - 8): index + 32]
+    if any(trigger in window for trigger in CJK_AGENT_DISPATCH_TRIGGERS):
+        return True
+    aliases = "|".join(re.escape(alias) for alias in AGENT_ALIASES[agent])
+    return bool(
+        re.search(rf"\b(use|run|launch|start|ask|have|dispatch|via|with)\s+(the\s+)?({aliases})\b", text)
+        or re.search(rf"\b({aliases})\b.{{0,30}}\b(report|check in|say hi)\b", text)
+    )
+
+
+def _direct_agent_instruction(goal: str, agent: str, *, multi: bool) -> str:
+    if not multi:
+        return goal
+    return (
+        f"{goal}\n\n"
+        f"Foreman is dispatching multiple requested agents directly. You are {agent}. "
+        "Do not invoke another coding agent from shell; complete only your own part and report "
+        "your result succinctly."
+    )
 
 
 def _event_id(row: Any) -> str:
