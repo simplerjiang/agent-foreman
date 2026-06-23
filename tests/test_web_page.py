@@ -81,6 +81,24 @@ def test_dispatch_form_uses_pm_model_not_agent_choice():
     assert "body.effort = effort" not in js
 
 
+def test_dispatch_composer_floats_at_bottom_and_embeds_options():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+
+    assert "function TaskComposer" in js
+    assert "className=\"task-composer-shell\"" in js
+    assert "className=\"task-composer-box\"" in js
+    assert "className=\"task-composer-toolbar\"" in js
+    assert "className=\"task-composer-workspace\"" in js
+    assert "className=\"task-composer-model\"" in js
+    assert "disabled=${Boolean(selectedSessionRow)}" in js
+    assert ".task-composer-shell" in css
+    assert "position: fixed;" in css and "bottom: max(" in css
+    assert "left: 292px;" in css
+    assert ".workspace-view" in css and "padding-bottom:" in css
+
+
 def test_workspace_menu_endpoint_and_frontend_wired(tmp_path):
     cfg = load_config(tmp_path / "none.yaml")
     cfg.workspaces = [WorkspaceCfg(path="D:/proj", name="Project")]
