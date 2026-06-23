@@ -172,11 +172,114 @@ body {
   overflow: auto;
   border-radius: 8px;
   background: rgba(5, 5, 5, 0.04);
+}
+
+.raw-body {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.markdown-body {
+  color: inherit;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body p {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 12px 0 6px;
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 650;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0 0 8px 20px;
+  padding: 0;
+}
+
+.markdown-body li {
+  margin: 2px 0;
+}
+
+.markdown-body blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 3px solid rgba(37, 99, 235, 0.35);
+  color: #475467;
+}
+
+.markdown-body code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(5, 5, 5, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.markdown-body pre {
+  margin: 8px 0;
+  padding: 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: rgba(5, 5, 5, 0.06);
+}
+
+.markdown-body pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+}
+
+.markdown-table-wrap {
+  margin: 8px 0;
+  overflow: auto;
+}
+
+.markdown-body table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 5px 7px;
+  border: 1px solid rgba(5, 5, 5, 0.12);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-title {
+  font-weight: 600;
+}
+
+.markdown-title p,
+.markdown-compact p {
+  margin-bottom: 0;
 }
 
 .event-meta {
@@ -268,6 +371,21 @@ body {
   .raw-body,
   .report-body {
     background: rgba(253, 253, 253, 0.06);
+  }
+
+  .markdown-body blockquote {
+    color: #d0d5dd;
+    border-left-color: rgba(84, 165, 255, 0.45);
+  }
+
+  .markdown-body code,
+  .markdown-body pre {
+    background: rgba(253, 253, 253, 0.08);
+  }
+
+  .markdown-body th,
+  .markdown-body td {
+    border-color: rgba(253, 253, 253, 0.14);
   }
 
   .diff-add {
