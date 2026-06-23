@@ -1603,6 +1603,76 @@
       </div>`;
   }
 
+  function TaskComposer(props) {
+    const {
+      d, lang, workspaces, workspace, setWorkspace, model, setModel,
+      modelOptions, modelLoading, refreshModels, task, setTask, pmModelDefault,
+      dispatching, runDispatch, dispatchStatus, selectedSessionRow, clearSession,
+    } = props;
+    const activeWorkspace = selectedSessionRow && selectedSessionRow.workspace
+      ? selectedSessionRow.workspace
+      : workspace;
+    const workspaceOptions = workspaces.length
+      ? workspaces.map((w) => ({ value: w.path, label: w.name ? `${w.name} - ${w.path}` : w.path }))
+      : [{ value: "", label: d.workspaceEmpty }];
+
+    return html`
+      <div className="task-composer-shell">
+        <${A.Form} className="task-composer" onFinish=${runDispatch}>
+          ${!workspaces.length && html`<${A.Alert} type="warning" showIcon message=${d.workspaceEmpty} description=${d.dispatchNoWorkspace} style=${{ marginBottom: 16 }} />`}
+          <div className="task-composer-context">
+            <${A.Space} wrap size=${[6, 6]}>
+              <${A.Tag} color=${selectedSessionRow ? "green" : "default"}>${selectedSessionRow ? d.continueSession : d.newSession}</${A.Tag}>
+              ${activeWorkspace ? html`<${A.Tag} color="blue">${shortPath(activeWorkspace, d)}</${A.Tag}>` : null}
+              ${selectedSessionRow && html`<${A.Button} size="small" type="text" htmlType="button" onClick=${clearSession}>${d.newSession}</${A.Button}>`}
+            </${A.Space}>
+            ${dispatchStatus && html`<${A.Typography.Text} className="task-composer-status" type=${dispatchStatus.includes(d.dispatchFailed) ? "danger" : "secondary"}>${dispatchStatus}</${A.Typography.Text}>`}
+          </div>
+          <div className="task-composer-box">
+            <${A.Input.TextArea}
+              className="task-composer-input"
+              autoSize=${{ minRows: 3, maxRows: 8 }}
+              value=${task}
+              onChange=${(e) => setTask(e.target.value)}
+              placeholder=${lang === "zh" ? "\u4f8b\u5982\uff1a\u91cd\u6784 auth \u6a21\u5757\uff0cpush \u524d\u95ee\u6211" : "e.g. refactor auth, ask me before push"}
+            />
+            <div className="task-composer-toolbar">
+              <div className="task-composer-options">
+                <${A.Select}
+                  className="task-composer-workspace"
+                  value=${workspace || ""}
+                  onChange=${setWorkspace}
+                  options=${workspaceOptions}
+                  disabled=${Boolean(selectedSessionRow)}
+                  popupMatchSelectWidth=${false}
+                  aria-label=${d.workspace}
+                />
+                <${A.Space.Compact} className="task-composer-model" block>
+                  <${A.AutoComplete}
+                    style=${{ width: "100%" }}
+                    value=${model}
+                    onChange=${setModel}
+                    options=${modelOptions}
+                    placeholder=${pmModelDefault}
+                    filterOption=${(input, option) => String(option.value || "").toLowerCase().includes(input.toLowerCase())}
+                    aria-label=${d.dispatchPmModel}
+                  />
+                  <${A.Button}
+                    htmlType="button"
+                    loading=${modelLoading}
+                    icon=${icon("ReloadOutlined")}
+                    onClick=${refreshModels}
+                    title=${d.modelRefresh}
+                  />
+                </${A.Space.Compact}>
+              </div>
+              <${A.Button} type="primary" htmlType="submit" loading=${dispatching} icon=${icon("SendOutlined")}>${d.send}</${A.Button}>
+            </div>
+          </div>
+        </${A.Form}>
+      </div>`;
+  }
+
   function WorkspaceView(props) {
     const {
       d, lang, workspaces, workspace, setWorkspace, model, setModel,
@@ -1611,56 +1681,7 @@
       runCompact, compactStatus, events, debugMode,
     } = props;
     return html`
-      <div className="view-grid">
-        <${A.Card} title=${d.dispatch} extra=${html`
-          <${A.Space} wrap>
-            ${selectedSessionRow && html`<${A.Tag} color="green">${d.continueSession}</${A.Tag}>`}
-            ${(selectedSessionRow && selectedSessionRow.workspace) || workspace ? html`<${A.Tag} color="blue">${shortPath(selectedSessionRow && selectedSessionRow.workspace ? selectedSessionRow.workspace : workspace, d)}</${A.Tag}>` : null}
-            ${selectedSessionRow && html`<${A.Button} size="small" onClick=${clearSession}>${d.newSession}</${A.Button}>`}
-          </${A.Space}>`}>
-          ${!workspaces.length && html`<${A.Alert} type="warning" showIcon message=${d.workspaceEmpty} description=${d.dispatchNoWorkspace} style=${{ marginBottom: 16 }} />`}
-          <${A.Form} layout="vertical" onFinish=${runDispatch}>
-            <${A.Form.Item} label=${d.taskGoal}>
-              <${A.Input.TextArea} rows=${4} value=${task} onChange=${(e) => setTask(e.target.value)} placeholder=${lang === "zh" ? "例如：重构 auth 模块，push 前问我" : "e.g. refactor auth, ask me before push"} />
-            </${A.Form.Item}>
-            <${A.Row} gutter=${12}>
-              <${A.Col} xs=${24} md=${8}>
-                <${A.Form.Item} label=${d.workspace}>
-                  <${A.Select}
-                    value=${workspace || ""}
-                    onChange=${setWorkspace}
-                    options=${workspaces.length ? workspaces.map((w) => ({ value: w.path, label: w.name ? `${w.name} - ${w.path}` : w.path })) : [{ value: "", label: d.workspaceEmpty }]}
-                  />
-                </${A.Form.Item}>
-              </${A.Col}>
-              <${A.Col} xs=${24} md=${16}>
-                <${A.Form.Item} label=${d.dispatchPmModel}>
-                  <${A.Space.Compact} block>
-                    <${A.AutoComplete}
-                      style=${{ width: "100%" }}
-                      value=${model}
-                      onChange=${setModel}
-                      options=${modelOptions}
-                      placeholder=${pmModelDefault}
-                      filterOption=${(input, option) => String(option.value || "").toLowerCase().includes(input.toLowerCase())}
-                    />
-                    <${A.Button}
-                      htmlType="button"
-                      loading=${modelLoading}
-                      icon=${icon("ReloadOutlined")}
-                      onClick=${refreshModels}
-                      title=${d.modelRefresh}
-                    />
-                  </${A.Space.Compact}>
-                </${A.Form.Item}>
-              </${A.Col}>
-            </${A.Row}>
-            <${A.Space}>
-              <${A.Button} type="primary" htmlType="submit" loading=${dispatching} icon=${icon("SendOutlined")}>${d.send}</${A.Button}>
-              ${dispatchStatus && html`<${A.Typography.Text} type=${dispatchStatus.includes(d.dispatchFailed) ? "danger" : "secondary"}>${dispatchStatus}</${A.Typography.Text}>`}
-            </${A.Space}>
-          </${A.Form}>
-        </${A.Card}>
+      <div className="view-grid workspace-view">
         <${A.Card}
           title=${d.timeline}
           extra=${selectedSessionRow ? html`
@@ -1672,6 +1693,26 @@
           ${compactStatus && html`<${A.Alert} type=${compactStatus.includes(d.compactFailed) ? "error" : "info"} showIcon message=${compactStatus} style=${{ marginBottom: 12 }} />`}
           <${Timeline} events=${events} d=${d} lang=${lang} debugMode=${debugMode} />
         </${A.Card}>
+        <${TaskComposer}
+          d=${d}
+          lang=${lang}
+          workspaces=${workspaces}
+          workspace=${workspace}
+          setWorkspace=${setWorkspace}
+          model=${model}
+          setModel=${setModel}
+          modelOptions=${modelOptions}
+          modelLoading=${modelLoading}
+          refreshModels=${refreshModels}
+          task=${task}
+          setTask=${setTask}
+          pmModelDefault=${pmModelDefault}
+          dispatching=${dispatching}
+          runDispatch=${runDispatch}
+          dispatchStatus=${dispatchStatus}
+          selectedSessionRow=${selectedSessionRow}
+          clearSession=${clearSession}
+        />
       </div>`;
   }
 
