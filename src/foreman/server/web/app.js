@@ -1520,7 +1520,7 @@
         dig=${dig} mainProps=${mainProps} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} />
 
       ${detailOpen ? html`<${DetailModal} d=${d} lang=${lang} detail=${detail} onClose=${() => setDetailOpen(false)} />` : null}
-      ${defnOpen ? html`<${Modal} title=${defnDraft && defnDraft.id ? d.edit : d.newBtn} onClose=${() => setDefnOpen(false)} footer=${html`<><button className="btn" onClick=${() => setDefnOpen(false)}>${d.cancel}</button><button className="btn primary" onClick=${saveDefinition}>${d.save}</button></>`}>
+      ${defnOpen ? html`<${Modal} title=${defnDraft && defnDraft.id ? d.edit : d.newBtn} onClose=${() => setDefnOpen(false)} footer=${[html`<button key="c" className="btn" onClick=${() => setDefnOpen(false)}>${d.cancel}</button>`, html`<button key="s" className="btn primary" onClick=${saveDefinition}>${d.save}</button>`]}>
         <${DefinitionEditor} d=${d} draft=${defnDraft} setDraft=${setDefnDraft} />
       </${Modal}>` : null}
     </div>`;

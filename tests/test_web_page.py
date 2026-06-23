@@ -49,6 +49,9 @@ def test_app_js_wires_api_and_ws_and_is_xss_safe():
     # React renders agent/PM output; never assign event payloads to raw HTML (XSS).
     assert ".innerHTML" not in js
     assert "dangerouslySetInnerHTML" not in js
+    # htm's `<>...</>` shorthand does NOT map to React.Fragment (it makes an invalid empty-tag
+    # element that crashes ReactDOM) — never use it; use an array or React.Fragment (codex review).
+    assert "html`<>" not in js
 
 
 def test_i18n_and_language_sync_wired():
