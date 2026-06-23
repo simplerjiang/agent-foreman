@@ -61,6 +61,21 @@ async def test_launch_unknown_agent_raises(tmp_path):
         await runner.launch("nope", "x", tmp_path, "s")
 
 
+def test_sync_config_refreshes_enabled_adapters(tmp_path):
+    cfg = Config()
+    cfg.agents = {"claude-code": AgentCfg(command="claude", enabled=True)}
+    runner = Runner(cfg, EventBus(), _store(tmp_path))
+    assert sorted(runner.adapters) == ["claude-code"]
+
+    cfg.agents = {
+        "claude-code": AgentCfg(command="claude", enabled=False),
+        "codex": AgentCfg(command="codex", enabled=True),
+    }
+    runner.sync_config()
+
+    assert sorted(runner.adapters) == ["codex"]
+
+
 # ── two-way control: send (resume) + interrupt (P4 / DESIGN §4.2) ───────────────────────────────────
 def _multi_spawn_adapter(adapter_cls, cfg, procs):
     """Adapter whose _spawn returns the next proc each call and records every spawned command."""

@@ -50,8 +50,8 @@ REVIEW_SYSTEM = (
     '"suggestions": [str], "needs_human": bool}.'
 )
 
-# Keep the diff bounded so a huge change can't blow the token budget; the tail is dropped with a
-# marker so the model knows the review was on a truncated diff.
+# Keep the diff bounded so a huge change can't blow the token budget. Over-long diffs are compacted
+# into an overview + selected file sections + an explicit omitted list, never silently head-only.
 DEFAULT_MAX_DIFF_CHARS = 20000
 
 
@@ -139,14 +139,50 @@ def parse_review(raw: str) -> ReviewResult:
     )
 
 
+def compact_diff_for_review(diff: str, *, max_chars: int = DEFAULT_MAX_DIFF_CHARS) -> str:
+    """Bound a diff while preserving global scope and disclosing omissions."""
+    body = diff or ""
+    if len(body) <= max_chars:
+        return body
+    files = _split_diff_files(body)
+    overview = _diff_overview(files, body)
+    budget = max(1200, max_chars - len(overview) - 900)
+    selected = _selected_file_indexes(len(files))
+    sections: list[str] = []
+    omitted: list[str] = []
+    used = 0
+    per_section = max(240, budget // max(1, len(selected)))
+    for i in selected:
+        path, section = files[i]
+        compacted, section_omitted = _compact_diff_section(section, per_section)
+        if used + len(compacted) > budget and sections:
+            omitted.append(f"{path}: token_budget")
+            continue
+        sections.append(compacted)
+        used += len(compacted)
+        if section_omitted:
+            omitted.append(f"{path}: middle_of_file")
+    selected_set = set(selected)
+    for i, (path, _section) in enumerate(files):
+        if i not in selected_set:
+            omitted.append(f"{path}: file_not_in_selected_hunks")
+    omitted_block = "\n".join(f"- {line}" for line in omitted) or "- none"
+    return (
+        overview
+        + "\n# Selected diff hunks\n"
+        + "".join(sections).strip()
+        + "\n\n# Omitted diff evidence\n"
+        + omitted_block
+        + "\n[diff truncated]\nomitted list above"
+    )
+
+
 def build_review_prompt(
     goal: str, diff: str, *, context: str = "", qa_standard: str = "",
     max_diff_chars: int = DEFAULT_MAX_DIFF_CHARS,
 ) -> str:
-    """Assemble the user prompt; truncate an over-long diff so token cost stays bounded."""
-    body = diff or ""
-    if len(body) > max_diff_chars:
-        body = body[:max_diff_chars] + "\n…[diff truncated]…"
+    """Assemble the user prompt; compact an over-long diff so token cost stays bounded."""
+    body = compact_diff_for_review(diff, max_chars=max_diff_chars)
     parts = [f"# Goal\n{goal}"]
     if qa_standard:
         parts.append(f"# QA standard\n{qa_standard}")
@@ -154,6 +190,69 @@ def build_review_prompt(
         parts.append(f"# Context\n{context}")
     parts.append(f"# Diff\n```diff\n{body}\n```")
     return "\n\n".join(parts)
+
+
+def _split_diff_files(diff: str) -> list[tuple[str, str]]:
+    lines = diff.splitlines(keepends=True)
+    files: list[tuple[str, str]] = []
+    current: list[str] = []
+    path = "(single diff)"
+    for line in lines:
+        if line.startswith("diff --git ") and current:
+            files.append((path, "".join(current)))
+            current = []
+        if line.startswith("diff --git "):
+            path = _path_from_diff_header(line)
+        current.append(line)
+    if current:
+        files.append((path, "".join(current)))
+    return files or [("(empty diff)", "")]
+
+
+def _path_from_diff_header(line: str) -> str:
+    parts = line.strip().split()
+    if len(parts) >= 4:
+        candidate = parts[3]
+        return candidate[2:] if candidate.startswith("b/") else candidate
+    return "(unknown file)"
+
+
+def _diff_overview(files: list[tuple[str, str]], diff: str) -> str:
+    additions = 0
+    deletions = 0
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+    changed = "\n".join(f"- {path}" for path, _section in files)
+    return (
+        "# Diff overview\n"
+        f"files_changed: {len(files)}\n"
+        f"additions: {additions}\n"
+        f"deletions: {deletions}\n"
+        "changed_files:\n"
+        f"{changed}\n"
+    )
+
+
+def _selected_file_indexes(count: int) -> list[int]:
+    if count <= 4:
+        return list(range(count))
+    indexes = [0, count - 1, 1, count // 2, count - 2]
+    out: list[int] = []
+    for i in indexes:
+        if 0 <= i < count and i not in out:
+            out.append(i)
+    return out
+
+
+def _compact_diff_section(section: str, max_chars: int) -> tuple[str, bool]:
+    if len(section) <= max_chars:
+        return section if section.endswith("\n") else section + "\n", False
+    marker = "\n...[diff hunk middle omitted]...\n"
+    half = max(80, (max_chars - len(marker)) // 2)
+    return section[:half].rstrip() + marker + section[-half:].lstrip(), True
 
 
 class Reviewer:
@@ -182,6 +281,7 @@ __all__ = [
     "Reviewer",
     "ReviewResult",
     "parse_review",
+    "compact_diff_for_review",
     "build_review_prompt",
     "VALID_VERDICTS",
     "APPROVE",

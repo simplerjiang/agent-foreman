@@ -20,6 +20,7 @@ from foreman.client.core.reviewer import (
     REQUEST_CHANGES,
     Reviewer,
     build_review_prompt,
+    compact_diff_for_review,
     parse_review,
 )
 from foreman.shared.config import Config
@@ -130,6 +131,28 @@ def test_prompt_truncates_long_diff():
 
 
 # ── Reviewer.review() through a mock LLM (no network) ───────────────────────────────────────────
+
+
+def test_compact_diff_keeps_scope_tail_and_omitted_list():
+    parts = []
+    for i in range(8):
+        body = "\n".join(f"+line {i}-{n}" for n in range(80))
+        if i == 7:
+            body += "\n+TAIL_FILE_MARKER"
+        parts.append(
+            f"diff --git a/file{i}.py b/file{i}.py\n"
+            f"--- a/file{i}.py\n"
+            f"+++ b/file{i}.py\n"
+            f"{body}\n"
+        )
+    compacted = compact_diff_for_review("".join(parts), max_chars=2500)
+
+    assert "# Diff overview" in compacted
+    assert "files_changed: 8" in compacted
+    assert "- file7.py" in compacted
+    assert "TAIL_FILE_MARKER" in compacted
+    assert "# Omitted diff evidence" in compacted
+    assert "file_not_in_selected_hunks" in compacted
 
 
 def _reviewer(reply_text: str, captured: dict, *, language: str = "zh") -> Reviewer:

@@ -14,6 +14,8 @@ from typing import Any
 from foreman.shared.i18n import language_directive
 from foreman.shared.llm import LLMClient, Message
 
+from .context_compression import context_pack_to_text, parse_context_pack
+
 VALID_AGENTS = {"claude-code", "codex"}
 VALID_EFFORTS = {"low", "medium", "high"}
 MAX_EVENT_CHARS = 20000
@@ -39,10 +41,19 @@ REVIEW_SYSTEM = (
 )
 
 COMPACT_SYSTEM = (
-    "You are the PM agent compacting a Foreman coding session. Compress the timeline into a concise "
-    "working context for future user follow-ups. Keep durable facts: user intent, decisions made, "
-    "files or commands changed, verification results, unresolved risks, and exact next context. "
-    "Drop repetitive raw logs. Do not invent completion. Return plain text only."
+    "You are the PM agent compacting a Foreman coding session. The raw event log remains the source "
+    "of truth; your output is only a derived ContextPack for future LLM calls. Extract facts from "
+    "the given timeline only. Do not invent completion. Separate verified facts from agent claims. "
+    "Keep source_refs like event:<id> whenever available. Preserve user constraints, decisions, "
+    "files, commands, tests, failures, approvals/rejections, open questions, risks, and next steps. "
+    "If evidence is omitted because of budget, list it in omitted. Respond with ONLY JSON matching "
+    "this shape: "
+    '{"version": 1, "session_state": {"goal_quote": str, "summary": str, "status": str, '
+    '"current_step": str}, "working_memory": {"verified_facts": [{"text": str, '
+    '"source_refs": [str], "status": "verified"}], "claims": [{"text": str, '
+    '"source_refs": [str], "status": "claimed"}], "decisions": [], "constraints": [], '
+    '"open_questions": [], "risks": [], "next_steps": [], "files": [], "commands": [], '
+    '"tests": []}, "retrieved_evidence": [], "dynamic_tail": [], "omitted": []}.'
 )
 
 
@@ -173,9 +184,11 @@ def events_to_text(rows: list[Any], *, max_chars: int = MAX_EVENT_CHARS) -> str:
         summary = _payload_summary(payload)
         if not summary:
             continue
+        event_id = _as_str(getattr(row, "id", ""))
+        event_ref = f"event:{event_id}" if event_id else "event:unknown"
         parts.append(
-            f"[{getattr(row, 'ts', '')}] {getattr(row, 'source', '')}/{getattr(row, 'type', '')}: "
-            f"{summary}"
+            f"[{event_ref} ts={getattr(row, 'ts', '')}] "
+            f"{getattr(row, 'source', '')}/{getattr(row, 'type', '')}: {summary}"
         )
     text = "\n".join(parts)
     if len(text) > max_chars:
@@ -310,9 +323,12 @@ class PMAgent:
         system = COMPACT_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_compact_prompt(goal, timeline, existing_context=existing_context)
         raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)], json_mode=False
+            [Message("system", system), Message("user", prompt)], json_mode=True
         )
-        return _as_str(raw)[:MAX_COMPACT_CHARS]
+        pack = parse_context_pack(
+            raw, goal=goal, timeline=timeline, existing_context=existing_context
+        )
+        return context_pack_to_text(pack, max_chars=MAX_COMPACT_CHARS)
 
 
 __all__ = [

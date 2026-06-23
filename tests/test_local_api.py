@@ -68,6 +68,69 @@ def test_api_agents_lists_enabled_with_model():
     assert agents == [{"name": "claude-code", "model": "sonnet", "effort": "high"}]
 
 
+def test_agent_settings_persist_and_refresh_runner(tmp_path):
+    class Runner:
+        def __init__(self):
+            self.syncs = 0
+
+        def sync_config(self):
+            self.syncs += 1
+
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    cfg.agents = {
+        "claude-code": AgentCfg(command="claude", enabled=True),
+        "codex": AgentCfg(command="codex", enabled=True),
+    }
+    runner = Runner()
+    dispatcher = type("Dispatcher", (), {"runner": runner})()
+    c = TestClient(create_app(cfg, store, EventBus(), dispatcher=dispatcher))
+
+    saved = c.post(
+        "/api/settings/agents",
+        json={
+            "agents": [
+                {
+                    "name": "claude-code",
+                    "enabled": True,
+                    "command": "claude.cmd",
+                    "model": "sonnet",
+                    "effort": "high",
+                },
+                {"name": "codex", "enabled": False, "command": "codex", "model": "gpt-5"},
+            ]
+        },
+    ).json()
+
+    assert {row["name"] for row in saved} == {"claude-code", "codex"}
+    assert cfg.agents["claude-code"].command == "claude.cmd"
+    assert cfg.agents["claude-code"].model == "sonnet"
+    assert cfg.agents["codex"].enabled is False
+    assert "claude.cmd" in (store.get_setting("agents.json") or "")
+    assert runner.syncs >= 2
+    assert c.get("/api/agents").json() == [
+        {"name": "claude-code", "model": "sonnet", "effort": "high"}
+    ]
+
+
+def test_agent_settings_rejects_disabling_all(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    c = TestClient(create_app(Config(), store, EventBus()))
+    res = c.post(
+        "/api/settings/agents",
+        json={
+            "agents": [
+                {"name": "claude-code", "enabled": False, "command": "claude"},
+                {"name": "codex", "enabled": False, "command": "codex"},
+            ]
+        },
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "no_enabled_agent"
+
+
 def test_api_models_returns_configured_defaults_without_key():
     cfg = Config()
     cfg.llm.model = "pm-model"

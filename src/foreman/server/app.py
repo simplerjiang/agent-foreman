@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets as _secrets
+import shutil
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -22,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from foreman.shared.autonomy import level_label, normalize_level
-from foreman.shared.config import Config, WorkspaceCfg
+from foreman.shared.config import AgentCfg, Config, WorkspaceCfg, default_agents
 from foreman.shared.events import AgentEvent, EventBus, utc_now_iso
 from foreman.shared.i18n import normalize as normalize_lang
 from foreman.shared.ratelimit import SlidingWindowLimiter
@@ -35,7 +37,10 @@ from .. import __version__
 _AUTH_RL_MAX_ATTEMPTS = 10
 _AUTH_RL_WINDOW_SECONDS = 300
 _WORKSPACES_SETTING = "workspaces.json"
+_AGENTS_SETTING = "agents.json"
 _LLM_KEY_ENV = "FOREMAN_LLM_API_KEY"
+_VALID_AGENT_EFFORTS = frozenset({"", "low", "medium", "high"})
+_SUPPORTED_AGENTS = frozenset(default_agents())
 
 
 class _LanguageBody(BaseModel):
@@ -61,6 +66,19 @@ class _LLMSettingsBody(BaseModel):
 class _WorkspaceBody(BaseModel):
     path: str
     name: str = ""
+
+
+class _AgentSettingsRow(BaseModel):
+    name: str
+    enabled: bool = True
+    command: str = ""
+    model: str = ""
+    effort: str = ""
+    mode: str = "headless"
+
+
+class _AgentSettingsBody(BaseModel):
+    agents: list[_AgentSettingsRow]
 
 
 class _PushKeys(BaseModel):
@@ -446,6 +464,153 @@ def create_app(
         store.set_setting(_WORKSPACES_SETTING, json.dumps(data, ensure_ascii=False))
         return data
 
+    def _clean_agents(items: list[Any]) -> dict[str, AgentCfg]:
+        base = {**default_agents(), **(cfg.agents or {})}
+        out: dict[str, AgentCfg] = {}
+        for name in sorted(_SUPPORTED_AGENTS):
+            current = base[name]
+            out[name] = AgentCfg(
+                command=current.command,
+                enabled=current.enabled,
+                mode=current.mode,
+                model=current.model,
+                effort=getattr(current, "effort", ""),
+            )
+        for item in items:
+            if isinstance(item, _AgentSettingsRow):
+                raw = item.model_dump()
+            elif isinstance(item, dict):
+                raw = item
+            else:
+                continue
+            name = str(raw.get("name", "")).strip()
+            if name not in _SUPPORTED_AGENTS:
+                continue
+            current = out[name]
+            mode = str(raw.get("mode", current.mode) or current.mode).strip().lower()
+            effort = str(raw.get("effort", "") or "").strip().lower()
+            out[name] = AgentCfg(
+                command=str(raw.get("command", current.command) or current.command).strip(),
+                enabled=bool(raw.get("enabled", current.enabled)),
+                mode=mode if mode in {"headless", "pty"} else "headless",
+                model=str(raw.get("model", "") or "").strip(),
+                effort=effort if effort in _VALID_AGENT_EFFORTS else "",
+            )
+        return out
+
+    def _agent_config_rows() -> list[dict]:
+        return [
+            {
+                "name": name,
+                "enabled": a.enabled,
+                "command": a.command,
+                "mode": a.mode,
+                "model": a.model,
+                "effort": getattr(a, "effort", ""),
+            }
+            for name, a in sorted(cfg.agents.items())
+            if name in _SUPPORTED_AGENTS
+        ]
+
+    def _effective_agents() -> dict[str, AgentCfg]:
+        rows: dict[str, AgentCfg] | None = None
+        if store is not None and hasattr(store, "get_setting"):
+            raw = store.get_setting(_AGENTS_SETTING)
+            if raw is not None:
+                try:
+                    data = json.loads(raw or "[]")
+                except (TypeError, ValueError):
+                    data = None
+                if isinstance(data, list):
+                    rows = _clean_agents(data)
+        if rows is None:
+            rows = _clean_agents(_agent_config_rows())
+        cfg.agents = rows
+        return rows
+
+    def _sync_runner_agents() -> None:
+        runner = getattr(dispatcher, "runner", None)
+        if runner is not None and hasattr(runner, "sync_config"):
+            runner.sync_config()
+
+    def _save_agents(rows: list[_AgentSettingsRow]) -> list[dict]:
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        next_agents = _clean_agents(rows)
+        if not any(a.enabled for a in next_agents.values()):
+            raise HTTPException(status_code=400, detail="no_enabled_agent")
+        cfg.agents = next_agents
+        data = _agent_config_rows()
+        store.set_setting(_AGENTS_SETTING, json.dumps(data, ensure_ascii=False))
+        _sync_runner_agents()
+        return _agent_setting_dicts()
+
+    def _agent_setting_dicts() -> list[dict]:
+        return [_agent_status(name, a) for name, a in sorted(_effective_agents().items())]
+
+    def _which_spawnable(command: str) -> str:
+        name = (command or "").strip()
+        if not name:
+            return ""
+        if os.name != "nt":
+            return shutil.which(name) or ""
+        found = shutil.which(name)
+        spawnable = {".exe", ".cmd", ".bat", ".com"}
+        if found and Path(found).suffix.lower() in spawnable:
+            return found
+        path = Path(name)
+        if path.suffix.lower() in spawnable and path.exists():
+            return str(path)
+        if path.suffix:
+            return ""
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory:
+                continue
+            base = Path(directory) / name
+            for ext in (".cmd", ".exe", ".bat", ".com"):
+                candidate = base.with_suffix(ext)
+                if candidate.is_file():
+                    return str(candidate)
+        return ""
+
+    def _agent_status(name: str, a: AgentCfg) -> dict:
+        resolved = _which_spawnable(a.command)
+        row = {
+            "name": name,
+            "enabled": a.enabled,
+            "command": a.command,
+            "mode": a.mode,
+            "model": a.model,
+            "effort": getattr(a, "effort", ""),
+            "resolved_path": resolved,
+            "ok": False,
+            "version": "",
+            "error": "",
+        }
+        if not a.enabled:
+            row["error"] = "disabled"
+            return row
+        if not resolved:
+            row["error"] = "not_found"
+            return row
+        try:
+            proc = subprocess.run(
+                [resolved, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics only
+            row["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+            return row
+        output = (proc.stdout or proc.stderr or "").strip()
+        row["version"] = output.splitlines()[0] if output else ""
+        row["ok"] = proc.returncode == 0
+        if proc.returncode != 0:
+            row["error"] = row["version"] or f"exit_{proc.returncode}"
+        return row
+
     def _env_path() -> Path:
         return Path(getattr(cfg, "env_path", "") or ".env")
 
@@ -511,7 +676,7 @@ def create_app(
                 seen.add(mid)
                 models.append({"id": mid, "source": source})
 
-        agent_cfg = cfg.agents.get((agent or "").strip())
+        agent_cfg = _effective_agents().get((agent or "").strip())
         if agent_cfg is not None:
             add(agent_cfg.model, "agent")
         effective = settings or _runtime_llm_settings()
@@ -533,6 +698,8 @@ def create_app(
         }
 
     _effective_workspaces()
+    _effective_agents()
+    _sync_runner_agents()
 
     def _auth_bucket(request: Request, scope: str) -> str:
         ip = _client_ip(request, trust_proxy=cfg.server.trust_proxy_headers)
@@ -644,7 +811,7 @@ def create_app(
         out: dict = {
             "ok": True,
             "version": __version__,
-            "agents": sorted(k for k, a in cfg.agents.items() if a.enabled),
+            "agents": sorted(k for k, a in _effective_agents().items() if a.enabled),
         }
         if cfg.server.health_show_db:
             out["db"] = cfg.store.db_path
@@ -656,9 +823,19 @@ def create_app(
         (DESIGN §5.1). Shared-only: reads cfg, like /health (never touches the store)."""
         return [
             {"name": name, "model": a.model, "effort": getattr(a, "effort", "")}
-            for name, a in sorted(cfg.agents.items())
+            for name, a in sorted(_effective_agents().items())
             if a.enabled
         ]
+
+    @app.get("/api/settings/agents")
+    async def get_agent_settings() -> list[dict]:
+        """Local CLI agent settings for the Settings page, with best-effort command diagnostics."""
+        return _agent_setting_dicts()
+
+    @app.post("/api/settings/agents")
+    async def set_agent_settings(body: _AgentSettingsBody) -> list[dict]:
+        """Persist local CLI agent settings and refresh the live Runner adapters."""
+        return _save_agents(body.agents)
 
     @app.get("/api/models")
     async def list_models(agent: str | None = None) -> dict:

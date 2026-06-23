@@ -25,10 +25,6 @@ class Runner:
         self.bus = bus
         self.store = store  # foreman.client.store.Store (needs .add_event)
         self.adapters: dict[str, AgentAdapter] = {}
-        if (c := cfg.agents.get("claude-code")) and c.enabled:
-            self.adapters["claude-code"] = ClaudeCodeAdapter(c)
-        if (c := cfg.agents.get("codex")) and c.enabled:
-            self.adapters["codex"] = CodexAdapter(c)
         self.handles: dict[str, AgentHandle] = {}
         self._pumps: dict[str, asyncio.Task] = {}
         # Which adapter drives each live handle — so send/interrupt (two-way control) can route
@@ -36,6 +32,15 @@ class Runner:
         self._adapter_by_handle: dict[str, AgentAdapter] = {}
         # Most recent live handle per session — the decision loop addresses agents by session id.
         self._handle_by_session: dict[str, AgentHandle] = {}
+        self.sync_config()
+
+    def sync_config(self) -> None:
+        """Refresh adapters after the local settings page changes agent config."""
+        self.adapters = {}
+        if (c := self.cfg.agents.get("claude-code")) and c.enabled:
+            self.adapters["claude-code"] = ClaudeCodeAdapter(c)
+        if (c := self.cfg.agents.get("codex")) and c.enabled:
+            self.adapters["codex"] = CodexAdapter(c)
 
     async def launch(
         self,

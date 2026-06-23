@@ -139,6 +139,74 @@ async def test_compact_stores_context_and_emits_event(tmp_path):
     assert any(e.type == "context_compact" for e in events)
 
 
+async def test_compact_stores_context_snapshot_and_memory_items(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        async def compact(self, goal, timeline, *, existing_context=""):
+            assert "[event:" in timeline
+            return json.dumps(
+                {
+                    "version": 1,
+                    "session_state": {
+                        "goal_quote": goal,
+                        "summary": "tests failed after refactor",
+                        "status": "blocked",
+                    },
+                    "working_memory": {
+                        "verified_facts": [
+                            {
+                                "text": "pytest failed in test_auth.py",
+                                "source_refs": ["event:e1"],
+                                "status": "verified",
+                                "importance": 90,
+                            }
+                        ],
+                        "claims": [
+                            {
+                                "text": "agent claimed the refactor was done",
+                                "source_refs": ["event:e2"],
+                                "status": "claimed",
+                            }
+                        ],
+                        "decisions": [],
+                        "constraints": [],
+                        "open_questions": [],
+                        "risks": [],
+                        "next_steps": [],
+                        "files": [],
+                        "commands": [],
+                        "tests": [],
+                    },
+                    "retrieved_evidence": [],
+                    "dynamic_tail": [],
+                    "omitted": [{"kind": "timeline", "reason": "token_budget"}],
+                }
+            )
+
+    cfg = _cfg(workspaces=[WorkspaceCfg(path="D:/proj")])
+    svc = DispatchService(cfg, store, bus=EventBus(), pm_agent=FakePM())
+    res = await svc.create("first task")
+    store.add_event(
+        make_event("agent_output", "claude-code", res["session_id"], payload={"text": "done"})
+    )
+
+    compacted = await svc.compact(res["session_id"])
+
+    snapshots = store.get_context_snapshots(res["session_id"])
+    memories = store.get_memory_items(res["session_id"])
+    payload = json.loads(
+        [e for e in store.get_events(res["session_id"]) if e.type == "context_compact"][-1]
+        .payload_json
+    )
+    assert compacted["snapshot_id"] == snapshots[0].id == payload["snapshot_id"]
+    assert json.loads(snapshots[0].summary_json)["session_state"]["status"] == "blocked"
+    assert sorted((m.kind, m.status, m.text) for m in memories) == [
+        ("fact", "claimed", "agent claimed the refactor was done"),
+        ("fact", "verified", "pytest failed in test_auth.py"),
+    ]
+
+
 async def test_create_runs_launcher_in_background(tmp_path):
     calls: list[tuple] = []
 

@@ -86,6 +86,15 @@
       remove: "移除",
       uiSettings: "界面",
       debugMode: "调试模式",
+      localAgents: "\u672c\u5730 Agent",
+      agentCommand: "\u542f\u52a8\u547d\u4ee4",
+      agentEnabled: "\u542f\u7528",
+      agentResolvedPath: "\u89e3\u6790\u8def\u5f84",
+      agentVersion: "\u7248\u672c",
+      agentDisabled: "\u5df2\u7981\u7528",
+      agentNotFound: "\u672a\u627e\u5230\u547d\u4ee4",
+      agentsSaved: "Agent \u8bbe\u7f6e\u5df2\u4fdd\u5b58",
+      noEnabledAgent: "\u81f3\u5c11\u8981\u542f\u7528\u4e00\u4e2a Agent\u3002",
       pmSettings: "PM 大脑",
       pmProvider: "服务商",
       pmModel: "模型",
@@ -230,6 +239,15 @@
       remove: "Remove",
       uiSettings: "UI",
       debugMode: "Debug mode",
+      localAgents: "Local agents",
+      agentCommand: "Command",
+      agentEnabled: "Enabled",
+      agentResolvedPath: "Resolved path",
+      agentVersion: "Version",
+      agentDisabled: "Disabled",
+      agentNotFound: "Command not found",
+      agentsSaved: "Agent settings saved",
+      noEnabledAgent: "Enable at least one agent.",
       pmSettings: "PM brain",
       pmProvider: "Provider",
       pmModel: "Model",
@@ -414,6 +432,7 @@
       no_workspace: d.dispatchNoWorkspace,
       workspace_not_allowed: d.workspaceNotAllowed,
       unknown_agent: d.unknownAgent,
+      no_enabled_agent: d.noEnabledAgent,
       session_not_found: d.sessionNotFound,
       no_context: d.noContext,
       no_dispatcher: d.noDispatcher,
@@ -555,6 +574,7 @@
     const [status, setStatus] = useState({ online: false, text: "..." });
     const [workspaces, setWorkspaces] = useState([]);
     const [agents, setAgents] = useState([]);
+    const [agentSettings, setAgentSettings] = useState([]);
     const [modelOptions, setModelOptions] = useState([]);
     const [modelLoading, setModelLoading] = useState(false);
     const [pmModelOptions, setPmModelOptions] = useState([]);
@@ -580,6 +600,7 @@
       provider: "openai", model: "", base_url: "", api_key_set: true, api_key: "",
     });
     const [llmStatus, setLlmStatus] = useState("");
+    const [agentSettingsStatus, setAgentSettingsStatus] = useState("");
     const [autonomy, setAutonomyState] = useState(1);
     const [detailOpen, setDetailOpen] = useState(false);
     const [detail, setDetail] = useState({ raw: [], diff: { files: [] } });
@@ -610,6 +631,11 @@
     const loadAgents = useCallback(async () => {
       try { setAgents(await api("/api/agents") || []); }
       catch (e) { setAgents([]); }
+    }, []);
+
+    const loadAgentSettings = useCallback(async () => {
+      try { setAgentSettings(await api("/api/settings/agents") || []); }
+      catch (e) { setAgentSettings([]); }
     }, []);
 
     const loadModels = useCallback(async (selectedAgent) => {
@@ -796,13 +822,17 @@
         .catch(() => setStatus({ online: false, text: "offline" }));
       loadWorkspaces();
       loadAgents();
+      loadAgentSettings();
       loadSessions();
       loadCards();
       loadApprovals();
       loadReports();
       loadLlm();
       loadAutonomy();
-    }, [loadAgents, loadApprovals, loadAutonomy, loadCards, loadLlm, loadReports, loadSessions, loadWorkspaces]);
+    }, [
+      loadAgentSettings, loadAgents, loadApprovals, loadAutonomy, loadCards, loadLlm,
+      loadReports, loadSessions, loadWorkspaces,
+    ]);
 
     useEffect(() => { loadModels(agent); }, [agent, loadModels]);
 
@@ -992,6 +1022,21 @@
           else localStorage.removeItem(WORKSPACE_KEY);
         }
       } catch (e) { notifyError(e); }
+    }
+
+    async function saveAgentSettings() {
+      try {
+        const rows = await api("/api/settings/agents", {
+          method: "POST",
+          body: { agents: agentSettings },
+        });
+        setAgentSettings(rows || []);
+        setAgentSettingsStatus(d.agentsSaved);
+        await loadAgents();
+        await loadModels(agent);
+      } catch (e) {
+        setAgentSettingsStatus(`${d.saveFailed}: ${friendlyError(e, d)}`);
+      }
     }
 
     async function saveLlm() {
@@ -1187,6 +1232,11 @@
                     browseWorkspaceFolder=${browseWorkspaceFolder}
                     saveWorkspace=${saveWorkspace}
                     deleteWorkspace=${deleteWorkspace}
+                    agentSettings=${agentSettings}
+                    setAgentSettings=${setAgentSettings}
+                    loadAgentSettings=${loadAgentSettings}
+                    saveAgentSettings=${saveAgentSettings}
+                    agentSettingsStatus=${agentSettingsStatus}
                     llm=${llm}
                     setLlm=${setLlm}
                     pmModelOptions=${pmModelOptions}
@@ -1607,10 +1657,14 @@
 
   function SettingsView({
     d, workspaces, loadWorkspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace,
-    browseWorkspaceFolder, deleteWorkspace, llm, setLlm, pmModelOptions, pmModelLoading,
-    refreshPmModels, saveLlm, clearLlmKey, llmStatus, autonomy, saveAutonomy,
-    debugMode, setDebugMode,
+    browseWorkspaceFolder, deleteWorkspace, agentSettings, setAgentSettings, loadAgentSettings,
+    saveAgentSettings, agentSettingsStatus, llm, setLlm, pmModelOptions, pmModelLoading,
+    refreshPmModels, saveLlm, clearLlmKey, llmStatus, autonomy, saveAutonomy, debugMode,
+    setDebugMode,
   }) {
+    const updateAgent = (name, patch) => setAgentSettings(
+      (rows) => (rows || []).map((row) => (row.name === name ? { ...row, ...patch } : row))
+    );
     return html`
       <div className="view-grid">
         <${A.Card} title=${d.workspaceSettings} extra=${html`<${A.Button} icon=${icon("ReloadOutlined")} onClick=${loadWorkspaces}>${d.refresh}</${A.Button}>`}>
@@ -1657,6 +1711,59 @@
             </${A.Row}>
             <${A.Button} type="primary" htmlType="submit">${d.addWorkspace}</${A.Button}>
           </${A.Form}>
+        </${A.Card}>
+        <${A.Card} title=${d.localAgents} extra=${html`<${A.Button} icon=${icon("ReloadOutlined")} onClick=${loadAgentSettings}>${d.refresh}</${A.Button}>`}>
+          <${A.List}
+            dataSource=${agentSettings || []}
+            renderItem=${(row) => {
+              const statusText = !row.enabled
+                ? d.agentDisabled
+                : (row.ok ? (row.version || "OK") : (row.error === "not_found" ? d.agentNotFound : (row.error || d.evError)));
+              return html`
+                <${A.List.Item}>
+                  <${A.Space} direction="vertical" size=${12} style=${{ width: "100%" }}>
+                    <${A.Space} wrap>
+                      <strong>${row.name}</strong>
+                      <${A.Tag} color=${row.ok ? "green" : (row.enabled ? "red" : "default")}>${statusText}</${A.Tag}>
+                      ${row.resolved_path && html`<${A.Typography.Text} type="secondary">${d.agentResolvedPath}: ${row.resolved_path}</${A.Typography.Text}>`}
+                    </${A.Space}>
+                    <${A.Row} gutter=${12}>
+                      <${A.Col} xs=${24} md=${4}>
+                        <${A.Form.Item} label=${d.agentEnabled}>
+                          <${A.Switch} checked=${row.enabled} onChange=${(v) => updateAgent(row.name, { enabled: v })} />
+                        </${A.Form.Item}>
+                      </${A.Col}>
+                      <${A.Col} xs=${24} md=${8}>
+                        <${A.Form.Item} label=${d.agentCommand}>
+                          <${A.Input} value=${row.command || ""} onChange=${(e) => updateAgent(row.name, { command: e.target.value })} />
+                        </${A.Form.Item}>
+                      </${A.Col}>
+                      <${A.Col} xs=${24} md=${8}>
+                        <${A.Form.Item} label=${d.dispatchModel}>
+                          <${A.Input} value=${row.model || ""} onChange=${(e) => updateAgent(row.name, { model: e.target.value })} placeholder=${d.modelDefaultHint} />
+                        </${A.Form.Item}>
+                      </${A.Col}>
+                      <${A.Col} xs=${24} md=${4}>
+                        <${A.Form.Item} label=${d.dispatchEffort}>
+                          <${A.Select}
+                            value=${row.effort || ""}
+                            onChange=${(v) => updateAgent(row.name, { effort: v })}
+                            options=${[
+                              { value: "", label: d.effortDefault },
+                              { value: "low", label: d.effortLow },
+                              { value: "medium", label: d.effortMedium },
+                              { value: "high", label: d.effortHigh },
+                            ]}
+                          />
+                        </${A.Form.Item}>
+                      </${A.Col}>
+                    </${A.Row}>
+                  </${A.Space}>
+                </${A.List.Item}>`;
+            }}
+          />
+          ${agentSettingsStatus && html`<${A.Alert} type=${agentSettingsStatus.includes(d.saveFailed) ? "error" : "success"} showIcon message=${agentSettingsStatus} style=${{ marginBottom: 16 }} />`}
+          <${A.Button} type="primary" icon=${icon("SaveOutlined")} onClick=${saveAgentSettings}>${d.save}</${A.Button}>
         </${A.Card}>
         <${A.Card} title=${d.pmSettings}>
           <${A.Form} layout="vertical" onFinish=${saveLlm}>

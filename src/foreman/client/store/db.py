@@ -22,10 +22,12 @@ from .models import (
     Audit,
     Checkpoint,
     ConfigKV,
+    ContextSnapshot,
     DecisionCard,
     Definition,
     DefinitionLink,
     Event,
+    MemoryItem,
     PushSubscription,
     Report,
     Session,
@@ -133,6 +135,45 @@ class Store:
                     select(Event).where(Event.session_id == session_id).order_by(Event.ts)
                 ).all()
             )
+
+    # -- derived context views ---------------------------------------------------------------
+    def add_context_snapshot(self, snapshot: ContextSnapshot) -> ContextSnapshot:
+        """Persist a rebuildable ContextPack derived from raw events."""
+        with self.session() as s:
+            s.add(snapshot)
+            s.commit()
+        return snapshot
+
+    def get_context_snapshots(
+        self, session_id: str, *, kind: str | None = None
+    ) -> list[ContextSnapshot]:
+        with self.session() as s:
+            stmt = select(ContextSnapshot).where(ContextSnapshot.session_id == session_id)
+            if kind is not None:
+                stmt = stmt.where(ContextSnapshot.kind == kind)
+            return list(s.exec(stmt.order_by(col(ContextSnapshot.created_at).desc())).all())
+
+    def add_memory_item(self, item: MemoryItem) -> MemoryItem:
+        """Persist one structured memory derived from a ContextSnapshot."""
+        with self.session() as s:
+            s.add(item)
+            s.commit()
+        return item
+
+    def get_memory_items(
+        self,
+        session_id: str,
+        *,
+        scope: str | None = None,
+        kind: str | None = None,
+    ) -> list[MemoryItem]:
+        with self.session() as s:
+            stmt = select(MemoryItem).where(MemoryItem.session_id == session_id)
+            if scope is not None:
+                stmt = stmt.where(MemoryItem.scope == scope)
+            if kind is not None:
+                stmt = stmt.where(MemoryItem.kind == kind)
+            return list(s.exec(stmt.order_by(col(MemoryItem.updated_at).desc())).all())
 
     # ── checkpoints (§6.5 / §7.1) ────────────────────────────────────────────────────────────
     def add_checkpoint(self, checkpoint: Checkpoint) -> Checkpoint:

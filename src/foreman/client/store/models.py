@@ -36,6 +36,48 @@ class Event(SQLModel, table=True):
     ts: str = ""
 
 
+class ContextSnapshot(SQLModel, table=True):
+    """A rebuildable compressed view over a range of raw events."""
+
+    id: str = Field(primary_key=True)
+    session_id: str = Field(index=True, foreign_key="session.id")
+    task_id: str | None = None
+    kind: str = Field(default="rolling", index=True)
+    source_start_event_id: str = ""
+    source_end_event_id: str = ""
+    source_event_ids_json: str = "[]"
+    summary_json: str = "{}"
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    summary_hash: str = ""
+    created_at: str = ""
+
+
+class MemoryItem(SQLModel, table=True):
+    """A structured fact/decision/risk/todo derived from a ContextSnapshot."""
+
+    id: str = Field(primary_key=True)
+    session_id: str = Field(index=True, foreign_key="session.id")
+    snapshot_id: str | None = Field(default=None, index=True)
+    scope: str = "session"          # session | workspace | workflow | user
+    kind: str = Field(default="fact", index=True)
+    text: str = ""
+    status: str = "unknown"         # claimed | verified | failed | unknown
+    importance: int = 50
+    confidence: int = 50
+    source_refs_json: str = "[]"
+    tags_json: str = "[]"
+    valid_from: str = ""
+    valid_until: str = ""
+    supersedes: str = ""
+    superseded_by: str = ""
+    last_seen_at: str = ""
+    expires_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
 class Review(SQLModel, table=True):
     id: str = Field(primary_key=True)
     task_id: str = Field(index=True)

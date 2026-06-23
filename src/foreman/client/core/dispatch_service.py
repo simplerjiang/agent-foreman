@@ -17,6 +17,8 @@ convention used across P2–P4: the intake + persistence + event are delivered a
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -25,7 +27,8 @@ from foreman.shared.config import Config
 from foreman.shared.events import make_event, utc_now_iso
 
 from ..dispatch import build_session_task
-from ..store.models import Task
+from ..store.models import ContextSnapshot, MemoryItem, Task
+from .context_compression import extract_json_object, memory_items_from_pack
 from .pm_agent import PMPlan, events_to_text
 
 # Bound the goal so a multi-megabyte string can't inflate every later briefing's token cost (and
@@ -207,6 +210,7 @@ class DispatchService:
             return {"ok": False, "error": "no_context"}
         if hasattr(self.store, "update_session"):
             self.store.update_session(session_id, plan=summary, updated_at=self._clock())
+        snapshot_id = self._store_context_derivatives(session_id, rows, summary)
         await self._persist_then_publish(
             make_event(
                 "context_compact",
@@ -216,6 +220,8 @@ class DispatchService:
                     "summary": summary,
                     "original_chars": len(timeline),
                     "summary_chars": len(summary),
+                    "snapshot_id": snapshot_id,
+                    "format": "context_pack_v1" if extract_json_object(summary) else "text",
                 },
             )
         )
@@ -225,6 +231,7 @@ class DispatchService:
             "summary": summary,
             "original_chars": len(timeline),
             "summary_chars": len(summary),
+            "snapshot_id": snapshot_id,
         }
 
     def _resolve_agent(self, agent: str | None) -> tuple[str, str]:
@@ -484,6 +491,52 @@ class DispatchService:
             await self.bus.publish(event)
 
     # ── multi-session overview (dashboard) ────────────────────────────────────────────────────
+    def _store_context_derivatives(self, session_id: str, rows: list[Any], summary: str) -> str:
+        if self.store is None or not hasattr(self.store, "add_context_snapshot"):
+            return ""
+        now = self._clock()
+        event_ids = [_event_id(row) for row in rows if _event_id(row)]
+        pack = extract_json_object(summary)
+        snapshot_id = uuid.uuid4().hex
+        snapshot = ContextSnapshot(
+            id=snapshot_id,
+            session_id=session_id,
+            task_id=_as_optional_str(getattr(rows[-1], "task_id", None)) if rows else None,
+            kind="rolling",
+            source_start_event_id=event_ids[0] if event_ids else "",
+            source_end_event_id=event_ids[-1] if event_ids else "",
+            source_event_ids_json=json.dumps(event_ids, ensure_ascii=False),
+            summary_json=json.dumps(pack or {"text": summary}, ensure_ascii=False),
+            summary_hash=hashlib.sha256(summary.encode("utf-8")).hexdigest(),
+            created_at=now,
+        )
+        self.store.add_context_snapshot(snapshot)
+        if pack is not None and hasattr(self.store, "add_memory_item"):
+            for raw in memory_items_from_pack(pack):
+                self.store.add_memory_item(
+                    MemoryItem(
+                        id=uuid.uuid4().hex,
+                        session_id=session_id,
+                        snapshot_id=snapshot_id,
+                        scope="session",
+                        kind=raw["kind"],
+                        text=raw["text"],
+                        status=raw["status"],
+                        importance=raw["importance"],
+                        confidence=raw["confidence"],
+                        source_refs_json=json.dumps(raw["source_refs"], ensure_ascii=False),
+                        tags_json=json.dumps(raw["tags"], ensure_ascii=False),
+                        valid_from=raw["valid_from"],
+                        valid_until=raw["valid_until"],
+                        supersedes=raw["supersedes"],
+                        superseded_by=raw["superseded_by"],
+                        last_seen_at=now,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+        return snapshot_id
+
     def overview(self) -> list[dict]:
         """All sessions with activity counts (events, last event, open cards, pending approvals).
 
@@ -543,3 +596,12 @@ def _fallback_compact(timeline: str, existing: str = "") -> str:
     if len(text) <= MAX_CONTEXT_CHARS:
         return text
     return "...[context compacted to latest events]...\n" + text[-MAX_CONTEXT_CHARS:]
+
+
+def _event_id(row: Any) -> str:
+    return str(getattr(row, "id", "") or "").strip()
+
+
+def _as_optional_str(value: object) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None

@@ -88,6 +88,15 @@ def test_llm_key_input_frontend_wired(tmp_path):
     assert "api_key" in js and "clearLlmKey" in js
 
 
+def test_agent_settings_frontend_wired(tmp_path):
+    c = TestClient(create_app(load_config(tmp_path / "none.yaml")))
+    js = c.get("/app.js").text
+    assert "/api/settings/agents" in js
+    assert "agentSettings" in js and "saveAgentSettings" in js
+    assert "agentResolvedPath" in js and "agentNotFound" in js
+    assert "SaveOutlined" in js and "A.Switch" in js
+
+
 def test_decision_card_and_detail_wired(tmp_path):
     """The PWA fetches cards + drills into step detail, and renders the diff safely (T4.3 §6.3)."""
     c = TestClient(create_app(load_config()))
