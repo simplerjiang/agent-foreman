@@ -39,6 +39,7 @@ _AUTH_RL_WINDOW_SECONDS = 300
 _WORKSPACES_SETTING = "workspaces.json"
 _AGENTS_SETTING = "agents.json"
 _LLM_KEY_ENV = "FOREMAN_LLM_API_KEY"
+_CLOUD_KEY_ENV = "FOREMAN_CLOUD_ACCESS_KEY"
 _VALID_AGENT_EFFORTS = frozenset({"", "low", "medium", "high"})
 _SUPPORTED_AGENTS = frozenset(default_agents())
 
@@ -168,6 +169,15 @@ class _DispatchBody(BaseModel):
     effort: str = ""  # reasoning level / 速度档位: low | medium | high ("" = the CLI default)
     session_id: str = ""  # when set, append a new task to an existing conversation
     source: str = ""  # desktop | phone | api
+
+
+class _CloudSettingsBody(BaseModel):
+    """Cloud relay connection settings (DESIGN §8.5). `url` is the relay 总机 base URL; `access_key`
+    is the per-machine key (stored in local .env, never returned). None leaves a field as-is; an
+    empty string clears it."""
+
+    url: str | None = None
+    access_key: str | None = None
 
 
 class _BriefBody(BaseModel):
@@ -379,6 +389,7 @@ def create_app(
     briefings: Any = None,
     definitions: Any = None,
     cache: Any = None,
+    cloud: Any = None,
 ) -> FastAPI:
     # In-memory log tail for the admin console's 日志管理 view (process-wide singleton). Re-attached
     # on startup because uvicorn applies its own logging dictConfig AFTER the app is built, which
@@ -410,6 +421,7 @@ def create_app(
     app.state.briefings = briefings
     app.state.definitions = definitions
     app.state.cache = cache
+    app.state.cloud = cloud
     app.state.started_at = time.time()  # for the admin overview's uptime stat
     app.state.log_buffer = get_log_buffer()
     # One limiter per app instance, shared across requests (team-mode brute-force speed bump, §8.2).
@@ -656,6 +668,33 @@ def create_app(
                 written = True
         if key and not written:
             next_lines.append(f"{_LLM_KEY_ENV}={key}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(next_lines) + ("\n" if next_lines else ""), encoding="utf-8")
+
+    def _save_cloud_key(value: str) -> None:
+        """Persist the relay access key to local .env (same pattern as the LLM key — never config.
+        yaml, never git). Stays on the machine; the relay only ever sees its hash (§8.3 / §8.5)."""
+        key = (value or "").strip()
+        cfg.secrets.cloud_access_key = key
+        path = _env_path()
+        if not key and not path.exists():
+            return
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        next_lines: list[str] = []
+        written = False
+        for line in lines:
+            stripped = line.lstrip()
+            is_key = stripped.startswith(f"{_CLOUD_KEY_ENV}=") or stripped.startswith(
+                f"export {_CLOUD_KEY_ENV}="
+            )
+            if not is_key:
+                next_lines.append(line)
+                continue
+            if key and not written:
+                next_lines.append(f"{_CLOUD_KEY_ENV}={key}")
+                written = True
+        if key and not written:
+            next_lines.append(f"{_CLOUD_KEY_ENV}={key}")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(next_lines) + ("\n" if next_lines else ""), encoding="utf-8")
 
@@ -1021,6 +1060,55 @@ def create_app(
         if body.api_key is not None:
             _save_llm_api_key(body.api_key)
         return await get_llm_settings()
+
+    def _cloud_state(extra: dict | None = None) -> dict:
+        """Cloud relay connection state for the Settings card. `available` is False when this
+        process can't dial a relay (e.g. the team cache server) — the UI then disables the card.
+        The access key is never returned, only whether one is set."""
+        url = ""
+        if store is not None and hasattr(store, "get_setting"):
+            url = (store.get_setting("cloud.url") or "").strip()
+        out = {
+            "available": cloud is not None,
+            "url": url,
+            "access_key_set": bool((cfg.secrets.cloud_access_key or "").strip()),
+            "connected": bool(cloud.status().get("connected")) if cloud is not None else False,
+            "error": (cloud.status().get("error") if cloud is not None else "") or "",
+        }
+        if extra:
+            out.update(extra)
+        return out
+
+    @app.get("/api/settings/cloud")
+    async def get_cloud_settings() -> dict:
+        return _cloud_state()
+
+    @app.post("/api/settings/cloud")
+    async def set_cloud_settings(body: _CloudSettingsBody) -> dict:
+        """Save the relay URL (config_kv) + access key (.env). Non-empty sets, empty clears, None
+        leaves as-is — same convention as the PM brain settings."""
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        if body.url is not None:
+            store.set_setting("cloud.url", body.url.strip())
+        if body.access_key is not None:
+            _save_cloud_key(body.access_key)
+        return _cloud_state()
+
+    @app.post("/api/settings/cloud/connect")
+    async def connect_cloud() -> dict:
+        """Dial the configured relay (DESIGN §8.5). Opt-in — the app never connects on its own."""
+        if cloud is None:
+            raise HTTPException(status_code=503, detail="cloud_unavailable")
+        state = await asyncio.to_thread(cloud.connect)
+        return _cloud_state({"connected": bool(state.get("connected")), "error": state.get("error", "")})
+
+    @app.post("/api/settings/cloud/disconnect")
+    async def disconnect_cloud() -> dict:
+        if cloud is None:
+            raise HTTPException(status_code=503, detail="cloud_unavailable")
+        state = await asyncio.to_thread(cloud.disconnect)
+        return _cloud_state({"connected": bool(state.get("connected"))})
 
     @app.get("/api/push/vapid-public-key")
     async def push_public_key() -> dict:

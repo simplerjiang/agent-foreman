@@ -1,7 +1,9 @@
-"""Non-browser checks for the timeline page (TASKS T1.11).
+"""Non-browser checks for the redesigned personal-mode PWA (warm-paper handoff, 2026-06-23).
 
-Confirms the static page ships and wires the API + WS (browser acceptance is done separately
-with a real browser per the autodev loop).
+Confirms the static page ships and wires the API + WS + new features (browser/E2E acceptance is
+done separately with codex per the goal). The personal page is a custom React/htm SPA (no Ant
+Design — that stays in the team-mode admin console at app.html). The invariant that survives every
+redesign: untrusted agent output is rendered through React, never assigned to innerHTML.
 """
 
 from __future__ import annotations
@@ -17,107 +19,126 @@ def test_index_served():
     r = c.get("/")
     assert r.status_code == 200
     assert "Foreman" in r.text
+    assert '<div id="root">' in r.text and "/app.js" in r.text
 
 
-def test_app_js_wires_api_and_ws():
-    c = TestClient(create_app(load_config()))
-    js = c.get("/app.js")
-    assert js.status_code == 200
-    assert "/api/sessions" in js.text
-    assert "/ws?session_id=" in js.text
-    assert "ReactDOM.createRoot" in js.text and "A.Layout" in js.text
-    # React renders agent output as text; never assign event payloads to raw HTML.
-    assert ".innerHTML" not in js.text
-
-
-def test_i18n_wired_in_page():
+def test_index_ships_slim_vendor_and_self_hosted_fonts():
+    """Personal mode drops Ant Design for the custom theme; React + htm still load. Fonts are
+    self-hosted (CSP default-src 'self' blocks Google Fonts, which is also unreliable in China)."""
     c = TestClient(create_app(load_config()))
     html = c.get("/").text
     assert "/vendor/react.production.min.js" in html
-    assert "/vendor/antd.min.js" in html
+    assert "/vendor/react-dom.production.min.js" in html
     assert "/vendor/htm.umd.js" in html
+    # self-hosted variable fonts, preloaded
+    assert "plus-jakarta-sans-latin.woff2" in html
+    assert "jetbrains-mono-latin.woff2" in html
+    # the woff2 files actually ship and are valid WOFF2 (magic 'wOF2')
+    for font in ("plus-jakarta-sans-latin.woff2", "jetbrains-mono-latin.woff2"):
+        r = c.get(f"/vendor/fonts/{font}")
+        assert r.status_code == 200, font
+        assert r.content[:4] == b"wOF2", font
+
+
+def test_app_js_wires_api_and_ws_and_is_xss_safe():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "/api/overview" in js and "/api/sessions" in js
+    assert "/ws?session_id=" in js
+    assert "ReactDOM.createRoot" in js and "htm.bind" in js
+    # React renders agent/PM output; never assign event payloads to raw HTML (XSS).
+    assert ".innerHTML" not in js
+    assert "dangerouslySetInnerHTML" not in js
+
+
+def test_i18n_and_language_sync_wired():
+    c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     assert "I18N" in js and "/api/settings/language" in js
+    # bilingual zh/en is the default — both dictionaries present
+    assert "navWorkspace" in js and "navSettings" in js
+
+
+def test_five_nav_views_present():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    for view in ("workspace", "decisions", "briefings", "rules", "settings"):
+        assert view in js, view
+    assert "function Workspace" in js and "function Settings" in js
 
 
 def test_autonomy_dial_wired_in_page():
-    """The PWA exposes the autonomy dial (0/1/2/3) and syncs it to the backend (T4.4 §6.4)."""
-    c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
-    assert "/api/settings/autonomy" in js and "loadAutonomy" in js
-    assert "A.Slider" in js and "saveAutonomy" in js
-    assert "自动执行权限" in js and "autonomyHelp" in js
-
-
-def test_debug_mode_gates_raw_data_and_event_meta_chips():
-    c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
-    assert "foreman.debug" in js and "debugMode" in js and "setDebugMode" in js
-    assert "A.Switch" in js and "调试模式" in js
-    assert "debugMode && event.payload" in js and "debugMode=${debugMode}" in js
-    assert "eventMetaChips" in js and "showAgent" in js and "ApiOutlined" in js
-    assert "payload.deliberation" in js and "payload.todo" in js
-    assert "mergeStreamEvent" in js and "pm_reasoning" in js and "agent_reasoning" in js
-    assert "groupTimelineEvents" in js and "event-stream-panel" in js
-    assert "defaultActiveKey=${[\"body\"]}" in js
-
-
-def test_followup_compact_source_and_mobile_nav_wired():
-    c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
-    assert "clientSource" in js and "source: clientSource()" in js
-    assert "body.session_id = activeSession.id" in js
-    assert "/compact" in js and "compactContext" in js
-    assert "A.Drawer" in js and "MenuOutlined" in js and "mobile-menu-button" in js
-    assert "d.continueSession" in js and "d.newSession" in js
-
-
-def test_dispatch_form_uses_pm_model_not_agent_choice():
-    c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
-    assert "dispatchPmModel" in js and "pmModelDefault" in js
-    assert "pmTransport" in js and "transport: llm.transport" in js
-    assert 'api("/api/models")' in js
-    assert "body.model = model.trim()" in js
-    assert "body.agent = agent" not in js
-    assert "body.effort = effort" not in js
-
-
-def test_dispatch_composer_floats_at_bottom_and_embeds_options():
+    """The PWA exposes the autonomy dial (0/1/2/3) and syncs it to the backend (§6.4)."""
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     css = c.get("/app.css").text
-
-    assert "function TaskComposer" in js
-    assert "className=\"task-composer-shell\"" in js
-    assert "className=\"task-composer-box\"" in js
-    assert "className=\"task-composer-toolbar\"" in js
-    assert "className=\"task-composer-workspace\"" in js
-    assert "className=\"task-composer-model\"" in js
-    assert "disabled=${Boolean(selectedSessionRow)}" in js
-    assert ".task-composer-shell" in css
-    assert "position: fixed;" in css and "bottom: max(" in css
-    assert "left: 292px;" in css
-    assert ".workspace-view" in css and "padding-bottom:" in css
+    assert "/api/settings/autonomy" in js and "loadAutonomy" in js and "saveAutonomy" in js
+    assert "slider-wrap" in js and "autoExec" in js
+    assert "自动执行权限" in js
+    assert ".slider-wrap" in css and ".slider-knob" in css
 
 
-def test_workspace_menu_endpoint_and_frontend_wired(tmp_path):
+def test_workspace_chat_thread_and_right_panel_wired():
+    """The redesigned workspace is a chat thread + composer + right panel (to-dos/subagents/
+    terminal), all derived from the live event stream."""
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert "function digest" in js  # events -> thread/todos/subagents/terminal
+    assert "function ThreadNode" in js
+    assert "function TodoPanel" in js and "function SubPanel" in js and "function TermPanel" in js
+    assert "rightTab" in js and "tabTodos" in js and "tabSubagents" in js and "tabTerminal" in js
+    assert ".thread" in css and ".ws-right" in css and ".composer-box" in css
+
+
+def test_composer_dispatch_with_effort_and_context_meter():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert "function Composer" in js
+    assert "/api/tasks" in js and "body.session_id = sessionRow.id" in js
+    assert "source: clientSource()" in js
+    # Fast/Std/Deep maps to effort low|medium|high in the dispatch body
+    assert "effort" in js and 'setEffort("low")' in js and 'setEffort("high")' in js
+    # context meter + compact action
+    assert "ctx-meter" in js and "/compact" in js and "runCompact" in js
+    assert ".ctx-meter" in css and ".seg" in css
+
+
+def test_dispatch_model_picker_and_no_explicit_agent():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'api("/api/models")' in js
+    assert "body.model = model.trim()" in js
+    # agent is auto-picked by the PM — the composer never forces an agent choice
+    assert "agentAuto" in js
+    assert "body.agent = agent" not in js
+
+
+def test_mobile_shell_drawer_and_bottom_tabs_wired():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert "function MobileShell" in js and "setDrawerOpen" in js
+    assert "mTabChat" in js and "mTabTerm" in js
+    assert ".m-drawer" in css and ".m-bottom" in css and ".appbar" in css
+
+
+def test_workspace_settings_frontend_wired(tmp_path):
     cfg = load_config(tmp_path / "none.yaml")
     cfg.workspaces = [WorkspaceCfg(path="D:/proj", name="Project")]
     c = TestClient(create_app(cfg))
-
     assert c.get("/api/workspaces").json() == [{"path": "D:/proj", "name": "Project"}]
     js = c.get("/app.js").text
     assert "/api/workspaces" in js and "loadWorkspaces" in js
     assert "saveWorkspace" in js and "deleteWorkspace" in js
-    assert "A.Select" in js and "setWorkspace" in js
 
 
 def test_llm_key_input_frontend_wired(tmp_path):
     c = TestClient(create_app(load_config(tmp_path / "none.yaml")))
     js = c.get("/app.js").text
-    assert "A.Input.Password" in js
-    assert "api_key" in js and "clearLlmKey" in js
+    assert 'type="password"' in js
+    assert "api_key" in js and "clearLlmKey" in js and "saveLlm" in js
 
 
 def test_agent_settings_frontend_wired(tmp_path):
@@ -125,63 +146,69 @@ def test_agent_settings_frontend_wired(tmp_path):
     js = c.get("/app.js").text
     assert "/api/settings/agents" in js
     assert "agentSettings" in js and "saveAgentSettings" in js
-    assert "agentResolvedPath" in js and "agentNotFound" in js
-    assert "agentFullAccess" in js and "full_access" in js
-    assert "SaveOutlined" in js and "A.Switch" in js
+    assert "agentNotFound" in js and "full_access" in js
+    assert "function Switch" in js  # custom toggle (no antd)
 
 
 def test_decision_card_and_detail_wired(tmp_path):
-    """The PWA fetches cards + drills into step detail, and renders the diff safely (T4.3 §6.3)."""
+    """The PWA fetches cards + drills into step detail, and renders the diff safely (§6.3)."""
     c = TestClient(create_app(load_config()))
-    html = c.get("/").text
-    assert '<div id="root">' in html and "/app.js" in html
     js = c.get("/app.js").text
     assert "/api/cards" in js and "/api/actions/" in js and "/detail" in js
-    assert "chooseCard" in js and "/choose" in js  # one-tap card decision wired
-    # diff + raw output are untrusted -> rendered through React, never assigned to innerHTML.
-    assert "renderDiff" in js and ".innerHTML" not in js
+    assert "onCard" in js and "/choose" in js  # one-tap card decision wired
+    assert "/api/approvals" in js and "decideApproval" in js
+    # diff is untrusted -> rendered through React, never assigned to innerHTML.
+    assert "diff-file" in js and "diff-line" in js and ".innerHTML" not in js
 
 
-def test_llm_markdown_rendering_wired_safely(tmp_path):
+def test_markdown_rendering_wired_safely(tmp_path):
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     css = c.get("/app.css").text
-
-    assert "function MarkdownBody" in js and "renderMarkdownBlocks" in js
-    assert "text=${summary} className=\"event-body\"" in js
-    assert "text=${report.body_md || \"\"} className=\"report-body\"" in js
-    assert "text=${card.summary || \"\"} className=\"markdown-title\"" in js
-    assert "text=${card.audit_note} className=\"markdown-compact\"" in js
-    assert "approval.action || approval.diff_summary" in js
-    assert "<pre className=\"event-body\"" not in js
-    assert "<pre className=\"report-body\"" not in js
+    assert "function MD" in js and "renderBlocks" in js and "renderInline" in js
     assert ".innerHTML" not in js
     assert "dangerouslySetInnerHTML" not in js
     assert ".markdown-body" in css and ".markdown-table-wrap" in css
 
 
+def test_cloud_connection_frontend_wired(tmp_path):
+    """New feature (handoff design): the Settings → cloud-connection card links the machine to the
+    relay 总机 (DESIGN §8.5)."""
+    c = TestClient(create_app(load_config(tmp_path / "none.yaml")))
+    js = c.get("/app.js").text
+    assert "/api/settings/cloud" in js
+    assert "connectCloud" in js and "disconnectCloud" in js and "saveCloud" in js
+    assert "cloudConn" in js and "云端连接" in js
+    assert "access_key" in js
+
+
+def test_launch_splash_present(tmp_path):
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert "function Launch" in js and "booted" in js
+    assert ".launch" in css and ".boot" in css
+
+
+# ── team-mode console (unchanged by the personal-mode redesign) ─────────────────────────────────
+
 def test_admin_console_spa_ships_and_wires(tmp_path):
-    """The new Ant Design console SPA ships and is served at /app.html and /admin.html (the
-    back-compat alias). It's login-gated client-side and wires the admin dashboard endpoints."""
+    """The team-mode Ant Design console SPA still ships at /app.html and /admin.html (alias)."""
     c = TestClient(create_app(load_config()))
     for path in ("/app.html", "/admin.html"):
         page = c.get(path)
         assert page.status_code == 200, path
-        # loads the vendored Ant Design stack + the first-party app code (no build step)
         assert "admin-app.js" in page.text and "/vendor/antd.min.js" in page.text
 
     app_js = c.get("/admin-app.js").text
-    # login + the admin dashboard endpoints are wired
     assert "/api/auth/login" in app_js and "/api/auth/me" in app_js
     assert "/api/admin/overview" in app_js and "/api/admin/accounts" in app_js
     assert "/api/admin/sessions" in app_js and "/api/admin/db" in app_js
     assert "/api/admin/logs" in app_js
-    # rendering goes through React (htm), never raw innerHTML of server/account data (XSS).
     assert "htm.bind" in app_js and ".innerHTML" not in app_js
 
 
 def test_redeem_page_still_ships(tmp_path):
-    """The legacy invite-redemption page still ships (the new SPA also has a redeem tab)."""
     c = TestClient(create_app(load_config()))
     assert c.get("/redeem.html").status_code == 200
     redeem_js = c.get("/redeem.js").text
@@ -189,13 +216,11 @@ def test_redeem_page_still_ships(tmp_path):
 
 
 def test_access_keys_page_ships_and_wires(tmp_path):
-    """The user-facing access-key page ships and wires mint/list/revoke + expiry (T7.3 §8.2/§8.4)."""
     c = TestClient(create_app(load_config()))
     keys_html = c.get("/keys.html")
     assert keys_html.status_code == 200 and "data-i18n" in keys_html.text
     keys_js = c.get("/keys.js").text
     assert "/api/auth/login" in keys_js and "/api/keys" in keys_js
-    assert "expires_in_days" in keys_js  # the expiry knob (§8.4) is wired
-    assert "DELETE" in keys_js  # revoke
-    # the key label is user-supplied → rendered via textContent only, never innerHTML (XSS).
+    assert "expires_in_days" in keys_js
+    assert "DELETE" in keys_js
     assert "textContent" in keys_js and ".innerHTML" not in keys_js

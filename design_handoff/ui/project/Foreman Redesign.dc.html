@@ -1,0 +1,1200 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:'Plus Jakarta Sans',-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  :root{
+    --bg:#faf9f6;--bg2:#f2f0ea;--surface:#ffffff;--surface2:#f7f5f1;
+    --border:#eae6de;--border2:#ddd8ce;--text:#1d1b16;--muted:#736e63;--faint:#a09a8d;
+    --accent:#2a6fdb;--accent-soft:#eaf1fc;--accent-text:#1e5bc0;--accent-line:#cfe0f8;
+    --green:#1f8a5b;--green-soft:#e7f4ec;--amber:#b07712;--amber-soft:#fbf2df;
+    --red:#c0392b;--red-soft:#fbece9;--violet:#6b5bd9;--violet-soft:#efecfb;
+    --shadow:0 1px 2px rgba(20,18,12,.05),0 10px 30px -16px rgba(20,18,12,.18);
+    --shadow-sm:0 1px 2px rgba(20,18,12,.06);
+  }
+  [data-theme="dark"]{
+    --bg:#131210;--bg2:#1a1814;--surface:#1c1a15;--surface2:#23201a;
+    --border:#2c2920;--border2:#3a362b;--text:#f2efe7;--muted:#a39d8f;--faint:#6e6859;
+    --accent:#5b94f0;--accent-soft:#172540;--accent-text:#9bbcf6;--accent-line:#2c3f63;
+    --green:#46b985;--green-soft:#13271d;--amber:#d8a13e;--amber-soft:#2a2212;
+    --red:#e6766a;--red-soft:#2d1714;--violet:#9889e8;--violet-soft:#1e1a33;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 16px 40px -18px rgba(0,0,0,.7);
+    --shadow-sm:0 1px 2px rgba(0,0,0,.4);
+  }
+  [data-lang="zh"] [data-en]{display:none!important}
+  [data-lang="en"] [data-zh]{display:none!important}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:7px;border:2px solid transparent;background-clip:padding-box}
+  ::-webkit-scrollbar-track{background:transparent}
+  @keyframes fdspin{to{transform:rotate(360deg)}}
+  @keyframes fdpulse{0%,100%{opacity:.35;transform:scale(.92)}50%{opacity:1;transform:scale(1)}}
+  @keyframes fdblink{0%,100%{opacity:1}50%{opacity:.15}}
+  @keyframes fdup{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes fdbar{0%{width:6%}30%{width:34%}55%{width:52%}78%{width:74%}100%{width:96%}}
+  @keyframes fdshim{from{transform:translateX(-120%)}to{transform:translateX(220%)}}
+  @keyframes fddot{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+  @keyframes fdrise{from{transform:scaleY(.4);opacity:.5}to{transform:scaleY(1);opacity:1}}
+  @keyframes fdorbit{from{transform:rotate(0) translateX(34px) rotate(0)}to{transform:rotate(360deg) translateX(34px) rotate(-360deg)}}
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" data-lang="{{ lang }}" style="min-height:100vh;background:var(--bg);color:var(--text);transition:background .3s">
+
+  <!-- demo toolbar -->
+  <div style="position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:14px;padding:11px 20px;background:var(--surface);border-bottom:1px solid var(--border);box-shadow:var(--shadow-sm)">
+    <div style="display:flex;align-items:center;gap:9px">
+      <div style="width:26px;height:26px;border-radius:6px;background:var(--accent);position:relative;display:grid;place-items:center;box-shadow:0 2px 8px -2px var(--accent)">
+        <div style="width:13px;height:8px;border-radius:6px 6px 2px 2px;background:#fff"></div>
+        <div style="position:absolute;bottom:6px;width:17px;height:3px;border-radius:2px;background:rgba(255,255,255,.85)"></div>
+      </div>
+      <span style="font-weight:800;font-size:15px;letter-spacing:-.02em">Foreman</span>
+      <span style="font-size:11px;font-weight:600;color:var(--faint);font-family:'JetBrains Mono',monospace">redesign</span>
+    </div>
+    <div style="display:flex;gap:4px;padding:3px;background:var(--bg2);border-radius:8px">
+      <button onClick="{{ goLaunch }}" style="{{ tabLaunch }}"><span data-zh>启动动画</span><span data-en>Launch</span></button>
+      <button onClick="{{ goApp }}" style="{{ tabApp }}"><span data-zh>工作台</span><span data-en>Workbench</span></button>
+      <button onClick="{{ goVariants }}" style="{{ tabVar }}"><span data-zh>任务对话 · 变体</span><span data-en>Conversation · Variants</span></button>
+      <button onClick="{{ goMobile }}" style="{{ tabMob }}"><span data-zh>手机端</span><span data-en>Mobile</span></button>
+    </div>
+    <div style="flex:1"></div>
+    <button onClick="{{ toggleLang }}" style="display:flex;align-items:center;gap:6px;padding:7px 12px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit">
+      <span style="opacity:.5">🌐</span><span data-zh>中 / EN</span><span data-en>EN / 中</span>
+    </button>
+    <button onClick="{{ toggleTheme }}" style="display:flex;align-items:center;gap:6px;padding:7px 12px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit">
+      <span>{{ themeIcon }}</span><span style="font-family:'JetBrains Mono',monospace;text-transform:capitalize">{{ theme }}</span>
+    </button>
+  </div>
+
+  <!-- ============ LAUNCH ============ -->
+  <sc-if value="{{ showLaunch }}" hint-placeholder-val="{{ true }}">
+  <div style="min-height:calc(100vh - 50px);display:grid;place-items:center;padding:40px;background:radial-gradient(120% 90% at 50% 0%,var(--bg2),var(--bg))">
+    <div style="width:520px;max-width:100%;display:flex;flex-direction:column;align-items:center;text-align:center">
+      <div style="position:relative;width:120px;height:120px;display:grid;place-items:center;margin-bottom:34px">
+        <div style="position:absolute;inset:0;border-radius:50%;border:1.5px dashed var(--accent-line);animation:fdspin 14s linear infinite"></div>
+        <div style="position:absolute;width:11px;height:11px;border-radius:50%;background:var(--accent);top:50%;left:50%;margin:-5px;animation:fdorbit 3.4s linear infinite;box-shadow:0 0 14px var(--accent)"></div>
+        <div style="position:absolute;width:7px;height:7px;border-radius:50%;background:var(--violet);top:50%;left:50%;margin:-3px;animation:fdorbit 4.8s linear infinite reverse;opacity:.7"></div>
+        <div style="width:74px;height:74px;border-radius:21px;background:var(--accent);position:relative;display:grid;place-items:center;box-shadow:0 14px 34px -10px var(--accent);animation:fdpulse 2.6s ease-in-out infinite">
+          <div style="width:36px;height:22px;border-radius:15px 15px 5px 5px;background:#fff"></div>
+          <div style="position:absolute;bottom:16px;width:48px;height:7px;border-radius:5px;background:rgba(255,255,255,.9)"></div>
+        </div>
+      </div>
+      <div style="font-size:30px;font-weight:800;letter-spacing:-.03em;margin-bottom:8px">Foreman</div>
+      <div style="font-size:14px;color:var(--muted);margin-bottom:30px;max-width:340px">
+        <span data-zh>正在唤醒你的工程包工头 —— 把活儿交给本地 agent，PM 大脑替你盯着。</span>
+        <span data-en>Waking your engineering foreman — hand work to local agents, the PM brain watches over it.</span>
+      </div>
+      <div style="width:100%;max-width:360px;height:6px;border-radius:6px;background:var(--bg2);overflow:hidden;position:relative;border:1px solid var(--border)">
+        <div style="height:100%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--violet));animation:fdbar 4.6s cubic-bezier(.4,0,.2,1) forwards;position:relative;overflow:hidden">
+          <div style="position:absolute;inset:0;width:40%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent);animation:fdshim 1.3s linear infinite"></div>
+        </div>
+      </div>
+      <div style="margin-top:24px;width:100%;max-width:360px;display:flex;flex-direction:column;gap:11px;font-family:'JetBrains Mono',monospace;font-size:12.5px;text-align:left">
+        <div style="display:flex;align-items:center;gap:10px;color:var(--green);animation:fdup .4s both"><span>✓</span><span data-zh>引擎已就绪 · PM Core</span><span data-en>Engine ready · PM Core</span></div>
+        <div style="display:flex;align-items:center;gap:10px;color:var(--green);animation:fdup .4s .9s both"><span>✓</span><span data-zh>连接本地 agent · claude · codex</span><span data-en>Local agents linked · claude · codex</span></div>
+        <div style="display:flex;align-items:center;gap:10px;color:var(--muted);animation:fdup .4s 1.8s both"><span style="display:inline-block;width:11px;height:11px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:fdspin .7s linear infinite"></span><span data-zh>加载工作区与工作方式…</span><span data-en>Loading workspaces & playbook…</span></div>
+        <div style="display:flex;align-items:center;gap:10px;color:var(--faint);animation:fdup .4s 2.7s both"><span style="opacity:.5">○</span><span data-zh>唤醒 PM 大脑</span><span data-en>Waking PM brain</span></div>
+      </div>
+      <div style="margin-top:30px;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace">
+        v0.1.0 · 127.0.0.1:8788 · <span style="display:inline-flex;gap:3px">提示<span data-en style="display:none"></span></span>
+        <span data-zh>· 这一屏顶替了启动时的 5 秒空白</span><span data-en>· replaces the 5s blank on cold start</span>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============ WORKBENCH ============ -->
+  <sc-if value="{{ showApp }}" hint-placeholder-val="{{ true }}">
+  <div style="display:flex;min-height:calc(100vh - 50px)">
+
+    <!-- sidebar -->
+    <aside style="width:236px;flex:none;border-right:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;padding:18px 14px">
+      <div style="padding:4px 8px 16px">
+        <div style="font-size:16px;font-weight:800;letter-spacing:-.02em">Foreman</div>
+        <div style="font-size:11.5px;color:var(--faint)"><span data-zh>本地工作台 · v0.1.0</span><span data-en>Local workbench · v0.1.0</span></div>
+      </div>
+      <nav style="display:flex;flex-direction:column;gap:2px">
+        <button onClick="{{ goNavW }}" style="{{ navWStyle }}">
+          <span style="width:16px;text-align:center">◳</span><span data-zh>工作台</span><span data-en>Workspace</span>
+          <span style="margin-left:auto;font-size:10px;background:var(--accent);color:#fff;padding:1px 6px;border-radius:20px;font-weight:700">2</span>
+        </button>
+        <button onClick="{{ goNavD }}" style="{{ navDStyle }}">
+          <span style="width:16px;text-align:center">◉</span><span data-zh>决策</span><span data-en>Decisions</span>
+          <span style="margin-left:auto;font-size:10px;background:var(--amber-soft);color:var(--amber);padding:1px 6px;border-radius:20px;font-weight:700">3</span>
+        </button>
+        <button onClick="{{ goNavB }}" style="{{ navBStyle }}">
+          <span style="width:16px;text-align:center">▤</span><span data-zh>简报</span><span data-en>Briefings</span>
+        </button>
+        <button onClick="{{ goNavP }}" style="{{ navPStyle }}">
+          <span style="width:16px;text-align:center">▦</span><span data-zh>工作方式</span><span data-en>Playbook</span>
+        </button>
+        <button onClick="{{ goNavS }}" style="{{ navSStyle }}">
+          <span style="width:16px;text-align:center">⚙</span><span data-zh>设置</span><span data-en>Settings</span>
+        </button>
+      </nav>
+
+      <div style="margin-top:22px;padding:0 8px 8px;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--faint);text-transform:uppercase;display:flex;align-items:center;justify-content:space-between">
+        <span data-zh>会话</span><span data-en>Sessions</span>
+        <span style="font-size:14px;cursor:pointer;color:var(--muted)">+</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;overflow:auto">
+        <div style="padding:9px 11px;border-radius:8px;border:1px solid var(--accent-line);background:var(--accent-soft);cursor:pointer">
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);animation:fdpulse 1.6s infinite"></span>
+            <span style="font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">重构 auth 模块</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">claude-code · 运行中 · 4m</div>
+        </div>
+        <div style="padding:9px 11px;border-radius:8px;cursor:pointer" style-hover="background:var(--bg2)">
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--amber)"></span>
+            <span style="font-size:12.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">迁移脚本 + 测试</span>
+          </div>
+          <div style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace"><span data-zh>等待审批 · 1</span><span data-en>1 approval</span></div>
+        </div>
+        <div style="padding:9px 11px;border-radius:8px;cursor:pointer" style-hover="background:var(--bg2)">
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--green)"></span>
+            <span style="font-size:12.5px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">修复 CI 缓存</span>
+          </div>
+          <div style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace"><span data-zh>已完成 · 2h 前</span><span data-en>done · 2h ago</span></div>
+        </div>
+      </div>
+
+      <div style="margin-top:auto;padding-top:14px;border-top:1px solid var(--border);display:flex;align-items:center;gap:9px">
+        <div style="width:30px;height:30px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);display:grid;place-items:center;font-size:13px;font-weight:700">J</div>
+        <div style="line-height:1.2">
+          <div style="font-size:12.5px;font-weight:600">jiang</div>
+          <div style="font-size:10.5px;color:var(--faint)"><span data-zh>个人模式 · 离线优先</span><span data-en>Personal · offline-first</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- main -->
+    <main style="flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)">
+      <sc-if value="{{ showWorkspace }}" hint-placeholder-val="{{ true }}">
+      <!-- session header -->
+      <div style="display:flex;align-items:center;gap:14px;padding:16px 26px;border-bottom:1px solid var(--border);background:var(--surface)">
+        <div style="min-width:0">
+          <div style="display:flex;align-items:center;gap:9px">
+            <h2 style="margin:0;font-size:17px;font-weight:700;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">重构 auth 模块，push 前问我</h2>
+            <span style="font-size:10.5px;font-weight:700;color:var(--green);background:var(--green-soft);padding:2px 8px;border-radius:20px;display:inline-flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);animation:fdpulse 1.6s infinite"></span><span data-zh>运行中</span><span data-en>RUNNING</span></span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">~/AutoWorkAgent · claude-code · sonnet · <span data-zh>档位 标准</span><span data-en>level standard</span></div>
+        </div>
+        <div style="flex:1"></div>
+        <!-- autonomy pill -->
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid var(--border2);border-radius:8px;background:var(--surface)">
+          <span style="font-size:11px;color:var(--faint);font-weight:600"><span data-zh>自动权限</span><span data-en>Autonomy</span></span>
+          <div style="display:flex;gap:3px">
+            <span style="width:7px;height:14px;border-radius:2px;background:var(--green)"></span>
+            <span style="width:7px;height:14px;border-radius:2px;background:var(--green)"></span>
+            <span style="width:7px;height:14px;border-radius:2px;background:var(--border2)"></span>
+            <span style="width:7px;height:14px;border-radius:2px;background:var(--border2)"></span>
+          </div>
+          <span style="font-size:11px;font-weight:700;color:var(--accent-text)">L2</span>
+        </div>
+        <button style="padding:8px 13px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>生成简报</span><span data-en>Briefing</span></button>
+      </div>
+
+      <!-- body: thread + composer (left) | todo + terminal (right) -->
+      <div style="flex:1;display:flex;min-height:0">
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <!-- thread -->
+      <div style="flex:1;overflow:auto;padding:26px 26px 12px">
+        <div style="max-width:780px;margin:0 auto;display:flex;flex-direction:column;gap:18px">
+
+          <!-- divider -->
+          <div style="display:flex;align-items:center;gap:12px;color:var(--faint);font-size:11px;font-family:'JetBrains Mono',monospace">
+            <div style="flex:1;height:1px;background:var(--border)"></div>14:23 · <span data-zh>今天</span><span data-en>today</span><div style="flex:1;height:1px;background:var(--border)"></div>
+          </div>
+
+          <!-- user task -->
+          <div style="display:flex;gap:12px;justify-content:flex-end">
+            <div style="max-width:78%;background:var(--accent);color:#fff;padding:12px 15px;border-radius:11px 11px 4px 11px;box-shadow:var(--shadow-sm)">
+              <div style="font-size:14px;line-height:1.55">把 auth 模块拆出独立的 token 校验层，补单测，push 前问我。优先用现有 crypto 工具。</div>
+              <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">
+                <span style="font-size:10.5px;background:rgba(255,255,255,.18);padding:2px 7px;border-radius:6px;font-family:'JetBrains Mono',monospace">@auth.py</span>
+                <span style="font-size:10.5px;background:rgba(255,255,255,.18);padding:2px 7px;border-radius:6px;font-family:'JetBrains Mono',monospace">/工作流:add-feature</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- PM plan card -->
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);overflow:hidden">
+            <div style="display:flex;align-items:center;gap:9px;padding:11px 15px;border-bottom:1px solid var(--border);background:var(--surface2)">
+              <span style="width:22px;height:22px;border-radius:6px;background:var(--violet-soft);color:var(--violet);display:grid;place-items:center;font-size:12px;font-weight:700">PM</span>
+              <span style="font-size:13px;font-weight:700"><span data-zh>计划</span><span data-en>Plan</span></span>
+              <span style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace">gpt-5.5 · 4 步</span>
+              <span style="margin-left:auto;font-size:11px;color:var(--green);font-weight:600">✓ <span data-zh>已确认</span><span data-en>approved</span></span>
+            </div>
+            <div style="padding:6px 15px 13px">
+              <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)"><span style="width:18px;height:18px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center;font-size:10px;flex:none">✓</span><span style="font-size:13px">抽取 <code style="font-family:'JetBrains Mono',monospace;background:var(--bg2);padding:1px 5px;border-radius:4px;font-size:12px">TokenVerifier</code> 到独立模块</span></div>
+              <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)"><span style="width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:9px;flex:none;animation:fdpulse 1.6s infinite">2</span><span style="font-size:13px;font-weight:600">复用 <code style="font-family:'JetBrains Mono',monospace;background:var(--bg2);padding:1px 5px;border-radius:4px;font-size:12px">shared/crypto</code> 改写校验</span><span style="margin-left:auto;font-size:11px;color:var(--accent-text);font-family:'JetBrains Mono',monospace"><span data-zh>进行中</span><span data-en>active</span></span></div>
+              <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)"><span style="width:18px;height:18px;border-radius:50%;background:var(--bg2);color:var(--faint);display:grid;place-items:center;font-size:10px;flex:none">3</span><span style="font-size:13px;color:var(--muted)">补 <code style="font-family:'JetBrains Mono',monospace;background:var(--bg2);padding:1px 5px;border-radius:4px;font-size:12px">test_auth.py</code> 单测</span></div>
+              <div style="display:flex;align-items:center;gap:10px;padding:8px 0"><span style="width:18px;height:18px;border-radius:50%;background:var(--bg2);color:var(--faint);display:grid;place-items:center;font-size:10px;flex:none">4</span><span style="font-size:13px;color:var(--muted)">本地跑测试，push 前停下问你</span></div>
+            </div>
+          </div>
+
+          <!-- PM note -->
+          <div style="display:flex;gap:12px">
+            <div style="width:28px;height:28px;flex:none;border-radius:8px;background:var(--violet-soft);color:var(--violet);display:grid;place-items:center;font-size:11px;font-weight:700;box-shadow:var(--shadow-sm)">PM</div>
+            <div style="flex:1;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:11px 14px;box-shadow:var(--shadow-sm)">
+              <div style="font-size:13.5px;line-height:1.6"><span data-zh>计划已确认。我把每一步交给子代理执行 —— 点开下面的面板,能看到它的回复、运行的命令和具体改动。</span><span data-en>Plan confirmed. I'm handing each step to a subagent — expand a panel below to see its reply, the commands it ran, and the exact changes.</span></div>
+            </div>
+          </div>
+
+          <!-- subagent call panels (collapsible) -->
+          <sc-for list="{{ callView }}" as="c" hint-placeholder-count="2">
+            <div style="{{ c.cardStyle }}">
+              <div onClick="{{ c.onClick }}" style="display:flex;align-items:center;gap:11px;padding:12px 15px;cursor:pointer">
+                <span style="{{ c.avatarStyle }}">{{ c.avatar }}</span>
+                <div style="flex:1;min-width:0">
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                    <span style="font-size:13px;font-weight:700">{{ c.agent }}</span>
+                    <span style="font-size:12.5px;color:var(--muted)"><span data-zh>{{ c.titleZh }}</span><span data-en>{{ c.titleEn }}</span></span>
+                    <span style="{{ c.statusStyle }}"><span data-zh>{{ c.statusZh }}</span><span data-en>{{ c.statusEn }}</span></span>
+                  </div>
+                  <div style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span data-zh>{{ c.summaryZh }}</span><span data-en>{{ c.summaryEn }}</span></div>
+                </div>
+                <span style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace;flex:none">{{ c.dur }}</span>
+                <span style="font-size:11.5px;color:var(--accent-text);font-weight:600;flex:none;display:inline-flex;gap:4px;align-items:center"><span data-zh>{{ c.openLabelZh }}</span><span data-en>{{ c.openLabelEn }}</span>{{ c.chevron }}</span>
+              </div>
+              <sc-if value="{{ c.open }}" hint-placeholder-val="{{ true }}">
+                <div style="border-top:1px solid var(--border);padding:14px 15px;display:flex;flex-direction:column;gap:14px">
+                  <div>
+                    <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--faint);text-transform:uppercase;margin-bottom:6px"><span data-zh>回复</span><span data-en>Reply</span></div>
+                    <div style="font-size:13px;line-height:1.6;color:var(--text)"><span data-zh>{{ c.replyZh }}</span><span data-en>{{ c.replyEn }}</span></div>
+                  </div>
+                  <div>
+                    <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--faint);text-transform:uppercase;margin-bottom:6px"><span data-zh>执行的命令</span><span data-en>Commands run</span></div>
+                    <div style="background:#16140f;border-radius:8px;padding:10px 13px;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#d6d2c6;line-height:1.85">
+                      <sc-for list="{{ c.commands }}" as="cmd" hint-placeholder-count="2">
+                        <div><span style="color:#7fae6f">$</span> {{ cmd }}</div>
+                      </sc-for>
+                    </div>
+                  </div>
+                  <sc-if value="{{ c.hasDiff }}" hint-placeholder-val="{{ true }}">
+                  <div>
+                    <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--faint);text-transform:uppercase;margin-bottom:6px"><span data-zh>文件改动</span><span data-en>File changes</span></div>
+                    <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;font-family:'JetBrains Mono',monospace;font-size:11.5px">
+                      <div style="display:flex;align-items:center;gap:8px;padding:7px 13px;background:var(--surface2);border-bottom:1px solid var(--border)"><span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.diffFile }}</span><span style="margin-left:auto;color:var(--green);flex:none">{{ c.diffStat }}</span></div>
+                      <div style="padding:4px 0;line-height:1.65">
+                        <sc-for list="{{ c.diffLines }}" as="d" hint-placeholder-count="4">
+                          <div style="{{ d.style }}">{{ d.text }}</div>
+                        </sc-for>
+                      </div>
+                    </div>
+                  </div>
+                  </sc-if>
+                  <sc-if value="{{ c.hasResult }}" hint-placeholder-val="{{ true }}">
+                    <div style="font-size:12.5px;font-weight:600;color:var(--green);background:var(--green-soft);padding:9px 13px;border-radius:8px"><span data-zh>{{ c.resultZh }}</span><span data-en>{{ c.resultEn }}</span></div>
+                  </sc-if>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+
+          <!-- decision card -->
+          <div style="border:1.5px solid var(--amber);border-radius:11px;background:var(--surface);box-shadow:0 12px 30px -16px var(--amber);overflow:hidden">
+            <div style="display:flex;align-items:center;gap:9px;padding:11px 16px;background:var(--amber-soft)">
+              <span style="font-size:14px">⚠️</span>
+              <span style="font-size:13px;font-weight:700;color:var(--text)"><span data-zh>需要你拍板</span><span data-en>Decision needed</span></span>
+              <span style="margin-left:auto;font-size:10.5px;font-weight:700;color:var(--amber);background:var(--surface);padding:2px 8px;border-radius:20px;border:1px solid var(--amber)"><span data-zh>中风险</span><span data-en>MEDIUM RISK</span></span>
+            </div>
+            <div style="padding:14px 16px">
+              <div style="font-size:14px;font-weight:600;margin-bottom:5px">旧 <code style="font-family:'JetBrains Mono',monospace;background:var(--bg2);padding:1px 5px;border-radius:4px;font-size:12.5px">HS256</code> 校验路径要删掉吗？</div>
+              <div style="font-size:13px;color:var(--muted);line-height:1.55;margin-bottom:13px">新 <code style="font-family:'JetBrains Mono',monospace;background:var(--bg2);padding:1px 4px;border-radius:4px;font-size:12px">TokenVerifier</code> 已覆盖全部调用点。删除可减少 ~40 行遗留代码，但若有外部脚本仍签发旧 token 会失效。建议保留一个 release 周期。</div>
+              <div style="display:flex;gap:9px;flex-wrap:wrap">
+                <button style="padding:9px 16px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>保留一个周期</span><span data-en>Keep one cycle</span></button>
+                <button style="padding:9px 16px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>现在删除</span><span data-en>Delete now</span></button>
+                <button style="padding:9px 16px;border:1px solid transparent;background:transparent;color:var(--muted);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>让我看 diff</span><span data-en>Show diff</span></button>
+              </div>
+            </div>
+          </div>
+
+          <!-- PM closing note -->
+          <div style="display:flex;gap:12px">
+            <div style="width:28px;height:28px;flex:none;border-radius:8px;background:var(--violet-soft);color:var(--violet);display:grid;place-items:center;font-size:11px;font-weight:700;box-shadow:var(--shadow-sm)">PM</div>
+            <div style="flex:1;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:11px 14px;box-shadow:var(--shadow-sm)">
+              <div style="font-size:13.5px;line-height:1.6"><span data-zh>codex 的复查已通过。等你定了上面那张卡,我就让 claude-code 补单测、本地跑测试,push 前再停下问你。</span><span data-en>codex's review passed. Once you settle the card above, I'll have claude-code add tests and run them locally, then pause again before push.</span></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- composer -->
+      <div style="padding:14px 26px 18px;border-top:1px solid var(--border);background:var(--surface)">
+        <div style="max-width:780px;margin:0 auto">
+          <!-- context meter -->
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px;font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace">
+            <span data-zh>上下文</span><span data-en>Context</span>
+            <div style="flex:1;max-width:160px;height:5px;border-radius:5px;background:var(--bg2);overflow:hidden"><div style="width:62%;height:100%;background:linear-gradient(90deg,var(--accent),var(--violet))"></div></div>
+            <span>62% · 78k / 128k</span>
+            <button style="margin-left:auto;display:flex;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--border2);background:var(--surface);color:var(--muted);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">⟲ <span data-zh>压缩上下文</span><span data-en>Compact</span></button>
+          </div>
+          <div style="border:1.5px solid var(--border2);border-radius:11px;background:var(--surface);overflow:hidden;box-shadow:var(--shadow-sm)" style-focus="border-color:var(--accent)">
+            <sc-if value="{{ hasAttach }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;padding:11px 13px 2px">
+              <sc-for list="{{ attachView }}" as="a" hint-placeholder-count="2">
+                <div style="display:flex;align-items:center;gap:8px;padding:5px 8px 5px 5px;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
+                  <sc-if value="{{ a.isImage }}" hint-placeholder-val="{{ true }}"><span style="width:30px;height:30px;border-radius:6px;flex:none;border:1px solid var(--border);background-image:repeating-linear-gradient(45deg,var(--bg2),var(--bg2) 5px,var(--surface) 5px,var(--surface) 10px);display:grid;place-items:center;font-size:12px">🖼</span></sc-if>
+                  <sc-if value="{{ a.isFile }}" hint-placeholder-val="{{ true }}"><span style="width:30px;height:30px;border-radius:6px;flex:none;background:var(--accent-soft);color:var(--accent-text);display:grid;place-items:center;font-size:14px">📄</span></sc-if>
+                  <span style="font-size:12px;font-weight:600;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.name }}</span>
+                  <span onClick="{{ a.onRemove }}" style="cursor:pointer;color:var(--faint);font-size:15px;line-height:1;width:18px;height:18px;display:grid;place-items:center;border-radius:5px" style-hover="background:var(--bg2);color:var(--text)">×</span>
+                </div>
+              </sc-for>
+            </div>
+            </sc-if>
+            <textarea placeholder="继续和 PM 对话…  /  输入 / 调用工作方式，@ 引用文件，或拖入文件 / 图片" rows="2" style="width:100%;border:none;outline:none;resize:none;padding:13px 15px 4px;font-size:14px;font-family:inherit;background:transparent;color:var(--text);line-height:1.5"></textarea>
+            <div style="display:flex;align-items:center;gap:7px;padding:8px 12px;flex-wrap:wrap">
+              <button onClick="{{ addAttach }}" style="display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">📎 <span data-zh>附件</span><span data-en>Attach</span></button>
+              <button style="display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">📁 ~/AutoWorkAgent <span style="color:var(--faint)">▾</span></button>
+              <span style="display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px dashed var(--border2);color:var(--faint);border-radius:7px;font-size:11.5px;font-weight:600">🤖 <span data-zh>执行 agent 由 PM 自动选择</span><span data-en>agent auto-picked by PM</span></span>
+              <div style="display:flex;gap:2px;padding:3px;background:var(--bg2);border-radius:7px">
+                <span style="padding:3px 9px;border-radius:6px;font-size:11.5px;font-weight:600;color:var(--muted);cursor:pointer"><span data-zh>快速</span><span data-en>Fast</span></span>
+                <span style="padding:3px 9px;border-radius:6px;font-size:11.5px;font-weight:700;background:var(--surface);color:var(--accent-text);box-shadow:var(--shadow-sm);cursor:pointer"><span data-zh>标准</span><span data-en>Std</span></span>
+                <span style="padding:3px 9px;border-radius:6px;font-size:11.5px;font-weight:600;color:var(--muted);cursor:pointer"><span data-zh>深度</span><span data-en>Deep</span></span>
+              </div>
+              <div style="flex:1"></div>
+              <span style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace">⏎ <span data-zh>发送</span><span data-en>send</span></span>
+              <button style="display:flex;align-items:center;gap:7px;padding:8px 16px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;box-shadow:0 4px 12px -4px var(--accent)"><span data-zh>发送</span><span data-en>Send</span> ↑</button>
+            </div>
+          </div>
+        </div>
+      </div>
+        </div><!-- /left col -->
+
+        <!-- right panel: todo + terminal -->
+        <aside style="width:392px;flex:none;border-left:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;min-height:0">
+          <div style="padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+            <div style="width:30px;height:30px;flex:none;border-radius:8px;background:var(--surface2);border:1px solid var(--border);display:grid;place-items:center;font-size:14px">🤖</div>
+            <div style="min-width:0;line-height:1.3">
+              <div style="font-size:13px;font-weight:700">claude-code</div>
+              <div style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace">sonnet · 4m23s · 78k tok</div>
+            </div>
+            <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;color:var(--green)"><span style="width:7px;height:7px;border-radius:50%;background:var(--green);animation:fdpulse 1.6s infinite"></span><span data-zh>运行中</span><span data-en>LIVE</span></span>
+          </div>
+          <div style="display:flex;gap:4px;padding:11px 13px 2px">
+            <button onClick="{{ tabTodoClick }}" style="{{ tabTodoStyle }}"><span data-zh>任务清单</span><span data-en>To-dos</span> <span style="font-size:10px;opacity:.7">{{ todoCount }}</span></button>
+            <button onClick="{{ tabSubClick }}" style="{{ tabSubStyle }}"><span data-zh>子代理</span><span data-en>Subagents</span> <span style="font-size:10px;opacity:.7">{{ subCount }}</span></button>
+            <button onClick="{{ tabTermClick }}" style="{{ tabTermStyle }}"><span data-zh>终端</span><span data-en>Terminal</span></button>
+          </div>
+
+          <sc-if value="{{ showTodo }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:1;overflow:auto;padding:13px">
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:11px">
+              <div style="flex:1;height:6px;border-radius:6px;background:var(--bg2);overflow:hidden"><div style="height:100%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--green));width:{{ progressPct }};transition:width .3s"></div></div>
+              <span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">{{ progressLabel }}</span>
+            </div>
+            <sc-for list="{{ todoView }}" as="t" hint-placeholder-count="5">
+              <div onClick="{{ t.onClick }}" style="{{ t.rowStyle }}" style-hover="background:var(--bg2)">
+                <span style="{{ t.iconStyle }}">{{ t.icon }}</span>
+                <div style="flex:1;min-width:0">
+                  <div style="{{ t.titleStyle }}"><span data-zh>{{ t.titleZh }}</span><span data-en>{{ t.titleEn }}</span></div>
+                  <sc-if value="{{ t.hasSub }}" hint-placeholder-val="{{ true }}"><div style="{{ t.subStyle }}"><span data-zh>{{ t.subZh }}</span><span data-en>{{ t.subEn }}</span></div></sc-if>
+                </div>
+                <span style="flex:none;color:var(--faint);font-size:12px;cursor:grab;margin-top:2px">⋮⋮</span>
+              </div>
+            </sc-for>
+            <div style="display:flex;gap:7px;margin-top:10px;padding-top:11px;border-top:1px dashed var(--border)">
+              <input value="{{ newTodo }}" onChange="{{ onNewTodo }}" onKeyDown="{{ onNewTodoKey }}" placeholder="添加一步… ⏎" style="flex:1;border:1px solid var(--border2);border-radius:7px;padding:8px 11px;font-size:12.5px;font-family:inherit;background:var(--surface);color:var(--text);outline:none" />
+              <button onClick="{{ addTodo }}" style="flex:none;width:34px;border:none;border-radius:7px;background:var(--accent);color:#fff;font-size:17px;font-weight:700;cursor:pointer">+</button>
+            </div>
+            <div style="margin-top:12px;font-size:11px;color:var(--faint);line-height:1.55;display:flex;gap:6px"><span style="opacity:.7">💡</span><span data-zh>清单由 PM 自动拆解,你可勾选、增删、拖拽排序 —— 改动会同步给 agent。</span><span data-en>Auto-drafted by the PM. Check, add, reorder — changes sync back to the agent.</span></div>
+          </div>
+          </sc-if>
+
+          <sc-if value="{{ showSub }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:1;overflow:auto;padding:13px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">
+              <span style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:fdpulse 1.6s infinite"></span>
+              <span data-zh>{{ subSummaryZh }}</span><span data-en>{{ subSummaryEn }}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;background:var(--violet-soft);margin-bottom:4px">
+              <span style="width:24px;height:24px;border-radius:6px;background:var(--violet);color:#fff;display:grid;place-items:center;font-size:11px;font-weight:700;flex:none"><span data-zh>主</span><span data-en>M</span></span>
+              <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:700">claude-code <span style="font-weight:500;color:var(--muted)">· orchestrator</span></div><div style="font-size:10.5px;color:var(--faint);font-family:'JetBrains Mono',monospace"><span data-zh>派发了 4 个子代理</span><span data-en>spawned 4 subagents</span></div></div>
+            </div>
+            <div style="margin-left:11px;padding-left:14px;border-left:1.5px dashed var(--border2)">
+              <sc-for list="{{ subView }}" as="s" hint-placeholder-count="4">
+                <div style="{{ s.cardStyle }}">
+                  <div onClick="{{ s.onClick }}" style="display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer">
+                    <span style="{{ s.iconStyle }}">{{ s.icon }}</span>
+                    <div style="flex:1;min-width:0">
+                      <div style="{{ s.nameStyle }}"><span data-zh>{{ s.nameZh }}</span><span data-en>{{ s.nameEn }}</span></div>
+                      <div style="font-size:10.5px;color:var(--faint);font-family:'JetBrains Mono',monospace;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span data-zh>{{ s.actZh }}</span><span data-en>{{ s.actEn }}</span></div>
+                    </div>
+                    <span style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;background:var(--bg2);padding:2px 7px;border-radius:6px;flex:none">{{ s.agent }}</span>
+                    <span style="color:var(--faint);font-size:11px;flex:none">{{ s.chevron }}</span>
+                  </div>
+                  <sc-if value="{{ s.open }}" hint-placeholder-val="{{ true }}">
+                    <div style="border-top:1px solid var(--border);padding:11px 13px;background:var(--surface2)">
+                      <div style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace;margin-bottom:7px"><span data-zh>{{ s.metaZh }}</span><span data-en>{{ s.metaEn }}</span></div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--muted);white-space:pre-line;line-height:1.75"><span data-zh>{{ s.detZh }}</span><span data-en>{{ s.detEn }}</span></div>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          </sc-if>
+
+          <sc-if value="{{ showTerm }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:1;overflow:auto;padding:13px">
+            <div style="background:#16140f;border:1px solid var(--border2);border-radius:10px;overflow:hidden;font-family:'JetBrains Mono',monospace;font-size:12px;min-height:100%">
+              <div style="display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.06)">
+                <span style="width:9px;height:9px;border-radius:50%;background:#e0584b"></span><span style="width:9px;height:9px;border-radius:50%;background:#e6b13e"></span><span style="width:9px;height:9px;border-radius:50%;background:#3fb37f"></span>
+                <span style="margin-left:6px;color:#8a8578;font-size:11px">~/AutoWorkAgent — claude-code</span>
+              </div>
+              <div style="padding:12px 13px;color:#d6d2c6;line-height:1.85">
+                <div><span style="color:#7fae6f">$</span> grep -n "verify_token" src/foreman/server/auth.py</div>
+                <div style="color:#8a8578">  42:  def verify_token(self, raw): ...</div>
+                <div style="margin-top:6px"><span style="color:#6d9fe0">edit</span> src/foreman/server/auth.py <span style="color:#7fae6f">+38 −12</span></div>
+                <div><span style="color:#6d9fe0">new&nbsp;</span> src/foreman/server/token_verifier.py <span style="color:#7fae6f">+64</span></div>
+                <div style="margin-top:6px"><span style="color:#7fae6f">$</span> pytest -k token -q</div>
+                <div style="color:#8a8578">collected 7 items</div>
+                <div style="margin-top:6px;color:#c7a3e8">› 复用 shared/crypto.constant_time_eq,避免时序泄露<span style="display:inline-block;width:7px;height:14px;background:#d6d2c6;margin-left:3px;vertical-align:-2px;animation:fdblink 1s steps(1) infinite"></span></div>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+        </aside>
+
+      </div><!-- /body row -->
+      </sc-if>
+
+      <!-- ===== DECISIONS ===== -->
+      <sc-if value="{{ showDecisions }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;overflow:auto">
+        <div style="padding:24px 30px 6px;border-bottom:1px solid var(--border);background:var(--surface)">
+          <h2 style="margin:0;font-size:21px;font-weight:800;letter-spacing:-.02em"><span data-zh>决策</span><span data-en>Decisions</span></h2>
+          <div style="font-size:13px;color:var(--muted);margin-top:4px"><span data-zh>处理需要你确认的卡片和审批。</span><span data-en>Handle the cards and approvals that need you.</span></div>
+        </div>
+        <div style="padding:24px 30px 48px"><div style="max-width:1000px;margin:0 auto">
+
+          <div style="font-size:13px;font-weight:800;color:var(--text);margin:0 0 13px;display:flex;align-items:center;gap:9px"><span data-zh>决策卡</span><span data-en>Decision cards</span><span style="font-size:10px;font-weight:700;color:var(--amber);background:var(--amber-soft);padding:1px 7px;border-radius:20px">2</span></div>
+          <div style="display:flex;flex-direction:column;gap:14px;margin-bottom:30px">
+            <div style="border:1.5px solid var(--amber);border-radius:11px;background:var(--surface);box-shadow:0 12px 30px -18px var(--amber);overflow:hidden">
+              <div style="display:flex;align-items:center;gap:9px;padding:11px 16px;background:var(--amber-soft)"><span>⚠️</span><span style="font-size:13px;font-weight:700"><span data-zh>需要你拍板</span><span data-en>Decision needed</span></span><span onClick="{{ goNavW }}" style="font-size:10.5px;color:var(--accent-text);font-weight:600;font-family:'JetBrains Mono',monospace;margin-left:4px;cursor:pointer" style-hover="text-decoration:underline">↗ 重构 auth 模块</span><span style="margin-left:auto;font-size:10.5px;font-weight:700;color:var(--amber);background:var(--surface);padding:2px 8px;border-radius:20px;border:1px solid var(--amber)"><span data-zh>中风险</span><span data-en>MEDIUM</span></span></div>
+              <div style="padding:14px 16px">
+                <div style="font-size:14px;font-weight:600;margin-bottom:5px">旧 <code style="font-family:'JetBrains Mono',monospace;background:var(--bg2);padding:1px 5px;border-radius:4px;font-size:12.5px">HS256</code> 校验路径要删掉吗？</div>
+                <div style="font-size:13px;color:var(--muted);line-height:1.55;margin-bottom:13px">新 TokenVerifier 已覆盖全部调用点。删除可减少 ~40 行遗留代码,但外部脚本若仍签发旧 token 会失效。建议保留一个 release 周期。</div>
+                <div style="display:flex;gap:9px;flex-wrap:wrap">
+                  <button style="padding:9px 16px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>保留一个周期</span><span data-en>Keep one cycle</span></button>
+                  <button style="padding:9px 16px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>现在删除</span><span data-en>Delete now</span></button>
+                  <button style="padding:9px 16px;border:none;background:transparent;color:var(--muted);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>看 diff</span><span data-en>Show diff</span></button>
+                </div>
+              </div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm);overflow:hidden">
+              <div style="display:flex;align-items:center;gap:9px;padding:11px 16px;background:var(--surface2)"><span>💡</span><span style="font-size:13px;font-weight:700"><span data-zh>建议</span><span data-en>Suggestion</span></span><span onClick="{{ goNavW }}" style="font-size:10.5px;color:var(--accent-text);font-weight:600;font-family:'JetBrains Mono',monospace;margin-left:4px;cursor:pointer" style-hover="text-decoration:underline">↗ 修复 CI 缓存</span><span style="margin-left:auto;font-size:10.5px;font-weight:700;color:var(--green);background:var(--green-soft);padding:2px 8px;border-radius:20px"><span data-zh>低风险</span><span data-en>LOW</span></span></div>
+              <div style="padding:14px 16px">
+                <div style="font-size:14px;font-weight:600;margin-bottom:5px">把缓存 key 换成 <code style="font-family:'JetBrains Mono',monospace;background:var(--bg2);padding:1px 5px;border-radius:4px;font-size:12.5px">lockfile hash</code>?</div>
+                <div style="font-size:13px;color:var(--muted);line-height:1.55;margin-bottom:13px">当前用分支名做 key,命中率低。换成 lockfile 哈希预计可省 ~3 分钟 CI 时长。</div>
+                <div style="display:flex;gap:9px;flex-wrap:wrap">
+                  <button style="padding:9px 16px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>采纳</span><span data-en>Apply</span></button>
+                  <button style="padding:9px 16px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>忽略</span><span data-en>Dismiss</span></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="font-size:13px;font-weight:800;color:var(--text);margin:0 0 13px;display:flex;align-items:center;gap:9px"><span data-zh>审批</span><span data-en>Approvals</span><span style="font-size:10px;font-weight:700;color:var(--red);background:var(--red-soft);padding:1px 7px;border-radius:20px">1</span></div>
+          <div style="display:flex;flex-direction:column;gap:11px">
+            <div style="display:flex;align-items:center;gap:13px;border:1px solid var(--border);border-left:3px solid var(--red);border-radius:10px;background:var(--surface);padding:13px 16px;box-shadow:var(--shadow-sm);flex-wrap:wrap">
+              <span style="width:30px;height:30px;flex:none;border-radius:7px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:800">C</span>
+              <div style="flex:1;min-width:180px">
+                <div style="font-size:13px;font-weight:600"><span data-zh>claude-code 想执行命令</span><span data-en>claude-code wants to run</span></div>
+                <code style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text);background:var(--bg2);padding:2px 8px;border-radius:6px;display:inline-block;margin-top:5px">git push origin auth-refactor</code>
+                <div onClick="{{ goNavW }}" style="font-size:11px;color:var(--accent-text);font-weight:600;cursor:pointer;margin-top:7px" style-hover="text-decoration:underline">↗ <span data-zh>来自会话 · 重构 auth 模块</span><span data-en>from session · Refactor auth</span></div>
+              </div>
+              <span style="font-size:10.5px;font-weight:700;color:var(--red);background:var(--red-soft);padding:2px 9px;border-radius:20px"><span data-zh>高风险 · 写远端</span><span data-en>HIGH · remote write</span></span>
+              <div style="display:flex;gap:8px">
+                <button style="padding:8px 16px;border:none;background:var(--green);color:#fff;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit"><span data-zh>批准</span><span data-en>Approve</span></button>
+                <button style="padding:8px 16px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>驳回</span><span data-en>Reject</span></button>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:13px;border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:10px;background:var(--surface);padding:13px 16px;box-shadow:var(--shadow-sm);flex-wrap:wrap">
+              <span style="width:30px;height:30px;flex:none;border-radius:7px;background:var(--violet);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:800">X</span>
+              <div style="flex:1;min-width:180px">
+                <div style="font-size:13px;font-weight:600"><span data-zh>codex 想安装依赖</span><span data-en>codex wants to install</span></div>
+                <code style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text);background:var(--bg2);padding:2px 8px;border-radius:6px;display:inline-block;margin-top:5px">pip install pyjwt==2.8.0</code>
+                <div onClick="{{ goNavW }}" style="font-size:11px;color:var(--accent-text);font-weight:600;cursor:pointer;margin-top:7px" style-hover="text-decoration:underline">↗ <span data-zh>来自会话 · 重构 auth 模块</span><span data-en>from session · Refactor auth</span></div>
+              </div>
+              <span style="font-size:10.5px;font-weight:700;color:var(--amber);background:var(--amber-soft);padding:2px 9px;border-radius:20px"><span data-zh>中风险 · 新依赖</span><span data-en>MEDIUM · new dep</span></span>
+              <div style="display:flex;gap:8px">
+                <button style="padding:8px 16px;border:none;background:var(--green);color:#fff;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit"><span data-zh>批准</span><span data-en>Approve</span></button>
+                <button style="padding:8px 16px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>驳回</span><span data-en>Reject</span></button>
+              </div>
+            </div>
+          </div>
+
+        </div></div>
+      </div>
+      </sc-if>
+
+      <!-- ===== BRIEFINGS ===== -->
+      <sc-if value="{{ showBriefings }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;overflow:auto">
+        <div style="display:flex;align-items:flex-start;gap:14px;padding:24px 30px 6px;border-bottom:1px solid var(--border);background:var(--surface)">
+          <div style="flex:1">
+            <h2 style="margin:0;font-size:21px;font-weight:800;letter-spacing:-.02em"><span data-zh>简报</span><span data-en>Briefings</span></h2>
+            <div style="font-size:13px;color:var(--muted);margin-top:4px"><span data-zh>把当前进展整理成可读状态。</span><span data-en>Turn current progress into readable status.</span></div>
+          </div>
+          <button style="display:flex;align-items:center;gap:7px;padding:9px 15px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;box-shadow:0 4px 12px -4px var(--accent)">✦ <span data-zh>生成简报</span><span data-en>Generate</span></button>
+        </div>
+        <div style="padding:24px 30px 48px"><div style="max-width:820px;margin:0 auto">
+          <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden;margin-bottom:24px">
+            <div style="display:flex;align-items:center;gap:9px;padding:13px 18px;border-bottom:1px solid var(--border);background:var(--surface2)">
+              <span style="width:22px;height:22px;border-radius:6px;background:var(--violet-soft);color:var(--violet);display:grid;place-items:center;font-size:12px;font-weight:700">PM</span>
+              <span style="font-size:14px;font-weight:700">auth 重构 · <span data-zh>阶段简报</span><span data-en>progress briefing</span></span>
+              <span style="margin-left:auto;font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace">gpt-5.5 · 14:31</span>
+            </div>
+            <div style="padding:18px 20px;font-size:13.5px;line-height:1.65;color:var(--text)">
+              <p style="margin:0 0 14px;color:var(--muted)"><span data-zh>过去 12 分钟,auth 模块的 token 校验已抽成独立层并通过时序安全复查;还差单测与你对旧路径的决定。</span><span data-en>Over the last 12 min, token verification was extracted into its own layer and passed the timing-safety review; tests and your call on the legacy path remain.</span></p>
+              <div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--green);text-transform:uppercase;margin-bottom:7px"><span data-zh>进展</span><span data-en>Progress</span></div>
+              <ul style="margin:0 0 16px;padding-left:18px;color:var(--text)"><li style="margin:3px 0"><span data-zh>TokenVerifier 已抽出,2 个文件,+64 −12</span><span data-en>TokenVerifier extracted · 2 files · +64 −12</span></li><li style="margin:3px 0"><span data-zh>codex 复查:无时序泄露</span><span data-en>codex review: no timing leak</span></li></ul>
+              <div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--amber);text-transform:uppercase;margin-bottom:7px"><span data-zh>阻塞 / 待你</span><span data-en>Blocked / on you</span></div>
+              <ul style="margin:0 0 16px;padding-left:18px;color:var(--text)"><li style="margin:3px 0"><span data-zh>是否删除旧 HS256 路径(决策卡待处理)</span><span data-en>Delete legacy HS256 path? (decision pending)</span></li></ul>
+              <div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--accent-text);text-transform:uppercase;margin-bottom:7px"><span data-zh>下一步</span><span data-en>Next</span></div>
+              <ul style="margin:0;padding-left:18px;color:var(--text)"><li style="margin:3px 0"><span data-zh>补 test_auth.py 单测 → 本地跑 → push 前停下问你</span><span data-en>Add test_auth.py → run locally → pause before push</span></li></ul>
+            </div>
+            <div style="padding:11px 18px;border-top:1px solid var(--border);display:flex;align-items:center;gap:14px;font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace"><span data-zh>覆盖 1 个会话</span><span data-en>covers 1 session</span><span style="margin-left:auto;display:flex;gap:14px"><span style="cursor:pointer;color:var(--accent-text);font-weight:600">⧉ <span data-zh>复制</span><span data-en>Copy</span></span><span style="cursor:pointer;color:var(--accent-text);font-weight:600">↗ <span data-zh>推送到手机</span><span data-en>Push</span></span></span></div>
+          </div>
+          <div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--faint);text-transform:uppercase;margin-bottom:11px"><span data-zh>历史</span><span data-en>History</span></div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:12px;padding:12px 15px;border:1px solid var(--border);border-radius:9px;background:var(--surface);cursor:pointer" style-hover="border-color:var(--border2)"><span style="font-size:13px;font-weight:600;flex:1">迁移脚本 · <span data-zh>收尾简报</span><span data-en>wrap-up</span></span><span style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace">11:02</span></div>
+            <div style="display:flex;align-items:center;gap:12px;padding:12px 15px;border:1px solid var(--border);border-radius:9px;background:var(--surface);cursor:pointer" style-hover="border-color:var(--border2)"><span style="font-size:13px;font-weight:600;flex:1">CI 缓存 · <span data-zh>日报</span><span data-en>daily</span></span><span style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace"><span data-zh>昨天</span><span data-en>yesterday</span></span></div>
+          </div>
+        </div></div>
+      </div>
+      </sc-if>
+
+      <!-- ===== PLAYBOOK ===== -->
+      <sc-if value="{{ showPlaybook }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;overflow:auto">
+        <div style="padding:24px 30px 6px;border-bottom:1px solid var(--border);background:var(--surface)">
+          <h2 style="margin:0;font-size:21px;font-weight:800;letter-spacing:-.02em"><span data-zh>工作方式</span><span data-en>Playbook</span></h2>
+          <div style="font-size:13px;color:var(--muted);margin-top:4px"><span data-zh>维护工作流、技能、代码规范和验收标准 —— agent 干活时会自动注入。</span><span data-en>Maintain workflows, skills, code standards & QA rubrics — auto-injected when agents work.</span></div>
+        </div>
+        <div style="padding:20px 30px 48px"><div style="max-width:1000px;margin:0 auto">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:20px">
+            <span style="padding:6px 13px;border-radius:7px;background:var(--accent-soft);color:var(--accent-text);font-size:12.5px;font-weight:700;cursor:pointer"><span data-zh>全部</span><span data-en>All</span></span>
+            <span style="padding:6px 13px;border-radius:7px;background:var(--surface);border:1px solid var(--border2);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer"><span data-zh>工作流</span><span data-en>Workflows</span></span>
+            <span style="padding:6px 13px;border-radius:7px;background:var(--surface);border:1px solid var(--border2);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer"><span data-zh>技能</span><span data-en>Skills</span></span>
+            <span style="padding:6px 13px;border-radius:7px;background:var(--surface);border:1px solid var(--border2);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer"><span data-zh>代码规范</span><span data-en>Standards</span></span>
+            <span style="padding:6px 13px;border-radius:7px;background:var(--surface);border:1px solid var(--border2);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer"><span data-zh>验收标准</span><span data-en>QA</span></span>
+            <div style="flex:1"></div>
+            <button style="padding:7px 13px;border:1px solid var(--border2);background:var(--surface);color:var(--muted);border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">↑ <span data-zh>导入</span><span data-en>Import</span></button>
+            <button style="padding:7px 13px;border:1px solid var(--border2);background:var(--surface);color:var(--muted);border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">↓ <span data-zh>导出</span><span data-en>Export</span></button>
+            <button style="padding:7px 14px;border:none;background:var(--accent);color:#fff;border-radius:7px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit">+ <span data-zh>新建</span><span data-en>New</span></button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px">
+            <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm);padding:15px 16px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span style="font-size:10px;font-weight:700;color:var(--accent-text);background:var(--accent-soft);padding:2px 8px;border-radius:6px"><span data-zh>工作流</span><span data-en>Workflow</span></span><span style="margin-left:auto;font-size:10.5px;font-weight:700;color:var(--green)">● <span data-zh>启用中</span><span data-en>active</span></span></div>
+              <div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-bottom:6px">add-feature</div>
+              <div style="font-size:12.5px;color:var(--muted);line-height:1.5;margin-bottom:11px"><span data-zh>计划 → 实现 → 自测 → 复查 → 等待确认 → push。</span><span data-en>plan → build → self-test → review → confirm → push.</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:var(--faint);background:var(--bg2);padding:2px 7px;border-radius:6px">{"lang":"py"}</span><span style="margin-left:auto;display:flex;gap:12px;font-size:12px;color:var(--muted)"><span style="cursor:pointer">编辑</span><span style="cursor:pointer;color:var(--red)">删除</span></span></div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm);padding:15px 16px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span style="font-size:10px;font-weight:700;color:var(--violet);background:var(--violet-soft);padding:2px 8px;border-radius:6px"><span data-zh>技能</span><span data-en>Skill</span></span><span style="margin-left:auto;font-size:10.5px;font-weight:700;color:var(--green)">● <span data-zh>启用中</span><span data-en>active</span></span></div>
+              <div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-bottom:6px">write-pytest</div>
+              <div style="font-size:12.5px;color:var(--muted);line-height:1.5;margin-bottom:11px"><span data-zh>用 pytest + 参数化,覆盖边界与失败路径。</span><span data-en>pytest + parametrize, cover edges & failure paths.</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:var(--faint);background:var(--bg2);padding:2px 7px;border-radius:6px"><span data-zh>全局</span><span data-en>global</span></span><span style="margin-left:auto;display:flex;gap:12px;font-size:12px;color:var(--muted)"><span style="cursor:pointer">编辑</span><span style="cursor:pointer;color:var(--red)">删除</span></span></div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm);padding:15px 16px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span style="font-size:10px;font-weight:700;color:var(--amber);background:var(--amber-soft);padding:2px 8px;border-radius:6px"><span data-zh>代码规范</span><span data-en>Standard</span></span><span style="margin-left:auto;font-size:10.5px;font-weight:700;color:var(--faint)">○ <span data-zh>未启用</span><span data-en>off</span></span></div>
+              <div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-bottom:6px">py-style</div>
+              <div style="font-size:12.5px;color:var(--muted);line-height:1.5;margin-bottom:11px"><span data-zh>类型注解必填,行宽 100,禁裸 except。</span><span data-en>type hints required, width 100, no bare except.</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:var(--faint);background:var(--bg2);padding:2px 7px;border-radius:6px">{"lang":"py"}</span><span style="margin-left:auto;display:flex;gap:12px;font-size:12px;color:var(--muted)"><span style="cursor:pointer;color:var(--accent-text)">启用</span><span style="cursor:pointer">编辑</span></span></div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm);padding:15px 16px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span style="font-size:10px;font-weight:700;color:var(--green);background:var(--green-soft);padding:2px 8px;border-radius:6px"><span data-zh>验收标准</span><span data-en>QA rubric</span></span><span style="margin-left:auto;font-size:10.5px;font-weight:700;color:var(--green)">● <span data-zh>启用中</span><span data-en>active</span></span></div>
+              <div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-bottom:6px">ship-ready</div>
+              <div style="font-size:12.5px;color:var(--muted);line-height:1.5;margin-bottom:11px"><span data-zh>测试通过、无 lint 错误、diff 有说明才算完成。</span><span data-en>tests pass, no lint errors, diff explained = done.</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:var(--faint);background:var(--bg2);padding:2px 7px;border-radius:6px"><span data-zh>全局</span><span data-en>global</span></span><span style="margin-left:auto;display:flex;gap:12px;font-size:12px;color:var(--muted)"><span style="cursor:pointer">编辑</span><span style="cursor:pointer;color:var(--red)">删除</span></span></div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+      </sc-if>
+
+      <!-- ===== SETTINGS ===== -->
+      <sc-if value="{{ showSettings }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;overflow:auto">
+        <div style="padding:24px 30px 6px;border-bottom:1px solid var(--border);background:var(--surface)">
+          <h2 style="margin:0;font-size:21px;font-weight:800;letter-spacing:-.02em"><span data-zh>设置</span><span data-en>Settings</span></h2>
+          <div style="font-size:13px;color:var(--muted);margin-top:4px"><span data-zh>配置工作区、PM 大脑和界面偏好。</span><span data-en>Configure workspaces, the PM brain, and UI preferences.</span></div>
+        </div>
+        <div style="padding:24px 30px 48px"><div style="max-width:780px;margin:0 auto;display:flex;flex-direction:column;gap:18px">
+
+          <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm);padding:20px">
+            <div style="font-size:14px;font-weight:800;margin-bottom:14px"><span data-zh>工作区</span><span data-en>Workspaces</span></div>
+            <div style="display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px"><span style="font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace;flex:1">~/AutoWorkAgent</span><span style="font-size:11px;color:var(--green);font-weight:700">● <span data-zh>已连接</span><span data-en>connected</span></span><span style="font-size:12px;color:var(--red);cursor:pointer"><span data-zh>移除</span><span data-en>Remove</span></span></div>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:11px;margin-bottom:12px">
+              <div><div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:5px"><span data-zh>项目路径</span><span data-en>Project path</span></div><input placeholder="E:\AutoWorkAgent" style="width:100%;border:1px solid var(--border2);border-radius:8px;padding:9px 12px;font-size:13px;font-family:'JetBrains Mono',monospace;background:var(--surface);color:var(--text);outline:none" /></div>
+              <div><div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:5px"><span data-zh>显示名称</span><span data-en>Name</span></div><input placeholder="Foreman" style="width:100%;border:1px solid var(--border2);border-radius:8px;padding:9px 12px;font-size:13px;font-family:inherit;background:var(--surface);color:var(--text);outline:none" /></div>
+            </div>
+            <button style="padding:9px 16px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit"><span data-zh>添加 / 更新工作区</span><span data-en>Add / update</span></button>
+          </div>
+
+          <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm);padding:20px">
+            <div style="font-size:14px;font-weight:800;margin-bottom:4px"><span data-zh>PM 大脑</span><span data-en>PM brain</span></div>
+            <div style="font-size:12px;color:var(--faint);margin-bottom:16px"><span data-zh>给 PM 审阅 / 简报调用的模型。Key 永远留在本地。</span><span data-en>The model the PM uses to review & brief. Your key never leaves this machine.</span></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:13px;margin-bottom:13px">
+              <div><div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:5px"><span data-zh>服务商</span><span data-en>Provider</span></div><div style="display:flex;align-items:center;border:1px solid var(--border2);border-radius:8px;padding:9px 12px;font-size:13px;background:var(--surface)">OpenAI-compatible<span style="margin-left:auto;color:var(--faint)">▾</span></div></div>
+              <div><div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:5px"><span data-zh>模型</span><span data-en>Model</span></div><input value="gpt-5.5" style="width:100%;border:1px solid var(--border2);border-radius:8px;padding:9px 12px;font-size:13px;font-family:'JetBrains Mono',monospace;background:var(--surface);color:var(--text);outline:none" /></div>
+            </div>
+            <div style="margin-bottom:13px"><div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:5px"><span data-zh>接口地址</span><span data-en>Base URL</span></div><input value="https://api.kongsites.com/v1" style="width:100%;border:1px solid var(--border2);border-radius:8px;padding:9px 12px;font-size:13px;font-family:'JetBrains Mono',monospace;background:var(--surface);color:var(--text);outline:none" /></div>
+            <div style="margin-bottom:11px"><div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:5px">API Key</div><input type="password" value="sk-xxxxxxxxxxxx" style="width:100%;border:1px solid var(--border2);border-radius:8px;padding:9px 12px;font-size:13px;font-family:'JetBrains Mono',monospace;background:var(--surface);color:var(--text);outline:none" /></div>
+            <div style="display:flex;align-items:center;gap:9px;padding:9px 12px;background:var(--accent-soft);border-radius:8px;margin-bottom:14px;font-size:12px;color:var(--accent-text)">ⓘ <span data-zh>已配置 API Key。留空保存则不修改。</span><span data-en>API key set. Save with this blank to keep it.</span></div>
+            <div style="display:flex;gap:9px"><button style="padding:9px 18px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit"><span data-zh>保存</span><span data-en>Save</span></button><button style="padding:9px 16px;border:1px solid var(--red);background:transparent;color:var(--red);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>清空 Key</span><span data-en>Clear key</span></button></div>
+          </div>
+
+          <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm);padding:20px">
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:4px"><span style="font-size:14px;font-weight:800"><span data-zh>云端连接</span><span data-en>Cloud connection</span></span><span style="font-size:10.5px;font-weight:700;color:var(--green);background:var(--green-soft);padding:2px 8px;border-radius:20px">● <span data-zh>已连接</span><span data-en>connected</span></span></div>
+            <div style="font-size:12px;color:var(--faint);margin-bottom:16px"><span data-zh>把本机接入线上总机 —— 人不在电脑前也能在手机上看进度、点审批。总机不存你的代码与 Key。</span><span data-en>Link this machine to the online relay — watch progress and approve from your phone. The relay never stores your code or keys.</span></div>
+            <div style="margin-bottom:13px"><div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:5px"><span data-zh>云端地址</span><span data-en>Cloud URL</span></div><input value="https://foreman.yourteam.dev" style="width:100%;border:1px solid var(--border2);border-radius:8px;padding:9px 12px;font-size:13px;font-family:'JetBrains Mono',monospace;background:var(--surface);color:var(--text);outline:none" /></div>
+            <div style="margin-bottom:11px"><div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:5px"><span data-zh>接入密钥 Access Key</span><span data-en>Access key</span></div><input type="password" value="fk_live_8c2a000000000000" style="width:100%;border:1px solid var(--border2);border-radius:8px;padding:9px 12px;font-size:13px;font-family:'JetBrains Mono',monospace;background:var(--surface);color:var(--text);outline:none" /></div>
+            <div style="display:flex;align-items:center;gap:9px;padding:9px 12px;background:var(--accent-soft);border-radius:8px;margin-bottom:14px;font-size:12px;color:var(--accent-text)">ⓘ <span data-zh>在云端 /keys.html 生成,一机一张、可单独吊销。</span><span data-en>Mint one at /keys.html on the relay — one per machine, individually revocable.</span></div>
+            <div style="display:flex;gap:9px"><button style="padding:9px 18px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit"><span data-zh>连接</span><span data-en>Connect</span></button><button style="padding:9px 16px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><span data-zh>断开</span><span data-en>Disconnect</span></button></div>
+          </div>
+
+          <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm);padding:20px">
+            <div style="font-size:14px;font-weight:800;margin-bottom:16px"><span data-zh>界面与自动化</span><span data-en>Interface & automation</span></div>
+            <div style="font-size:12.5px;font-weight:600;margin-bottom:5px"><span data-zh>自动执行权限</span><span data-en>Auto-execution</span></div>
+            <div style="font-size:12px;color:var(--faint);margin-bottom:14px"><span data-zh>决定 Foreman 在没有你确认时能自动执行多少动作。</span><span data-en>How much Foreman may do without your confirmation.</span></div>
+            <div style="position:relative;height:6px;border-radius:6px;background:var(--bg2);margin:0 6px 8px">
+              <div style="position:absolute;left:0;top:0;height:100%;width:66%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--violet))"></div>
+              <div style="position:absolute;left:66%;top:50%;transform:translate(-50%,-50%);width:18px;height:18px;border-radius:50%;background:#fff;border:2px solid var(--accent);box-shadow:var(--shadow-sm)"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint);margin-bottom:22px;font-family:'JetBrains Mono',monospace"><span><span data-zh>0 只报告</span><span data-en>0 report</span></span><span><span data-zh>1 安全自动</span><span data-en>1 safe</span></span><span style="color:var(--accent-text);font-weight:700"><span data-zh>2 策略弹卡</span><span data-en>2 policy</span></span><span><span data-zh>3 拦危险</span><span data-en>3 danger</span></span></div>
+            <div style="display:flex;align-items:center;gap:14px;padding:13px 0;border-top:1px solid var(--border)"><span style="font-size:13px;font-weight:600;flex:1"><span data-zh>主题</span><span data-en>Theme</span></span><div style="display:flex;gap:8px"><button onClick="{{ setLight }}" style="{{ themeLightStyle }}"><span data-zh>浅色</span><span data-en>Light</span></button><button onClick="{{ setDark }}" style="{{ themeDarkStyle }}"><span data-zh>深色</span><span data-en>Dark</span></button></div></div>
+            <div style="display:flex;align-items:center;gap:14px;padding:13px 0;border-top:1px solid var(--border)"><span style="font-size:13px;font-weight:600;flex:1"><span data-zh>语言</span><span data-en>Language</span></span><div style="display:flex;gap:8px"><button onClick="{{ setZh }}" style="{{ langZhStyle }}">中文</button><button onClick="{{ setEn }}" style="{{ langEnStyle }}">EN</button></div></div>
+            <div style="display:flex;align-items:center;gap:14px;padding:13px 0;border-top:1px solid var(--border)"><div style="flex:1"><div style="font-size:13px;font-weight:600"><span data-zh>手机通知</span><span data-en>Push notifications</span></div><div style="font-size:11.5px;color:var(--faint)"><span data-zh>决策与审批推到手机</span><span data-en>decisions & approvals to your phone</span></div></div><button style="padding:8px 15px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit">🔔 <span data-zh>开启</span><span data-en>Enable</span></button></div>
+          </div>
+
+        </div></div>
+      </div>
+      </sc-if>
+    </main>
+  </div>
+  </sc-if>
+
+  <!-- ============ VARIANTS ============ -->
+  <sc-if value="{{ showVariants }}" hint-placeholder-val="{{ true }}">
+  <div style="min-height:calc(100vh - 50px);padding:30px 24px 60px;background:var(--bg)">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="margin-bottom:6px;font-size:20px;font-weight:800;letter-spacing:-.02em"><span data-zh>任务对话 · 三种布局</span><span data-en>Task conversation · three layouts</span></div>
+      <div style="font-size:13.5px;color:var(--muted);margin-bottom:24px;max-width:640px"><span data-zh>核心交互的三个方向。工作台采用的是「A · 统一线程流」。每种都共享同一套设计语言。</span><span data-en>Three directions for the core interaction. The workbench ships layout A. All share the same design language.</span></div>
+
+      <div style="display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap">
+
+        <!-- Variant A -->
+        <div style="flex:1;min-width:300px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span style="font-size:12px;font-weight:800;background:var(--accent);color:#fff;width:20px;height:20px;border-radius:6px;display:grid;place-items:center">A</span><span style="font-size:13.5px;font-weight:700"><span data-zh>统一线程流</span><span data-en>Unified stream</span></span><span style="font-size:11px;color:var(--green);font-weight:700;background:var(--green-soft);padding:1px 7px;border-radius:20px"><span data-zh>已采用</span><span data-en>shipped</span></span></div>
+          <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden;height:330px;display:flex;flex-direction:column">
+            <div style="padding:11px 13px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">重构 auth · 运行中</div>
+            <div style="flex:1;padding:13px;display:flex;flex-direction:column;gap:9px;overflow:hidden">
+              <div style="align-self:flex-end;background:var(--accent);color:#fff;padding:7px 11px;border-radius:9px 9px 3px 9px;font-size:11.5px;max-width:75%">拆出 token 校验层</div>
+              <div style="background:var(--surface2);border:1px solid var(--border);padding:7px 11px;border-radius:9px 9px 9px 3px;font-size:11.5px;max-width:80%">PM 计划 · 4 步 ✓</div>
+              <div style="background:#16140f;color:#d6d2c6;padding:7px 11px;border-radius:8px;font-size:10.5px;font-family:'JetBrains Mono',monospace">edit auth.py +38 −12</div>
+              <div style="border:1.5px solid var(--amber);background:var(--amber-soft);padding:7px 11px;border-radius:8px;font-size:11px;font-weight:600">⚠️ 删旧校验路径？</div>
+            </div>
+            <div style="padding:10px 13px;border-top:1px solid var(--border);display:flex;gap:7px;align-items:center">
+              <div style="flex:1;height:30px;border:1px solid var(--border2);border-radius:7px"></div>
+              <div style="width:30px;height:30px;border-radius:7px;background:var(--accent)"></div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:9px;line-height:1.5"><span data-zh>计划、终端、决策卡都内联进一条时间线。最贴近对话直觉，新手零学习成本。</span><span data-en>Plan, terminal and decision cards inline in one timeline. Most intuitive, zero learning curve.</span></div>
+        </div>
+
+        <!-- Variant B -->
+        <div style="flex:1;min-width:300px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span style="font-size:12px;font-weight:800;background:var(--violet);color:#fff;width:20px;height:20px;border-radius:6px;display:grid;place-items:center">B</span><span style="font-size:13.5px;font-weight:700"><span data-zh>线程 + 实时终端</span><span data-en>Thread + live terminal</span></span></div>
+          <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden;height:330px;display:flex;flex-direction:column">
+            <div style="padding:11px 13px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">重构 auth · split view</div>
+            <div style="flex:1;display:flex;overflow:hidden">
+              <div style="width:46%;border-right:1px solid var(--border);padding:11px;display:flex;flex-direction:column;gap:8px">
+                <div style="align-self:flex-end;background:var(--accent);color:#fff;padding:6px 9px;border-radius:8px 8px 2px 8px;font-size:10.5px">拆出校验层</div>
+                <div style="background:var(--surface2);border:1px solid var(--border);padding:6px 9px;border-radius:8px;font-size:10.5px">PM 计划 ✓</div>
+                <div style="border:1.5px solid var(--amber);background:var(--amber-soft);padding:6px 9px;border-radius:7px;font-size:10px;font-weight:600">⚠️ 决策</div>
+              </div>
+              <div style="flex:1;background:#16140f;padding:11px;font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#d6d2c6;line-height:1.7;overflow:hidden">
+                <div style="color:#8a8578">~/AutoWorkAgent</div>
+                <div><span style="color:#7fae6f">$</span> pytest -k token</div>
+                <div style="color:#6d9fe0">edit token_verifier.py</div>
+                <div style="color:#7fae6f">+64 −0</div>
+                <div style="color:#c7a3e8">› constant_time_eq<span style="display:inline-block;width:5px;height:10px;background:#d6d2c6;margin-left:2px;animation:fdblink 1s steps(1) infinite"></span></div>
+              </div>
+            </div>
+            <div style="padding:9px 13px;border-top:1px solid var(--border);display:flex;gap:7px"><div style="flex:1;height:26px;border:1px solid var(--border2);border-radius:7px"></div><div style="width:26px;height:26px;border-radius:7px;background:var(--accent)"></div></div>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:9px;line-height:1.5"><span data-zh>左侧对话决策，右侧 agent 实时终端。适合盯着 agent 干活的高级用户。</span><span data-en>Chat & decisions left, live agent terminal right. For power users watching execution.</span></div>
+        </div>
+
+        <!-- Variant C -->
+        <div style="flex:1;min-width:300px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span style="font-size:12px;font-weight:800;background:var(--text);color:var(--bg);width:20px;height:20px;border-radius:6px;display:grid;place-items:center">C</span><span style="font-size:13.5px;font-weight:700"><span data-zh>步骤看板</span><span data-en>Step board</span></span></div>
+          <div style="border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden;height:330px;display:flex;flex-direction:column">
+            <div style="padding:11px 13px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">重构 auth · 4 步</div>
+            <div style="flex:1;padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:9px;overflow:hidden">
+              <div style="border:1px solid var(--border);border-left:3px solid var(--green);border-radius:8px;padding:9px;font-size:10.5px"><div style="font-weight:700;margin-bottom:3px">① 抽取模块</div><div style="color:var(--green)">✓ 完成</div></div>
+              <div style="border:1px solid var(--accent-line);border-left:3px solid var(--accent);border-radius:8px;padding:9px;font-size:10.5px;background:var(--accent-soft)"><div style="font-weight:700;margin-bottom:3px">② 改写校验</div><div style="color:var(--accent-text)">● 进行中</div></div>
+              <div style="border:1.5px solid var(--amber);border-radius:8px;padding:9px;font-size:10.5px;background:var(--amber-soft)"><div style="font-weight:700;margin-bottom:3px">⚠️ 决策卡</div><div style="color:var(--amber)">删旧路径？</div></div>
+              <div style="border:1px solid var(--border);border-left:3px solid var(--border2);border-radius:8px;padding:9px;font-size:10.5px"><div style="font-weight:700;margin-bottom:3px">③ 补单测</div><div style="color:var(--faint)">待开始</div></div>
+            </div>
+            <div style="padding:9px 13px;border-top:1px solid var(--border);display:flex;gap:7px"><div style="flex:1;height:26px;border:1px solid var(--border2);border-radius:7px"></div><div style="width:26px;height:26px;border-radius:7px;background:var(--accent)"></div></div>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:9px;line-height:1.5"><span data-zh>把计划步骤拆成卡片并行盯进度。适合多步、长跑任务的总览。</span><span data-en>Plan steps as parallel cards. Best for many-step, long-running tasks.</span></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============ MOBILE ============ -->
+  <sc-if value="{{ showMobile }}" hint-placeholder-val="{{ true }}">
+  <div style="min-height:calc(100vh - 50px);padding:30px 20px 50px;background:var(--bg2)">
+    <div style="max-width:900px;margin:0 auto 22px;text-align:center">
+      <div style="font-size:19px;font-weight:800;letter-spacing:-.02em"><span data-zh>同一个页面 · 手机端</span><span data-en>Same page · on mobile</span></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:5px;max-width:520px;margin-left:auto;margin-right:auto"><span data-zh>桌面与手机共用一套代码。点 ☰ 打开抽屉切换全部页面(工作台/决策/简报/工作方式/设置);工作台内底部标签切换对话/清单/子代理/终端。</span><span data-en>Desktop and phone share one codebase. Tap ☰ to switch all pages (Workspace/Decisions/Briefings/Playbook/Settings); inside Workspace the bottom tabs switch chat/to-dos/agents/terminal.</span></div>
+    </div>
+
+    <div style="display:grid;place-items:center">
+      <div style="position:relative;width:390px;max-width:100%;height:800px;border-radius:46px;background:#0a0a0a;padding:11px;box-shadow:0 40px 90px -34px rgba(0,0,0,.55)">
+        <div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:118px;height:25px;background:#0a0a0a;border-radius:0 0 14px 14px;z-index:6"></div>
+        <div style="width:100%;height:100%;border-radius:36px;overflow:hidden;background:var(--bg);display:flex;flex-direction:column;position:relative">
+
+          <!-- drawer -->
+          <sc-if value="{{ mDrawerOpen }}" hint-placeholder-val="{{ false }}">
+            <div onClick="{{ toggleDrawer }}" style="position:absolute;inset:0;z-index:30;background:rgba(0,0,0,.45)"></div>
+            <div style="position:absolute;top:0;left:0;bottom:0;width:76%;z-index:31;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:48px 12px 16px;box-shadow:18px 0 50px -20px rgba(0,0,0,.5)">
+              <div style="padding:6px 8px 14px"><div style="font-size:16px;font-weight:800">Foreman</div><div style="font-size:11px;color:var(--faint)"><span data-zh>本地工作台</span><span data-en>Local workbench</span></div></div>
+              <div style="display:flex;flex-direction:column;gap:3px">
+                <button onClick="{{ mGoW }}" style="{{ mNavWStyle }}"><span style="width:16px;text-align:center">◳</span><span data-zh>工作台</span><span data-en>Workspace</span></button>
+                <button onClick="{{ mGoD }}" style="{{ mNavDStyle }}"><span style="width:16px;text-align:center">◉</span><span data-zh>决策</span><span data-en>Decisions</span><span style="margin-left:auto;font-size:10px;background:var(--amber-soft);color:var(--amber);padding:1px 6px;border-radius:20px;font-weight:700">2</span></button>
+                <button onClick="{{ mGoB }}" style="{{ mNavBStyle }}"><span style="width:16px;text-align:center">▤</span><span data-zh>简报</span><span data-en>Briefings</span></button>
+                <button onClick="{{ mGoP }}" style="{{ mNavPStyle }}"><span style="width:16px;text-align:center">▦</span><span data-zh>工作方式</span><span data-en>Playbook</span></button>
+                <button onClick="{{ mGoS }}" style="{{ mNavSStyle }}"><span style="width:16px;text-align:center">⚙</span><span data-zh>设置</span><span data-en>Settings</span></button>
+              </div>
+              <div style="margin-top:auto;display:flex;align-items:center;gap:9px;padding:11px 8px 0;border-top:1px solid var(--border)"><div style="width:28px;height:28px;border-radius:7px;background:var(--surface2);border:1px solid var(--border);display:grid;place-items:center;font-weight:700;font-size:12px">J</div><div style="font-size:12px;font-weight:600">jiang</div></div>
+            </div>
+          </sc-if>
+
+          <!-- statusbar -->
+          <div style="height:40px;flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:0 26px 5px;font-size:12.5px;font-weight:700;color:var(--text)"><span>9:41</span><span style="letter-spacing:1px;opacity:.7">●●● ▾ ▮</span></div>
+
+          <!-- appbar -->
+          <div style="flex:none;display:flex;align-items:center;gap:11px;padding:8px 14px;border-bottom:1px solid var(--border);background:var(--surface)">
+            <span onClick="{{ toggleDrawer }}" style="font-size:19px;color:var(--text);cursor:pointer;width:26px;text-align:center">☰</span>
+            <div style="min-width:0;flex:1">
+              <div style="font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span data-zh>{{ mTitleZh }}</span><span data-en>{{ mTitleEn }}</span></div>
+              <div style="font-size:10.5px;color:var(--faint);font-family:'JetBrains Mono',monospace"><span data-zh>{{ mSubZh }}</span><span data-en>{{ mSubEn }}</span></div>
+            </div>
+            <sc-if value="{{ mWorkspace }}" hint-placeholder-val="{{ true }}"><span style="font-size:9.5px;font-weight:700;color:var(--green);background:var(--green-soft);padding:3px 8px;border-radius:20px;display:inline-flex;align-items:center;gap:4px"><span style="width:5px;height:5px;border-radius:50%;background:var(--green);animation:fdpulse 1.6s infinite"></span>LIVE</span></sc-if>
+          </div>
+
+          <!-- body -->
+          <div style="flex:1;overflow:auto;min-height:0">
+
+            <sc-if value="{{ mWorkspace }}" hint-placeholder-val="{{ true }}">
+            <sc-if value="{{ mChat }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:13px;display:flex;flex-direction:column;gap:11px">
+              <div style="align-self:flex-end;max-width:82%;background:var(--accent);color:#fff;padding:9px 12px;border-radius:11px 11px 3px 11px;font-size:12.5px;line-height:1.5">把 auth 拆出独立的 token 校验层,补单测,push 前问我。</div>
+              <div style="background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:9px 12px;font-size:12px"><span style="font-weight:700;color:var(--violet)">PM</span> <span data-zh>计划 · 4 步 </span><span data-en>plan · 4 steps </span><span style="color:var(--green);font-weight:600">✓</span></div>
+              <!-- subagent call panels (mobile, collapsible) -->
+              <sc-for list="{{ callView }}" as="c" hint-placeholder-count="2">
+                <div style="{{ c.cardStyle }}">
+                  <div onClick="{{ c.onClick }}" style="display:flex;align-items:center;gap:9px;padding:10px 12px;cursor:pointer">
+                    <span style="{{ c.avatarStyle }}">{{ c.avatar }}</span>
+                    <div style="flex:1;min-width:0">
+                      <div style="display:flex;align-items:center;gap:6px"><span style="font-size:12px;font-weight:700">{{ c.agent }}</span><span style="{{ c.statusStyle }}"><span data-zh>{{ c.statusZh }}</span><span data-en>{{ c.statusEn }}</span></span></div>
+                      <div style="font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span data-zh>{{ c.titleZh }}</span><span data-en>{{ c.titleEn }}</span></div>
+                    </div>
+                    <span style="color:var(--accent-text);font-size:12px;flex:none">{{ c.chevron }}</span>
+                  </div>
+                  <sc-if value="{{ c.open }}" hint-placeholder-val="{{ true }}">
+                    <div style="border-top:1px solid var(--border);padding:11px 12px;display:flex;flex-direction:column;gap:11px">
+                      <div style="font-size:12px;line-height:1.55;color:var(--text)"><span data-zh>{{ c.replyZh }}</span><span data-en>{{ c.replyEn }}</span></div>
+                      <div style="background:#16140f;border-radius:8px;padding:9px 11px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#d6d2c6;line-height:1.8">
+                        <sc-for list="{{ c.commands }}" as="cmd" hint-placeholder-count="2"><div><span style="color:#7fae6f">$</span> {{ cmd }}</div></sc-for>
+                      </div>
+                      <sc-if value="{{ c.hasDiff }}" hint-placeholder-val="{{ true }}">
+                        <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;font-family:'JetBrains Mono',monospace;font-size:10.5px">
+                          <div style="display:flex;padding:6px 11px;background:var(--surface2);border-bottom:1px solid var(--border)"><span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.diffFile }}</span><span style="margin-left:auto;color:var(--green);flex:none">{{ c.diffStat }}</span></div>
+                          <sc-for list="{{ c.diffLines }}" as="d" hint-placeholder-count="3"><div style="{{ d.style }}">{{ d.text }}</div></sc-for>
+                        </div>
+                      </sc-if>
+                      <sc-if value="{{ c.hasResult }}" hint-placeholder-val="{{ true }}"><div style="font-size:11.5px;font-weight:600;color:var(--green);background:var(--green-soft);padding:7px 11px;border-radius:7px"><span data-zh>{{ c.resultZh }}</span><span data-en>{{ c.resultEn }}</span></div></sc-if>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-for>
+              <!-- decision card (mobile) -->
+              <div style="border:1.5px solid var(--amber);border-radius:10px;background:var(--surface);overflow:hidden">
+                <div style="display:flex;align-items:center;gap:7px;padding:8px 11px;background:var(--amber-soft)"><span>⚠️</span><span style="font-size:12px;font-weight:700"><span data-zh>需要你拍板</span><span data-en>Decision needed</span></span><span style="margin-left:auto;font-size:9px;font-weight:700;color:var(--amber);border:1px solid var(--amber);padding:1px 6px;border-radius:20px">MED</span></div>
+                <div style="padding:11px">
+                  <div style="font-size:12.5px;font-weight:600;margin-bottom:9px">删掉旧 HS256 校验路径吗?</div>
+                  <div style="display:flex;gap:7px">
+                    <button style="flex:1;padding:9px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:12px;font-weight:600;font-family:inherit"><span data-zh>保留一周期</span><span data-en>Keep</span></button>
+                    <button style="flex:1;padding:9px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:12px;font-weight:600;font-family:inherit"><span data-zh>现在删</span><span data-en>Delete</span></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ mTodoOn }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:13px">
+              <div style="display:flex;align-items:center;gap:9px;margin-bottom:11px"><div style="flex:1;height:6px;border-radius:6px;background:var(--bg2);overflow:hidden"><div style="height:100%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--green));width:{{ progressPct }}"></div></div><span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">{{ progressLabel }}</span></div>
+              <sc-for list="{{ todoView }}" as="t" hint-placeholder-count="5">
+                <div onClick="{{ t.onClick }}" style="{{ t.rowStyle }}">
+                  <span style="{{ t.iconStyle }}">{{ t.icon }}</span>
+                  <div style="flex:1;min-width:0"><div style="{{ t.titleStyle }}"><span data-zh>{{ t.titleZh }}</span><span data-en>{{ t.titleEn }}</span></div><sc-if value="{{ t.hasSub }}" hint-placeholder-val="{{ true }}"><div style="{{ t.subStyle }}"><span data-zh>{{ t.subZh }}</span><span data-en>{{ t.subEn }}</span></div></sc-if></div>
+                </div>
+              </sc-for>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ mSubOn }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:13px">
+              <div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-bottom:11px"><span data-zh>{{ subSummaryZh }}</span><span data-en>{{ subSummaryEn }}</span></div>
+              <sc-for list="{{ subView }}" as="s" hint-placeholder-count="4">
+                <div style="{{ s.cardStyle }}">
+                  <div onClick="{{ s.onClick }}" style="display:flex;align-items:center;gap:9px;padding:10px 12px;cursor:pointer">
+                    <span style="{{ s.iconStyle }}">{{ s.icon }}</span>
+                    <div style="flex:1;min-width:0"><div style="{{ s.nameStyle }}"><span data-zh>{{ s.nameZh }}</span><span data-en>{{ s.nameEn }}</span></div><div style="font-size:10px;color:var(--faint);font-family:'JetBrains Mono',monospace;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span data-zh>{{ s.actZh }}</span><span data-en>{{ s.actEn }}</span></div></div>
+                    <span style="color:var(--faint);font-size:11px;flex:none">{{ s.chevron }}</span>
+                  </div>
+                  <sc-if value="{{ s.open }}" hint-placeholder-val="{{ true }}"><div style="border-top:1px solid var(--border);padding:10px 12px;background:var(--surface2);font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);white-space:pre-line;line-height:1.7"><span data-zh>{{ s.detZh }}</span><span data-en>{{ s.detEn }}</span></div></sc-if>
+                </div>
+              </sc-for>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ mTermOn }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:13px">
+              <div style="background:#16140f;border-radius:9px;overflow:hidden;font-family:'JetBrains Mono',monospace;font-size:11px;color:#d6d2c6;line-height:1.85">
+                <div style="display:flex;gap:5px;padding:8px 11px;border-bottom:1px solid rgba(255,255,255,.06)"><span style="width:8px;height:8px;border-radius:50%;background:#e0584b"></span><span style="width:8px;height:8px;border-radius:50%;background:#e6b13e"></span><span style="width:8px;height:8px;border-radius:50%;background:#3fb37f"></span></div>
+                <div style="padding:11px">
+                  <div><span style="color:#7fae6f">$</span> pytest -k token -q</div>
+                  <div style="color:#8a8578">collected 7 items</div>
+                  <div style="color:#6d9fe0">edit token_verifier.py +64</div>
+                  <div style="color:#c7a3e8">› constant_time_eq<span style="display:inline-block;width:6px;height:12px;background:#d6d2c6;margin-left:3px;vertical-align:-2px;animation:fdblink 1s steps(1) infinite"></span></div>
+                </div>
+              </div>
+            </div>
+            </sc-if>
+            </sc-if><!-- /mWorkspace -->
+
+            <sc-if value="{{ mDecisions }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:13px;display:flex;flex-direction:column;gap:11px">
+              <div onClick="{{ mGoW }}" style="display:flex;align-items:center;gap:7px;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--surface);cursor:pointer;font-size:11.5px;color:var(--accent-text);font-weight:600">↗ <span data-zh>来自会话 · 重构 auth 模块 —— 点这里看上下文</span><span data-en>From session · Refactor auth — tap for context</span></div>
+              <div style="font-size:11px;font-weight:800;color:var(--text);display:flex;align-items:center;gap:7px"><span data-zh>决策卡</span><span data-en>Cards</span><span style="font-size:9px;font-weight:700;color:var(--amber);background:var(--amber-soft);padding:1px 6px;border-radius:20px">2</span></div>
+              <div style="border:1.5px solid var(--amber);border-radius:10px;background:var(--surface);overflow:hidden">
+                <div style="display:flex;align-items:center;gap:7px;padding:8px 11px;background:var(--amber-soft)"><span>⚠️</span><span style="font-size:12px;font-weight:700"><span data-zh>需要你拍板</span><span data-en>Decision</span></span><span style="margin-left:auto;font-size:9px;font-weight:700;color:var(--amber);border:1px solid var(--amber);padding:1px 6px;border-radius:20px">MED</span></div>
+                <div style="padding:11px"><div style="font-size:12.5px;font-weight:600;margin-bottom:5px">删掉旧 HS256 校验路径吗?</div><div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-bottom:10px">新 TokenVerifier 已覆盖全部调用点,建议保留一个 release 周期。</div><div style="display:flex;gap:7px"><button style="flex:1;padding:9px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:12px;font-weight:600;font-family:inherit"><span data-zh>保留一周期</span><span data-en>Keep</span></button><button style="flex:1;padding:9px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:12px;font-weight:600;font-family:inherit"><span data-zh>现在删</span><span data-en>Delete</span></button></div></div>
+              </div>
+              <div style="border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden">
+                <div style="display:flex;align-items:center;gap:7px;padding:8px 11px;background:var(--surface2)"><span>💡</span><span style="font-size:12px;font-weight:700"><span data-zh>建议</span><span data-en>Suggestion</span></span><span style="margin-left:auto;font-size:9px;font-weight:700;color:var(--green);background:var(--green-soft);padding:1px 6px;border-radius:20px">LOW</span></div>
+                <div style="padding:11px"><div style="font-size:12.5px;font-weight:600;margin-bottom:5px">缓存 key 换成 lockfile hash?</div><div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-bottom:10px">命中率更高,预计省 ~3 分钟 CI。</div><div style="display:flex;gap:7px"><button style="flex:1;padding:9px;border:none;background:var(--accent);color:#fff;border-radius:8px;font-size:12px;font-weight:600;font-family:inherit"><span data-zh>采纳</span><span data-en>Apply</span></button><button style="flex:1;padding:9px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:8px;font-size:12px;font-weight:600;font-family:inherit"><span data-zh>忽略</span><span data-en>Dismiss</span></button></div></div>
+              </div>
+              <div style="font-size:11px;font-weight:800;color:var(--text);margin-top:4px;display:flex;align-items:center;gap:7px"><span data-zh>审批</span><span data-en>Approvals</span><span style="font-size:9px;font-weight:700;color:var(--red);background:var(--red-soft);padding:1px 6px;border-radius:20px">1</span></div>
+              <div style="border:1px solid var(--border);border-left:3px solid var(--red);border-radius:9px;background:var(--surface);padding:11px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="width:24px;height:24px;flex:none;border-radius:6px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:11px;font-weight:800">C</span><span style="font-size:12px;font-weight:600;flex:1"><span data-zh>claude-code 想执行</span><span data-en>claude-code wants to run</span></span><span style="font-size:9px;font-weight:700;color:var(--red);background:var(--red-soft);padding:2px 7px;border-radius:20px">HIGH</span></div><code style="display:block;font-family:'JetBrains Mono',monospace;font-size:11px;background:var(--bg2);padding:5px 9px;border-radius:6px;margin-bottom:9px">git push origin auth-refactor</code><div style="display:flex;gap:7px"><button style="flex:1;padding:8px;border:none;background:var(--green);color:#fff;border-radius:7px;font-size:12px;font-weight:700;font-family:inherit"><span data-zh>批准</span><span data-en>Approve</span></button><button style="flex:1;padding:8px;border:1px solid var(--border2);background:var(--surface);color:var(--text);border-radius:7px;font-size:12px;font-weight:600;font-family:inherit"><span data-zh>驳回</span><span data-en>Reject</span></button></div></div>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ mBriefings }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:13px;display:flex;flex-direction:column;gap:13px">
+              <button style="display:flex;align-items:center;justify-content:center;gap:7px;padding:11px;border:none;background:var(--accent);color:#fff;border-radius:9px;font-size:13px;font-weight:700;font-family:inherit">✦ <span data-zh>生成简报</span><span data-en>Generate briefing</span></button>
+              <div style="border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden">
+                <div style="display:flex;align-items:center;gap:8px;padding:11px 13px;border-bottom:1px solid var(--border);background:var(--surface2)"><span style="width:20px;height:20px;border-radius:6px;background:var(--violet-soft);color:var(--violet);display:grid;place-items:center;font-size:10px;font-weight:700">PM</span><span style="font-size:12.5px;font-weight:700">auth 重构 · 阶段简报</span><span style="margin-left:auto;font-size:10px;color:var(--faint);font-family:'JetBrains Mono',monospace">14:31</span></div>
+                <div style="padding:13px;font-size:12.5px;line-height:1.6">
+                  <p style="margin:0 0 11px;color:var(--muted)"><span data-zh>token 校验已抽成独立层并通过时序复查;还差单测与你对旧路径的决定。</span><span data-en>Verification extracted & timing-reviewed; tests and your legacy-path call remain.</span></p>
+                  <div style="font-size:10px;font-weight:700;color:var(--green);text-transform:uppercase;margin-bottom:5px"><span data-zh>进展</span><span data-en>Progress</span></div>
+                  <ul style="margin:0 0 11px;padding-left:16px"><li>TokenVerifier 抽出 · +64 −12</li><li>codex 复查:无时序泄露</li></ul>
+                  <div style="font-size:10px;font-weight:700;color:var(--accent-text);text-transform:uppercase;margin-bottom:5px"><span data-zh>下一步</span><span data-en>Next</span></div>
+                  <ul style="margin:0;padding-left:16px"><li>补单测 → 本地跑 → push 前停下</li></ul>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--border);border-radius:9px;background:var(--surface)"><span style="font-size:12.5px;font-weight:600;flex:1">迁移脚本 · 收尾简报</span><span style="font-size:10.5px;color:var(--faint);font-family:'JetBrains Mono',monospace">11:02</span></div>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ mPlaybook }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:13px;display:flex;flex-direction:column;gap:11px">
+              <div style="display:flex;gap:7px;overflow:auto;padding-bottom:2px">
+                <span style="flex:none;padding:6px 12px;border-radius:7px;background:var(--accent-soft);color:var(--accent-text);font-size:12px;font-weight:700"><span data-zh>全部</span><span data-en>All</span></span>
+                <span style="flex:none;padding:6px 12px;border-radius:7px;border:1px solid var(--border2);color:var(--muted);font-size:12px;font-weight:600"><span data-zh>工作流</span><span data-en>Flows</span></span>
+                <span style="flex:none;padding:6px 12px;border-radius:7px;border:1px solid var(--border2);color:var(--muted);font-size:12px;font-weight:600"><span data-zh>技能</span><span data-en>Skills</span></span>
+                <span style="flex:none;padding:6px 12px;border-radius:7px;border:1px solid var(--border2);color:var(--muted);font-size:12px;font-weight:600"><span data-zh>规范</span><span data-en>Std</span></span>
+              </div>
+              <div style="border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:13px 14px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:9.5px;font-weight:700;color:var(--accent-text);background:var(--accent-soft);padding:2px 7px;border-radius:6px"><span data-zh>工作流</span><span data-en>Flow</span></span><span style="margin-left:auto;font-size:10px;font-weight:700;color:var(--green)">● <span data-zh>启用</span><span data-en>on</span></span></div><div style="font-size:13.5px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-bottom:5px">add-feature</div><div style="font-size:12px;color:var(--muted);line-height:1.5">计划→实现→自测→复查→确认→push。</div></div>
+              <div style="border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:13px 14px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:9.5px;font-weight:700;color:var(--violet);background:var(--violet-soft);padding:2px 7px;border-radius:6px"><span data-zh>技能</span><span data-en>Skill</span></span><span style="margin-left:auto;font-size:10px;font-weight:700;color:var(--green)">● <span data-zh>启用</span><span data-en>on</span></span></div><div style="font-size:13.5px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-bottom:5px">write-pytest</div><div style="font-size:12px;color:var(--muted);line-height:1.5">pytest + 参数化,覆盖边界与失败路径。</div></div>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ mSettings }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:13px;display:flex;flex-direction:column;gap:13px">
+              <div style="border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:14px"><div style="font-size:13px;font-weight:800;margin-bottom:11px"><span data-zh>工作区</span><span data-en>Workspaces</span></div><div style="display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--border);border-radius:8px"><span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;flex:1">~/AutoWorkAgent</span><span style="font-size:10px;color:var(--green);font-weight:700">● <span data-zh>已连</span><span data-en>on</span></span></div></div>
+              <div style="border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:14px"><div style="font-size:13px;font-weight:800;margin-bottom:11px"><span data-zh>PM 大脑</span><span data-en>PM brain</span></div><div style="font-size:11px;color:var(--muted);margin-bottom:4px"><span data-zh>模型</span><span data-en>Model</span></div><div style="border:1px solid var(--border2);border-radius:7px;padding:8px 11px;font-size:12.5px;font-family:'JetBrains Mono',monospace;margin-bottom:10px">gpt-5.5</div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">API Key</div><div style="border:1px solid var(--border2);border-radius:7px;padding:8px 11px;font-size:12.5px;font-family:'JetBrains Mono',monospace;color:var(--faint)">sk-•••••••••</div></div>
+              <div style="border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:14px"><div style="font-size:13px;font-weight:800;margin-bottom:12px"><span data-zh>界面</span><span data-en>Interface</span></div><div style="font-size:11.5px;font-weight:600;margin-bottom:6px"><span data-zh>自动执行权限</span><span data-en>Autonomy</span></div><div style="position:relative;height:6px;border-radius:6px;background:var(--bg2);margin:0 4px 7px"><div style="position:absolute;left:0;height:100%;width:66%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--violet))"></div><div style="position:absolute;left:66%;top:50%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid var(--accent)"></div></div><div style="display:flex;justify-content:space-between;font-size:9px;color:var(--faint);font-family:'JetBrains Mono',monospace;margin-bottom:16px"><span>0</span><span>1</span><span style="color:var(--accent-text);font-weight:700">2</span><span>3</span></div><div style="display:flex;align-items:center;padding:10px 0;border-top:1px solid var(--border)"><span style="font-size:12.5px;font-weight:600;flex:1"><span data-zh>主题</span><span data-en>Theme</span></span><div style="display:flex;gap:6px"><button onClick="{{ setLight }}" style="{{ themeLightStyle }}"><span data-zh>浅</span><span data-en>L</span></button><button onClick="{{ setDark }}" style="{{ themeDarkStyle }}"><span data-zh>深</span><span data-en>D</span></button></div></div><div style="display:flex;align-items:center;padding:10px 0;border-top:1px solid var(--border)"><span style="font-size:12.5px;font-weight:600;flex:1"><span data-zh>语言</span><span data-en>Language</span></span><div style="display:flex;gap:6px"><button onClick="{{ setZh }}" style="{{ langZhStyle }}">中</button><button onClick="{{ setEn }}" style="{{ langEnStyle }}">EN</button></div></div></div>
+            </div>
+            </sc-if>
+
+          </div>
+
+          <!-- composer (chat only) -->
+          <sc-if value="{{ mShowComposer }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:none;padding:9px 12px;border-top:1px solid var(--border);background:var(--surface)">
+            <div style="display:flex;align-items:center;gap:6px;border:1.5px solid var(--border2);border-radius:10px;padding:7px 8px">
+              <button onClick="{{ addAttach }}" style="flex:none;width:30px;height:30px;border:none;background:transparent;color:var(--muted);font-size:16px;cursor:pointer;border-radius:7px">📎</button>
+              <input placeholder="继续下指令…" style="flex:1;border:none;outline:none;background:transparent;color:var(--text);font-size:13px;font-family:inherit" />
+              <button style="flex:none;width:32px;height:32px;border:none;border-radius:8px;background:var(--accent);color:#fff;font-size:15px;font-weight:700;cursor:pointer">↑</button>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- bottom tab bar -->
+          <sc-if value="{{ mShowBottom }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:none;display:flex;border-top:1px solid var(--border);background:var(--surface);padding-bottom:6px">
+            <button onClick="{{ mSetChat }}" style="{{ mChatStyle }}"><span style="font-size:16px">💬</span><span data-zh>对话</span><span data-en>Chat</span></button>
+            <button onClick="{{ mSetTodo }}" style="{{ mTodoStyle }}"><span style="font-size:16px">☑</span><span data-zh>清单</span><span data-en>To-dos</span></button>
+            <button onClick="{{ mSetSub }}" style="{{ mSubStyle }}"><span style="font-size:16px">⑂</span><span data-zh>子代理</span><span data-en>Agents</span></button>
+            <button onClick="{{ mSetTerm }}" style="{{ mTermStyle }}"><span style="font-size:16px">▸_</span><span data-zh>终端</span><span data-en>Term</span></button>
+          </div>
+          </sc-if>
+
+        </div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:860}}">
+class Component extends DCLogic {
+  state = {
+    theme: 'light', lang: 'zh', screen: 'app', navPage: 'workspace', rightTab: 'todo', mTab: 'chat', newTodo: '',
+    attachments: [ { id: 1, type: 'image', name: '登录页-mockup.png' }, { id: 2, type: 'file', name: 'auth_spec.md' } ],
+    mNav: 'workspace', mDrawer: false,
+    todos: [
+      { id: 1, status: 'done',    titleZh: '抽取 TokenVerifier 到独立模块', titleEn: 'Extract TokenVerifier into its own module', subZh: 'token_verifier.py · +64', subEn: 'token_verifier.py · +64' },
+      { id: 2, status: 'active',  titleZh: '复用 shared/crypto 改写校验', titleEn: 'Rewrite verify on shared/crypto', subZh: 'auth.py · +38 −12 · 进行中', subEn: 'auth.py · +38 −12 · running' },
+      { id: 3, status: 'blocked', titleZh: '删旧 HS256 校验路径', titleEn: 'Remove legacy HS256 path', subZh: '⚠ 等待你拍板', subEn: '⚠ awaiting your call' },
+      { id: 4, status: 'pending', titleZh: '补 test_auth.py 单测', titleEn: 'Add tests in test_auth.py', subZh: '', subEn: '' },
+      { id: 5, status: 'pending', titleZh: '本地跑测试,push 前停下问你', titleEn: 'Run tests, pause before push', subZh: '', subEn: '' },
+    ],
+    expandedSub: 1,
+    subagents: [
+      { id:1, status:'active',  nameZh:'重写 token 校验', nameEn:'Rewrite token verify', agent:'claude-code', metaZh:'sonnet · 2m10s', metaEn:'sonnet · 2m10s', actZh:'编辑 token_verifier.py · +64', actEn:'editing token_verifier.py · +64', detZh:'edit token_verifier.py  +64\n复用 shared/crypto.constant_time_eq\n› 正在跑 pytest -k token …', detEn:'edit token_verifier.py  +64\nreuse shared/crypto.constant_time_eq\n› running pytest -k token …' },
+      { id:2, status:'queued',  nameZh:'补 test_auth 单测', nameEn:'Write test_auth tests', agent:'claude-code', metaZh:'排队中', metaEn:'queued', actZh:'等第 2 步合并后开始', actEn:'starts after step 2 merges', detZh:'排队中 · 依赖「改写校验」完成', detEn:'Queued · waiting on “rewrite verify”' },
+      { id:3, status:'done',    nameZh:'时序安全审查', nameEn:'Timing-safety review', agent:'codex', metaZh:'codex · 48s', metaEn:'codex · 48s', actZh:'未发现时序泄露', actEn:'no timing leak found', detZh:'扫描 7 个用例 · constant_time_eq 全覆盖 ✓', detEn:'Scanned 7 cases · constant_time_eq covers all ✓' },
+      { id:4, status:'done',    nameZh:'扫描旧调用点', nameEn:'Scan legacy callers', agent:'claude-code', metaZh:'claude · 1m02s', metaEn:'claude · 1m02s', actZh:'找到 3 处,已迁移', actEn:'found 3, migrated', detZh:'auth.py:42 / login.py:88 / api.py:210 → 已切到 TokenVerifier', detEn:'auth.py:42 / login.py:88 / api.py:210 → moved to TokenVerifier' },
+    ],
+    openCalls: { 1: true },
+    calls: [
+      { id:1, agent:'claude-code', avatar:'C', color:'var(--accent)', status:'active', dur:'2m10s',
+        titleZh:'重写 token 校验层', titleEn:'Rewrite token verification',
+        summaryZh:'编辑 2 个文件 · 执行 3 条命令 · +64 −12', summaryEn:'2 files · 3 commands · +64 −12',
+        replyZh:'先定位所有 verify_token 调用点,把校验逻辑抽到独立的 TokenVerifier,改用 shared/crypto 的常量时间比较,避免基于内容的时序侧信道。', replyEn:'Locating every verify_token caller, extracting the logic into a dedicated TokenVerifier, and switching to shared/crypto constant-time compare to avoid content-based timing side-channels.',
+        commands:['grep -n "verify_token" src/foreman/server/auth.py','python -c "import foreman.shared.crypto"','pytest -k token -q'],
+        diffFile:'src/foreman/server/token_verifier.py', diffStat:'+64 −12',
+        diff:[ {s:' ',t:'@@ class TokenVerifier @@'}, {s:'+',t:'    def verify(self, raw: str) -> Claims:'}, {s:'+',t:'        sig = self._sign(raw)'}, {s:'+',t:'        if not constant_time_eq(sig, expected):'}, {s:'+',t:'            raise InvalidToken()'}, {s:'-',t:'    if sig == expected:   # timing-unsafe'} ] },
+      { id:2, agent:'codex', avatar:'X', color:'var(--violet)', status:'done', dur:'48s',
+        titleZh:'时序安全复查', titleEn:'Timing-safety review',
+        summaryZh:'扫描 7 处比较 · 无短路返回', summaryEn:'scanned 7 comparisons · no early return',
+        replyZh:'复查新校验路径上的所有比较操作,确认全部经过 constant_time_eq,没有基于内容的提前返回。建议保留旧路径一个 release 周期再删。', replyEn:'Reviewed every comparison on the new path; all go through constant_time_eq with no content-based early return. Suggest keeping the legacy path one release cycle before removal.',
+        commands:['rg "==|!=" src/foreman/server/token_verifier.py'],
+        resultZh:'✓ 未发现时序泄露,可继续。', resultEn:'✓ No timing leak found — safe to proceed.' },
+    ],
+  };
+
+  toggleCall(id) { this.setState(s => ({ openCalls: { ...s.openCalls, [id]: !s.openCalls[id] } })); }
+
+  toggleDrawer() { this.setState(s => ({ mDrawer: !s.mDrawer })); }
+  mGo(p) { this.setState({ mNav: p, mDrawer: false }); }
+
+  addAttach() { this.setState(s => ({ attachments: [...s.attachments, { id: Date.now(), type: 'image', name: 'screenshot.png' }] })); }
+  removeAttach(id) { this.setState(s => ({ attachments: s.attachments.filter(a => a.id !== id) })); }
+
+  toggleSub(id) { this.setState(s => ({ expandedSub: s.expandedSub === id ? null : id })); }
+
+  toggleTodo(id) {
+    this.setState(s => ({
+      todos: s.todos.map(t => t.id === id ? { ...t, status: t.status === 'done' ? 'pending' : 'done' } : t),
+    }));
+  }
+  addTodo() {
+    const v = (this.state.newTodo || '').trim();
+    if (!v) return;
+    this.setState(s => ({
+      todos: [...s.todos, { id: Date.now(), status: 'pending', titleZh: v, titleEn: v, subZh: '', subEn: '' }],
+      newTodo: '',
+    }));
+  }
+
+  renderVals() {
+    const { theme, lang, screen, navPage, rightTab, mTab, todos, newTodo, subagents, expandedSub, attachments, mNav, mDrawer } = this.state;
+    const mTitles = { workspace: ['重构 auth 模块', 'Refactor auth'], decisions: ['决策', 'Decisions'], briefings: ['简报', 'Briefings'], playbook: ['工作方式', 'Playbook'], settings: ['设置', 'Settings'] };
+    const mSubs = { workspace: ['claude-code · sonnet', 'claude-code · sonnet'], decisions: ['2 卡 · 2 审批', '2 cards · 2 approvals'], briefings: ['1 份简报', '1 briefing'], playbook: ['4 条', '4 entries'], settings: ['本地 · 个人模式', 'Local · personal'] };
+    const navStyle = (on) => 'display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:8px;font-size:13.5px;cursor:pointer;border:none;width:100%;text-align:left;font-family:inherit;background:' + (on ? 'var(--accent-soft)' : 'transparent') + ';color:' + (on ? 'var(--accent-text)' : 'var(--muted)') + ';font-weight:' + (on ? '600' : '500') + ';';
+    const pill = (on) => 'padding:7px 14px;border-radius:8px;border:1px solid ' + (on ? 'var(--accent)' : 'var(--border2)') + ';background:' + (on ? 'var(--accent-soft)' : 'var(--surface)') + ';color:' + (on ? 'var(--accent-text)' : 'var(--muted)') + ';font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit';
+    const tab = (on) => on
+      ? 'padding:6px 13px;border:none;border-radius:7px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;background:var(--surface);color:var(--text);box-shadow:var(--shadow-sm)'
+      : 'padding:6px 13px;border:none;border-radius:7px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;background:transparent;color:var(--muted)';
+    const segTab = (on) => on
+      ? 'flex:1;padding:8px;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;background:var(--accent-soft);color:var(--accent-text)'
+      : 'flex:1;padding:8px;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;background:transparent;color:var(--muted)';
+    const mTabBtn = (on) => 'flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 0 6px;border:none;background:transparent;cursor:pointer;font-family:inherit;font-size:9.5px;font-weight:'
+      + (on ? '700;color:var(--accent-text)' : '600;color:var(--faint)');
+
+    const meta = {
+      done:    { icon: '✓', iconStyle: 'flex:none;width:19px;height:19px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center;font-size:11px;margin-top:1px', rowBg: 'transparent' },
+      active:  { icon: '',  iconStyle: 'flex:none;width:15px;height:15px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:fdspin .8s linear infinite;margin-top:3px', rowBg: 'var(--accent-soft)' },
+      blocked: { icon: '!', iconStyle: 'flex:none;width:19px;height:19px;border-radius:50%;background:var(--amber);color:#fff;display:grid;place-items:center;font-size:11px;font-weight:800;margin-top:1px', rowBg: 'var(--amber-soft)' },
+      pending: { icon: '',  iconStyle: 'flex:none;width:17px;height:17px;border:1.5px solid var(--border2);border-radius:50%;margin-top:2px', rowBg: 'transparent' },
+    };
+    const todoView = todos.map(t => {
+      const m = meta[t.status] || meta.pending;
+      const titleStyle = 'font-size:13px;line-height:1.4;'
+        + (t.status === 'done' ? 'color:var(--muted);text-decoration:line-through;text-decoration-color:var(--border2);font-weight:500;'
+           : t.status === 'active' ? 'color:var(--text);font-weight:700;'
+           : t.status === 'blocked' ? 'color:var(--text);font-weight:700;' : 'color:var(--text);font-weight:600;');
+      const subStyle = 'margin-top:3px;font-size:11px;font-family:\'JetBrains Mono\',monospace;'
+        + (t.status === 'blocked' ? 'color:var(--amber);font-weight:600;' : 'color:var(--faint);');
+      return {
+        id: t.id, icon: m.icon, iconStyle: m.iconStyle, titleStyle, subStyle,
+        titleZh: t.titleZh, titleEn: t.titleEn, subZh: t.subZh, subEn: t.subEn,
+        hasSub: !!t.subZh,
+        rowStyle: 'display:flex;gap:11px;align-items:flex-start;padding:10px 11px;border-radius:8px;cursor:pointer;transition:background .15s;background:' + m.rowBg,
+        onClick: () => this.toggleTodo(t.id),
+      };
+    });
+    const doneCount = todos.filter(t => t.status === 'done').length;
+    const pct = Math.round((doneCount / todos.length) * 100);
+
+    const subMeta = {
+      active: { icon: '',  iconStyle: 'flex:none;width:15px;height:15px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:fdspin .8s linear infinite' },
+      done:   { icon: '✓', iconStyle: 'flex:none;width:18px;height:18px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center;font-size:10px' },
+      queued: { icon: '◷', iconStyle: 'flex:none;width:18px;height:18px;border-radius:50%;border:1.5px solid var(--border2);color:var(--faint);display:grid;place-items:center;font-size:11px' },
+    };
+    const subView = subagents.map(s => {
+      const m = subMeta[s.status] || subMeta.queued;
+      const open = expandedSub === s.id;
+      return {
+        id: s.id, icon: m.icon, iconStyle: m.iconStyle, open, agent: s.agent,
+        nameZh: s.nameZh, nameEn: s.nameEn, metaZh: s.metaZh, metaEn: s.metaEn,
+        actZh: s.actZh, actEn: s.actEn, detZh: s.detZh, detEn: s.detEn,
+        chevron: open ? '▾' : '▸',
+        nameStyle: 'font-size:13px;font-weight:' + (s.status === 'done' ? '600' : '700') + ';' + (s.status === 'queued' ? 'color:var(--muted);' : 'color:var(--text);'),
+        cardStyle: 'border:1px solid ' + (open ? 'var(--accent-line)' : 'var(--border)') + ';border-radius:9px;background:var(--surface);margin-bottom:9px;overflow:hidden;box-shadow:var(--shadow-sm)',
+        onClick: () => this.toggleSub(s.id),
+      };
+    });
+    const subRunning = subagents.filter(s => s.status === 'active').length;
+    const subDone = subagents.filter(s => s.status === 'done').length;
+    const subQueued = subagents.filter(s => s.status === 'queued').length;
+
+    const calls = this.state.calls, openCalls = this.state.openCalls;
+    const callView = calls.map(c => {
+      const open = !!openCalls[c.id];
+      const diffLines = (c.diff || []).map(d => ({
+        text: d.t,
+        style: 'padding:1px 13px;white-space:pre-wrap;word-break:break-word;' + (d.s === '+' ? 'background:var(--green-soft);color:var(--green);' : d.s === '-' ? 'background:var(--red-soft);color:var(--red);' : 'color:var(--faint);'),
+      }));
+      return {
+        id: c.id, open, onClick: () => this.toggleCall(c.id), chevron: open ? '▾' : '▸',
+        openLabelZh: open ? '收起' : '展开', openLabelEn: open ? 'Hide' : 'Open',
+        agent: c.agent, avatar: c.avatar,
+        avatarStyle: 'width:26px;height:26px;flex:none;border-radius:7px;display:grid;place-items:center;font-size:12px;font-weight:800;color:#fff;background:' + c.color,
+        titleZh: c.titleZh, titleEn: c.titleEn,
+        statusZh: c.status === 'active' ? '运行中' : '完成', statusEn: c.status === 'active' ? 'running' : 'done',
+        statusStyle: 'font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;flex:none;' + (c.status === 'active' ? 'color:var(--accent-text);background:var(--accent-soft);' : 'color:var(--green);background:var(--green-soft);'),
+        dur: c.dur, summaryZh: c.summaryZh, summaryEn: c.summaryEn,
+        replyZh: c.replyZh, replyEn: c.replyEn, commands: c.commands || [],
+        diffLines, diffFile: c.diffFile || '', diffStat: c.diffStat || '', hasDiff: !!(c.diff && c.diff.length),
+        resultZh: c.resultZh || '', resultEn: c.resultEn || '', hasResult: !!c.resultZh,
+        cardStyle: 'border:1px solid ' + (open ? 'var(--accent-line)' : 'var(--border)') + ';border-radius:11px;background:var(--surface);overflow:hidden;box-shadow:var(--shadow-sm)',
+      };
+    });
+
+    return {
+      theme, lang,
+      themeIcon: theme === 'dark' ? '🌙' : '☀️',
+      showLaunch: screen === 'launch',
+      showApp: screen === 'app',
+      showVariants: screen === 'variants',
+      tabLaunch: tab(screen === 'launch'),
+      tabApp: tab(screen === 'app'),
+      tabVar: tab(screen === 'variants'),
+      goLaunch: () => this.setState({ screen: 'launch' }),
+      goApp: () => this.setState({ screen: 'app' }),
+      goVariants: () => this.setState({ screen: 'variants' }),
+      toggleTheme: () => this.setState(s => ({ theme: s.theme === 'dark' ? 'light' : 'dark' })),
+      toggleLang: () => this.setState(s => ({ lang: s.lang === 'zh' ? 'en' : 'zh' })),
+      // right panel
+      showTodo: rightTab === 'todo',
+      showTerm: rightTab === 'term',
+      tabTodoStyle: segTab(rightTab === 'todo'),
+      tabTermStyle: segTab(rightTab === 'term'),
+      tabTodoClick: () => this.setState({ rightTab: 'todo' }),
+      tabTermClick: () => this.setState({ rightTab: 'term' }),
+      showSub: rightTab === 'sub',
+      tabSubStyle: segTab(rightTab === 'sub'),
+      tabSubClick: () => this.setState({ rightTab: 'sub' }),
+      subView, subCount: subagents.length, callView,
+      attachView: attachments.map(a => ({ id: a.id, name: a.name, isImage: a.type === 'image', isFile: a.type !== 'image', onRemove: () => this.removeAttach(a.id) })),
+      hasAttach: attachments.length > 0,
+      addAttach: () => this.addAttach(),
+      showWorkspace: navPage === 'workspace', showDecisions: navPage === 'decisions', showBriefings: navPage === 'briefings', showPlaybook: navPage === 'playbook', showSettings: navPage === 'settings',
+      navWStyle: navStyle(navPage === 'workspace'), navDStyle: navStyle(navPage === 'decisions'), navBStyle: navStyle(navPage === 'briefings'), navPStyle: navStyle(navPage === 'playbook'), navSStyle: navStyle(navPage === 'settings'),
+      goNavW: () => this.setState({ navPage: 'workspace' }), goNavD: () => this.setState({ navPage: 'decisions' }), goNavB: () => this.setState({ navPage: 'briefings' }), goNavP: () => this.setState({ navPage: 'playbook' }), goNavS: () => this.setState({ navPage: 'settings' }),
+      setLight: () => this.setState({ theme: 'light' }), setDark: () => this.setState({ theme: 'dark' }),
+      themeLightStyle: pill(theme === 'light'), themeDarkStyle: pill(theme === 'dark'),
+      setZh: () => this.setState({ lang: 'zh' }), setEn: () => this.setState({ lang: 'en' }),
+      langZhStyle: pill(lang === 'zh'), langEnStyle: pill(lang === 'en'),
+      mWorkspace: mNav === 'workspace', mDecisions: mNav === 'decisions', mBriefings: mNav === 'briefings', mPlaybook: mNav === 'playbook', mSettings: mNav === 'settings',
+      mDrawerOpen: mDrawer, toggleDrawer: () => this.toggleDrawer(),
+      mGoW: () => this.mGo('workspace'), mGoD: () => this.mGo('decisions'), mGoB: () => this.mGo('briefings'), mGoP: () => this.mGo('playbook'), mGoS: () => this.mGo('settings'),
+      mNavWStyle: navStyle(mNav === 'workspace'), mNavDStyle: navStyle(mNav === 'decisions'), mNavBStyle: navStyle(mNav === 'briefings'), mNavPStyle: navStyle(mNav === 'playbook'), mNavSStyle: navStyle(mNav === 'settings'),
+      mTitleZh: mTitles[mNav][0], mTitleEn: mTitles[mNav][1], mSubZh: mSubs[mNav][0], mSubEn: mSubs[mNav][1],
+      mShowComposer: mNav === 'workspace' && mTab === 'chat',
+      mShowBottom: mNav === 'workspace',
+      subSummaryZh: subRunning + ' 运行 · ' + subDone + ' 完成 · ' + subQueued + ' 排队',
+      subSummaryEn: subRunning + ' running · ' + subDone + ' done · ' + subQueued + ' queued',
+      showMobile: screen === 'mobile',
+      tabMob: tab(screen === 'mobile'),
+      goMobile: () => this.setState({ screen: 'mobile' }),
+      mChat: mTab === 'chat', mTodoOn: mTab === 'todo', mSubOn: mTab === 'sub', mTermOn: mTab === 'term',
+      mChatStyle: mTabBtn(mTab === 'chat'), mTodoStyle: mTabBtn(mTab === 'todo'), mSubStyle: mTabBtn(mTab === 'sub'), mTermStyle: mTabBtn(mTab === 'term'),
+      mSetChat: () => this.setState({ mTab: 'chat' }), mSetTodo: () => this.setState({ mTab: 'todo' }), mSetSub: () => this.setState({ mTab: 'sub' }), mSetTerm: () => this.setState({ mTab: 'term' }),
+      todoView,
+      todoCount: todos.length,
+      progressPct: pct + '%',
+      progressLabel: doneCount + '/' + todos.length,
+      newTodo,
+      onNewTodo: (e) => this.setState({ newTodo: e.target.value }),
+      onNewTodoKey: (e) => { if (e.key === 'Enter') { e.preventDefault(); this.addTodo(); } },
+      addTodo: () => this.addTodo(),
+    };
+  }
+}
+</script>
+</body>
+</html>

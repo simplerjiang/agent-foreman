@@ -8,6 +8,7 @@ is unit-testable headlessly; pywebview/pystray are imported only in the CLI comm
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -161,9 +162,14 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # qa_rubric, §11.2). Injected like the Gate/CardService so app.py stays shared-only; definitions
     # live ONLY in the local store and never reach the shared server (§8.3 / §14).
     definitions = DefinitionService(store, bus=bus, cipher=cipher)
+    # Cloud relay connection (DESIGN §8.5): the Settings → 云端连接 card links this machine to the
+    # team 总机 so the phone can watch + approve from afar. Opt-in (a button) — never auto-dials.
+    from .core.cloud import CloudManager
+
+    cloud = CloudManager(store=store, cfg=cfg, name=socket.gethostname())
     app = create_app(
         cfg, store, bus, hooks=hooks, gate=gate, cards=cards,
-        dispatcher=dispatcher, briefings=briefings, definitions=definitions,
+        dispatcher=dispatcher, briefings=briefings, definitions=definitions, cloud=cloud,
     )
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))

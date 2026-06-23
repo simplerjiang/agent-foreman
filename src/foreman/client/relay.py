@@ -55,6 +55,7 @@ class RelayConnector:
         name: str = "",
         connect: Callable[[str], Awaitable[object]] | None = None,
         on_frame: Callable[[Envelope], Awaitable[None]] | None = None,
+        on_status: Callable[[bool], None] | None = None,
         backoff_base: float = 1.0,
         backoff_cap: float = 60.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -68,6 +69,10 @@ class RelayConnector:
         self.name = name
         self._connect = connect or _default_connect
         self._on_frame = on_frame
+        # Optional liveness callback (True after a successful handshake, False when the session
+        # ends) so a supervising CloudManager can surface "connected" in the UI without reaching
+        # into the connector's internals. Must never raise.
+        self._on_status = on_status
         self._backoff_base = backoff_base
         self._backoff_cap = backoff_cap
         self._sleep = sleep
@@ -77,6 +82,16 @@ class RelayConnector:
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_sleep = heartbeat_sleep
         self._handshook = False  # set per-session once the relay accepts our key
+
+    def _notify_status(self, connected: bool) -> None:
+        """Fire the optional liveness callback, swallowing any error (status reporting must never
+        break the connection loop)."""
+        if self._on_status is None:
+            return
+        try:
+            self._on_status(connected)
+        except Exception:  # noqa: BLE001 — a buggy observer must not kill the relay loop
+            pass
 
     def hello(self) -> Envelope:
         """The first frame: access key (inside TLS, never bare) + machine identity (§8.5 ①)."""
@@ -106,6 +121,7 @@ class RelayConnector:
             # Explicit denial (revoked/unknown/expired) — fatal; retrying a bad key is pointless.
             raise RelayAuthError(str(ack.payload.get("reason") or "handshake denied"))
         self._handshook = True
+        self._notify_status(True)
 
         tasks = [asyncio.create_task(self._read_loop(conn))]
         if self._heartbeat_interval and self._heartbeat_interval > 0:
@@ -165,6 +181,8 @@ class RelayConnector:
             except Exception:
                 pass  # transport/connect/read error -> back off and retry below
             finally:
+                if self._handshook:
+                    self._notify_status(False)
                 if conn is not None:
                     await _safe_close(conn)
             tries += 1
