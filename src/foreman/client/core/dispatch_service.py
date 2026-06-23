@@ -430,8 +430,8 @@ class DispatchService:
     def _sanitize_pm_plan(self, plan: PMPlan, pm_model: str) -> PMPlan:
         if not pm_model or plan.model != pm_model:
             return plan
-        cfg_model = (self.cfg.agents.get(plan.agent).model if plan.agent in self.cfg.agents else "")
-        cfg_model = (cfg_model or "").strip()
+        cfg = self.cfg.agents.get(plan.agent)
+        cfg_model = (cfg.model if cfg is not None else "").strip()
         if cfg_model == pm_model:
             return plan
         return PMPlan(

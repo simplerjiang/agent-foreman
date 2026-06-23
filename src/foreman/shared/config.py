@@ -235,5 +235,5 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         cfg.agents = default_agents()
     cfg.config_path = str(p)
     cfg.env_path = str(p.with_name(".env"))
-    cfg.secrets = Secrets(_env_file=cfg.env_path)  # re-read env / sibling .env
+    cfg.secrets = Secrets(_env_file=cfg.env_path)  # type: ignore[call-arg]  # pydantic-settings
     return cfg
