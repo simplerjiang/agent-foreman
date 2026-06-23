@@ -110,6 +110,23 @@ def test_cloud_manager_connect_and_disconnect():
     assert off["error"] == ""
 
 
+def test_cloud_manager_clearing_config_stops_connection():
+    store = FakeStore()
+    store.set_setting("cloud.url", "wss://relay.example/relay")
+    cfg = load_config()
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    mgr = CloudManager(store=store, cfg=cfg, connector_factory=_factory(ack_ok=True))
+    assert mgr.connect(wait=3.0)["connected"] is True
+    # user clears the config, then presses Connect again
+    store.set_setting("cloud.url", "")
+    cfg.secrets.cloud_access_key = ""
+    state = mgr.connect(wait=0.5)
+    assert state["connected"] is False
+    assert state["error"] == "not_configured"
+    # the old connector thread must be gone, not left dialing with stale creds
+    assert mgr._thread is None or not mgr._thread.is_alive()
+
+
 def test_cloud_manager_auth_denied_surfaces_error():
     store = FakeStore()
     store.set_setting("cloud.url", "wss://relay.example/relay")

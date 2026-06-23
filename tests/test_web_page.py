@@ -110,9 +110,18 @@ def test_dispatch_model_picker_and_no_explicit_agent():
     js = c.get("/app.js").text
     assert 'api("/api/models")' in js
     assert "body.model = model.trim()" in js
+    # per-dispatch model override is wired (datalist from /api/models) — not a dead path
+    assert 'list="composer-models"' in js and "setModel(e.target.value)" in js
     # agent is auto-picked by the PM — the composer never forces an agent choice
     assert "agentAuto" in js
     assert "body.agent = agent" not in js
+
+
+def test_pm_review_rendered_in_thread():
+    """pm_review events (PM's post-run verdict) surface in the redesigned thread (codex review)."""
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 't === "pm_review"' in js and "follow_up" in js
 
 
 def test_mobile_shell_drawer_and_bottom_tabs_wired():

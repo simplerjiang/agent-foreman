@@ -135,6 +135,10 @@ class CloudManager:
         keeps retrying in the background regardless. Returns status()."""
         with self._lock:
             if not self.configured():
+                # Tear down any live connection first — otherwise clearing the URL/key then pressing
+                # Connect would leave the old connector dialing with stale credentials while the UI
+                # reports "not configured" (codex review finding).
+                self._stop_locked()
                 self._connected = False
                 self._error = "not_configured"
                 return self.status()

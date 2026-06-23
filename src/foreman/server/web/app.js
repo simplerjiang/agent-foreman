@@ -37,7 +37,7 @@
       decisionNeeded: "需要你拍板", suggestion: "建议", showDiff: "看 diff",
       riskHigh: "高风险", riskMedium: "中风险", riskLow: "低风险",
       context: "上下文", compact: "压缩上下文", compacting: "压缩中...", compactDone: "上下文已压缩", compactFailed: "压缩失败",
-      attach: "附件", agentAuto: "执行 agent 由 PM 自动选择",
+      attach: "附件", agentAuto: "执行 agent 由 PM 自动选择", modelPlaceholder: "模型·默认",
       fast: "快速", std: "标准", deep: "深度", send: "发送", sendHint: "发送",
       composerPlaceholder: "继续和 PM 对话…  输入 @ 引用文件，选择档位，或直接下指令",
       mComposerPlaceholder: "继续下指令…",
@@ -112,7 +112,7 @@
       decisionNeeded: "Decision needed", suggestion: "Suggestion", showDiff: "Show diff",
       riskHigh: "HIGH RISK", riskMedium: "MEDIUM RISK", riskLow: "LOW RISK",
       context: "Context", compact: "Compact", compacting: "Compacting...", compactDone: "Context compacted", compactFailed: "Compact failed",
-      attach: "Attach", agentAuto: "agent auto-picked by PM",
+      attach: "Attach", agentAuto: "agent auto-picked by PM", modelPlaceholder: "model · default",
       fast: "Fast", std: "Std", deep: "Deep", send: "Send", sendHint: "send",
       composerPlaceholder: "Continue with the PM…  type @ to reference files, pick a level, or just give an order",
       mComposerPlaceholder: "Continue…",
@@ -401,6 +401,12 @@
         const steps = Array.isArray(p.todo) ? p.todo.map((x) => String(x)) : (typeof p.todo === "string" && p.todo ? [p.todo] : []);
         lastPlan = { steps, summary: p.summary || "", instruction: p.instruction || "" };
         nodes.push({ kind: "plan", id: e.id || `p-${nodes.length}`, ts: e.ts, steps, summary: p.summary || "", deliberation: Array.isArray(p.deliberation) ? p.deliberation : [] });
+      } else if (t === "pm_review") {
+        // The PM's post-run review (after each agent run): show its verdict + summary/follow-up so
+        // "done" / "needs follow-up" status surfaces in the thread (DispatchService._emit_pm_review).
+        const status = p.done ? (lang === "zh" ? "复查通过" : "review passed") : (lang === "zh" ? "需要跟进" : "needs follow-up");
+        const txt = [`**${status}**`, p.summary || "", p.reason || "", p.follow_up ? `→ ${p.follow_up}` : ""].filter(Boolean).join("\n\n");
+        nodes.push({ kind: "pm", id: e.id || `pr-${nodes.length}`, ts: e.ts, text: txt });
       } else if (t === "pm_output" || t === "pm_reasoning") {
         const txt = extractAgentText(p);
         if (!txt) continue;
@@ -761,7 +767,7 @@
   }
 
   function Composer(props) {
-    const { d, lang, workspaces, workspace, setWorkspace, task, setTask, model, setModel, effort, setEffort,
+    const { d, lang, workspaces, workspace, setWorkspace, task, setTask, model, setModel, modelOptions, effort, setEffort,
       attachments, addAttach, removeAttach, dispatching, runDispatch, dispatchStatus, sessionRow, events,
       compacting, runCompact, compactStatus } = props;
     const wsOpts = workspaces.length ? workspaces : [];
@@ -784,6 +790,8 @@
           <div className="composer-tools">
             <button className="tool-chip" onClick=${addAttach}>📎 ${d.attach}</button>
             ${wsOpts.length ? html`<select className="ws-select" value=${workspace} onChange=${(e) => setWorkspace(e.target.value)} disabled=${!!sessionRow}>${wsOpts.map((w) => html`<option key=${w.path} value=${w.path}>📁 ${w.name || shortPath(w.path, d)}</option>`)}</select>` : null}
+            <input className="ws-select model-pick" value=${model} onChange=${(e) => setModel(e.target.value)} list="composer-models" placeholder=${d.modelPlaceholder} aria-label=${d.model} />
+            <datalist id="composer-models">${(modelOptions || []).map((o) => html`<option key=${o.value} value=${o.value}></option>`)}</datalist>
             <span className="tool-chip dashed">🤖 ${d.agentAuto}</span>
             <div className="seg">
               <button className=${`opt${effort === "low" ? " on" : ""}`} onClick=${() => setEffort("low")}>${d.fast}</button>
@@ -1452,7 +1460,7 @@
 
     const composerProps = {
       workspaces, workspace, setWorkspace: (v) => { setWorkspace(v); if (v) localStorage.setItem(WORKSPACE_KEY, v); },
-      task, setTask, model, setModel, effort, setEffort, attachments, addAttach, removeAttach,
+      task, setTask, model, setModel, modelOptions, effort, setEffort, attachments, addAttach, removeAttach,
       dispatching, runDispatch, dispatchStatus, onAddStep,
     };
     const settingsProps = {
