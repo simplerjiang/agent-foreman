@@ -93,6 +93,7 @@
       agentEnabled: "\u542f\u7528",
       agentResolvedPath: "\u89e3\u6790\u8def\u5f84",
       agentVersion: "\u7248\u672c",
+      agentFullAccess: "\u5de5\u5177\u5168\u5f00",
       agentDisabled: "\u5df2\u7981\u7528",
       agentNotFound: "\u672a\u627e\u5230\u547d\u4ee4",
       agentsSaved: "Agent \u8bbe\u7f6e\u5df2\u4fdd\u5b58",
@@ -256,6 +257,7 @@
       agentEnabled: "Enabled",
       agentResolvedPath: "Resolved path",
       agentVersion: "Version",
+      agentFullAccess: "Full access",
       agentDisabled: "Disabled",
       agentNotFound: "Command not found",
       agentsSaved: "Agent settings saved",
@@ -702,7 +704,16 @@
         return `${payload.goal || ""}${deferred}`.trim();
       }
       case "pm_plan":
-        return [payload.summary, payload.instruction].filter(Boolean).join("\n");
+        return [
+          payload.summary,
+          Array.isArray(payload.deliberation) && payload.deliberation.length
+            ? `Decision notes\n${payload.deliberation.map((item) => `- ${item}`).join("\n")}`
+            : "",
+          Array.isArray(payload.todo) && payload.todo.length
+            ? `Todo\n${payload.todo.map((item) => `- ${item}`).join("\n")}`
+            : "",
+          payload.instruction,
+        ].filter(Boolean).join("\n\n");
       case "pm_review":
         return [
           payload.done ? "done" : "needs follow-up",
@@ -2123,17 +2134,17 @@
                           <${A.Switch} checked=${row.enabled} onChange=${(v) => updateAgent(row.name, { enabled: v })} />
                         </${A.Form.Item}>
                       </${A.Col}>
-                      <${A.Col} xs=${24} md=${8}>
+                      <${A.Col} xs=${24} md=${7}>
                         <${A.Form.Item} label=${d.agentCommand}>
                           <${A.Input} value=${row.command || ""} onChange=${(e) => updateAgent(row.name, { command: e.target.value })} />
                         </${A.Form.Item}>
                       </${A.Col}>
-                      <${A.Col} xs=${24} md=${8}>
+                      <${A.Col} xs=${24} md=${7}>
                         <${A.Form.Item} label=${d.dispatchModel}>
                           <${A.Input} value=${row.model || ""} onChange=${(e) => updateAgent(row.name, { model: e.target.value })} placeholder=${d.modelDefaultHint} />
                         </${A.Form.Item}>
                       </${A.Col}>
-                      <${A.Col} xs=${24} md=${4}>
+                      <${A.Col} xs=${24} md=${3}>
                         <${A.Form.Item} label=${d.dispatchEffort}>
                           <${A.Select}
                             value=${row.effort || ""}
@@ -2145,6 +2156,11 @@
                               { value: "high", label: d.effortHigh },
                             ]}
                           />
+                        </${A.Form.Item}>
+                      </${A.Col}>
+                      <${A.Col} xs=${24} md=${3}>
+                        <${A.Form.Item} label=${d.agentFullAccess}>
+                          <${A.Switch} checked=${row.full_access !== false} onChange=${(v) => updateAgent(row.name, { full_access: v })} />
                         </${A.Form.Item}>
                       </${A.Col}>
                     </${A.Row}>

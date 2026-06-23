@@ -17,30 +17,42 @@ def _cfg(model: str = "") -> AgentCfg:
 
 def test_build_cmd():
     a = CodexAdapter(_cfg())
-    assert a._build_cmd("do Y") == ["codex", "exec", "--json", "do Y"]
-    assert a._build_cmd("do Y", "gpt-5") == [
-        "codex", "exec", "--json", "--model", "gpt-5", "do Y",
+    assert a._build_cmd("do Y") == [
+        "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "do Y",
     ]
+    assert a._build_cmd("do Y", "gpt-5") == [
+        "codex", "exec", "--json", "--model", "gpt-5",
+        "--dangerously-bypass-approvals-and-sandbox", "do Y",
+    ]
+
+
+def test_full_access_can_be_disabled():
+    a = CodexAdapter(AgentCfg(command="codex", full_access=False))
+    assert a._build_cmd("do Y") == ["codex", "exec", "--json", "do Y"]
 
 
 def test_build_cmd_with_effort():
     # Codex carries reasoning level as a `-c model_reasoning_effort=` config override.
     a = CodexAdapter(_cfg())
     assert a._build_cmd("do Y", "gpt-5", "high") == [
-        "codex", "exec", "--json", "--model", "gpt-5", "-c", "model_reasoning_effort=high", "do Y",
+        "codex", "exec", "--json", "--model", "gpt-5", "-c", "model_reasoning_effort=high",
+        "--dangerously-bypass-approvals-and-sandbox", "do Y",
     ]
     assert a._build_cmd("do Y", "", "low") == [
-        "codex", "exec", "--json", "-c", "model_reasoning_effort=low", "do Y",
+        "codex", "exec", "--json", "-c", "model_reasoning_effort=low",
+        "--dangerously-bypass-approvals-and-sandbox", "do Y",
     ]
 
 
 def test_build_resume_cmd():
     a = CodexAdapter(_cfg())
     assert a._build_resume_cmd("more", "sess-9") == [
-        "codex", "exec", "--json", "resume", "sess-9", "more",
+        "codex", "exec", "--json", "resume",
+        "--dangerously-bypass-approvals-and-sandbox", "sess-9", "more",
     ]
     assert a._build_resume_cmd("more", "sess-9", "gpt-5") == [
-        "codex", "exec", "--json", "resume", "--model", "gpt-5", "sess-9", "more",
+        "codex", "exec", "--json", "resume", "--model", "gpt-5",
+        "--dangerously-bypass-approvals-and-sandbox", "sess-9", "more",
     ]
 
 
@@ -50,7 +62,9 @@ async def test_start_registers_and_returns_handle(tmp_path):
     h = await a.start("do Y", tmp_path, "sx")
     assert h.pid == 999 and h.session_id == "sx" and h.id == "sx:999"
     assert a._procs[h.id] is proc
-    assert a.spawned_cmd == ["codex", "exec", "--json", "do Y"]
+    assert a.spawned_cmd == [
+        "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "do Y",
+    ]
     assert a.spawned_cwd == tmp_path
 
 
@@ -59,7 +73,10 @@ async def test_start_model_override_wins(tmp_path):
     a = fake_adapter(CodexAdapter, _cfg("cfg-model"), proc)
     h = await a.start("do Y", tmp_path, "sx", model="run-model")
     assert h.model == "run-model"
-    assert a.spawned_cmd == ["codex", "exec", "--json", "--model", "run-model", "do Y"]
+    assert a.spawned_cmd == [
+        "codex", "exec", "--json", "--model", "run-model",
+        "--dangerously-bypass-approvals-and-sandbox", "do Y",
+    ]
 
 
 async def test_stream_parses_lines(tmp_path):

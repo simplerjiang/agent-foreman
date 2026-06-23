@@ -21,10 +21,12 @@ def _cfg(model: str = "") -> AgentCfg:
 def test_build_cmd():
     a = ClaudeCodeAdapter(_cfg())
     assert a._build_cmd("do X") == [
-        "claude", "-p", "do X", "--output-format", "stream-json", "--verbose",
+        "claude", "-p", "do X", "--permission-mode", "bypassPermissions", "--tools", "default",
+        "--output-format", "stream-json", "--verbose",
     ]
     assert a._build_cmd("do X", "sonnet") == [
         "claude", "-p", "do X", "--model", "sonnet",
+        "--permission-mode", "bypassPermissions", "--tools", "default",
         "--output-format", "stream-json", "--verbose",
     ]
 
@@ -32,11 +34,21 @@ def test_build_cmd():
 def test_build_resume_cmd():
     a = ClaudeCodeAdapter(_cfg())
     assert a._build_resume_cmd("do Y", "sess-1") == [
-        "claude", "-p", "do Y", "--resume", "sess-1", "--output-format", "stream-json", "--verbose",
+        "claude", "-p", "do Y", "--resume", "sess-1",
+        "--permission-mode", "bypassPermissions", "--tools", "default",
+        "--output-format", "stream-json", "--verbose",
     ]
     assert a._build_resume_cmd("do Y", "sess-1", "sonnet") == [
         "claude", "-p", "do Y", "--resume", "sess-1", "--model", "sonnet",
+        "--permission-mode", "bypassPermissions", "--tools", "default",
         "--output-format", "stream-json", "--verbose",
+    ]
+
+
+def test_full_access_can_be_disabled():
+    a = ClaudeCodeAdapter(AgentCfg(command="claude", full_access=False))
+    assert a._build_cmd("do X") == [
+        "claude", "-p", "do X", "--output-format", "stream-json", "--verbose",
     ]
 
 

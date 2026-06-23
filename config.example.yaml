@@ -35,12 +35,14 @@ agents:
     command: claude            # resolved on PATH (claude.cmd on Windows)
     model: ""                  # optional: e.g. sonnet; empty = Claude Code default
     effort: ""                 # optional reasoning level: low|medium|high; empty = CLI default
+    full_access: true          # pass permission/tool flags so the CLI can read/write/run/search
     mode: headless             # headless | pty
   codex:
     enabled: true
     command: codex
     model: ""                  # optional: e.g. gpt-5; empty = Codex CLI default
     effort: ""                 # optional reasoning level: low|medium|high; empty = CLI default
+    full_access: true          # bypass Codex approval/sandbox prompts for Foreman-launched runs
     mode: headless
 
 # Monitoring sources.

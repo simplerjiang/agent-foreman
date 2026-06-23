@@ -8,7 +8,7 @@ follow-up. It does not execute tools directly; it only chooses how to steer the 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from foreman.shared.i18n import language_directive
@@ -24,18 +24,23 @@ MAX_COMPACT_CHARS = 12000
 PLAN_SYSTEM = (
     "You are the PM agent for Foreman. Analyze the user's task before any coding CLI is launched. "
     "Choose which enabled coding agent should run, which coding-agent model/effort to use, and "
-    "write the exact instruction for that agent. The dispatch model is already being used for you, "
+    "write the exact instruction for that agent. Deliberate before dispatch: produce concise "
+    "visible decision notes and a todo list, then mark ready only when no more planning would "
+    "change the launch decision. Do not reveal hidden chain-of-thought; decision notes must be "
+    "short, evidence-oriented summaries. The dispatch model is already being used for you, "
     "the PM brain; never copy it into the coding-agent model field. Choose the coding agent "
     "yourself. Prefer the highest-capability enabled agent/model/effort over saving tokens; use "
     "high effort by default unless the task is clearly trivial. If no coding-agent model is "
     "configured, leave model empty so the CLI uses its own default/profile. Keep the instruction "
     "actionable, include acceptance checks, and tell the agent not to push, merge, or deploy unless "
     "the user explicitly requested it. Never tell one coding agent to launch or shell out to another "
-    "coding agent; Foreman owns all Claude Code and Codex process launches. Human-facing JSON string "
+    "coding agent; Foreman owns all Claude Code and Codex process launches. Assume the selected "
+    "coding agent may use its available file read/write/edit, shell command, and web/search tools "
+    "when its full_access setting is true. Human-facing JSON string "
     "values must follow the selected output language; keep only identifiers, paths, commands, code, "
     "and quoted user text as-is. Respond with ONLY JSON: "
     '{"summary": str, "agent": "claude-code|codex", "model": str, "effort": "low|medium|high|", '
-    '"instruction": str}.'
+    '"instruction": str, "todo": [str], "deliberation": [str], "ready": bool}.'
 )
 
 REVIEW_SYSTEM = (
@@ -72,6 +77,10 @@ class PMPlan:
     effort: str
     instruction: str
     summary: str = ""
+    todo: list[str] = field(default_factory=list)
+    deliberation: list[str] = field(default_factory=list)
+    ready: bool = True
+    planning_rounds: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -84,6 +93,27 @@ class PMReview:
 
 def _as_str(value: object) -> str:
     return "" if value is None else str(value).strip()
+
+
+def _as_bool(value: object, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = _as_str(value).lower()
+    if text in {"true", "yes", "1"}:
+        return True
+    if text in {"false", "no", "0"}:
+        return False
+    return default
+
+
+def _as_str_list(value: object, *, max_items: int = 12) -> list[str]:
+    if isinstance(value, str):
+        items = [line.strip(" -\t") for line in value.splitlines()]
+    elif isinstance(value, list):
+        items = [_as_str(item) for item in value]
+    else:
+        items = []
+    return [item for item in items if item][:max_items]
 
 
 def _extract_json_object(raw: str) -> dict | None:
@@ -134,6 +164,9 @@ def parse_plan(
         effort=effort,
         instruction=instruction,
         summary=_as_str(obj.get("summary")),
+        todo=_as_str_list(obj.get("todo")),
+        deliberation=_as_str_list(obj.get("deliberation")),
+        ready=_as_bool(obj.get("ready"), default=True),
     )
 
 
@@ -153,18 +186,40 @@ def build_plan_prompt(
     goal: str,
     *,
     workspace: str,
-    available_agents: list[dict[str, str]],
+    available_agents: list[dict[str, Any]],
     requested_agent: str,
     pm_model: str,
     requested_effort: str,
     context: str = "",
+    planning_rounds: list[dict[str, Any]] | None = None,
+    round_no: int = 1,
+    min_rounds: int = 1,
+    max_rounds: int = 1,
 ) -> str:
     parts = [
         f"# User task\n{goal}",
         f"# Workspace\n{workspace}",
+        "# PM planning round\n"
+        + json.dumps(
+            {
+                "round": round_no,
+                "min_rounds_before_dispatch": min_rounds,
+                "max_rounds": max_rounds,
+                "ready_rule": (
+                    "Set ready=false if another planning round is likely to change agent choice, "
+                    "todo, acceptance checks, or launch instruction."
+                ),
+            },
+            ensure_ascii=False,
+        ),
     ]
     if context:
         parts.append(f"# Existing session context\n{context}")
+    if planning_rounds:
+        parts.append(
+            "# Prior PM planning rounds\n"
+            + json.dumps(planning_rounds[-4:], ensure_ascii=False)
+        )
     parts.extend(
         [
             "# Enabled agents\n" + json.dumps(available_agents, ensure_ascii=False),
@@ -176,6 +231,11 @@ def build_plan_prompt(
                     "requested_effort": requested_effort,
                     "model_rule": (
                         "pm_model is for the PM brain only; do not pass it to the coding CLI"
+                    ),
+                    "capability_rule": (
+                        "When an enabled agent has full_access=true, Foreman launches that CLI "
+                        "with permission flags intended to allow file read/write/edit, shell, "
+                        "and web/search use where the CLI supports those tools."
                     ),
                 },
                 ensure_ascii=False,
@@ -282,6 +342,8 @@ def build_review_prompt(
                     "model": plan.model,
                     "effort": plan.effort,
                     "instruction": plan.instruction,
+                    "todo": plan.todo,
+                    "deliberation": plan.deliberation,
                 },
                 ensure_ascii=False,
             ),
@@ -301,17 +363,27 @@ def build_compact_prompt(goal: str, timeline: str, *, existing_context: str = ""
 
 
 class PMAgent:
-    def __init__(self, llm: LLMClient, *, language: str = "zh", max_runs: int = 3) -> None:
+    def __init__(
+        self,
+        llm: LLMClient,
+        *,
+        language: str = "zh",
+        max_runs: int = 3,
+        min_plan_rounds: int = 2,
+        max_plan_rounds: int = 3,
+    ) -> None:
         self.llm = llm
         self.language = language
         self.max_runs = max(1, int(max_runs))
+        self.min_plan_rounds = max(1, int(min_plan_rounds))
+        self.max_plan_rounds = max(self.min_plan_rounds, int(max_plan_rounds))
 
     async def plan(
         self,
         goal: str,
         *,
         workspace: str,
-        available_agents: list[dict[str, str]],
+        available_agents: list[dict[str, Any]],
         requested_agent: str,
         pm_model: str,
         requested_effort: str,
@@ -320,30 +392,59 @@ class PMAgent:
         on_stream=None,
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
-        prompt = build_plan_prompt(
-            goal,
-            workspace=workspace,
-            available_agents=available_agents,
-            requested_agent=requested_agent,
-            pm_model=pm_model,
-            requested_effort=requested_effort,
-            context=context,
-        )
-        raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)],
-            json_mode=True,
-            model=pm_model,
-            on_stream=on_stream,
-        )
         enabled = [_as_str(a.get("name")) for a in available_agents]
-        return parse_plan(
-            raw,
-            enabled_agents=enabled,
-            fallback_agent=requested_agent or (enabled[0] if enabled else "claude-code"),
-            fallback_model="",
-            fallback_effort=requested_effort,
-            fallback_instruction=fallback_instruction,
-        )
+        rounds: list[dict[str, Any]] = []
+        plan: PMPlan | None = None
+        for round_no in range(1, self.max_plan_rounds + 1):
+            prompt = build_plan_prompt(
+                goal,
+                workspace=workspace,
+                available_agents=available_agents,
+                requested_agent=requested_agent,
+                pm_model=pm_model,
+                requested_effort=requested_effort,
+                context=context,
+                planning_rounds=rounds,
+                round_no=round_no,
+                min_rounds=self.min_plan_rounds,
+                max_rounds=self.max_plan_rounds,
+            )
+            raw = await self.llm.complete(
+                [Message("system", system), Message("user", prompt)],
+                json_mode=True,
+                model=pm_model,
+                on_stream=on_stream,
+            )
+            plan = parse_plan(
+                raw,
+                enabled_agents=enabled,
+                fallback_agent=requested_agent or (enabled[0] if enabled else "claude-code"),
+                fallback_model="",
+                fallback_effort=requested_effort,
+                fallback_instruction=fallback_instruction,
+            )
+            rounds.append(
+                {
+                    "round": round_no,
+                    "ready": plan.ready,
+                    "summary": plan.summary,
+                    "todo": plan.todo,
+                    "deliberation": plan.deliberation,
+                    "agent": plan.agent,
+                    "effort": plan.effort,
+                }
+            )
+            if round_no >= self.min_plan_rounds and plan.ready:
+                break
+        if plan is None:
+            plan = PMPlan(
+                agent=requested_agent or (enabled[0] if enabled else "claude-code"),
+                model="",
+                effort=requested_effort,
+                instruction=fallback_instruction,
+            )
+        plan.planning_rounds = rounds
+        return plan
 
     async def review(
         self,

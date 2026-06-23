@@ -65,7 +65,9 @@ def test_api_agents_lists_enabled_with_model():
     }
     c = TestClient(create_app(cfg))
     agents = c.get("/api/agents").json()
-    assert agents == [{"name": "claude-code", "model": "sonnet", "effort": "high"}]
+    assert agents == [
+        {"name": "claude-code", "model": "sonnet", "effort": "high", "full_access": True}
+    ]
 
 
 def test_agent_settings_persist_and_refresh_runner(tmp_path):
@@ -97,6 +99,7 @@ def test_agent_settings_persist_and_refresh_runner(tmp_path):
                     "command": "claude.cmd",
                     "model": "sonnet",
                     "effort": "high",
+                    "full_access": False,
                 },
                 {"name": "codex", "enabled": False, "command": "codex", "model": "gpt-5"},
             ]
@@ -106,11 +109,12 @@ def test_agent_settings_persist_and_refresh_runner(tmp_path):
     assert {row["name"] for row in saved} == {"claude-code", "codex"}
     assert cfg.agents["claude-code"].command == "claude.cmd"
     assert cfg.agents["claude-code"].model == "sonnet"
+    assert cfg.agents["claude-code"].full_access is False
     assert cfg.agents["codex"].enabled is False
     assert "claude.cmd" in (store.get_setting("agents.json") or "")
     assert runner.syncs >= 2
     assert c.get("/api/agents").json() == [
-        {"name": "claude-code", "model": "sonnet", "effort": "high"}
+        {"name": "claude-code", "model": "sonnet", "effort": "high", "full_access": False}
     ]
 
 

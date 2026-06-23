@@ -10,7 +10,7 @@ import asyncio
 import json
 
 from foreman.client.core.dispatch_service import DispatchService, _explicit_agent_targets
-from foreman.client.core.pm_agent import PMAgent, PMPlan, PMReview, events_to_text
+from foreman.client.core.pm_agent import PMAgent, PMPlan, PMReview, events_to_text, parse_plan
 from foreman.client.store import Store
 from foreman.client.store.models import (
     Approval,
@@ -223,6 +223,31 @@ def test_events_to_text_extracts_nested_agent_item_text():
     assert "nested text" in events_to_text(rows)
 
 
+def test_parse_plan_extracts_todo_and_deliberation():
+    plan = parse_plan(
+        json.dumps(
+            {
+                "summary": "use codex",
+                "agent": "codex",
+                "effort": "high",
+                "instruction": "do it",
+                "todo": ["inspect", "test"],
+                "deliberation": ["codex has the right repo tools"],
+                "ready": False,
+            }
+        ),
+        enabled_agents=["codex"],
+        fallback_agent="codex",
+        fallback_model="",
+        fallback_effort="high",
+        fallback_instruction="fallback",
+    )
+
+    assert plan.todo == ["inspect", "test"]
+    assert plan.deliberation == ["codex has the right repo tools"]
+    assert plan.ready is False
+
+
 async def test_create_runs_launcher_in_background(tmp_path):
     calls: list[tuple] = []
 
@@ -406,6 +431,43 @@ async def test_pm_agent_plan_prompt_requires_selected_language(tmp_path):
     assert plan.summary == "使用 codex"
     assert "请始终用简体中文回答" in captured["system"]
     assert "Human-facing JSON string values must follow the selected output language" in captured["system"]
+
+
+async def test_pm_agent_plans_for_at_least_two_rounds(tmp_path):
+    captured: dict = {"calls": 0, "prompts": []}
+
+    class FakeLLM:
+        async def complete(self, messages, *, json_mode=False, model="", on_stream=None):
+            captured["calls"] += 1
+            captured["prompts"].append(messages[-1].content)
+            return json.dumps(
+                {
+                    "summary": f"round {captured['calls']}",
+                    "agent": "codex",
+                    "model": "",
+                    "effort": "high",
+                    "instruction": "do it",
+                    "todo": ["inspect", "test"],
+                    "deliberation": [f"note {captured['calls']}"],
+                    "ready": True,
+                }
+            )
+
+    pm = PMAgent(FakeLLM(), min_plan_rounds=2, max_plan_rounds=3)
+    plan = await pm.plan(
+        "fix x",
+        workspace=str(tmp_path),
+        available_agents=[{"name": "codex", "model": "", "effort": "", "full_access": True}],
+        requested_agent="codex",
+        pm_model="",
+        requested_effort="high",
+        fallback_instruction="fallback",
+    )
+
+    assert captured["calls"] == 2
+    assert len(plan.planning_rounds) == 2
+    assert "# Prior PM planning rounds" in captured["prompts"][1]
+    assert plan.todo == ["inspect", "test"]
 
 
 async def test_pm_model_override_is_not_passed_to_coding_agent(tmp_path):

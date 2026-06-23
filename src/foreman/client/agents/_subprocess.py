@@ -43,6 +43,9 @@ class SubprocessCliAdapter:
         """Reasoning level for this run: explicit arg, else the agent's config default ("")."""
         return (effort or getattr(self.cfg, "effort", "") or "").strip()
 
+    def _full_access(self) -> bool:
+        return bool(getattr(self.cfg, "full_access", True))
+
     def _build_cmd(self, instruction: str, model: str = "", effort: str = "") -> list[str]:
         raise NotImplementedError
 

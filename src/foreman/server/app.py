@@ -76,6 +76,7 @@ class _AgentSettingsRow(BaseModel):
     model: str = ""
     effort: str = ""
     mode: str = "headless"
+    full_access: bool = True
 
 
 class _AgentSettingsBody(BaseModel):
@@ -465,6 +466,18 @@ def create_app(
         store.set_setting(_WORKSPACES_SETTING, json.dumps(data, ensure_ascii=False))
         return data
 
+    def _bool_setting(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        text = str(value).strip().lower()
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+        return default
+
     def _clean_agents(items: list[Any]) -> dict[str, AgentCfg]:
         base = {**default_agents(), **(cfg.agents or {})}
         out: dict[str, AgentCfg] = {}
@@ -476,6 +489,7 @@ def create_app(
                 mode=current.mode,
                 model=current.model,
                 effort=getattr(current, "effort", ""),
+                full_access=_bool_setting(getattr(current, "full_access", True), True),
             )
         for item in items:
             if isinstance(item, _AgentSettingsRow):
@@ -496,6 +510,9 @@ def create_app(
                 mode=mode if mode in {"headless", "pty"} else "headless",
                 model=str(raw.get("model", "") or "").strip(),
                 effort=effort if effort in _VALID_AGENT_EFFORTS else "",
+                full_access=_bool_setting(
+                    raw.get("full_access"), getattr(current, "full_access", True)
+                ),
             )
         return out
 
@@ -508,6 +525,7 @@ def create_app(
                 "mode": a.mode,
                 "model": a.model,
                 "effort": getattr(a, "effort", ""),
+                "full_access": bool(getattr(a, "full_access", True)),
             }
             for name, a in sorted(cfg.agents.items())
             if name in _SUPPORTED_AGENTS
@@ -583,6 +601,7 @@ def create_app(
             "mode": a.mode,
             "model": a.model,
             "effort": getattr(a, "effort", ""),
+            "full_access": bool(getattr(a, "full_access", True)),
             "resolved_path": resolved,
             "ok": False,
             "version": "",
@@ -830,7 +849,12 @@ def create_app(
         """Enabled CLI agents + their configured model/effort defaults — the dispatch form's pickers
         (DESIGN §5.1). Shared-only: reads cfg, like /health (never touches the store)."""
         return [
-            {"name": name, "model": a.model, "effort": getattr(a, "effort", "")}
+            {
+                "name": name,
+                "model": a.model,
+                "effort": getattr(a, "effort", ""),
+                "full_access": bool(getattr(a, "full_access", True)),
+            }
             for name, a in sorted(_effective_agents().items())
             if a.enabled
         ]

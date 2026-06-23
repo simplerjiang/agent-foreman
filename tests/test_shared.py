@@ -28,6 +28,8 @@ def test_config_loads_defaults(tmp_path):
     assert sorted(cfg.agents) == ["claude-code", "codex"]
     assert cfg.agents["claude-code"].command == "claude"
     assert cfg.agents["codex"].command == "codex"
+    assert cfg.agents["claude-code"].full_access is True
+    assert cfg.agents["codex"].full_access is True
 
 
 def test_config_loads_env_next_to_config(tmp_path, monkeypatch):
