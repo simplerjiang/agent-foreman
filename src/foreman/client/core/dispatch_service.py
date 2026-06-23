@@ -473,10 +473,15 @@ class DispatchService:
         effort: str,
     ) -> None:
         enabled_agents = [
-            {"name": name, "model": cfg.model, "effort": getattr(cfg, "effort", "")}
+            {
+                "name": name,
+                "model": cfg.model,
+                "effort": getattr(cfg, "effort", ""),
+                "full_access": bool(getattr(cfg, "full_access", True)),
+            }
             for name, cfg in sorted(self.cfg.agents.items())
             if cfg.enabled
-        ] or [{"name": agent, "model": "", "effort": effort}]
+        ] or [{"name": agent, "model": "", "effort": effort, "full_access": True}]
         context = self._session_context(session_id)
         plan_kwargs = {
             "workspace": workspace,
@@ -544,6 +549,10 @@ class DispatchService:
             effort=plan.effort,
             instruction=plan.instruction,
             summary=plan.summary,
+            todo=plan.todo,
+            deliberation=plan.deliberation,
+            ready=plan.ready,
+            planning_rounds=plan.planning_rounds,
         )
 
     async def _emit_pm_plan(self, session_id: str, task_id: str, plan: PMPlan) -> None:
@@ -558,6 +567,10 @@ class DispatchService:
                 "model": plan.model,
                 "effort": plan.effort,
                 "instruction": plan.instruction,
+                "todo": plan.todo,
+                "deliberation": plan.deliberation,
+                "ready": plan.ready,
+                "planning_rounds": plan.planning_rounds,
             },
         )
         await self._persist_then_publish(event)
@@ -754,7 +767,9 @@ def _stream_delta(chunk: dict) -> str:
 def _fallback_instruction(goal: str, context: str = "") -> str:
     parts = [
         "You are working under Foreman's PM supervision. Complete the user task, verify the result, "
-        "and report honestly what changed and what could not be verified.",
+        "and report honestly what changed and what could not be verified. Use your available file "
+        "read/write/edit, shell command, and web/search tools as needed. Do not push, merge, or "
+        "deploy unless the user explicitly requested it.",
     ]
     if context:
         parts.append(f"Existing session context:\n{context}")
@@ -820,7 +835,12 @@ def _direct_agent_instruction(
     goal: str, agent: str, *, multi: bool, language: str = ""
 ) -> str:
     if not multi:
-        return goal
+        return (
+            f"{goal}\n\n"
+            "Foreman has launched you with the available file read/write/edit, shell command, "
+            "and web/search tools for this CLI. Use them as needed, verify the result, and do not "
+            "push, merge, or deploy unless the user explicitly requested it."
+        )
     if normalize_lang(language) == "zh":
         return (
             f"{goal}\n\n"

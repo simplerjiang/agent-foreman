@@ -15,10 +15,16 @@ from ._subprocess import SubprocessCliAdapter
 class ClaudeCodeAdapter(SubprocessCliAdapter):
     name = "claude-code"
 
+    def _access_args(self) -> list[str]:
+        if not self._full_access():
+            return []
+        return ["--permission-mode", "bypassPermissions", "--tools", "default"]
+
     def _build_cmd(self, instruction: str, model: str = "", effort: str = "") -> list[str]:
         return [
             self.cfg.command, "-p", instruction,
             *self._model_args(model),
+            *self._access_args(),
             "--output-format", "stream-json", "--verbose",
         ]
 
@@ -29,6 +35,7 @@ class ClaudeCodeAdapter(SubprocessCliAdapter):
         return [
             self.cfg.command, "-p", instruction, "--resume", native_session_id,
             *self._model_args(model),
+            *self._access_args(),
             "--output-format", "stream-json", "--verbose",
         ]
 

@@ -110,6 +110,9 @@ class AgentCfg(BaseModel):
     # A per-dispatch override (phone/web) wins over this. claude maps it to CLAUDE_CODE_EFFORT_LEVEL;
     # codex to `-c model_reasoning_effort=` (DESIGN §4.2).
     effort: str = ""
+    # Let the coding CLI use its built-in file, shell, and network/search tools without pausing on
+    # every permission prompt. The workspace allowlist still controls where Foreman may launch it.
+    full_access: bool = True
 
 
 def default_agents() -> dict[str, AgentCfg]:
