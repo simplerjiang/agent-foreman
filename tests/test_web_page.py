@@ -58,6 +58,8 @@ def test_debug_mode_gates_raw_data_and_event_meta_chips():
     assert "eventMetaChips" in js and "showAgent" in js and "ApiOutlined" in js
     assert "payload.summary, payload.instruction" in js
     assert "mergeStreamEvent" in js and "pm_reasoning" in js and "agent_reasoning" in js
+    assert "groupTimelineEvents" in js and "event-stream-panel" in js
+    assert "defaultActiveKey=${[\"body\"]}" in js
 
 
 def test_followup_compact_source_and_mobile_nav_wired():

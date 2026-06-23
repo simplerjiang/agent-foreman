@@ -91,6 +91,19 @@ async def test_stream_classifies_reasoning_json_lines(tmp_path):
     assert events[0].payload["delta"] == "thinking"
 
 
+async def test_stream_classifies_nested_reasoning_items(tmp_path):
+    lines = [
+        b'{"type":"item.completed","item":{"content":[{"type":"reasoning","summary":"plan"}]}}\n',
+        b'{"type":"result","result":"ok"}\n',
+    ]
+    a = fake_adapter(CodexAdapter, _cfg(), FakeProc(stdout_lines=lines))
+    h = await a.start("x", tmp_path, "s")
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_reasoning", "stop"]
+    assert events[0].payload["item"]["content"][0]["summary"] == "plan"
+
+
 async def test_stream_reports_nonzero_exit_with_stderr(tmp_path):
     a = fake_adapter(
         CodexAdapter,

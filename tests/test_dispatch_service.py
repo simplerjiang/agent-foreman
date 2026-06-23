@@ -207,6 +207,22 @@ async def test_compact_stores_context_snapshot_and_memory_items(tmp_path):
     ]
 
 
+def test_events_to_text_extracts_nested_agent_item_text():
+    rows = [
+        make_event(
+            "agent_output",
+            "codex",
+            "s1",
+            payload={
+                "type": "item.completed",
+                "item": {"content": [{"type": "output_text", "text": "nested text"}]},
+            },
+        )
+    ]
+
+    assert "nested text" in events_to_text(rows)
+
+
 async def test_create_runs_launcher_in_background(tmp_path):
     calls: list[tuple] = []
 
@@ -360,6 +376,38 @@ async def test_real_pm_agent_stream_chunks_are_persisted_and_published(tmp_path)
     assert "pm_output" in published and "pm_reasoning" in published
 
 
+async def test_pm_agent_plan_prompt_requires_selected_language(tmp_path):
+    captured: dict = {}
+
+    class FakeLLM:
+        async def complete(self, messages, *, json_mode=False, model="", on_stream=None):
+            captured["system"] = messages[0].content
+            return json.dumps(
+                {
+                    "summary": "使用 codex",
+                    "agent": "codex",
+                    "model": "",
+                    "effort": "high",
+                    "instruction": "完成任务并验证。",
+                }
+            )
+
+    pm = PMAgent(FakeLLM(), language="zh")
+    plan = await pm.plan(
+        "修复问题",
+        workspace=str(tmp_path),
+        available_agents=[{"name": "codex", "model": "", "effort": ""}],
+        requested_agent="codex",
+        pm_model="",
+        requested_effort="high",
+        fallback_instruction="fallback",
+    )
+
+    assert plan.summary == "使用 codex"
+    assert "请始终用简体中文回答" in captured["system"]
+    assert "Human-facing JSON string values must follow the selected output language" in captured["system"]
+
+
 async def test_pm_model_override_is_not_passed_to_coding_agent(tmp_path):
     store = _store(tmp_path)
 
@@ -457,9 +505,60 @@ async def test_explicit_multi_agent_request_directly_launches_named_agents(tmp_p
 
     assert [call[0] for call in runner.launched] == ["codex", "claude-code"]
     assert [call[3] for call in runner.launched] == ["", ""]  # PM model is not a CLI model
-    assert all("Do not invoke another coding agent" in call[1] for call in runner.launched)
+    assert all("不要通过 shell 调用其他编码 agent" in call[1] for call in runner.launched)
     plans = [json.loads(e.payload_json) for e in store.get_events(res["session_id"]) if e.type == "pm_plan"]
     assert [p["agent"] for p in plans] == ["codex", "claude-code"]
+    assert [p["summary"] for p in plans] == [
+        "Foreman 直接下发给 codex。",
+        "Foreman 直接下发给 claude-code。",
+    ]
+
+
+async def test_explicit_multi_agent_request_launches_before_waiting(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        language = "en"
+
+        async def plan(self, *_a, **_kw):
+            raise AssertionError("direct agent request should not call PM planning")
+
+    class FakeHandle:
+        def __init__(self, agent, session_id):
+            self.agent = agent
+            self.session_id = session_id
+
+    class FakeRunner:
+        def __init__(self):
+            self.launched = []
+            self.wait_started = asyncio.Event()
+            self.release_waits = asyncio.Event()
+
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            self.launched.append(agent)
+            return FakeHandle(agent, session_id)
+
+        async def wait(self, handle):
+            self.wait_started.set()
+            await self.release_waits.wait()
+
+    cfg = _cfg(
+        agents={
+            "claude-code": AgentCfg(command="claude", enabled=True),
+            "codex": AgentCfg(command="codex", enabled=True),
+        },
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    runner = FakeRunner()
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=FakePM())
+
+    await svc.create("ask codex and claude to report", model="pm-model")
+    await asyncio.wait_for(runner.wait_started.wait(), timeout=1)
+    try:
+        assert runner.launched == ["codex", "claude-code"]
+    finally:
+        runner.release_waits.set()
+        await asyncio.gather(*list(svc._tasks))
 
 
 def test_explicit_agent_target_detection_is_conservative():

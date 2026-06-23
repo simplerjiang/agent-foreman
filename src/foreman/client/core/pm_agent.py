@@ -31,7 +31,9 @@ PLAN_SYSTEM = (
     "configured, leave model empty so the CLI uses its own default/profile. Keep the instruction "
     "actionable, include acceptance checks, and tell the agent not to push, merge, or deploy unless "
     "the user explicitly requested it. Never tell one coding agent to launch or shell out to another "
-    "coding agent; Foreman owns all Claude Code and Codex process launches. Respond with ONLY JSON: "
+    "coding agent; Foreman owns all Claude Code and Codex process launches. Human-facing JSON string "
+    "values must follow the selected output language; keep only identifiers, paths, commands, code, "
+    "and quoted user text as-is. Respond with ONLY JSON: "
     '{"summary": str, "agent": "claude-code|codex", "model": str, "effort": "low|medium|high|", '
     '"instruction": str}.'
 )
@@ -40,7 +42,9 @@ REVIEW_SYSTEM = (
     "You are the PM agent reviewing a coding CLI's returned timeline. Decide whether the original "
     "user task is actually complete. If it is not complete, write the next follow-up instruction to "
     "send to the same agent. Be strict: missing tests, unverified behavior, obvious errors, or partial "
-    "implementation means done=false. Respond with ONLY JSON: "
+    "implementation means done=false. Human-facing JSON string values must follow the selected output "
+    "language; keep only identifiers, paths, commands, code, and quoted user text as-is. Respond with "
+    "ONLY JSON: "
     '{"done": bool, "summary": str, "reason": str, "follow_up": str}.'
 )
 
@@ -187,7 +191,12 @@ def events_to_text(rows: list[Any], *, max_chars: int = MAX_EVENT_CHARS) -> str:
         if getattr(row, "type", "") in {"pm_output", "pm_reasoning"}:
             continue
         try:
-            payload = json.loads(getattr(row, "payload_json", "") or "{}")
+            raw_payload = getattr(row, "payload", None)
+            payload = (
+                raw_payload
+                if isinstance(raw_payload, dict)
+                else json.loads(getattr(row, "payload_json", "") or "{}")
+            )
         except (TypeError, ValueError):
             payload = {}
         summary = _payload_summary(payload)
@@ -212,17 +221,41 @@ def _payload_summary(payload: object) -> str:
         value = _as_str(payload.get(key))
         if value:
             return value
-    message = payload.get("message")
-    if isinstance(message, dict):
-        content = message.get("content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            texts = [_as_str(block.get("text")) for block in content if isinstance(block, dict)]
-            joined = "\n".join(t for t in texts if t)
-            if joined:
-                return joined
+    for key in ("message", "item"):
+        nested = _content_summary(payload.get(key))
+        if nested:
+            return nested
     return json.dumps(payload, ensure_ascii=False)[:2000]
+
+
+def _content_summary(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return ""
+    for key in ("text", "delta", "thinking", "reasoning", "summary"):
+        direct = _as_str(value.get(key))
+        if direct:
+            return direct
+    content = value.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        for key in ("text", "delta", "thinking", "reasoning", "summary"):
+            text = _as_str(block.get(key))
+            if text:
+                parts.append(text)
+                break
+        else:
+            nested = _content_summary(block)
+            if nested:
+                parts.append(nested)
+    return "\n".join(parts).strip()
 
 
 def build_review_prompt(

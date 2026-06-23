@@ -375,6 +375,20 @@ body {
   margin-top: 8px;
 }
 
+.event-stream-panel {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.event-stream-label {
+  min-width: 0;
+}
+
+.event-stream-body {
+  max-height: 360px;
+  margin-top: 8px;
+}
+
 .report-body {
   max-height: 420px;
 }

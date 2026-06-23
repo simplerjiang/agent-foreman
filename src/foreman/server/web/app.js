@@ -160,6 +160,8 @@
       ev_action_executed: "已执行",
       ev_action_undone: "已回退",
       ev_context_compact: "上下文压缩",
+      streamChunks: "片段",
+      emptyStream: "暂无可读内容",
       evError: "出错",
       evDone: "已完成",
       evDeferred: "已记录，等待执行层接管",
@@ -321,6 +323,8 @@
       ev_action_executed: "Executed",
       ev_action_undone: "Undone",
       ev_context_compact: "Context compacted",
+      streamChunks: "chunks",
+      emptyStream: "No readable content yet",
       evError: "Error",
       evDone: "Done",
       evDeferred: "recorded, waiting for execution layer",
@@ -369,6 +373,12 @@
     action_undone: "UndoOutlined",
     context_compact: "CompressOutlined",
   };
+  const STREAM_EVENT_TYPES = new Set([
+    "pm_output",
+    "pm_reasoning",
+    "agent_output",
+    "agent_reasoning",
+  ]);
 
   const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
   const setToken = (token) => token
@@ -649,29 +659,37 @@
   }
 
   function extractAgentText(payload) {
-    if (!payload || typeof payload !== "object") return "";
-    if (typeof payload.text === "string") return payload.text;
-    if (typeof payload.delta === "string") return payload.delta;
-    if (typeof payload.result === "string") return payload.result;
-    if (typeof payload.thinking === "string") return payload.thinking;
-    if (typeof payload.reasoning === "string") return payload.reasoning;
-    if (typeof payload.summary === "string") return payload.summary;
-    const msg = payload.message;
-    if (!msg || typeof msg !== "object") return "";
-    const content = msg.content;
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return "";
+    return extractTextParts(payload).join("\n").trim();
+  }
+
+  function extractTextParts(value) {
+    if (!value || typeof value !== "object") return [];
     const parts = [];
+    for (const key of ["text", "result", "thinking", "reasoning", "summary"]) {
+      if (typeof value[key] === "string" && value[key].trim()) parts.push(value[key]);
+    }
+    if (!parts.length && typeof value.delta === "string" && value.delta.trim()) {
+      parts.push(value.delta);
+    }
+    for (const key of ["message", "item"]) {
+      if (value[key] && typeof value[key] === "object") parts.push(...extractTextParts(value[key]));
+    }
+    const content = value.content;
+    if (typeof content === "string" && content.trim()) return [...parts, content];
+    if (!Array.isArray(content)) return parts;
+    const contentParts = [];
     for (const block of content) {
       if (!block || typeof block !== "object") continue;
-      if (typeof block.text === "string") parts.push(block.text);
-      else if (typeof block.thinking === "string") parts.push(block.thinking);
-      else if (typeof block.reasoning === "string") parts.push(block.reasoning);
-      else if (typeof block.summary === "string") parts.push(block.summary);
-      else if (block.type === "tool_use") parts.push(`[tool] ${block.name || "tool"}`);
-      else if (block.type === "tool_result") parts.push(String(block.content || ""));
+      if (typeof block.text === "string") contentParts.push(block.text);
+      else if (typeof block.delta === "string") contentParts.push(block.delta);
+      else if (typeof block.thinking === "string") contentParts.push(block.thinking);
+      else if (typeof block.reasoning === "string") contentParts.push(block.reasoning);
+      else if (typeof block.summary === "string") contentParts.push(block.summary);
+      else if (block.type === "tool_use") contentParts.push(`[tool] ${block.name || "tool"}`);
+      else if (block.type === "tool_result") contentParts.push(String(block.content || ""));
+      else contentParts.push(...extractTextParts(block));
     }
-    return parts.join("\n").trim();
+    return [...parts, ...contentParts].filter(Boolean);
   }
 
   function summarizeEvent(event, d) {
@@ -757,6 +775,58 @@
       },
     };
     return next;
+  }
+
+  function streamGroupKey(event) {
+    const payload = event.payload || {};
+    return [
+      event.session_id || "",
+      event.task_id || "",
+      event.type || "",
+      event.source || "",
+      payload.stream_id || "plain",
+    ].join("\u001f");
+  }
+
+  function joinStreamSummaries(events, d) {
+    const parts = events.map((event) => summarizeEvent(event, d).trim()).filter(Boolean);
+    const usesDelta = events.some((event) => (
+      event.payload && typeof event.payload.delta === "string"
+    ));
+    return usesDelta ? parts.join("") : parts.join("\n\n");
+  }
+
+  function groupTimelineEvents(events, d, debugMode) {
+    const out = [];
+    const indexes = new Map();
+    for (const event of events) {
+      if (!STREAM_EVENT_TYPES.has(event.type)) {
+        out.push(event);
+        continue;
+      }
+      const summary = summarizeEvent(event, d).trim();
+      if (!summary && !debugMode) continue;
+      const key = streamGroupKey(event);
+      let idx = indexes.get(key);
+      if (idx === undefined) {
+        idx = out.length;
+        indexes.set(key, idx);
+        out.push({ ...event, _grouped: true, _groupEvents: [] });
+      }
+      const group = out[idx];
+      group._groupEvents.push(event);
+      group.ts = event.ts || group.ts;
+      group.payload = { ...(group.payload || {}), ...(event.payload || {}) };
+    }
+    return out.map((event) => {
+      if (!event._grouped) return event;
+      const grouped = event._groupEvents || [];
+      return {
+        ...event,
+        _groupCount: grouped.length,
+        _summary: joinStreamSummaries(grouped, d),
+      };
+    });
   }
 
   function eventSignature(event) {
@@ -1717,14 +1787,16 @@
   }
 
   function Timeline({ events, d, lang, debugMode }) {
-    if (!events.length) {
+    const displayEvents = groupTimelineEvents(events, d, debugMode);
+    if (!displayEvents.length) {
       return html`<${A.Empty} image=${A.Empty.PRESENTED_IMAGE_SIMPLE} description=${d.selectSessionHint} />`;
     }
     return html`
       <${A.List}
         itemLayout="vertical"
-        dataSource=${events}
+        dataSource=${displayEvents}
         renderItem=${(event) => {
+          if (event._grouped) return renderStreamGroup(event, d, lang, debugMode);
           const eventIcon = EVENT_ICON[event.type] || "InfoCircleOutlined";
           const summary = summarizeEvent(event, d);
           const chips = eventMetaChips(event);
@@ -1753,6 +1825,53 @@
             </${A.List.Item}>`;
         }}
       />`;
+  }
+
+  function renderStreamGroup(event, d, lang, debugMode) {
+    const eventIcon = EVENT_ICON[event.type] || "InfoCircleOutlined";
+    const summary = event._summary || "";
+    const chips = eventMetaChips(event);
+    const label = html`
+      <${A.Space} className="event-stream-label" wrap>
+        ${icon(eventIcon)}
+        <strong>${d[`ev_${event.type}`] || event.type || "-"}</strong>
+        <${A.Typography.Text} type="secondary">${event.source || ""}</${A.Typography.Text}>
+        <${A.Typography.Text} type="secondary">${formatDateTime(event.ts, lang)}</${A.Typography.Text}>
+        <${A.Tag}>${event._groupCount || 0} ${d.streamChunks}</${A.Tag}>
+      </${A.Space}>`;
+    const items = [];
+    items.push({
+      key: "body",
+      label,
+      children: html`
+        ${chips.length > 0 && html`
+          <${A.Space} className="event-meta" wrap size=${[4, 4]}>
+            ${chips.map((chip) => html`
+              <${A.Tag} key=${chip.key} color=${chip.color} icon=${icon(chip.icon)}>${chip.value}</${A.Tag}>
+            `)}
+          </${A.Space}>
+        `}
+        ${summary
+          ? html`<${MarkdownBody} text=${summary} className="event-body event-stream-body" maxChars=${8000} />`
+          : html`<${A.Typography.Text} type="secondary">${d.emptyStream}</${A.Typography.Text}>`}
+      `,
+    });
+    if (debugMode) {
+      items.push({
+        key: "raw",
+        label: d.rawJson,
+        children: html`<pre className="raw-body">${JSON.stringify(event._groupEvents || [], null, 2)}</pre>`,
+      });
+    }
+    return html`
+      <${A.List.Item}>
+        <${A.Collapse}
+          className="event-stream-panel"
+          size="small"
+          defaultActiveKey=${["body"]}
+          items=${items}
+        />
+      </${A.List.Item}>`;
   }
 
   function DecisionsView({ d, lang, cards, approvals, loadCards, loadApprovals, chooseCard, openDetail, decideApproval }) {
