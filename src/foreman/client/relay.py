@@ -55,12 +55,17 @@ class RelayConnector:
         name: str = "",
         connect: Callable[[str], Awaitable[object]] | None = None,
         on_frame: Callable[[Envelope], Awaitable[None]] | None = None,
+        on_status: Callable[[bool], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
         backoff_base: float = 1.0,
         backoff_cap: float = 60.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
         heartbeat_interval: float = 30.0,
         heartbeat_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        sync_provider: Callable[[], Envelope | None] | None = None,
+        sync_interval: float = 20.0,
+        sync_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.url = url
         self.access_key = access_key
@@ -68,6 +73,13 @@ class RelayConnector:
         self.name = name
         self._connect = connect or _default_connect
         self._on_frame = on_frame
+        # Optional liveness callback (True after a successful handshake, False when the session
+        # ends) so a supervising CloudManager can surface "connected" in the UI without reaching
+        # into the connector's internals. Must never raise.
+        self._on_status = on_status
+        # Optional error observer: the dial/read errors run() otherwise swallows are reported here
+        # so the UI can show "connection failed: ..." instead of an indefinite "connecting".
+        self._on_error = on_error
         self._backoff_base = backoff_base
         self._backoff_cap = backoff_cap
         self._sleep = sleep
@@ -76,7 +88,32 @@ class RelayConnector:
         # the backoff `sleep` so injecting one in a reconnect test doesn't perturb the other.
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_sleep = heartbeat_sleep
+        # Optional periodic display-cache push (DESIGN §8.5 ③ / T7.5): while connected, send a
+        # KIND_CACHE_SYNC frame (session/card summaries — never diffs/秘方) so the relay can serve
+        # the phone view. `sync_provider` returns the frame to send (or None to skip a tick).
+        self._sync_provider = sync_provider
+        self._sync_interval = sync_interval
+        self._sync_sleep = sync_sleep
         self._handshook = False  # set per-session once the relay accepts our key
+
+    def _notify_status(self, connected: bool) -> None:
+        """Fire the optional liveness callback, swallowing any error (status reporting must never
+        break the connection loop)."""
+        if self._on_status is None:
+            return
+        try:
+            self._on_status(connected)
+        except Exception:  # noqa: BLE001 — a buggy observer must not kill the relay loop
+            pass
+
+    def _notify_error(self, exc: Exception) -> None:
+        """Report a dial/read error to the optional observer, swallowing observer errors."""
+        if self._on_error is None:
+            return
+        try:
+            self._on_error(exc)
+        except Exception:  # noqa: BLE001 — a buggy observer must not kill the relay loop
+            pass
 
     def hello(self) -> Envelope:
         """The first frame: access key (inside TLS, never bare) + machine identity (§8.5 ①)."""
@@ -106,10 +143,13 @@ class RelayConnector:
             # Explicit denial (revoked/unknown/expired) — fatal; retrying a bad key is pointless.
             raise RelayAuthError(str(ack.payload.get("reason") or "handshake denied"))
         self._handshook = True
+        self._notify_status(True)
 
         tasks = [asyncio.create_task(self._read_loop(conn))]
         if self._heartbeat_interval and self._heartbeat_interval > 0:
             tasks.append(asyncio.create_task(self._heartbeat_loop(conn)))
+        if self._sync_provider is not None:
+            tasks.append(asyncio.create_task(self._sync_loop(conn)))
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
@@ -144,6 +184,16 @@ class RelayConnector:
             await self._heartbeat_sleep(self._heartbeat_interval)
             await conn.send(ping)
 
+    async def _sync_loop(self, conn) -> None:
+        """Push a display-cache snapshot on connect, then every `sync_interval` seconds (§8.5 ③).
+        The provider returns the frame (or None to skip); a send failure ends the session and
+        run()'s backoff reconnects, same as a heartbeat/read error."""
+        while True:
+            frame = self._sync_provider() if self._sync_provider is not None else None
+            if frame is not None:
+                await conn.send(frame.to_json())
+            await self._sync_sleep(self._sync_interval)
+
     async def run(self, *, max_attempts: int | None = None) -> None:
         """Keep a connection up forever, reconnecting with exponential backoff (§8.5 ③).
 
@@ -162,9 +212,11 @@ class RelayConnector:
                 await self.run_once(conn)
             except RelayAuthError:
                 raise  # key needs fixing — retrying a revoked/unknown key is pointless
-            except Exception:
-                pass  # transport/connect/read error -> back off and retry below
+            except Exception as exc:  # noqa: BLE001
+                self._notify_error(exc)  # surface the dial/read error; still back off and retry
             finally:
+                if self._handshook:
+                    self._notify_status(False)
                 if conn is not None:
                     await _safe_close(conn)
             tries += 1

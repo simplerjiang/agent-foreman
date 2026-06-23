@@ -21,6 +21,10 @@ class Secrets(BaseSettings):
     llm_api_key: str = ""
     vapid_private_key: str = ""
     auth_token: str = ""
+    # Access key the local process uses to dial the team relay 总机 (DESIGN §8.5 ①). One per
+    # machine, minted at the relay's /keys.html, individually revocable. Stays local — the relay
+    # only ever sees its hash. Empty = this machine isn't linked to a cloud relay.
+    cloud_access_key: str = ""
     # Optional at-rest encryption key for definition bodies (DESIGN §765, T6.2). A urlsafe-base64
     # Fernet key (scripts/gen_definition_key.py). Empty (the default) → bodies stay plaintext.
     definition_key: str = ""
