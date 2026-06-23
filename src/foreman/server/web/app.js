@@ -779,7 +779,7 @@
         ${(events && events.length) ? html`<div className="ctx-meter">
           <span>${d.context}</span>
           <div className="track"><span style=${{ width: `${pct}%` }}></span></div>
-          <span>≈${est}k</span>
+          <span>≈${Math.round(est / 100) / 10}k</span>
           <button className="btn ghost sm" style=${{ marginLeft: "auto" }} onClick=${runCompact} disabled=${compacting || !sessionRow}>⟲ ${compacting ? d.compacting : d.compact}</button>
         </div>` : null}
         ${compactStatus ? html`<div className=${`alert ${compactStatus.includes(d.compactFailed) ? "error" : "info"}`} style=${{ marginBottom: 9 }}>${compactStatus}</div>` : null}
@@ -923,7 +923,7 @@
     const { d, lang, workspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace, browseFolder, deleteWorkspace, loadWorkspaces,
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
-      cloud, setCloud, saveCloud, connectCloud, disconnectCloud, cloudStatus, cloudAvailable,
+      cloud, setCloud, saveCloud, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2, setLang } = props;
     const updateAgent = (name, patch) => setAgentSettings((rows) => (rows || []).map((r) => (r.name === name ? { ...r, ...patch } : r)));
     const sliderRef = useRef(null);
@@ -1015,6 +1015,7 @@
           <button className="btn" onClick=${saveCloud} disabled=${!cloudAvailable}>${d.save}</button>
           <button className="btn primary" onClick=${connectCloud} disabled=${!cloudAvailable}>${d.connect}</button>
           <button className="btn" onClick=${disconnectCloud} disabled=${!cloudAvailable}>${d.disconnect}</button>
+          ${cloud.access_key_set ? html`<button className="btn danger" onClick=${clearCloudKey} disabled=${!cloudAvailable}>${d.clearKey}</button>` : null}
         </div>
       </div>
 
@@ -1083,7 +1084,7 @@
   // ===========================================================================
   function MobileShell(props) {
     const { d, lang, view, setView, mTab, setMTab, drawerOpen, setDrawerOpen, counts, sessionRow,
-      dig, mainProps, sessions, selected, onSelect } = props;
+      dig, mainProps, sessions, selected, onSelect, onNew } = props;
     const titles = { workspace: sessionRow ? (sessionRow.goal || d.navWorkspace) : d.navWorkspace, decisions: d.navDecisions, briefings: d.navBriefings, rules: d.navRules, settings: d.navSettings };
     const live = sessionRow && (sessionRow.status || "").toLowerCase().match(/run|active/);
     return html`<div className="mobile">
@@ -1096,7 +1097,7 @@
         <div className="m-drawer">
           <div className="sb-brand"><div className="name">Foreman</div><div className="sub">${d.productSubtitle}</div></div>
           <${NavList} d=${d} view=${view} onView=${(k) => { setView(k); setDrawerOpen(false); }} counts=${counts} />
-          <div className="sb-section" style=${{ marginTop: 18 }}><span>${d.sessions}</span></div>
+          <div className="sb-section" style=${{ marginTop: 18 }}><span>${d.sessions}</span><span className="add" onClick=${() => { onNew(); setDrawerOpen(false); }} title=${d.newSession}>+</span></div>
           <div className="sb-sessions" style=${{ flex: "0 1 auto", maxHeight: "40vh" }}>
             ${!(sessions || []).length ? html`<${Empty} icon="✉" text=${d.noActiveSession} />` :
               sessions.map((s) => html`<${SessionItem} key=${s.id} s=${s} d=${d} lang=${lang} active=${s.id === selected} onClick=${() => { onSelect(s.id); setDrawerOpen(false); }} />`)}
@@ -1429,6 +1430,10 @@
       try { const c = await api("/api/settings/cloud/disconnect", { method: "POST" }); setCloud((p) => ({ ...p, connected: !!c.connected })); setCloudStatus(d.notConnected); }
       catch (e) { notifyError(e); }
     }
+    async function clearCloudKey() {
+      try { const c = await api("/api/settings/cloud", { method: "POST", body: { access_key: "" } }); setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected }); setCloudStatus(d.saved); }
+      catch (e) { setCloudStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
+    }
 
     async function enablePush() {
       if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) { toast(d.pushUnsupported, "error"); return; }
@@ -1467,7 +1472,7 @@
       d, lang, workspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace, browseFolder, deleteWorkspace, loadWorkspaces,
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
-      cloud, setCloud, saveCloud, connectCloud, disconnectCloud, cloudStatus, cloudAvailable,
+      cloud, setCloud, saveCloud, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2: lang, setLang, onPush: enablePush,
     };
     const decisionsProps = { d, lang, cards: openCards, approvals, onCard, onApproval: decideApproval, openDetail, onGoSession: openTimeline };
@@ -1517,7 +1522,7 @@
       <!-- mobile -->
       <${MobileShell} d=${d} lang=${lang} view=${view} setView=${setView} mTab=${mTab} setMTab=${setMTab}
         drawerOpen=${drawerOpen} setDrawerOpen=${setDrawerOpen} counts=${counts} sessionRow=${sessionRow}
-        dig=${dig} mainProps=${mainProps} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} />
+        dig=${dig} mainProps=${mainProps} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} />
 
       ${detailOpen ? html`<${DetailModal} d=${d} lang=${lang} detail=${detail} onClose=${() => setDetailOpen(false)} />` : null}
       ${defnOpen ? html`<${Modal} title=${defnDraft && defnDraft.id ? d.edit : d.newBtn} onClose=${() => setDefnOpen(false)} footer=${[html`<button key="c" className="btn" onClick=${() => setDefnOpen(false)}>${d.cancel}</button>`, html`<button key="s" className="btn primary" onClick=${saveDefinition}>${d.save}</button>`]}>

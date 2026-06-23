@@ -63,6 +63,9 @@ class RelayConnector:
         clock: Callable[[], float] = time.monotonic,
         heartbeat_interval: float = 30.0,
         heartbeat_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        sync_provider: Callable[[], Envelope | None] | None = None,
+        sync_interval: float = 20.0,
+        sync_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.url = url
         self.access_key = access_key
@@ -85,6 +88,12 @@ class RelayConnector:
         # the backoff `sleep` so injecting one in a reconnect test doesn't perturb the other.
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_sleep = heartbeat_sleep
+        # Optional periodic display-cache push (DESIGN §8.5 ③ / T7.5): while connected, send a
+        # KIND_CACHE_SYNC frame (session/card summaries — never diffs/秘方) so the relay can serve
+        # the phone view. `sync_provider` returns the frame to send (or None to skip a tick).
+        self._sync_provider = sync_provider
+        self._sync_interval = sync_interval
+        self._sync_sleep = sync_sleep
         self._handshook = False  # set per-session once the relay accepts our key
 
     def _notify_status(self, connected: bool) -> None:
@@ -139,6 +148,8 @@ class RelayConnector:
         tasks = [asyncio.create_task(self._read_loop(conn))]
         if self._heartbeat_interval and self._heartbeat_interval > 0:
             tasks.append(asyncio.create_task(self._heartbeat_loop(conn)))
+        if self._sync_provider is not None:
+            tasks.append(asyncio.create_task(self._sync_loop(conn)))
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
@@ -172,6 +183,16 @@ class RelayConnector:
         while True:
             await self._heartbeat_sleep(self._heartbeat_interval)
             await conn.send(ping)
+
+    async def _sync_loop(self, conn) -> None:
+        """Push a display-cache snapshot on connect, then every `sync_interval` seconds (§8.5 ③).
+        The provider returns the frame (or None to skip); a send failure ends the session and
+        run()'s backoff reconnects, same as a heartbeat/read error."""
+        while True:
+            frame = self._sync_provider() if self._sync_provider is not None else None
+            if frame is not None:
+                await conn.send(frame.to_json())
+            await self._sync_sleep(self._sync_interval)
 
     async def run(self, *, max_attempts: int | None = None) -> None:
         """Keep a connection up forever, reconnecting with exponential backoff (§8.5 ③).

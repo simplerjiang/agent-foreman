@@ -118,15 +118,30 @@ class CloudManager:
         # indefinite "connecting" when the relay is offline/unreachable (codex review finding).
         self._error = str(exc)[:160] or "unreachable"
 
+    def _build_sync(self):
+        """Build the display-cache snapshot to push to the relay (session/card summaries only —
+        never diffs/秘方, §8.3). None if the store can't supply rows. Errors are swallowed so a
+        bad snapshot never drops the connection."""
+        store = self._store
+        if store is None or not hasattr(store, "get_sessions") or not hasattr(store, "get_decision_cards"):
+            return None
+        try:
+            from foreman.client.cache_sync import build_cache_sync
+
+            return build_cache_sync(store.get_sessions(), store.get_decision_cards(None))
+        except Exception:  # noqa: BLE001 — a snapshot failure must not kill the relay link
+            return None
+
     def _build_connector(self, url: str, key: str) -> RelayConnector:
         if self._connector_factory is not None:
             return self._connector_factory(
                 url=url, access_key=key, process_id=self._process_id(),
                 name=self._name, on_status=self._on_status, on_error=self._on_error,
+                sync_provider=self._build_sync,
             )
         return RelayConnector(
             url, key, process_id=self._process_id(), name=self._name,
-            on_status=self._on_status, on_error=self._on_error,
+            on_status=self._on_status, on_error=self._on_error, sync_provider=self._build_sync,
         )
 
     def connect(self, *, wait: float = 3.0) -> dict:

@@ -16,7 +16,7 @@ from foreman.client.core.cloud import CloudManager, normalize_relay_url
 from foreman.client.relay import RelayConnector
 from foreman.server.app import create_app
 from foreman.shared.config import load_config
-from foreman.shared.protocol import KIND_HELLO_ACK, Envelope
+from foreman.shared.protocol import KIND_CACHE_SYNC, KIND_HELLO_ACK, Envelope
 
 
 class FakeStore:
@@ -29,6 +29,12 @@ class FakeStore:
     def set_setting(self, key: str, value: str) -> None:
         self._kv[key] = value
 
+    def get_sessions(self):
+        return []
+
+    def get_decision_cards(self, session_id=None):
+        return []
+
 
 class _FakeConn:
     """A relay connection that handshakes OK (or denies) then holds the line open."""
@@ -37,9 +43,10 @@ class _FakeConn:
         self._ack_ok = ack_ok
         self._acked = False
         self._closed = asyncio.Event()
+        self.sent: list[str] = []
 
     async def send(self, data: str) -> None:  # noqa: D401
-        return None
+        self.sent.append(data)
 
     async def recv(self) -> str:
         if not self._acked:
@@ -52,25 +59,29 @@ class _FakeConn:
         self._closed.set()
 
 
-def _factory(ack_ok: bool = True):
-    def make(*, url, access_key, process_id, name, on_status, on_error=None):
+def _factory(ack_ok: bool = True, conns: list | None = None):
+    def make(*, url, access_key, process_id, name, on_status, on_error=None, sync_provider=None):
         async def connect(_u):
-            return _FakeConn(ack_ok=ack_ok)
+            conn = _FakeConn(ack_ok=ack_ok)
+            if conns is not None:
+                conns.append(conn)
+            return conn
         return RelayConnector(
             url, access_key, process_id=process_id, name=name, on_status=on_status,
-            on_error=on_error, connect=connect, heartbeat_interval=0, backoff_base=0.05,
+            on_error=on_error, sync_provider=sync_provider, sync_interval=0.05,
+            connect=connect, heartbeat_interval=0, backoff_base=0.05,
         )
     return make
 
 
 def _factory_unreachable():
-    def make(*, url, access_key, process_id, name, on_status, on_error=None):
+    def make(*, url, access_key, process_id, name, on_status, on_error=None, sync_provider=None):
         async def connect(_u):
             raise ConnectionError("connection refused")
         return RelayConnector(
             url, access_key, process_id=process_id, name=name, on_status=on_status,
-            on_error=on_error, connect=connect, heartbeat_interval=0,
-            backoff_base=0.05, backoff_cap=0.1,
+            on_error=on_error, sync_provider=sync_provider, connect=connect,
+            heartbeat_interval=0, backoff_base=0.05, backoff_cap=0.1,
         )
     return make
 
@@ -108,6 +119,27 @@ def test_cloud_manager_connect_and_disconnect():
     assert off["connected"] is False
     # an intentional disconnect is a clean offline state — no leftover error from tearing the loop
     assert off["error"] == ""
+
+
+def test_cloud_manager_pushes_cache_sync():
+    """A live cloud link must push display-cache snapshots so the relay can serve the phone view —
+    not just hello/heartbeat (codex review finding)."""
+    store = FakeStore()
+    store.set_setting("cloud.url", "wss://relay.example/relay")
+    cfg = load_config()
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    conns: list = []
+    mgr = CloudManager(store=store, cfg=cfg, connector_factory=_factory(ack_ok=True, conns=conns))
+    assert mgr.connect(wait=3.0)["connected"] is True
+    deadline = time.monotonic() + 2.0
+    sent: list[str] = []
+    while time.monotonic() < deadline:
+        if conns and any(KIND_CACHE_SYNC in s for s in conns[0].sent):
+            sent = list(conns[0].sent)
+            break
+        time.sleep(0.05)
+    mgr.disconnect()
+    assert any(KIND_CACHE_SYNC in s and "sessions" in s for s in sent)
 
 
 def test_cloud_manager_clearing_config_stops_connection():

@@ -190,6 +190,7 @@ def test_cloud_connection_frontend_wired(tmp_path):
     js = c.get("/app.js").text
     assert "/api/settings/cloud" in js
     assert "connectCloud" in js and "disconnectCloud" in js and "saveCloud" in js
+    assert "clearCloudKey" in js  # the saved access key can be cleared from the UI (codex review)
     assert "cloudConn" in js and "云端连接" in js
     assert "access_key" in js
     # the field asks for the wss relay endpoint the connector actually needs (codex review)
@@ -210,6 +211,8 @@ def test_mobile_drawer_has_session_picker():
     js = c.get("/app.js").text
     # MobileShell is handed the session list + selector so a phone can open an existing session
     assert "sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline}" in js
+    # ...and a new-session action so later mobile tasks aren't all forced into a follow-up (codex)
+    assert "onNew=${newSession}" in js
 
 
 def test_launch_splash_present(tmp_path):
