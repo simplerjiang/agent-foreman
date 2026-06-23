@@ -131,7 +131,7 @@ def test_agent_settings_rejects_disabling_all(tmp_path):
     assert res.json()["detail"] == "no_enabled_agent"
 
 
-def test_api_models_returns_configured_defaults_without_key():
+def test_api_models_returns_pm_defaults_without_key():
     cfg = Config()
     cfg.llm.model = "pm-model"
     cfg.secrets.llm_api_key = ""
@@ -139,12 +139,9 @@ def test_api_models_returns_configured_defaults_without_key():
         "codex": AgentCfg(command="codex", enabled=True, model="agent-model"),
     }
     c = TestClient(create_app(cfg))
-    data = c.get("/api/models?agent=codex").json()
-    assert data["models"] == [
-        {"id": "agent-model", "source": "agent"},
-        {"id": "pm-model", "source": "pm"},
-    ]
-    assert data["default"] == "agent-model"
+    data = c.get("/api/models").json()
+    assert data["models"] == [{"id": "pm-model", "source": "pm"}]
+    assert data["default"] == "pm-model"
     assert "LLMConfigError" in data["error"]
 
 

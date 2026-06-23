@@ -49,6 +49,7 @@
       enablePush: "开启通知",
       autonomy: "自动执行权限",
       dispatchAgent: "Agent",
+      dispatchPmModel: "PM 模型",
       dispatchModel: "模型",
       dispatchEffort: "档位",
       modelRefresh: "刷新模型",
@@ -58,6 +59,7 @@
       effortMedium: "标准",
       effortHigh: "深度",
       modelDefaultHint: "留空 = 使用配置默认模型",
+      pmModelDefaultHint: "留空 = 使用 PM 大脑默认模型",
       dispatchNoWorkspace: "未配置工作区：请到设置页添加项目路径。",
       dispatchFailed: "下发失败",
       dispatched: "已下发",
@@ -202,6 +204,7 @@
       enablePush: "Enable notifications",
       autonomy: "Auto-execution",
       dispatchAgent: "Agent",
+      dispatchPmModel: "PM model",
       dispatchModel: "Model",
       dispatchEffort: "Level",
       modelRefresh: "Refresh models",
@@ -211,6 +214,7 @@
       effortMedium: "Standard",
       effortHigh: "Deep",
       modelDefaultHint: "blank = configured default model",
+      pmModelDefaultHint: "blank = PM brain default model",
       dispatchNoWorkspace: "No workspace configured. Add a project path in Settings.",
       dispatchFailed: "Dispatch failed",
       dispatched: "Dispatched",
@@ -507,9 +511,10 @@
   function eventMetaChips(event) {
     const payload = event.payload || {};
     if (!["dispatch", "pm_plan"].includes(event.type)) return [];
+    const showAgent = event.type === "dispatch" && !payload.pm_agent;
     return [
       payload.pm_agent && { key: "pm", value: "PM", icon: "TeamOutlined", color: "purple" },
-      payload.agent && { key: "agent", value: payload.agent, icon: "RobotOutlined", color: "blue" },
+      showAgent && payload.agent && { key: "agent", value: payload.agent, icon: "RobotOutlined", color: "blue" },
       payload.model && { key: "model", value: payload.model, icon: "ApiOutlined", color: "geekblue" },
       payload.effort && { key: "effort", value: payload.effort, icon: "ThunderboltOutlined", color: "gold" },
     ].filter(Boolean);
@@ -590,9 +595,7 @@
     const [workspace, setWorkspace] = useState(localStorage.getItem(WORKSPACE_KEY) || "");
     const [workspaceDraft, setWorkspaceDraft] = useState({ path: "", name: "" });
     const [task, setTask] = useState("");
-    const [agent, setAgent] = useState("");
     const [model, setModel] = useState("");
-    const [effort, setEffort] = useState("");
     const [dispatchStatus, setDispatchStatus] = useState("");
     const [compactStatus, setCompactStatus] = useState("");
     const [briefStatus, setBriefStatus] = useState("");
@@ -638,19 +641,17 @@
       catch (e) { setAgentSettings([]); }
     }, []);
 
-    const loadModels = useCallback(async (selectedAgent) => {
-      const name = selectedAgent || agent || "";
+    const loadModels = useCallback(async () => {
       setModelLoading(true);
       try {
-        const suffix = name ? `?agent=${encodeURIComponent(name)}` : "";
-        const data = await api(`/api/models${suffix}`);
+        const data = await api("/api/models");
         setModelOptions(modelChoiceOptions(data && data.models));
       } catch (e) {
         setModelOptions([]);
       } finally {
         setModelLoading(false);
       }
-    }, [agent]);
+    }, []);
 
     const loadPmModels = useCallback(async (draft) => {
       const current = draft || {};
@@ -730,9 +731,7 @@
       }
       const body = { goal: task.trim(), workspace: targetWorkspace, source: clientSource() };
       if (activeSession) body.session_id = activeSession.id;
-      if (agent) body.agent = agent;
       if (model.trim()) body.model = model.trim();
-      if (effort) body.effort = effort;
       try {
         const res = await api("/api/tasks", { method: "POST", body });
         setTask("");
@@ -775,11 +774,9 @@
       () => sessions.find((s) => s.id === selectedSession),
       [sessions, selectedSession]
     );
-    const selectedAgentName = agent || ((agents[0] && agents[0].name) || "");
-    const agentDefault = useMemo(() => {
-      const row = agents.find((a) => a.name === selectedAgentName);
-      return (row && row.model) || d.modelDefaultHint;
-    }, [selectedAgentName, agents, d.modelDefaultHint]);
+    const pmModelDefault = useMemo(() => (
+      (llm && llm.model) || d.pmModelDefaultHint
+    ), [llm, d.pmModelDefaultHint]);
     const workspaceGroups = useMemo(() => {
       const groups = new Map();
       for (const s of sessions) {
@@ -834,7 +831,7 @@
       loadReports, loadSessions, loadWorkspaces,
     ]);
 
-    useEffect(() => { loadModels(agent); }, [agent, loadModels]);
+    useEffect(() => { loadModels(); }, [loadModels]);
 
     useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
 
@@ -1033,7 +1030,7 @@
         setAgentSettings(rows || []);
         setAgentSettingsStatus(d.agentsSaved);
         await loadAgents();
-        await loadModels(agent);
+        await loadModels();
       } catch (e) {
         setAgentSettingsStatus(`${d.saveFailed}: ${friendlyError(e, d)}`);
       }
@@ -1052,7 +1049,7 @@
         setLlm(next);
         setLlmStatus(d.saved);
         await loadPmModels(next);
-        await loadModels(agent);
+        await loadModels();
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
     }
 
@@ -1063,7 +1060,7 @@
         setLlm(next);
         setLlmStatus(d.saved);
         await loadPmModels(next);
-        await loadModels(agent);
+        await loadModels();
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
     }
 
@@ -1162,19 +1159,14 @@
                     workspaces=${workspaces}
                     workspace=${workspace}
                     setWorkspace=${(v) => { setWorkspace(v); if (v) localStorage.setItem(WORKSPACE_KEY, v); }}
-                    agents=${agents}
-                    agent=${agent}
-                    setAgent=${setAgent}
                     model=${model}
                     setModel=${setModel}
                     modelOptions=${modelOptions}
                     modelLoading=${modelLoading}
-                    refreshModels=${() => loadModels(agent)}
-                    effort=${effort}
-                    setEffort=${setEffort}
+                    refreshModels=${loadModels}
                     task=${task}
                     setTask=${setTask}
-                    agentDefault=${agentDefault}
+                    pmModelDefault=${pmModelDefault}
                     dispatching=${dispatching}
                     runDispatch=${runDispatch}
                     dispatchStatus=${dispatchStatus}
@@ -1352,8 +1344,8 @@
 
   function WorkspaceView(props) {
     const {
-      d, lang, workspaces, workspace, setWorkspace, agents, agent, setAgent, model, setModel,
-      modelOptions, modelLoading, refreshModels, effort, setEffort, task, setTask, agentDefault,
+      d, lang, workspaces, workspace, setWorkspace, model, setModel,
+      modelOptions, modelLoading, refreshModels, task, setTask, pmModelDefault,
       dispatching, runDispatch, dispatchStatus, selectedSessionRow, clearSession, compacting,
       runCompact, compactStatus, events, debugMode,
     } = props;
@@ -1380,24 +1372,15 @@
                   />
                 </${A.Form.Item}>
               </${A.Col}>
-              <${A.Col} xs=${24} md=${5}>
-                <${A.Form.Item} label=${d.dispatchAgent}>
-                  <${A.Select}
-                    value=${agent}
-                    onChange=${setAgent}
-                    options=${[{ value: "", label: d.agentDefault }, ...agents.map((a) => ({ value: a.name, label: a.name }))]}
-                  />
-                </${A.Form.Item}>
-              </${A.Col}>
-              <${A.Col} xs=${24} md=${7}>
-                <${A.Form.Item} label=${d.dispatchModel}>
+              <${A.Col} xs=${24} md=${16}>
+                <${A.Form.Item} label=${d.dispatchPmModel}>
                   <${A.Space.Compact} block>
                     <${A.AutoComplete}
                       style=${{ width: "100%" }}
                       value=${model}
                       onChange=${setModel}
                       options=${modelOptions}
-                      placeholder=${agentDefault}
+                      placeholder=${pmModelDefault}
                       filterOption=${(input, option) => String(option.value || "").toLowerCase().includes(input.toLowerCase())}
                     />
                     <${A.Button}
@@ -1408,20 +1391,6 @@
                       title=${d.modelRefresh}
                     />
                   </${A.Space.Compact}>
-                </${A.Form.Item}>
-              </${A.Col}>
-              <${A.Col} xs=${24} md=${4}>
-                <${A.Form.Item} label=${d.dispatchEffort}>
-                  <${A.Select}
-                    value=${effort}
-                    onChange=${setEffort}
-                    options=${[
-                      { value: "", label: d.effortDefault },
-                      { value: "low", label: d.effortLow },
-                      { value: "medium", label: d.effortMedium },
-                      { value: "high", label: d.effortHigh },
-                    ]}
-                  />
                 </${A.Form.Item}>
               </${A.Col}>
             </${A.Row}>

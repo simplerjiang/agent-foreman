@@ -95,7 +95,7 @@ class LLMClient:
         # `ws_connect(url, headers, timeout) -> async-context-manager` lets tests inject a fake socket.
         self._ws_connect = ws_connect or _default_ws_connect
 
-    def _resolve(self) -> tuple[str, str, str]:
+    def _resolve(self, model_override: str = "") -> tuple[str, str, str]:
         """Effective (provider, base_url, model) for this request: a settings-page override (if any)
         wins over the config default. Transport stays config-only wiring."""
         provider, base_url, model = self.provider, self.base_url, self.model
@@ -107,6 +107,7 @@ class LLMClient:
             provider = (ov.get("provider") or provider or "").strip() or provider
             base_url = ((ov.get("base_url") or base_url or "").strip() or base_url).rstrip("/")
             model = (ov.get("model") or model or "").strip() or model
+        model = (model_override or "").strip() or model
         return provider, base_url, model
 
     def _api_key(self) -> str:
@@ -122,12 +123,14 @@ class LLMClient:
             raise LLMConfigError("missing FOREMAN_LLM_API_KEY")
         return key
 
-    async def complete(self, messages: list[Message], *, json_mode: bool = False) -> str:
+    async def complete(
+        self, messages: list[Message], *, json_mode: bool = False, model: str = ""
+    ) -> str:
         """Return the assistant's text. Set json_mode=True to nudge structured JSON output.
 
         On the ws transport json_mode is a no-op (the Responses path has no response_format; callers
         already instruct the model to emit JSON and parse tolerantly)."""
-        provider, base_url, model = self._resolve()
+        provider, base_url, model = self._resolve(model)
         if self.mode == "ws":
             return await self._responses_ws(messages, base_url, model)
         if provider == "anthropic":
