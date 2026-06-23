@@ -121,6 +121,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
             "provider": store.get_setting("llm.provider") or "",
             "model": store.get_setting("llm.model") or "",
             "base_url": store.get_setting("llm.base_url") or "",
+            "transport": store.get_setting("llm.transport") or cfg.llm.transport,
             "api_key": cfg.secrets.llm_api_key,
         }
 

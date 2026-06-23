@@ -10,7 +10,7 @@ import asyncio
 import json
 
 from foreman.client.core.dispatch_service import DispatchService, _explicit_agent_targets
-from foreman.client.core.pm_agent import PMPlan, PMReview
+from foreman.client.core.pm_agent import PMAgent, PMPlan, PMReview, events_to_text
 from foreman.client.store import Store
 from foreman.client.store.models import (
     Approval,
@@ -295,6 +295,69 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
     events = store.get_events(res["session_id"])
     assert "pm_plan" in [e.type for e in events]
     assert [e.type for e in events].count("pm_review") == 2
+
+
+async def test_real_pm_agent_stream_chunks_are_persisted_and_published(tmp_path):
+    store = _store(tmp_path)
+
+    class FakeLLM:
+        model = "pm-model"
+
+        async def complete(self, messages, *, json_mode=False, model="", on_stream=None):
+            if on_stream is not None:
+                await on_stream({"kind": "reasoning", "delta": "thinking", "event_type": "r"})
+                await on_stream({"kind": "output", "delta": "partial", "event_type": "o"})
+            system = messages[0].content
+            if "Analyze the user's task" in system:
+                return json.dumps(
+                    {
+                        "summary": "use codex",
+                        "agent": "codex",
+                        "model": "",
+                        "effort": "high",
+                        "instruction": "do it",
+                    }
+                )
+            return json.dumps({"done": True, "summary": "done", "reason": "", "follow_up": ""})
+
+    class FakeHandle:
+        session_id = "s"
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            handle = FakeHandle()
+            handle.session_id = session_id
+            store.add_event(make_event("stop", agent, session_id, payload={"result": "done"}))
+            return handle
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    bus = EventBus()
+    q = bus.subscribe_queue()
+    svc = DispatchService(
+        cfg, store, bus=bus, runner=FakeRunner(), pm_agent=PMAgent(FakeLLM())
+    )
+
+    res = await svc.create("raw user task")
+    await asyncio.gather(*list(svc._tasks))
+
+    rows = store.get_events(res["session_id"])
+    stream_rows = [e for e in rows if e.type in {"pm_output", "pm_reasoning"}]
+    assert {e.type for e in stream_rows} == {"pm_output", "pm_reasoning"}
+    payloads = [json.loads(e.payload_json) for e in stream_rows]
+    assert all(p["stream_id"] and p["delta"] for p in payloads)
+    assert {"plan", "review-1"}.issubset({p["phase"] for p in payloads})
+    assert "thinking" not in events_to_text(rows)
+
+    published = []
+    while not q.empty():
+        published.append(q.get_nowait().type)
+    assert "pm_output" in published and "pm_reasoning" in published
 
 
 async def test_pm_model_override_is_not_passed_to_coding_agent(tmp_path):

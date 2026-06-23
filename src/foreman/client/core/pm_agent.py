@@ -184,6 +184,8 @@ def build_plan_prompt(
 def events_to_text(rows: list[Any], *, max_chars: int = MAX_EVENT_CHARS) -> str:
     parts: list[str] = []
     for row in rows[-120:]:
+        if getattr(row, "type", "") in {"pm_output", "pm_reasoning"}:
+            continue
         try:
             payload = json.loads(getattr(row, "payload_json", "") or "{}")
         except (TypeError, ValueError):
@@ -206,7 +208,7 @@ def events_to_text(rows: list[Any], *, max_chars: int = MAX_EVENT_CHARS) -> str:
 def _payload_summary(payload: object) -> str:
     if not isinstance(payload, dict):
         return _as_str(payload)
-    for key in ("text", "result", "summary", "msg", "error"):
+    for key in ("text", "delta", "thinking", "reasoning", "result", "summary", "msg", "error"):
         value = _as_str(payload.get(key))
         if value:
             return value
@@ -282,6 +284,7 @@ class PMAgent:
         requested_effort: str,
         fallback_instruction: str,
         context: str = "",
+        on_stream=None,
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_plan_prompt(
@@ -294,7 +297,10 @@ class PMAgent:
             context=context,
         )
         raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)], json_mode=True, model=pm_model
+            [Message("system", system), Message("user", prompt)],
+            json_mode=True,
+            model=pm_model,
+            on_stream=on_stream,
         )
         enabled = [_as_str(a.get("name")) for a in available_agents]
         return parse_plan(
@@ -315,23 +321,36 @@ class PMAgent:
         run_count: int,
         context: str = "",
         pm_model: str = "",
+        on_stream=None,
     ) -> PMReview:
         system = REVIEW_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_review_prompt(
             goal, plan, timeline, run_count=run_count, max_runs=self.max_runs, context=context
         )
         raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)], json_mode=True, model=pm_model
+            [Message("system", system), Message("user", prompt)],
+            json_mode=True,
+            model=pm_model,
+            on_stream=on_stream,
         )
         return parse_review(raw)
 
     async def compact(
-        self, goal: str, timeline: str, *, existing_context: str = "", pm_model: str = ""
+        self,
+        goal: str,
+        timeline: str,
+        *,
+        existing_context: str = "",
+        pm_model: str = "",
+        on_stream=None,
     ) -> str:
         system = COMPACT_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_compact_prompt(goal, timeline, existing_context=existing_context)
         raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)], json_mode=True, model=pm_model
+            [Message("system", system), Message("user", prompt)],
+            json_mode=True,
+            model=pm_model,
+            on_stream=on_stream,
         )
         pack = parse_context_pack(
             raw, goal=goal, timeline=timeline, existing_context=existing_context

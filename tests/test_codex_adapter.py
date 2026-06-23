@@ -17,26 +17,30 @@ def _cfg(model: str = "") -> AgentCfg:
 
 def test_build_cmd():
     a = CodexAdapter(_cfg())
-    assert a._build_cmd("do Y") == ["codex", "exec", "do Y"]
-    assert a._build_cmd("do Y", "gpt-5") == ["codex", "exec", "--model", "gpt-5", "do Y"]
+    assert a._build_cmd("do Y") == ["codex", "exec", "--json", "do Y"]
+    assert a._build_cmd("do Y", "gpt-5") == [
+        "codex", "exec", "--json", "--model", "gpt-5", "do Y",
+    ]
 
 
 def test_build_cmd_with_effort():
     # Codex carries reasoning level as a `-c model_reasoning_effort=` config override.
     a = CodexAdapter(_cfg())
     assert a._build_cmd("do Y", "gpt-5", "high") == [
-        "codex", "exec", "--model", "gpt-5", "-c", "model_reasoning_effort=high", "do Y",
+        "codex", "exec", "--json", "--model", "gpt-5", "-c", "model_reasoning_effort=high", "do Y",
     ]
     assert a._build_cmd("do Y", "", "low") == [
-        "codex", "exec", "-c", "model_reasoning_effort=low", "do Y",
+        "codex", "exec", "--json", "-c", "model_reasoning_effort=low", "do Y",
     ]
 
 
 def test_build_resume_cmd():
     a = CodexAdapter(_cfg())
-    assert a._build_resume_cmd("more", "sess-9") == ["codex", "exec", "resume", "sess-9", "more"]
+    assert a._build_resume_cmd("more", "sess-9") == [
+        "codex", "exec", "--json", "resume", "sess-9", "more",
+    ]
     assert a._build_resume_cmd("more", "sess-9", "gpt-5") == [
-        "codex", "exec", "resume", "--model", "gpt-5", "sess-9", "more",
+        "codex", "exec", "--json", "resume", "--model", "gpt-5", "sess-9", "more",
     ]
 
 
@@ -46,7 +50,7 @@ async def test_start_registers_and_returns_handle(tmp_path):
     h = await a.start("do Y", tmp_path, "sx")
     assert h.pid == 999 and h.session_id == "sx" and h.id == "sx:999"
     assert a._procs[h.id] is proc
-    assert a.spawned_cmd == ["codex", "exec", "do Y"]
+    assert a.spawned_cmd == ["codex", "exec", "--json", "do Y"]
     assert a.spawned_cwd == tmp_path
 
 
@@ -55,7 +59,7 @@ async def test_start_model_override_wins(tmp_path):
     a = fake_adapter(CodexAdapter, _cfg("cfg-model"), proc)
     h = await a.start("do Y", tmp_path, "sx", model="run-model")
     assert h.model == "run-model"
-    assert a.spawned_cmd == ["codex", "exec", "--model", "run-model", "do Y"]
+    assert a.spawned_cmd == ["codex", "exec", "--json", "--model", "run-model", "do Y"]
 
 
 async def test_stream_parses_lines(tmp_path):
@@ -71,6 +75,20 @@ async def test_stream_parses_lines(tmp_path):
     assert events[0].source == "codex"
     assert events[0].payload == {"text": "plain codex output line"}
     assert events[1].payload["result"] == "ok"
+
+
+async def test_stream_classifies_reasoning_json_lines(tmp_path):
+    lines = [
+        b'{"type":"reasoning","delta":"thinking"}\n',
+        b'{"type":"result","result":"ok"}\n',
+    ]
+    a = fake_adapter(CodexAdapter, _cfg(), FakeProc(stdout_lines=lines))
+    h = await a.start("x", tmp_path, "s")
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_reasoning", "stop"]
+    assert events[0].source == "codex"
+    assert events[0].payload["delta"] == "thinking"
 
 
 async def test_stream_reports_nonzero_exit_with_stderr(tmp_path):

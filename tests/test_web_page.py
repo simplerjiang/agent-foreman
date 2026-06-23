@@ -57,6 +57,7 @@ def test_debug_mode_gates_raw_data_and_event_meta_chips():
     assert "debugMode && event.payload" in js and "debugMode=${debugMode}" in js
     assert "eventMetaChips" in js and "showAgent" in js and "ApiOutlined" in js
     assert "payload.summary, payload.instruction" in js
+    assert "mergeStreamEvent" in js and "pm_reasoning" in js and "agent_reasoning" in js
 
 
 def test_followup_compact_source_and_mobile_nav_wired():
@@ -73,6 +74,7 @@ def test_dispatch_form_uses_pm_model_not_agent_choice():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     assert "dispatchPmModel" in js and "pmModelDefault" in js
+    assert "pmTransport" in js and "transport: llm.transport" in js
     assert 'api("/api/models")' in js
     assert "body.model = model.trim()" in js
     assert "body.agent = agent" not in js

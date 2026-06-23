@@ -16,8 +16,9 @@ Transports (config.llm.transport):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
@@ -33,6 +34,9 @@ class Message:
 
 class LLMConfigError(RuntimeError):
     """Raised before a request when the PM brain is not configured enough to call."""
+
+
+StreamCallback = Callable[[dict], Awaitable[None] | None]
 
 
 def _messages_to_responses_input(messages: list[Message]) -> tuple[str, list[dict]]:
@@ -123,16 +127,33 @@ class LLMClient:
             raise LLMConfigError("missing FOREMAN_LLM_API_KEY")
         return key
 
+    def _transport_mode(self) -> str:
+        mode = self.mode
+        if self._settings_resolver is not None:
+            try:
+                ov = self._settings_resolver() or {}
+            except Exception:  # noqa: BLE001 - a broken resolver must never break defaults
+                ov = {}
+            override = str(ov.get("transport") or "").strip().lower()
+            if override:
+                mode = override
+        return mode
+
     async def complete(
-        self, messages: list[Message], *, json_mode: bool = False, model: str = ""
+        self,
+        messages: list[Message],
+        *,
+        json_mode: bool = False,
+        model: str = "",
+        on_stream: StreamCallback | None = None,
     ) -> str:
         """Return the assistant's text. Set json_mode=True to nudge structured JSON output.
 
         On the ws transport json_mode is a no-op (the Responses path has no response_format; callers
         already instruct the model to emit JSON and parse tolerantly)."""
         provider, base_url, model = self._resolve(model)
-        if self.mode == "ws":
-            return await self._responses_ws(messages, base_url, model)
+        if self._transport_mode() == "ws":
+            return await self._responses_ws(messages, base_url, model, on_stream=on_stream)
         if provider == "anthropic":
             return await self._anthropic(messages, json_mode, base_url, model)
         return await self._openai(messages, json_mode, base_url, model)
@@ -192,7 +213,14 @@ class LLMClient:
         blocks = r.json().get("content", [])
         return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
 
-    async def _responses_ws(self, messages: list[Message], base_url: str, model: str) -> str:
+    async def _responses_ws(
+        self,
+        messages: list[Message],
+        base_url: str,
+        model: str,
+        *,
+        on_stream: StreamCallback | None = None,
+    ) -> str:
         """Run one turn over the Responses-API WebSocket and return the accumulated assistant text.
 
         Sends a `response.create` frame; accumulates `response.output_text.delta` deltas; stops at
@@ -203,12 +231,15 @@ class LLMClient:
             "type": "response.create",
             "model": model,
             "stream": True,
+            "store": False,
+            "reasoning": {"summary": "auto"},
             "input": items,
         }
         if instructions:
             request["instructions"] = instructions
         headers = {"Authorization": f"Bearer {self._api_key()}"}
         buf: list[str] = []
+        reasoning_streamed = False
         async with self._ws_connect(_ws_url(base_url), headers, self.timeout) as ws:
             await ws.send(json.dumps(request))
             while True:
@@ -218,9 +249,24 @@ class LLMClient:
                 except (TypeError, ValueError):
                     continue  # ignore a non-JSON keepalive/marker frame
                 etype = obj.get("type")
+                chunk = _stream_chunk(obj)
+                if chunk is not None and on_stream is not None:
+                    if chunk["kind"] == "reasoning":
+                        reasoning_streamed = True
+                    await _call_stream(on_stream, chunk)
                 if etype == "response.output_text.delta":
                     buf.append(str(obj.get("delta", "")))
                 elif etype == "response.completed":
+                    if on_stream is not None and not reasoning_streamed:
+                        for text in _completed_reasoning_summaries(obj):
+                            await _call_stream(
+                                on_stream,
+                                {
+                                    "kind": "reasoning",
+                                    "delta": text,
+                                    "event_type": str(etype or ""),
+                                },
+                            )
                     break
                 elif etype == "error":
                     raise RuntimeError(f"responses ws error: {obj.get('error')}")
@@ -228,6 +274,60 @@ class LLMClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+async def _call_stream(callback: StreamCallback, chunk: dict) -> None:
+    res = callback(chunk)
+    if inspect.isawaitable(res):
+        await res
+
+
+def _stream_chunk(obj: dict) -> dict | None:
+    etype = str(obj.get("type") or "")
+    if etype == "response.output_text.delta":
+        return {"kind": "output", "delta": str(obj.get("delta", "")), "event_type": etype}
+    if "reasoning" not in etype.lower() or not etype.endswith(".delta"):
+        return None
+    delta = _string_part(obj.get("delta"))
+    if not delta:
+        delta = _string_part(obj.get("text") or obj.get("summary"))
+    return {"kind": "reasoning", "delta": delta, "event_type": etype} if delta else None
+
+
+def _completed_reasoning_summaries(obj: dict) -> list[str]:
+    response = obj.get("response")
+    items = response.get("output", []) if isinstance(response, dict) else obj.get("output", [])
+    out: list[str] = []
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if not isinstance(item, dict) or item.get("type") != "reasoning":
+            continue
+        text = _reasoning_summary_text(item.get("summary"))
+        if text:
+            out.append(text)
+    return out
+
+
+def _reasoning_summary_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return _string_part(value.get("text") or value.get("summary"))
+    if isinstance(value, list):
+        parts = [_reasoning_summary_text(item) for item in value]
+        return "\n".join(part for part in parts if part).strip()
+    return ""
+
+
+def _string_part(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
 def _model_ids(data: object) -> list[str]:

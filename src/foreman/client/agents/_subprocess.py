@@ -169,7 +169,12 @@ class SubprocessCliAdapter:
             return make_event("agent_output", self.name, session_id, payload={"text": line})
         if not isinstance(obj, dict):
             return make_event("agent_output", self.name, session_id, payload={"text": line})
-        etype = "stop" if obj.get("type") == "result" else "agent_output"
+        if obj.get("type") == "result":
+            etype = "stop"
+        elif _is_reasoning_payload(obj):
+            etype = "agent_reasoning"
+        else:
+            etype = "agent_output"
         return make_event(etype, self.name, session_id, payload=obj)
 
     async def send(self, handle: AgentHandle, text: str) -> None:
@@ -248,6 +253,30 @@ def _which_spawnable(name: str) -> str | None:
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def _is_reasoning_payload(obj: dict) -> bool:
+    markers = ("reasoning", "thinking", "thought")
+    text = " ".join(
+        str(obj.get(key) or "").lower()
+        for key in ("type", "subtype", "event", "channel", "role", "name")
+    )
+    if any(marker in text for marker in markers):
+        return True
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    blocks = content if isinstance(content, list) else [content]
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "").lower()
+        if any(marker in block_type for marker in markers):
+            return True
+        if any(marker in block for marker in markers):
+            return True
+    return False
 
 
 async def _read_pipe_text(pipe) -> str:

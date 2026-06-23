@@ -266,9 +266,80 @@ async def test_ws_responses_accumulates_deltas_and_builds_request():
     assert cap["headers"]["Authorization"] == "Bearer secret-key"
     req = json.loads(sent[0])                                            # the response.create frame
     assert req["type"] == "response.create" and req["model"] == "gpt-5.5" and req["stream"] is True
+    assert req["store"] is False
+    assert req["reasoning"] == {"summary": "auto"}
     assert req["instructions"] == "be terse"                            # system -> instructions
     assert req["input"] == [
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+    ]
+
+
+async def test_ws_responses_stream_callback_receives_output_and_reasoning():
+    sent: list = []
+    frames = [
+        json.dumps({"type": "response.reasoning_summary_text.delta", "delta": "think"}),
+        json.dumps({"type": "response.output_text.delta", "delta": "Hi"}),
+        json.dumps({"type": "response.completed"}),
+    ]
+    chunks: list[dict] = []
+    c, _ = _ws_client(frames, sent)
+    out = await c.complete([Message("user", "x")], on_stream=lambda chunk: chunks.append(chunk))
+    await c.aclose()
+
+    assert out == "Hi"
+    assert [(c["kind"], c["delta"]) for c in chunks] == [
+        ("reasoning", "think"),
+        ("output", "Hi"),
+    ]
+
+
+async def test_settings_resolver_can_switch_transport_to_ws_after_construction():
+    cfg = Config()
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "gpt-5.5"
+    cfg.llm.transport = "http"
+    cfg.secrets.llm_api_key = "secret-key"
+    sent: list = []
+    frames = [
+        json.dumps({"type": "response.output_text.delta", "delta": "ok"}),
+        json.dumps({"type": "response.completed"}),
+    ]
+    cap: dict = {}
+
+    def connect(url, headers, timeout):
+        cap.update(url=url, headers=headers, timeout=timeout)
+        return _FakeWS(frames, sent)
+
+    c = LLMClient(cfg, ws_connect=connect, settings_resolver=lambda: {"transport": "ws"})
+    out = await c.complete([Message("user", "x")])
+    await c.aclose()
+
+    assert out == "ok"
+    assert cap["url"] == "wss://example.test/v1/responses"
+
+
+async def test_ws_responses_completed_frame_can_surface_reasoning_summary():
+    frames = [
+        json.dumps(
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {"type": "reasoning", "summary": [{"text": "summary"}]},
+                        {"type": "message", "content": [{"type": "output_text", "text": "Done"}]},
+                    ]
+                },
+            }
+        ),
+    ]
+    chunks: list[dict] = []
+    c, _ = _ws_client(frames, [])
+    out = await c.complete([Message("user", "x")], on_stream=lambda chunk: chunks.append(chunk))
+    await c.aclose()
+
+    assert out == ""
+    assert chunks == [
+        {"kind": "reasoning", "delta": "summary", "event_type": "response.completed"}
     ]
 
 

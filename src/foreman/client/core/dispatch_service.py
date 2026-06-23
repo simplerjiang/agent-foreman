@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import re
 import uuid
@@ -234,9 +235,10 @@ class DispatchService:
             return {"ok": False, "error": "no_context"}
         existing = (session.plan or "").strip()
         if self.pm_agent is not None and hasattr(self.pm_agent, "compact"):
-            summary = await self.pm_agent.compact(
-                session.goal, timeline, existing_context=existing
-            )
+            kwargs = {"existing_context": existing}
+            if _accepts_keyword(self.pm_agent.compact, "on_stream"):
+                kwargs["on_stream"] = self._pm_stream_sink(session_id, None, "compact")
+            summary = await self.pm_agent.compact(session.goal, timeline, **kwargs)
         else:
             summary = _fallback_compact(timeline, existing)
         summary = (summary or "").strip()[:MAX_CONTEXT_CHARS]
@@ -472,16 +474,18 @@ class DispatchService:
             if cfg.enabled
         ] or [{"name": agent, "model": "", "effort": effort}]
         context = self._session_context(session_id)
-        plan = await self.pm_agent.plan(
-            goal,
-            workspace=workspace,
-            available_agents=enabled_agents,
-            requested_agent="",
-            pm_model=pm_model,
-            requested_effort="high",
-            fallback_instruction=_fallback_instruction(goal, context),
-            context=context,
-        )
+        plan_kwargs = {
+            "workspace": workspace,
+            "available_agents": enabled_agents,
+            "requested_agent": "",
+            "pm_model": pm_model,
+            "requested_effort": "high",
+            "fallback_instruction": _fallback_instruction(goal, context),
+            "context": context,
+        }
+        if _accepts_keyword(self.pm_agent.plan, "on_stream"):
+            plan_kwargs["on_stream"] = self._pm_stream_sink(session_id, task_id, "plan")
+        plan = await self.pm_agent.plan(goal, **plan_kwargs)
         plan = self._sanitize_pm_plan(plan, pm_model)
         await self._emit_pm_plan(session_id, task_id, plan)
         handle = await self.runner.launch(
@@ -492,9 +496,16 @@ class DispatchService:
         await self.runner.wait(handle)
         while True:
             timeline = events_to_text(self.store.get_events(session_id))
-            review = await self.pm_agent.review(
-                goal, plan, timeline, run_count=run_count, context=context, pm_model=pm_model
-            )
+            review_kwargs = {
+                "run_count": run_count,
+                "context": context,
+                "pm_model": pm_model,
+            }
+            if _accepts_keyword(self.pm_agent.review, "on_stream"):
+                review_kwargs["on_stream"] = self._pm_stream_sink(
+                    session_id, task_id, f"review-{run_count}"
+                )
+            review = await self.pm_agent.review(goal, plan, timeline, **review_kwargs)
             await self._emit_pm_review(session_id, task_id, review, run_count)
             if review.done:
                 return
@@ -568,6 +579,36 @@ class DispatchService:
             "error", "pm-agent", session_id, task_id=task_id, payload={"msg": msg}
         )
         await self._persist_then_publish(event)
+
+    def _pm_stream_sink(self, session_id: str, task_id: str | None, phase: str):
+        stream_id = f"{phase}:{uuid.uuid4().hex}"
+        seq = 0
+
+        async def emit(chunk: dict) -> None:
+            nonlocal seq
+            delta = _stream_delta(chunk)
+            if not delta:
+                return
+            seq += 1
+            kind = str(chunk.get("kind") or "output").strip().lower()
+            event_type = "pm_reasoning" if kind == "reasoning" else "pm_output"
+            await self._persist_then_publish(
+                make_event(
+                    event_type,
+                    "pm-agent",
+                    session_id,
+                    task_id=task_id,
+                    payload={
+                        "phase": phase,
+                        "stream_id": stream_id,
+                        "seq": seq,
+                        "delta": delta,
+                        "event_type": str(chunk.get("event_type") or ""),
+                    },
+                )
+            )
+
+        return emit
 
     async def _safe_launch(
         self, session_id: str, goal: str, workspace: str, agent: str, model: str, effort: str
@@ -685,6 +726,25 @@ class DispatchService:
 
 
 __all__ = ["DispatchService"]
+
+
+def _accepts_keyword(fn, name: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return True
+    if name in sig.parameters:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+
+def _stream_delta(chunk: dict) -> str:
+    value = chunk.get("delta", "") if isinstance(chunk, dict) else ""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _fallback_instruction(goal: str, context: str = "") -> str:
