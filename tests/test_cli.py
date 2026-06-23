@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from foreman.__main__ import app
+from foreman.__main__ import _CLI_CONSOLE, app
 
 runner = CliRunner()
 
@@ -17,6 +17,10 @@ def test_version():
     r = runner.invoke(app, ["version"])
     assert r.exit_code == 0
     assert "Foreman v" in r.output
+
+
+def test_cli_output_avoids_windows_legacy_renderer():
+    assert _CLI_CONSOLE.legacy_windows is False
 
 
 def test_app_command_registered():

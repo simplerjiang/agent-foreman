@@ -12,10 +12,13 @@ from __future__ import annotations
 from typing import cast
 
 import typer
-from rich import print as rprint
+from rich.console import Console
 
 from . import __version__
 from foreman.shared.config import load_config
+
+_CLI_CONSOLE = Console(color_system=None, legacy_windows=False, highlight=False)
+rprint = _CLI_CONSOLE.print
 
 app = typer.Typer(add_completion=False, help="Foreman — a PM agent for your local coding agents.")
 WINDOW_WIDTH = 1280
