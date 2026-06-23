@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 
 CONTEXT_PACK_VERSION = 1
@@ -314,7 +314,7 @@ def _as_str_list(value: object) -> list[str]:
 
 def _as_int(value: object, default: int) -> int:
     try:
-        return max(0, min(100, int(value)))
+        return max(0, min(100, int(cast(Any, value))))
     except (TypeError, ValueError):
         return default
 

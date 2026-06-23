@@ -121,8 +121,11 @@ class DispatchService:
         )
         if err:
             return {"ok": False, "error": err}
-        resolved_model = self._resolve_model(resolved_agent, model)
-        resolved_effort = self._resolve_effort(resolved_agent, effort)
+        pm_enabled = self.pm_agent is not None and self.runner is not None
+        resolved_model = (model or "").strip() if pm_enabled else self._resolve_model(
+            resolved_agent, model
+        )
+        resolved_effort = "" if pm_enabled else self._resolve_effort(resolved_agent, effort)
 
         if existing_session is None:
             session, task = build_session_task(self.store, goal, ws, resolved_agent)
@@ -133,7 +136,6 @@ class DispatchService:
             continued = True
             if hasattr(self.store, "update_session"):
                 self.store.update_session(session.id, status="running", updated_at=self._clock())
-        pm_enabled = self.pm_agent is not None and self.runner is not None
         deferred = self.launcher is None and not pm_enabled
         await self._emit_dispatch(
             session.id,
@@ -350,11 +352,11 @@ class DispatchService:
         goal: str,
         workspace: str,
         agent: str,
-        model: str,
+        pm_model: str,
         effort: str,
     ) -> None:
         try:
-            await self._pm_launch(session_id, task_id, goal, workspace, agent, model, effort)
+            await self._pm_launch(session_id, task_id, goal, workspace, agent, pm_model, effort)
         except Exception as exc:  # noqa: BLE001 — PM failure must be visible, not crash the server
             event = make_event(
                 "error",
@@ -372,25 +374,26 @@ class DispatchService:
         goal: str,
         workspace: str,
         agent: str,
-        model: str,
+        pm_model: str,
         effort: str,
     ) -> None:
         enabled_agents = [
             {"name": name, "model": cfg.model, "effort": getattr(cfg, "effort", "")}
             for name, cfg in sorted(self.cfg.agents.items())
             if cfg.enabled
-        ] or [{"name": agent, "model": model, "effort": effort}]
+        ] or [{"name": agent, "model": "", "effort": effort}]
         context = self._session_context(session_id)
         plan = await self.pm_agent.plan(
             goal,
             workspace=workspace,
             available_agents=enabled_agents,
-            requested_agent=agent,
-            requested_model=model,
-            requested_effort=effort,
+            requested_agent="",
+            pm_model=pm_model,
+            requested_effort="high",
             fallback_instruction=_fallback_instruction(goal, context),
             context=context,
         )
+        plan = self._sanitize_pm_plan(plan, pm_model)
         await self._emit_pm_plan(session_id, task_id, plan)
         handle = await self.runner.launch(
             plan.agent, plan.instruction, Path(workspace), session_id,
@@ -401,7 +404,7 @@ class DispatchService:
         while True:
             timeline = events_to_text(self.store.get_events(session_id))
             review = await self.pm_agent.review(
-                goal, plan, timeline, run_count=run_count, context=context
+                goal, plan, timeline, run_count=run_count, context=context, pm_model=pm_model
             )
             await self._emit_pm_review(session_id, task_id, review, run_count)
             if review.done:
@@ -423,6 +426,21 @@ class DispatchService:
             await self.runner.send(handle, review.follow_up)
             run_count += 1
             await self.runner.wait(handle)
+
+    def _sanitize_pm_plan(self, plan: PMPlan, pm_model: str) -> PMPlan:
+        if not pm_model or plan.model != pm_model:
+            return plan
+        cfg = self.cfg.agents.get(plan.agent)
+        cfg_model = (cfg.model if cfg is not None else "").strip()
+        if cfg_model == pm_model:
+            return plan
+        return PMPlan(
+            agent=plan.agent,
+            model=cfg_model,
+            effort=plan.effort,
+            instruction=plan.instruction,
+            summary=plan.summary,
+        )
 
     async def _emit_pm_plan(self, session_id: str, task_id: str, plan: PMPlan) -> None:
         event = make_event(

@@ -55,7 +55,7 @@ def test_debug_mode_gates_raw_data_and_event_meta_chips():
     assert "foreman.debug" in js and "debugMode" in js and "setDebugMode" in js
     assert "A.Switch" in js and "调试模式" in js
     assert "debugMode && event.payload" in js and "debugMode=${debugMode}" in js
-    assert "eventMetaChips" in js and "RobotOutlined" in js and "ApiOutlined" in js
+    assert "eventMetaChips" in js and "showAgent" in js and "ApiOutlined" in js
     assert "payload.summary, payload.instruction" in js
 
 
@@ -67,6 +67,16 @@ def test_followup_compact_source_and_mobile_nav_wired():
     assert "/compact" in js and "compactContext" in js
     assert "A.Drawer" in js and "MenuOutlined" in js and "mobile-menu-button" in js
     assert "d.continueSession" in js and "d.newSession" in js
+
+
+def test_dispatch_form_uses_pm_model_not_agent_choice():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "dispatchPmModel" in js and "pmModelDefault" in js
+    assert 'api("/api/models")' in js
+    assert "body.model = model.trim()" in js
+    assert "body.agent = agent" not in js
+    assert "body.effort = effort" not in js
 
 
 def test_workspace_menu_endpoint_and_frontend_wired(tmp_path):

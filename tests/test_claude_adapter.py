@@ -90,7 +90,7 @@ def test_resolve_argv_prefers_cmd_when_powershell_shim_exists(monkeypatch, tmp_p
     cmd.write_text("@echo off\n", encoding="utf-8")
     ps1.write_text("Write-Output nope\n", encoding="utf-8")
     a = ClaudeCodeAdapter(_cfg())
-    monkeypatch.setattr(subproc.os, "name", "nt", raising=False)
+    monkeypatch.setattr(subproc, "_is_windows", lambda: True)
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: str(ps1) if name == "claude" else None)
     assert a._resolve_argv(["claude", "-p", "x"]) == [str(cmd), "-p", "x"]

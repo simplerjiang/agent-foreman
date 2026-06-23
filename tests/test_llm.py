@@ -91,6 +91,24 @@ async def test_settings_resolver_overrides_model_and_base_url():
     assert cap["json"]["model"] == "runtime-model"
 
 
+async def test_complete_model_override_wins_for_one_request():
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://config.test/v1"
+    cfg.llm.model = "config-model"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["json"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    await c.complete([Message("user", "hi")], model="dispatch-pm-model")
+    await c.aclose()
+    assert cap["json"]["model"] == "dispatch-pm-model"
+
+
 async def test_settings_resolver_overrides_api_key_without_restart():
     cfg = Config()
     cfg.llm.base_url = "https://config.test/v1"

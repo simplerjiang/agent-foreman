@@ -236,7 +236,7 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
 
         async def plan(self, goal, **kw):
             self.plan_goal = goal
-            assert kw["requested_agent"] == "claude-code"
+            assert kw["requested_agent"] == ""
             return PMPlan(
                 agent="codex",
                 model="gpt-5",
@@ -245,7 +245,7 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
                 summary="use codex",
             )
 
-        async def review(self, goal, plan, timeline, *, run_count, context=""):
+        async def review(self, goal, plan, timeline, *, run_count, context="", pm_model=""):
             self.reviews += 1
             assert "PM planned instruction" in plan.instruction
             if self.reviews == 1:
@@ -295,6 +295,60 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
     events = store.get_events(res["session_id"])
     assert "pm_plan" in [e.type for e in events]
     assert [e.type for e in events].count("pm_review") == 2
+
+
+async def test_pm_model_override_is_not_passed_to_coding_agent(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        max_runs = 1
+
+        async def plan(self, goal, **kw):
+            assert kw["pm_model"] == "gpt-5.5"
+            assert kw["requested_agent"] == ""
+            assert kw["requested_effort"] == "high"
+            return PMPlan(
+                agent="claude-code",
+                model="gpt-5.5",
+                effort="high",
+                instruction="PM planned instruction",
+            )
+
+        async def review(self, goal, plan, timeline, *, run_count, context="", pm_model=""):
+            assert pm_model == "gpt-5.5"
+            return PMReview(done=True, summary="done")
+
+    class FakeHandle:
+        session_id = "s"
+
+    class FakeRunner:
+        def __init__(self):
+            self.launched = []
+            self.handle = FakeHandle()
+
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            self.handle.session_id = session_id
+            self.launched.append((agent, model, effort))
+            store.add_event(make_event("stop", agent, session_id, payload={"result": "first"}))
+            return self.handle
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"claude-code": AgentCfg(command="claude", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    runner = FakeRunner()
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=FakePM())
+
+    res = await svc.create("raw user task", model="gpt-5.5")
+    assert res["model"] == "gpt-5.5"
+    await asyncio.gather(*list(svc._tasks))
+
+    assert runner.launched == [("claude-code", "", "high")]
+    pm_plan = [e for e in store.get_events(res["session_id"]) if e.type == "pm_plan"][0]
+    assert json.loads(pm_plan.payload_json)["model"] == ""
 
 
 async def test_create_ignores_bad_effort(tmp_path):

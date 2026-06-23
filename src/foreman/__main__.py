@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import typer
 from rich import print as rprint
 
@@ -117,7 +119,7 @@ class _DesktopApi:
             folder_dialog = getattr(file_dialog, "FOLDER", None)
             if folder_dialog is None:
                 folder_dialog = getattr(webview, "FOLDER_DIALOG", 20)
-            paths = window.create_file_dialog(folder_dialog, allow_multiple=False)
+            paths = window.create_file_dialog(cast(int, folder_dialog), allow_multiple=False)
         except Exception:
             return ""
         if not paths:

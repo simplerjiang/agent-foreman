@@ -23,11 +23,14 @@ MAX_COMPACT_CHARS = 12000
 
 PLAN_SYSTEM = (
     "You are the PM agent for Foreman. Analyze the user's task before any coding CLI is launched. "
-    "Choose which enabled coding agent should run, which model/effort to use, and write the exact "
-    "instruction for that agent. Prefer the user's requested agent/model when it fits, but you may "
-    "override it when another enabled option is clearly better. Keep the instruction actionable, "
-    "include acceptance checks, and tell the agent not to push, merge, or deploy unless the user "
-    "explicitly requested it. Respond with ONLY JSON: "
+    "Choose which enabled coding agent should run, which coding-agent model/effort to use, and "
+    "write the exact instruction for that agent. The dispatch model is already being used for you, "
+    "the PM brain; never copy it into the coding-agent model field. Choose the coding agent "
+    "yourself. Prefer the highest-capability enabled agent/model/effort over saving tokens; use "
+    "high effort by default unless the task is clearly trivial. If no coding-agent model is "
+    "configured, leave model empty so the CLI uses its own default/profile. Keep the instruction "
+    "actionable, include acceptance checks, and tell the agent not to push, merge, or deploy unless "
+    "the user explicitly requested it. Respond with ONLY JSON: "
     '{"summary": str, "agent": "claude-code|codex", "model": str, "effort": "low|medium|high|", '
     '"instruction": str}.'
 )
@@ -147,7 +150,7 @@ def build_plan_prompt(
     workspace: str,
     available_agents: list[dict[str, str]],
     requested_agent: str,
-    requested_model: str,
+    pm_model: str,
     requested_effort: str,
     context: str = "",
 ) -> str:
@@ -160,12 +163,15 @@ def build_plan_prompt(
     parts.extend(
         [
             "# Enabled agents\n" + json.dumps(available_agents, ensure_ascii=False),
-            "# User dispatch preference\n"
+            "# Dispatch context\n"
             + json.dumps(
                 {
-                    "agent": requested_agent,
-                    "model": requested_model,
-                    "effort": requested_effort,
+                    "user_requested_agent": requested_agent,
+                    "pm_model": pm_model,
+                    "requested_effort": requested_effort,
+                    "model_rule": (
+                        "pm_model is for the PM brain only; do not pass it to the coding CLI"
+                    ),
                 },
                 ensure_ascii=False,
             ),
@@ -271,7 +277,7 @@ class PMAgent:
         workspace: str,
         available_agents: list[dict[str, str]],
         requested_agent: str,
-        requested_model: str,
+        pm_model: str,
         requested_effort: str,
         fallback_instruction: str,
         context: str = "",
@@ -282,19 +288,19 @@ class PMAgent:
             workspace=workspace,
             available_agents=available_agents,
             requested_agent=requested_agent,
-            requested_model=requested_model,
+            pm_model=pm_model,
             requested_effort=requested_effort,
             context=context,
         )
         raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)], json_mode=True
+            [Message("system", system), Message("user", prompt)], json_mode=True, model=pm_model
         )
         enabled = [_as_str(a.get("name")) for a in available_agents]
         return parse_plan(
             raw,
             enabled_agents=enabled,
             fallback_agent=requested_agent or (enabled[0] if enabled else "claude-code"),
-            fallback_model=requested_model,
+            fallback_model="",
             fallback_effort=requested_effort,
             fallback_instruction=fallback_instruction,
         )
@@ -307,23 +313,24 @@ class PMAgent:
         *,
         run_count: int,
         context: str = "",
+        pm_model: str = "",
     ) -> PMReview:
         system = REVIEW_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_review_prompt(
             goal, plan, timeline, run_count=run_count, max_runs=self.max_runs, context=context
         )
         raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)], json_mode=True
+            [Message("system", system), Message("user", prompt)], json_mode=True, model=pm_model
         )
         return parse_review(raw)
 
     async def compact(
-        self, goal: str, timeline: str, *, existing_context: str = ""
+        self, goal: str, timeline: str, *, existing_context: str = "", pm_model: str = ""
     ) -> str:
         system = COMPACT_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_compact_prompt(goal, timeline, existing_context=existing_context)
         raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)], json_mode=True
+            [Message("system", system), Message("user", prompt)], json_mode=True, model=pm_model
         )
         pack = parse_context_pack(
             raw, goal=goal, timeline=timeline, existing_context=existing_context
