@@ -86,6 +86,8 @@ def test_cloud_manager_connect_and_disconnect():
 
     off = mgr.disconnect()
     assert off["connected"] is False
+    # an intentional disconnect is a clean offline state — no leftover error from tearing the loop
+    assert off["error"] == ""
 
 
 def test_cloud_manager_auth_denied_surfaces_error():

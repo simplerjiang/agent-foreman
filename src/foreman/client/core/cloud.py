@@ -42,6 +42,7 @@ class CloudManager:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task | None = None
         self._connected = False
         self._error = ""
         self._want = False
@@ -118,8 +119,12 @@ class CloudManager:
                 self._loop = loop
                 asyncio.set_event_loop(loop)
                 connector = self._build_connector(url, key)
+                task = loop.create_task(connector.run())
+                self._task = task
                 try:
-                    loop.run_until_complete(connector.run())
+                    loop.run_until_complete(task)
+                except asyncio.CancelledError:
+                    pass  # intentional disconnect — a clean stop, not an error
                 except RelayAuthError:
                     self._connected = False
                     self._error = "auth"
@@ -128,6 +133,13 @@ class CloudManager:
                     self._error = str(exc)[:160]
                 finally:
                     self._connected = False
+                    # Drain any child tasks (read/heartbeat loops) so the loop closes without a
+                    # "Task was destroyed but it is pending" warning.
+                    pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                     try:
                         loop.close()
                     except Exception:  # noqa: BLE001
@@ -145,16 +157,20 @@ class CloudManager:
             self._want = False
             self._stop_locked()
             self._connected = False
+            self._error = ""  # an intentional disconnect is a clean offline state, not an error
         return self.status()
 
     def _stop_locked(self) -> None:
-        loop, thread = self._loop, self._thread
+        loop, thread, task = self._loop, self._thread, self._task
         self._loop = None
         self._thread = None
-        if loop is not None:
+        self._task = None
+        # Cancel the connector task (not loop.stop): cancellation unwinds run_until_complete and
+        # the child tasks cleanly, instead of aborting the future mid-flight.
+        if loop is not None and task is not None:
             try:
-                loop.call_soon_threadsafe(loop.stop)
+                loop.call_soon_threadsafe(task.cancel)
             except Exception:  # noqa: BLE001 — loop may already be closed
                 pass
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=2.0)
+            thread.join(timeout=3.0)

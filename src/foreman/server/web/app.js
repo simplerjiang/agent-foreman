@@ -1218,8 +1218,11 @@
     const loadLlm = useCallback(async () => { try { const next = { ...(await api("/api/settings/llm")), api_key: "" }; setLlm(next); await loadPmModels(next); } catch (e) { /* server mode */ } }, [loadPmModels]);
     const loadAutonomy = useCallback(async () => { try { setAutonomyState((await api("/api/settings/autonomy")).level); } catch (e) { /* keep */ } }, []);
     const loadCloud = useCallback(async () => {
-      try { const c = await api("/api/settings/cloud"); setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected }); setCloudAvailable(true); }
-      catch (e) { if (e.status === 503 || e.status === 404) setCloudAvailable(false); }
+      try {
+        const c = await api("/api/settings/cloud");
+        setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected });
+        setCloudAvailable(c.available !== false);
+      } catch (e) { setCloudAvailable(false); }
     }, []);
 
     // boot
