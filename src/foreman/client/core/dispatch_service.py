@@ -27,6 +27,7 @@ from typing import Any
 
 from foreman.shared.config import Config
 from foreman.shared.events import make_event, utc_now_iso
+from foreman.shared.i18n import normalize as normalize_lang
 
 from ..dispatch import build_session_task
 from ..store.models import ContextSnapshot, MemoryItem, Task
@@ -438,10 +439,12 @@ class DispatchService:
         effort_override: str | None,
     ) -> None:
         multi = len(agents) > 1
+        language = getattr(self.pm_agent, "language", "")
+        handles = []
         for agent in agents:
             model = self._resolve_model(agent, model_override)
             effort = self._resolve_effort(agent, effort_override)
-            instruction = _direct_agent_instruction(goal, agent, multi=multi)
+            instruction = _direct_agent_instruction(goal, agent, multi=multi, language=language)
             await self._emit_pm_plan(
                 session_id,
                 task_id,
@@ -450,13 +453,14 @@ class DispatchService:
                     model=model,
                     effort=effort,
                     instruction=instruction,
-                    summary=f"Foreman direct dispatch to {agent}.",
+                    summary=_direct_agent_summary(agent, language),
                 ),
             )
             handle = await self.runner.launch(
                 agent, instruction, Path(workspace), session_id, model=model, effort=effort
             )
-            await self.runner.wait(handle)
+            handles.append(handle)
+        await asyncio.gather(*(self.runner.wait(handle) for handle in handles))
 
     async def _pm_launch(
         self,
@@ -806,9 +810,23 @@ def _looks_like_single_agent_dispatch(text: str, index: int, agent: str) -> bool
     )
 
 
-def _direct_agent_instruction(goal: str, agent: str, *, multi: bool) -> str:
+def _direct_agent_summary(agent: str, language: str = "") -> str:
+    if normalize_lang(language) == "en":
+        return f"Foreman direct dispatch to {agent}."
+    return f"Foreman 直接下发给 {agent}。"
+
+
+def _direct_agent_instruction(
+    goal: str, agent: str, *, multi: bool, language: str = ""
+) -> str:
     if not multi:
         return goal
+    if normalize_lang(language) == "zh":
+        return (
+            f"{goal}\n\n"
+            f"Foreman 正在直接同时派发多个指定 agent。你是 {agent}。"
+            "不要通过 shell 调用其他编码 agent；只完成你自己的部分，并简短报告结果。"
+        )
     return (
         f"{goal}\n\n"
         f"Foreman is dispatching multiple requested agents directly. You are {agent}. "

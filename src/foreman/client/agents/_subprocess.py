@@ -263,19 +263,20 @@ def _is_reasoning_payload(obj: dict) -> bool:
     )
     if any(marker in text for marker in markers):
         return True
-    message = obj.get("message")
-    if not isinstance(message, dict):
-        return False
-    content = message.get("content")
-    blocks = content if isinstance(content, list) else [content]
-    for block in blocks:
-        if not isinstance(block, dict):
+    for key in ("message", "item"):
+        message = obj.get(key)
+        if not isinstance(message, dict):
             continue
-        block_type = str(block.get("type") or "").lower()
-        if any(marker in block_type for marker in markers):
-            return True
-        if any(marker in block for marker in markers):
-            return True
+        content = message.get("content")
+        blocks = content if isinstance(content, list) else [content]
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").lower()
+            if any(marker in block_type for marker in markers):
+                return True
+            if any(marker in block for marker in markers):
+                return True
     return False
 
 
