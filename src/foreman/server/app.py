@@ -1093,6 +1093,11 @@ def create_app(
             store.set_setting("cloud.url", body.url.strip())
         if body.access_key is not None:
             _save_cloud_key(body.access_key)
+        # Reconcile the live link with the saved config: a changed/cleared URL or key must not leave
+        # the old relay connection alive with stale credentials (codex review). Drop it on any save
+        # while connected; the user reconnects with the new settings via Connect.
+        if cloud is not None and cloud.status().get("connected"):
+            await asyncio.to_thread(cloud.disconnect)
         return _cloud_state()
 
     @app.post("/api/settings/cloud/connect")

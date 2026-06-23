@@ -178,7 +178,10 @@ def test_cloud_endpoints_save_and_status(tmp_path):
     # connect → connected
     conn = c.post("/api/settings/cloud/connect").json()
     assert conn["connected"] is True
-    # disconnect → offline
+    # saving new settings while connected reconciles the live link (drops it; no stale connection)
+    after_save = c.post("/api/settings/cloud", json={"url": "wss://other.example/relay"}).json()
+    assert after_save["connected"] is False
+    # disconnect is idempotent → offline
     off = c.post("/api/settings/cloud/disconnect").json()
     assert off["connected"] is False
 
