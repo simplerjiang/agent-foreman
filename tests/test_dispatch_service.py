@@ -274,6 +274,9 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
         def __init__(self):
             self.plan_goal = ""
             self.reviews = 0
+            self.timelines = []
+            self.review_states = []
+            self.state_keys = []
 
         async def plan(self, goal, **kw):
             self.plan_goal = goal
@@ -284,13 +287,37 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
                 effort="high",
                 instruction="PM planned instruction",
                 summary="use codex",
+                todo=["inspect", "test"],
             )
 
-        async def review(self, goal, plan, timeline, *, run_count, context="", pm_model=""):
+        async def review(
+            self, goal, plan, timeline, *, run_count, context="", pm_model="", review_state="",
+            todo_status=None, state_key=""
+        ):
             self.reviews += 1
+            self.timelines.append(timeline)
+            self.review_states.append(review_state)
+            self.state_keys.append(state_key)
             assert "PM planned instruction" in plan.instruction
             if self.reviews == 1:
-                return PMReview(done=False, summary="not done", follow_up="PM follow-up")
+                assert todo_status == [
+                    {"title": "inspect", "status": "in_progress"},
+                    {"title": "test", "status": "pending"},
+                ]
+                assert "first" in timeline
+            if self.reviews == 1:
+                return PMReview(
+                    done=False,
+                    summary="not done",
+                    follow_up="PM follow-up",
+                    todo_status=[
+                        {"title": "inspect", "status": "done"},
+                        {"title": "test", "status": "in_progress"},
+                    ],
+                )
+            assert "first" not in timeline
+            assert "PM follow-up" in timeline
+            assert "prior_reviews" in review_state
             return PMReview(done=True, summary="done")
 
     class FakeHandle:
@@ -328,14 +355,19 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
 
     res = await svc.create("raw user task", agent="claude-code")
     assert res["pm_agent"] is True
+    assert res["agent"] == "pm-agent"
     await asyncio.gather(*list(svc._tasks))
 
     assert pm.plan_goal == "raw user task"
+    assert pm.state_keys == [f"{res['session_id']}:{res['task_id']}:pm-review"] * 2
     assert runner.launched == [("codex", "PM planned instruction", str(tmp_path), "gpt-5", "high")]
     assert runner.sent == ["PM follow-up"]
     events = store.get_events(res["session_id"])
     assert "pm_plan" in [e.type for e in events]
-    assert [e.type for e in events].count("pm_review") == 2
+    reviews = [json.loads(e.payload_json) for e in events if e.type == "pm_review"]
+    assert len(reviews) == 2
+    assert [x["status"] for x in reviews[0]["todo_status"]] == ["done", "in_progress"]
+    assert [x["status"] for x in reviews[1]["todo_status"]] == ["done", "done"]
 
 
 async def test_real_pm_agent_stream_chunks_are_persisted_and_published(tmp_path):

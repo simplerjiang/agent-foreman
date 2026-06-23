@@ -90,6 +90,9 @@ class LLMCfg(BaseModel):
     model: str = "gpt-4o"
     request_timeout_s: int = 60
     max_tokens: int = 2048
+    # Optional PM-brain reasoning effort for providers that require an explicit knob.
+    # Empty means "do not send a provider-specific parameter".
+    reasoning_effort: str = ""
     # Wire transport. "http" (default): POST {base_url}/chat/completions (or /messages for anthropic).
     # "ws": the Responses API over a WebSocket — GET {ws base_url}/responses, send a `response.create`
     # frame, read `response.output_text.delta` events until `response.completed` (CLIProxyAPI style).

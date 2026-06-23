@@ -8,6 +8,7 @@
   const LANG_KEY = "foreman.lang";
   const THEME_KEY = "foreman.theme";
   const WORKSPACE_KEY = "foreman.workspace";
+  const DEFAULT_CONTEXT_TOKENS = 128000;
 
   // ---------------------------------------------------------------------------
   // i18n
@@ -66,7 +67,8 @@
       agentDisabled: "已禁用", agentNotFound: "未找到命令", agentsSaved: "Agent 设置已保存", noEnabledAgent: "至少要启用一个 Agent。",
       effortDefault: "默认", modelDefaultHint: "留空 = 使用配置默认模型",
       pmBrain: "PM 大脑", pmBrainSub: "给 PM 审阅 / 简报调用的模型。Key 永远留在本地。",
-      provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key",
+      provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key", transport: "传输方式",
+      reasoningEffort: "推理强度",
       pmKeyHint: "已配置 API Key。输入新 key 后保存可替换；留空不修改。", pmKeyMissing: "未检测到 API Key。可在这里输入并保存。",
       pmKeyPlaceholder: "留空不修改；输入新 key 后保存", clearKey: "清空 Key",
       cloudConn: "云端连接", cloudSub: "把本机接入线上总机 —— 人不在电脑前也能在手机上看进度、点审批。总机不存你的代码与 Key。",
@@ -141,7 +143,8 @@
       agentDisabled: "Disabled", agentNotFound: "Command not found", agentsSaved: "Agent settings saved", noEnabledAgent: "Enable at least one agent.",
       effortDefault: "Default", modelDefaultHint: "blank = configured default model",
       pmBrain: "PM brain", pmBrainSub: "The model the PM uses to review & brief. Your key never leaves this machine.",
-      provider: "Provider", model: "Model", baseUrl: "Base URL", apiKey: "API Key",
+      provider: "Provider", model: "Model", baseUrl: "Base URL", apiKey: "API Key", transport: "Transport",
+      reasoningEffort: "Reasoning effort",
       pmKeyHint: "API key is set. Enter a new key and save to replace it; blank keeps it.", pmKeyMissing: "No API key detected. You can enter and save one here.",
       pmKeyPlaceholder: "blank = unchanged; enter a new key to save", clearKey: "Clear key",
       cloudConn: "Cloud connection", cloudSub: "Link this machine to the online relay — watch progress and approve from your phone. The relay never stores your code or keys.",
@@ -264,8 +267,31 @@
     for (const e of events) {
       const p = e.payload || {};
       chars += (p.text || p.delta || p.summary || p.raw_text || p.goal || "").length;
+      if (!p.text && !p.delta && !p.summary && !p.raw_text && !p.goal) chars += JSON.stringify(p).length;
     }
     return Math.round(chars / 4);
+  }
+  function contextLimitFor(options, selectedModel, fallbackModel) {
+    const models = options || [];
+    const wanted = String(selectedModel || fallbackModel || "").trim();
+    const found = models.find((m) => m.value === wanted || m.id === wanted) || models.find((m) => m.context_length);
+    const contextLength = Number(found && found.context_length);
+    const outputReserve = Number(found && found.max_tokens);
+    if (Number.isFinite(contextLength) && contextLength > 0) {
+      return Number.isFinite(outputReserve) && outputReserve > 0 && outputReserve < contextLength
+        ? contextLength - outputReserve
+        : contextLength;
+    }
+    return DEFAULT_CONTEXT_TOKENS;
+  }
+  function tokenK(value) {
+    const n = Math.max(0, Number(value) || 0);
+    if (n >= 1000) return `${Math.round(n / 100) / 10}k`;
+    return `${Math.round(n)}`;
+  }
+  function displayAgent(agentType, d) {
+    if (!agentType || agentType === "pm-agent") return d.agentAuto;
+    return agentType;
   }
 
   // ---- text extraction (ported) ----
@@ -369,6 +395,37 @@
     const cls = ["markdown-body", className].filter(Boolean).join(" ");
     return html`<div className=${cls}>${renderBlocks(clampMarkdown(text, maxChars), "md")}</div>`;
   }
+  function normalizeTodoStatus(value) {
+    const v = String(value || "pending").toLowerCase();
+    if (v === "completed" || v === "done") return "done";
+    if (v === "in_progress" || v === "active" || v === "running") return "active";
+    if (v === "blocked") return "blocked";
+    return "pending";
+  }
+  function todoRowsFrom(items, fallbackSteps) {
+    const rows = [];
+    const raw = Array.isArray(items) && items.length ? items : (fallbackSteps || []);
+    raw.forEach((item, i) => {
+      const title = typeof item === "string" ? item : String((item && (item.title || item.content || item.task)) || "");
+      if (!title.trim()) return;
+      const status = typeof item === "string" ? (i === 0 ? "active" : "pending") : normalizeTodoStatus(item.status);
+      rows.push({ id: `t${rows.length}`, title: title.trim(), status });
+    });
+    return rows;
+  }
+  function mergeTodoRows(current, updates, done) {
+    const rows = current.map((x) => ({ ...x }));
+    const byTitle = new Map(rows.map((x, i) => [x.title, i]));
+    for (const item of Array.isArray(updates) ? updates : []) {
+      const title = String((item && (item.title || item.content || item.task)) || "").trim();
+      if (!title) continue;
+      const next = { id: `t${rows.length}`, title, status: normalizeTodoStatus(item.status) };
+      if (byTitle.has(title)) rows[byTitle.get(title)] = { ...rows[byTitle.get(title)], status: next.status };
+      else { byTitle.set(title, rows.length); rows.push(next); }
+    }
+    if (done) rows.forEach((x) => { x.status = "done"; });
+    return rows;
+  }
 
   // ---------------------------------------------------------------------------
   // event digest → thread / todos / subagents / terminal
@@ -376,6 +433,7 @@
   function digest(events, d, lang) {
     const nodes = [];
     let lastPlan = null;
+    let todos = [];
     const calls = new Map(); // taskId -> call
     const terminal = [];
     const streamGroups = new Map(); // key -> nodeIndex for pm streams
@@ -396,16 +454,19 @@
       const t = e.type;
       const p = e.payload || {};
       if (t === "dispatch") {
-        nodes.push({ kind: "user", id: e.id || `u-${nodes.length}`, ts: e.ts, goal: p.goal || "", chips: [p.agent, p.model, p.effort].filter(Boolean) });
+        const autoAgent = p.pm_agent && !(Array.isArray(p.direct_agents) && p.direct_agents.length);
+        nodes.push({ kind: "user", id: e.id || `u-${nodes.length}`, ts: e.ts, goal: p.goal || "", chips: [autoAgent ? d.agentAuto : p.agent, p.model, p.effort].filter(Boolean) });
       } else if (t === "pm_plan") {
         const steps = Array.isArray(p.todo) ? p.todo.map((x) => String(x)) : (typeof p.todo === "string" && p.todo ? [p.todo] : []);
         lastPlan = { steps, summary: p.summary || "", instruction: p.instruction || "" };
+        todos = todoRowsFrom(p.todo_status, steps);
         nodes.push({ kind: "plan", id: e.id || `p-${nodes.length}`, ts: e.ts, steps, summary: p.summary || "", deliberation: Array.isArray(p.deliberation) ? p.deliberation : [] });
       } else if (t === "pm_review") {
         // The PM's post-run review (after each agent run): show its verdict + summary/follow-up so
         // "done" / "needs follow-up" status surfaces in the thread (DispatchService._emit_pm_review).
         const status = p.done ? (lang === "zh" ? "复查通过" : "review passed") : (lang === "zh" ? "需要跟进" : "needs follow-up");
         const txt = [`**${status}**`, p.summary || "", p.reason || "", p.follow_up ? `→ ${p.follow_up}` : ""].filter(Boolean).join("\n\n");
+        todos = mergeTodoRows(todos, p.todo_status, !!p.done);
         nodes.push({ kind: "pm", id: e.id || `pr-${nodes.length}`, ts: e.ts, text: txt });
       } else if (t === "pm_output" || t === "pm_reasoning") {
         const txt = extractAgentText(p);
@@ -454,8 +515,7 @@
       }
     }
 
-    // todos from last plan
-    const todos = lastPlan ? lastPlan.steps.map((s, i) => ({ id: `t${i}`, title: s, status: "pending" })) : [];
+    if (!todos.length && lastPlan) todos = todoRowsFrom([], lastPlan.steps);
 
     // subagents from calls
     const subagents = Array.from(calls.values()).map((c) => ({
@@ -574,7 +634,7 @@
       rightTab, setRightTab, onCard, onApproval, openDetail, composer, runCompact, compacting, compactStatus, onBriefing,
       cards, approvals } = props;
     const threadNodes = threadExtras(dig, cards, approvals, sessionRow);
-    const agentType = (sessionRow && sessionRow.agent_type) || "claude-code";
+    const agentType = displayAgent(sessionRow && sessionRow.agent_type, d);
     const live = sessionRow && (sessionRow.status || "").toLowerCase().match(/run|active/);
     const onBars = Math.max(0, Math.min(4, autonomy + 1));
     return html`
@@ -767,19 +827,20 @@
   }
 
   function Composer(props) {
-    const { d, lang, workspaces, workspace, setWorkspace, task, setTask, model, setModel, modelOptions, effort, setEffort,
+    const { d, lang, workspaces, workspace, setWorkspace, task, setTask, model, setModel, modelOptions, llm, effort, setEffort,
       attachments, addAttach, removeAttach, dispatching, runDispatch, dispatchStatus, sessionRow, events,
       compacting, runCompact, compactStatus } = props;
     const wsOpts = workspaces.length ? workspaces : [];
     const est = estTokens(events || []);
-    const pct = Math.min(95, Math.round((est / 128000) * 100));
+    const contextLimit = contextLimitFor(modelOptions, model, llm && llm.model);
+    const pct = Math.min(95, Math.round((est / contextLimit) * 100));
     const onKey = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runDispatch(); } };
     return html`<div className="composer">
       <div className="composer-inner">
         ${(events && events.length) ? html`<div className="ctx-meter">
           <span>${d.context}</span>
           <div className="track"><span style=${{ width: `${pct}%` }}></span></div>
-          <span>≈${Math.round(est / 100) / 10}k</span>
+          <span>≈${tokenK(est)} / ${tokenK(contextLimit)}</span>
           <button className="btn ghost sm" style=${{ marginLeft: "auto" }} onClick=${runCompact} disabled=${compacting || !sessionRow}>⟲ ${compacting ? d.compacting : d.compact}</button>
         </div>` : null}
         ${compactStatus ? html`<div className=${`alert ${compactStatus.includes(d.compactFailed) ? "error" : "info"}`} style=${{ marginBottom: 9 }}>${compactStatus}</div>` : null}
@@ -994,6 +1055,12 @@
           </div>
         </div>
         <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.baseUrl}</span><input className="input mono" value=${llm.base_url || ""} onChange=${(e) => setLlm({ ...llm, base_url: e.target.value })} placeholder="https://api.openai.com/v1" /></div>
+        <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.transport}</span>
+          <select className="select" value=${llm.transport || "http"} onChange=${(e) => setLlm({ ...llm, transport: e.target.value })}><option value="http">HTTP</option><option value="ws">WS stream</option></select>
+        </div>
+        <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.reasoningEffort}</span>
+          <select className="select" value=${llm.reasoning_effort || ""} onChange=${(e) => setLlm({ ...llm, reasoning_effort: e.target.value })}><option value="">${d.effortDefault}</option><option value="low">${d.fast}</option><option value="medium">${d.std}</option><option value="high">${d.deep}</option><option value="max">max</option></select>
+        </div>
         <div className="field" style=${{ marginBottom: 11 }}><span className="field-label">${d.apiKey}</span><input className="input mono" type="password" value=${llm.api_key || ""} onChange=${(e) => setLlm({ ...llm, api_key: e.target.value })} placeholder=${d.pmKeyPlaceholder} autoComplete="off" /></div>
         <div className=${`alert ${llm.api_key_set ? "info" : "warn"}`} style=${{ marginBottom: 14 }}>ⓘ ${llm.api_key_set ? d.pmKeyHint : d.pmKeyMissing}</div>
         ${llmStatus ? html`<div className=${`alert ${llmStatus === d.saved ? "ok" : "error"}`} style=${{ marginBottom: 14 }}>${llmStatus}</div>` : null}
@@ -1133,7 +1200,7 @@
     </div></div>`;
     if (mTab === "todo") return html`<div style=${{ padding: 13 }}><${TodoPanel} d=${d} todos=${dig.todos} onAddStep=${mainProps.composer.onAddStep} /></div>`;
     if (mTab === "sub") return html`<div style=${{ padding: 13 }}><${SubPanel} d=${d} subagents=${dig.subagents} expandedSub=${mainProps.expandedSub} toggleSub=${mainProps.toggleSub} /></div>`;
-    return html`<div style=${{ padding: 13 }}><${TermPanel} d=${d} terminal=${dig.terminal} agentType=${(mainProps.sessionRow && mainProps.sessionRow.agent_type) || "claude-code"} sessionRow=${mainProps.sessionRow} /></div>`;
+    return html`<div style=${{ padding: 13 }}><${TermPanel} d=${d} terminal=${dig.terminal} agentType=${displayAgent(mainProps.sessionRow && mainProps.sessionRow.agent_type, d)} sessionRow=${mainProps.sessionRow} /></div>`;
   }
 
   // ===========================================================================
@@ -1177,7 +1244,7 @@
     const [dispatchStatus, setDispatchStatus] = useState("");
     const [compacting, setCompacting] = useState(false);
     const [compactStatus, setCompactStatus] = useState("");
-    const [llm, setLlm] = useState({ provider: "openai", model: "", base_url: "", transport: "http", api_key_set: true, api_key: "" });
+    const [llm, setLlm] = useState({ provider: "openai", model: "", base_url: "", transport: "http", reasoning_effort: "", api_key_set: true, api_key: "" });
     const [llmStatus, setLlmStatus] = useState("");
     const [agentStatus, setAgentStatus] = useState("");
     const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false });
@@ -1217,12 +1284,12 @@
       } catch (e) { setWorkspaces([]); }
     }, []);
     const loadAgentSettings = useCallback(async () => { try { setAgentSettings(await api("/api/settings/agents") || []); } catch (e) { setAgentSettings([]); } finally { setAgentsLoaded(true); } }, []);
-    const loadModels = useCallback(async () => { try { const data = await api("/api/models"); setModelOptions((data && data.models || []).map((m) => ({ value: m.id }))); } catch (e) { setModelOptions([]); } }, []);
+    const loadModels = useCallback(async () => { try { const data = await api("/api/models"); setModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, max_tokens: m.max_tokens, source: m.source }))); } catch (e) { setModelOptions([]); } }, []);
     const loadPmModels = useCallback(async (draft) => {
       const cur = draft || {};
-      const body = { provider: cur.provider || "openai", model: (cur.model || "").trim(), base_url: (cur.base_url || "").trim() };
+      const body = { provider: cur.provider || "openai", model: (cur.model || "").trim(), base_url: (cur.base_url || "").trim(), transport: cur.transport || "http", reasoning_effort: cur.reasoning_effort || "" };
       if ((cur.api_key || "").trim()) body.api_key = cur.api_key.trim();
-      try { const data = await api("/api/models/preview", { method: "POST", body }); setPmModelOptions((data && data.models || []).map((m) => ({ value: m.id }))); } catch (e) { setPmModelOptions([]); }
+      try { const data = await api("/api/models/preview", { method: "POST", body }); setPmModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, max_tokens: m.max_tokens, source: m.source }))); } catch (e) { setPmModelOptions([]); }
     }, []);
     const loadSessions = useCallback(async () => { try { try { setSessions(await api("/api/overview") || []); } catch (e) { setSessions(await api("/api/sessions") || []); } } catch (e) { setSessions([]); } }, []);
     const loadCards = useCallback(async () => { try { setCards(await api("/api/cards") || []); } catch (e) { setCards([]); } }, []);
@@ -1399,7 +1466,7 @@
     }
     async function saveLlm() {
       try {
-        const body = { provider: llm.provider || "openai", model: (llm.model || "").trim(), base_url: (llm.base_url || "").trim() };
+        const body = { provider: llm.provider || "openai", model: (llm.model || "").trim(), base_url: (llm.base_url || "").trim(), transport: llm.transport || "http", reasoning_effort: llm.reasoning_effort || "" };
         if ((llm.api_key || "").trim()) body.api_key = llm.api_key.trim();
         const data = await api("/api/settings/llm", { method: "POST", body }); const next = { ...data, api_key: "" }; setLlm(next); setLlmStatus(d.saved); await loadPmModels(next); await loadModels();
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
@@ -1465,7 +1532,7 @@
 
     const composerProps = {
       workspaces, workspace, setWorkspace: (v) => { setWorkspace(v); if (v) localStorage.setItem(WORKSPACE_KEY, v); },
-      task, setTask, model, setModel, modelOptions, effort, setEffort, attachments, addAttach, removeAttach,
+      task, setTask, model, setModel, modelOptions, llm, effort, setEffort, attachments, addAttach, removeAttach,
       dispatching, runDispatch, dispatchStatus, onAddStep,
     };
     const settingsProps = {

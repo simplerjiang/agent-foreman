@@ -8,6 +8,7 @@ follow-up. It does not execute tools directly; it only chooses how to steer the 
 from __future__ import annotations
 
 import json
+import inspect
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,7 +26,7 @@ PLAN_SYSTEM = (
     "You are the PM agent for Foreman. Analyze the user's task before any coding CLI is launched. "
     "Choose which enabled coding agent should run, which coding-agent model/effort to use, and "
     "write the exact instruction for that agent. Deliberate before dispatch: produce concise "
-    "visible decision notes and a todo list, then mark ready only when no more planning would "
+    "visible decision notes and an atomic todo list, then mark ready only when no more planning would "
     "change the launch decision. Do not reveal hidden chain-of-thought; decision notes must be "
     "short, evidence-oriented summaries. The dispatch model is already being used for you, "
     "the PM brain; never copy it into the coding-agent model field. Choose the coding agent "
@@ -47,10 +48,13 @@ REVIEW_SYSTEM = (
     "You are the PM agent reviewing a coding CLI's returned timeline. Decide whether the original "
     "user task is actually complete. If it is not complete, write the next follow-up instruction to "
     "send to the same agent. Be strict: missing tests, unverified behavior, obvious errors, or partial "
-    "implementation means done=false. Human-facing JSON string values must follow the selected output "
+    "implementation means done=false. Update the todo list every review: mark completed items as "
+    "done immediately, mark the next active item in_progress, and mark blocked items blocked. "
+    "Human-facing JSON string values must follow the selected output "
     "language; keep only identifiers, paths, commands, code, and quoted user text as-is. Respond with "
     "ONLY JSON: "
-    '{"done": bool, "summary": str, "reason": str, "follow_up": str}.'
+    '{"done": bool, "summary": str, "reason": str, "follow_up": str, '
+    '"todo_status": [{"title": str, "status": "pending|in_progress|done|blocked"}]}.'
 )
 
 COMPACT_SYSTEM = (
@@ -89,6 +93,7 @@ class PMReview:
     summary: str = ""
     reason: str = ""
     follow_up: str = ""
+    todo_status: list[dict[str, str]] = field(default_factory=list)
 
 
 def _as_str(value: object) -> str:
@@ -114,6 +119,40 @@ def _as_str_list(value: object, *, max_items: int = 12) -> list[str]:
     else:
         items = []
     return [item for item in items if item][:max_items]
+
+
+def _as_todo_status(value: object, *, max_items: int = 12) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in value[:max_items]:
+        if isinstance(item, str):
+            title, status = item, "pending"
+        elif isinstance(item, dict):
+            title = _as_str(item.get("title") or item.get("content") or item.get("task"))
+            status = _as_str(item.get("status")).lower()
+        else:
+            continue
+        if not title:
+            continue
+        if status == "completed":
+            status = "done"
+        elif status in {"active", "running"}:
+            status = "in_progress"
+        if status not in {"pending", "in_progress", "done", "blocked"}:
+            status = "pending"
+        out.append({"title": title, "status": status})
+    return out
+
+
+def _accepts_keyword(fn, name: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return True
+    if name in sig.parameters:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
 def _extract_json_object(raw: str) -> dict | None:
@@ -179,6 +218,7 @@ def parse_review(raw: str) -> PMReview:
         summary=_as_str(obj.get("summary")),
         reason=_as_str(obj.get("reason")),
         follow_up=_as_str(obj.get("follow_up")),
+        todo_status=_as_todo_status(obj.get("todo_status") or obj.get("todo")),
     )
 
 
@@ -326,12 +366,16 @@ def build_review_prompt(
     run_count: int,
     max_runs: int,
     context: str = "",
+    review_state: str = "",
+    todo_status: list[dict[str, str]] | None = None,
 ) -> str:
     parts = [
         f"# Original user task\n{goal}",
     ]
     if context:
         parts.append(f"# Existing session context\n{context}")
+    if review_state:
+        parts.append(f"# Prior PM review state\n{review_state}")
     parts.extend(
         [
             "# PM plan\n"
@@ -343,12 +387,13 @@ def build_review_prompt(
                     "effort": plan.effort,
                     "instruction": plan.instruction,
                     "todo": plan.todo,
+                    "todo_status": todo_status or [],
                     "deliberation": plan.deliberation,
                 },
                 ensure_ascii=False,
             ),
             f"# Review budget\nThis is completed agent run {run_count} of maximum {max_runs}.",
-            f"# Captured timeline\n{timeline or '(no agent output captured)'}",
+            f"# Captured timeline since last PM review\n{timeline or '(no new agent output captured)'}",
         ]
     )
     return "\n\n".join(parts)
@@ -455,18 +500,26 @@ class PMAgent:
         run_count: int,
         context: str = "",
         pm_model: str = "",
+        review_state: str = "",
+        todo_status: list[dict[str, str]] | None = None,
         on_stream=None,
+        state_key: str = "",
     ) -> PMReview:
         system = REVIEW_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_review_prompt(
-            goal, plan, timeline, run_count=run_count, max_runs=self.max_runs, context=context
+            goal,
+            plan,
+            timeline,
+            run_count=run_count,
+            max_runs=self.max_runs,
+            context=context,
+            review_state=review_state,
+            todo_status=todo_status,
         )
-        raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)],
-            json_mode=True,
-            model=pm_model,
-            on_stream=on_stream,
-        )
+        kwargs = {"json_mode": True, "model": pm_model, "on_stream": on_stream}
+        if state_key and _accepts_keyword(self.llm.complete, "state_key"):
+            kwargs["state_key"] = state_key
+        raw = await self.llm.complete([Message("system", system), Message("user", prompt)], **kwargs)
         return parse_review(raw)
 
     async def compact(

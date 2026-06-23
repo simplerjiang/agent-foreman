@@ -44,6 +44,7 @@ MAX_GOAL_CHARS = 8000
 VALID_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high"})
 VALID_SOURCES: frozenset[str] = frozenset({"desktop", "phone", "api"})
 MAX_CONTEXT_CHARS = 12000
+PM_AUTO_AGENT = "pm-agent"
 AGENT_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code": ("claude-code", "claude code", "claude"),
     "codex": ("codex",),
@@ -144,7 +145,9 @@ class DispatchService:
         )
         resolved_effort = "" if pm_enabled else self._resolve_effort(resolved_agent, effort)
 
-        session_agent = "+".join(direct_agents) if direct_agents else resolved_agent
+        session_agent = "+".join(direct_agents) if direct_agents else (
+            PM_AUTO_AGENT if pm_enabled else resolved_agent
+        )
         if existing_session is None:
             session, task = build_session_task(self.store, goal, ws, session_agent)
             continued = False
@@ -483,6 +486,12 @@ class DispatchService:
             if cfg.enabled
         ] or [{"name": agent, "model": "", "effort": effort, "full_access": True}]
         context = self._session_context(session_id)
+        await self._emit_pm_status(
+            session_id,
+            task_id,
+            "plan",
+            "PM is planning agent choice, todo list, and launch instruction...",
+        )
         plan_kwargs = {
             "workspace": workspace,
             "available_agents": enabled_agents,
@@ -496,26 +505,57 @@ class DispatchService:
             plan_kwargs["on_stream"] = self._pm_stream_sink(session_id, task_id, "plan")
         plan = await self.pm_agent.plan(goal, **plan_kwargs)
         plan = self._sanitize_pm_plan(plan, pm_model)
-        await self._emit_pm_plan(session_id, task_id, plan)
+        todo_status = _initial_todo_status(plan.todo)
+        await self._emit_pm_plan(session_id, task_id, plan, todo_status=todo_status)
+        await self._emit_pm_status(
+            session_id,
+            task_id,
+            "launch",
+            f"PM selected {plan.agent}; launching the coding agent...",
+        )
         handle = await self.runner.launch(
             plan.agent, plan.instruction, Path(workspace), session_id,
             model=plan.model, effort=plan.effort,
         )
         run_count = 1
+        reviewed_event_id = ""
+        review_notes: list[dict[str, Any]] = []
+        review_state_key = f"{session_id}:{task_id}:pm-review"
         await self.runner.wait(handle)
         while True:
-            timeline = events_to_text(self.store.get_events(session_id))
+            rows = self.store.get_events(session_id)
+            timeline = events_to_text(_events_after(rows, reviewed_event_id))
+            review_cutoff_id = _last_event_id(rows)
             review_kwargs = {
                 "run_count": run_count,
                 "context": context,
                 "pm_model": pm_model,
             }
+            if _accepts_keyword(self.pm_agent.review, "review_state"):
+                review_kwargs["review_state"] = _review_state_text(todo_status, review_notes)
+            if _accepts_keyword(self.pm_agent.review, "todo_status"):
+                review_kwargs["todo_status"] = todo_status
             if _accepts_keyword(self.pm_agent.review, "on_stream"):
                 review_kwargs["on_stream"] = self._pm_stream_sink(
                     session_id, task_id, f"review-{run_count}"
                 )
+            if _accepts_keyword(self.pm_agent.review, "state_key"):
+                review_kwargs["state_key"] = review_state_key
             review = await self.pm_agent.review(goal, plan, timeline, **review_kwargs)
-            await self._emit_pm_review(session_id, task_id, review, run_count)
+            todo_status = _merge_todo_status(todo_status, review.todo_status, done=review.done)
+            review.todo_status = todo_status
+            reviewed_event_id = (
+                await self._emit_pm_review(session_id, task_id, review, run_count)
+            ) or review_cutoff_id
+            review_notes.append(
+                {
+                    "run_count": run_count,
+                    "done": review.done,
+                    "summary": review.summary,
+                    "reason": review.reason,
+                    "follow_up": review.follow_up,
+                }
+            )
             if review.done:
                 return
             if run_count >= self.pm_agent.max_runs:
@@ -555,7 +595,14 @@ class DispatchService:
             planning_rounds=plan.planning_rounds,
         )
 
-    async def _emit_pm_plan(self, session_id: str, task_id: str, plan: PMPlan) -> None:
+    async def _emit_pm_plan(
+        self,
+        session_id: str,
+        task_id: str,
+        plan: PMPlan,
+        *,
+        todo_status: list[dict[str, str]] | None = None,
+    ) -> None:
         event = make_event(
             "pm_plan",
             "pm-agent",
@@ -568,6 +615,7 @@ class DispatchService:
                 "effort": plan.effort,
                 "instruction": plan.instruction,
                 "todo": plan.todo,
+                "todo_status": todo_status or [],
                 "deliberation": plan.deliberation,
                 "ready": plan.ready,
                 "planning_rounds": plan.planning_rounds,
@@ -575,7 +623,7 @@ class DispatchService:
         )
         await self._persist_then_publish(event)
 
-    async def _emit_pm_review(self, session_id: str, task_id: str, review, run_count: int) -> None:
+    async def _emit_pm_review(self, session_id: str, task_id: str, review, run_count: int) -> str:
         event = make_event(
             "pm_review",
             "pm-agent",
@@ -587,9 +635,31 @@ class DispatchService:
                 "summary": review.summary,
                 "reason": review.reason,
                 "follow_up": review.follow_up,
+                "todo_status": review.todo_status,
             },
         )
         await self._persist_then_publish(event)
+        return event.id
+
+    async def _emit_pm_status(
+        self, session_id: str, task_id: str, phase: str, text: str
+    ) -> None:
+        await self._persist_then_publish(
+            make_event(
+                "pm_output",
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload={
+                    "phase": phase,
+                    "stream_id": f"status:{phase}",
+                    "seq": 0,
+                    "delta": text,
+                    "event_type": "status",
+                    "status": "working",
+                },
+            )
+        )
 
     async def _emit_pm_error(self, session_id: str, task_id: str, msg: str) -> None:
         event = make_event(
@@ -784,6 +854,45 @@ def _fallback_compact(timeline: str, existing: str = "") -> str:
     return "...[context compacted to latest events]...\n" + text[-MAX_CONTEXT_CHARS:]
 
 
+def _initial_todo_status(items: list[str]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for i, title in enumerate(items):
+        text = str(title or "").strip()
+        if text:
+            out.append({"title": text, "status": "in_progress" if i == 0 else "pending"})
+    return out
+
+
+def _merge_todo_status(
+    current: list[dict[str, str]], update: list[dict[str, str]], *, done: bool
+) -> list[dict[str, str]]:
+    valid = {"pending", "in_progress", "done", "blocked"}
+    by_title = {
+        str(item.get("title") or "").strip(): str(item.get("status") or "pending").strip()
+        for item in current
+        if str(item.get("title") or "").strip()
+    }
+    order = [str(item.get("title") or "").strip() for item in current]
+    for item in update or []:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        status = str(item.get("status") or "pending").strip().lower()
+        if status == "completed":
+            status = "done"
+        elif status in {"active", "running"}:
+            status = "in_progress"
+        if status not in valid:
+            status = "pending"
+        if title not in by_title:
+            order.append(title)
+        by_title[title] = status
+    if done:
+        for title in order:
+            by_title[title] = "done"
+    return [{"title": title, "status": by_title[title]} for title in order if title]
+
+
 def _explicit_agent_targets(goal: str, enabled_agents: list[str]) -> list[str]:
     text = (goal or "").casefold()
     if not text:
@@ -853,6 +962,34 @@ def _direct_agent_instruction(
         "Do not invoke another coding agent from shell; complete only your own part and report "
         "your result succinctly."
     )
+
+
+def _events_after(rows: list[Any], event_id: str) -> list[Any]:
+    marker = (event_id or "").strip()
+    if not marker:
+        return rows
+    for idx, row in enumerate(rows):
+        if _event_id(row) == marker:
+            return rows[idx + 1:]
+    return rows
+
+
+def _last_event_id(rows: list[Any]) -> str:
+    return _event_id(rows[-1]) if rows else ""
+
+
+def _review_state_text(
+    todo_status: list[dict[str, str]], review_notes: list[dict[str, Any]]
+) -> str:
+    state = {
+        "todo_status": todo_status,
+        "prior_reviews": review_notes[-4:],
+        "timeline_rule": (
+            "The captured timeline below is only new activity since the prior PM review. "
+            "Use prior_reviews and todo_status as the carried loop state."
+        ),
+    }
+    return json.dumps(state, ensure_ascii=False)
 
 
 def _event_id(row: Any) -> str:

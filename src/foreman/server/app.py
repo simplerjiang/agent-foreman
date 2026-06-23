@@ -41,6 +41,7 @@ _AGENTS_SETTING = "agents.json"
 _LLM_KEY_ENV = "FOREMAN_LLM_API_KEY"
 _CLOUD_KEY_ENV = "FOREMAN_CLOUD_ACCESS_KEY"
 _VALID_AGENT_EFFORTS = frozenset({"", "low", "medium", "high"})
+_VALID_LLM_REASONING_EFFORTS = frozenset({"", "low", "medium", "high", "max"})
 _SUPPORTED_AGENTS = frozenset(default_agents())
 
 
@@ -62,6 +63,7 @@ class _LLMSettingsBody(BaseModel):
     model: str | None = None
     base_url: str | None = None
     transport: str | None = None  # "http" | "ws"
+    reasoning_effort: str | None = None
     api_key: str | None = None
 
 
@@ -216,6 +218,33 @@ class _DefinitionImportBody(BaseModel):
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
+def _web_asset_mtime() -> str:
+    try:
+        mtimes = [
+            p.stat().st_mtime
+            for p in WEB_DIR.glob("*")
+            if p.is_file() and p.suffix in {".css", ".html", ".js"}
+        ]
+    except OSError:
+        mtimes = []
+    return str(int(max(mtimes))) if mtimes else ""
+
+
+def _web_assets_dirty(repo: Path) -> bool:
+    try:
+        web_path = str(WEB_DIR.relative_to(repo))
+    except ValueError:
+        web_path = str(WEB_DIR)
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--", web_path],
+            cwd=str(repo), capture_output=True, text=True, timeout=3, check=True,
+        )
+        return bool(out.stdout.strip())
+    except Exception:  # noqa: BLE001 - dirty detection is best-effort cache busting
+        return False
+
+
 def _compute_asset_ver() -> str:
     """Cache-busting token stamped into the PWA's ``?v=…`` asset URLs. Changes every deploy so
     Cloudflare's edge cache (and browsers) refetch the CSS/JS instead of serving a stale copy.
@@ -229,10 +258,12 @@ def _compute_asset_ver() -> str:
         )
         sha = out.stdout.strip()
         if sha:
-            return sha
+            stamp = _web_asset_mtime() if _web_assets_dirty(repo) else ""
+            return f"{sha}-{stamp}" if stamp else sha
     except Exception:  # noqa: BLE001 — git missing / not a repo / timeout → fall back
         pass
-    return __version__
+    stamp = _web_asset_mtime()
+    return f"{__version__}-{stamp}" if stamp else __version__
 
 
 # Computed once at import (server start). The deploy restarts the service after the git reset,
@@ -703,16 +734,19 @@ def create_app(
         model = cfg.llm.model
         base_url = cfg.llm.base_url
         transport = cfg.llm.transport
+        reasoning_effort = getattr(cfg.llm, "reasoning_effort", "")
         if store is not None and hasattr(store, "get_setting"):
             provider = store.get_setting("llm.provider") or provider
             model = store.get_setting("llm.model") or model
             base_url = store.get_setting("llm.base_url") or base_url
             transport = store.get_setting("llm.transport") or transport
+            reasoning_effort = store.get_setting("llm.reasoning_effort") or reasoning_effort
         return {
             "provider": provider,
             "model": model,
             "base_url": base_url,
             "transport": transport,
+            "reasoning_effort": reasoning_effort,
             "api_key": cfg.secrets.llm_api_key,
         }
 
@@ -726,6 +760,8 @@ def create_app(
             settings["base_url"] = body.base_url.strip()
         if body.transport is not None and body.transport.strip():
             settings["transport"] = body.transport.strip().lower()
+        if body.reasoning_effort is not None:
+            settings["reasoning_effort"] = body.reasoning_effort.strip().lower()
         if body.api_key is not None and body.api_key.strip():
             settings["api_key"] = body.api_key.strip()
         return settings
@@ -733,14 +769,25 @@ def create_app(
     async def _list_model_choices(agent: str | None = None, settings: dict | None = None) -> dict:
         from foreman.shared.llm import LLMClient
 
-        models: list[dict] = []
+        models: list[dict[str, object]] = []
         seen: set[str] = set()
 
-        def add(model_id: str, source: str) -> None:
+        def add(
+            model_id: str,
+            source: str,
+            *,
+            context_length: int | None = None,
+            max_tokens: int | None = None,
+        ) -> None:
             mid = (model_id or "").strip()
             if mid and mid not in seen:
                 seen.add(mid)
-                models.append({"id": mid, "source": source})
+                item: dict[str, object] = {"id": mid, "source": source}
+                if context_length:
+                    item["context_length"] = context_length
+                if max_tokens:
+                    item["max_tokens"] = max_tokens
+                models.append(item)
 
         agent_cfg = _effective_agents().get((agent or "").strip())
         if agent_cfg is not None:
@@ -750,8 +797,13 @@ def create_app(
         error = ""
         client = LLMClient(cfg, settings_resolver=lambda: effective)
         try:
-            for model_id in await client.list_models():
-                add(model_id, "provider")
+            for info in await client.list_model_infos():
+                add(
+                    str(info.get("id") or ""),
+                    "provider",
+                    context_length=info.get("context_length"),
+                    max_tokens=info.get("max_tokens"),
+                )
         except Exception as exc:  # noqa: BLE001 - optional UI discovery must not block the form
             error = f"{type(exc).__name__}: {str(exc)[:160]}"
         finally:
@@ -1032,6 +1084,7 @@ def create_app(
             "model": settings["model"],
             "base_url": settings["base_url"],
             "transport": settings["transport"],
+            "reasoning_effort": settings["reasoning_effort"],
             "api_key_set": bool((cfg.secrets.llm_api_key or "").strip()),
         }
 
@@ -1057,6 +1110,12 @@ def create_app(
             store.set_setting("llm.transport", transport)
             if transport:
                 cfg.llm.transport = transport
+        if body.reasoning_effort is not None:
+            reasoning_effort = body.reasoning_effort.strip().lower()
+            if reasoning_effort not in _VALID_LLM_REASONING_EFFORTS:
+                raise HTTPException(status_code=400, detail="bad_reasoning_effort")
+            store.set_setting("llm.reasoning_effort", reasoning_effort)
+            cfg.llm.reasoning_effort = reasoning_effort
         if body.api_key is not None:
             _save_llm_api_key(body.api_key)
         return await get_llm_settings()

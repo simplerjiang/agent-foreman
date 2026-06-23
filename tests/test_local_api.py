@@ -149,6 +149,31 @@ def test_api_models_returns_pm_defaults_without_key():
     assert "LLMConfigError" in data["error"]
 
 
+def test_api_models_preserves_provider_context_metadata(monkeypatch):
+    class FakeLLM:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def list_model_infos(self):
+            return [{"id": "big-model", "context_length": 256000, "max_tokens": 8192}]
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr("foreman.shared.llm.LLMClient", FakeLLM)
+    cfg = Config()
+    cfg.llm.model = "pm-model"
+    cfg.secrets.llm_api_key = "k"
+    data = TestClient(create_app(cfg)).get("/api/models").json()
+
+    assert {
+        "id": "big-model",
+        "source": "provider",
+        "context_length": 256000,
+        "max_tokens": 8192,
+    } in data["models"]
+
+
 def test_api_models_preview_uses_unsaved_settings_without_persisting(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.init()
@@ -173,6 +198,30 @@ def test_api_models_preview_uses_unsaved_settings_without_persisting(tmp_path):
 
 
 # ── /api/workspaces: local UI can edit the workspace allowlist ──────────────────────────────────
+
+
+def test_llm_settings_persist_reasoning_effort(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    c = TestClient(create_app(cfg, store, EventBus()))
+
+    saved = c.post("/api/settings/llm", json={"reasoning_effort": "max"}).json()
+
+    assert saved["reasoning_effort"] == "max"
+    assert store.get_setting("llm.reasoning_effort") == "max"
+    assert cfg.llm.reasoning_effort == "max"
+
+
+def test_llm_settings_reject_bad_reasoning_effort(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    res = TestClient(create_app(Config(), store, EventBus())).post(
+        "/api/settings/llm", json={"reasoning_effort": "turbo"}
+    )
+
+    assert res.status_code == 400
+    assert res.json()["detail"] == "bad_reasoning_effort"
 
 
 def test_workspace_settings_can_dispatch_without_restart(tmp_path):
