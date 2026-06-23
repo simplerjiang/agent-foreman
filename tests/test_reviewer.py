@@ -210,6 +210,23 @@ async def test_review_escalates_on_garbage_reply():
     assert res.verdict == ESCALATE and res.needs_human is True
 
 
+async def test_review_escalates_approve_on_partial_diff():
+    cap: dict = {}
+    rv = _reviewer('{"verdict": "approve", "summary": "ok"}', cap)
+    diff = "\n".join(
+        f"diff --git a/file{i}.py b/file{i}.py\n--- a/file{i}.py\n+++ b/file{i}.py\n"
+        + "\n".join(f"+line {i}-{n}" for n in range(60))
+        for i in range(8)
+    )
+    res = await rv.review("g", diff, max_diff_chars=1200)
+    await rv.llm.aclose()
+
+    assert res.verdict == ESCALATE
+    assert res.needs_human is True
+    assert "partial" in res.risks[0]
+    assert "# Omitted diff evidence" in cap["json"]["messages"][-1]["content"]
+
+
 # ── CheckpointManager.diff(): the Reviewer's diff source ────────────────────────────────────────
 
 
