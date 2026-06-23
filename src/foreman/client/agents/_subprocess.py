@@ -122,20 +122,40 @@ class SubprocessCliAdapter:
         return handle
 
     async def stream(self, handle: AgentHandle) -> AsyncIterator[AgentEvent]:
-        """Yield one AgentEvent per stdout line; capture the agent's native session id if present."""
+        """Yield stdout events and surface a non-zero process exit as an error event."""
         proc = self._procs.get(handle.id)
-        if proc is None or proc.stdout is None:
+        if proc is None:
             return
-        async for raw in proc.stdout:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line:
-                continue
-            event = self._line_to_event(line, handle.session_id)
-            if not handle.native_session_id:
-                sid = event.payload.get("session_id")
-                if sid:
-                    handle.native_session_id = sid
-            yield event
+        stderr_task = (
+            asyncio.create_task(_read_pipe_text(proc.stderr))
+            if getattr(proc, "stderr", None) is not None
+            else None
+        )
+        if proc.stdout is not None:
+            async for raw in proc.stdout:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                event = self._line_to_event(line, handle.session_id)
+                if not handle.native_session_id:
+                    sid = event.payload.get("session_id")
+                    if sid:
+                        handle.native_session_id = sid
+                yield event
+
+        returncode = await proc.wait()
+        stderr_text = await stderr_task if stderr_task is not None else ""
+        if returncode:
+            yield make_event(
+                "error",
+                self.name,
+                handle.session_id,
+                payload={
+                    "msg": _process_error_message(self.name, returncode, stderr_text),
+                    "returncode": returncode,
+                    "stderr": stderr_text[-4000:],
+                },
+            )
 
     def _line_to_event(self, line: str, session_id: str) -> AgentEvent:
         """Map one output line to an AgentEvent; non-JSON / non-object → raw agent_output.
@@ -228,3 +248,24 @@ def _which_spawnable(name: str) -> str | None:
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+async def _read_pipe_text(pipe) -> str:
+    """Drain a subprocess pipe and decode it as UTF-8."""
+    try:
+        data = await pipe.read()
+    except AttributeError:
+        chunks: list[bytes] = []
+        async for raw in pipe:
+            chunks.append(raw)
+        data = b"".join(chunks)
+    if isinstance(data, str):
+        return data.strip()
+    return (data or b"").decode("utf-8", "replace").strip()
+
+
+def _process_error_message(name: str, returncode: int, stderr_text: str) -> str:
+    base = f"{name} exited with code {returncode}"
+    if stderr_text:
+        return f"{base}: {stderr_text[:500]}"
+    return base

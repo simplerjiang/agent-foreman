@@ -73,6 +73,21 @@ async def test_stream_parses_lines(tmp_path):
     assert events[1].payload["result"] == "ok"
 
 
+async def test_stream_reports_nonzero_exit_with_stderr(tmp_path):
+    a = fake_adapter(
+        CodexAdapter,
+        _cfg(),
+        FakeProc(stdout_lines=[], stderr_lines=[b"codex failed\n"], returncode=2),
+    )
+    h = await a.start("x", tmp_path, "s")
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["error"]
+    assert events[0].source == "codex"
+    assert events[0].payload["returncode"] == 2
+    assert "codex failed" in events[0].payload["msg"]
+
+
 async def test_stop_terminates(tmp_path):
     proc = FakeProc()
     a = fake_adapter(CodexAdapter, _cfg(), proc)

@@ -247,7 +247,7 @@ def _row_to_dict(row) -> dict:
 def _event_to_dict(ev: AgentEvent) -> dict:
     """A live AgentEvent → JSON-friendly dict (same shape as _row_to_dict)."""
     return {
-        "id": None, "session_id": ev.session_id, "task_id": ev.task_id,
+        "id": ev.id or None, "session_id": ev.session_id, "task_id": ev.task_id,
         "type": ev.type, "source": ev.source, "payload": ev.payload, "ts": ev.ts,
     }
 

@@ -17,14 +17,26 @@ class FakeStdout:
             raise StopAsyncIteration
         return self._lines.pop(0)
 
+    async def read(self) -> bytes:
+        out = b"".join(self._lines)
+        self._lines = []
+        return out
+
 
 class FakeProc:
-    def __init__(self, pid: int = 4321, stdout_lines: list[bytes] | None = None) -> None:
+    def __init__(
+        self,
+        pid: int = 4321,
+        stdout_lines: list[bytes] | None = None,
+        stderr_lines: list[bytes] | None = None,
+        returncode: int | None = None,
+    ) -> None:
         self.pid = pid
-        self.returncode: int | None = None
+        self.returncode: int | None = returncode
         self.terminated = False
         self.killed = False
         self.stdout = FakeStdout(stdout_lines) if stdout_lines is not None else None
+        self.stderr = FakeStdout(stderr_lines) if stderr_lines is not None else None
 
     def terminate(self) -> None:
         self.terminated = True

@@ -36,8 +36,10 @@ def test_session_and_task_roundtrip(tmp_path):
 
 def test_event_roundtrip_serializes_payload(tmp_path):
     st = _store(tmp_path)
-    row = st.add_event(make_event("agent_output", "claude-code", "s1", payload={"text": "hi"}))
+    event = make_event("agent_output", "claude-code", "s1", payload={"text": "hi"})
+    row = st.add_event(event)
     assert row.id and json.loads(row.payload_json) == {"text": "hi"}
+    assert event.id == row.id
 
     events = st.get_events("s1")
     assert len(events) == 1
