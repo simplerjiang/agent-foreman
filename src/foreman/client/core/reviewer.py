@@ -45,7 +45,8 @@ REVIEW_SYSTEM = (
     "diff, so do not take it on faith. Choose exactly one verdict: 'approve' (meets the goal, ship "
     "it), 'request_changes' (fixable problems the agent should redo), or 'escalate' (risky, "
     "ambiguous, or you are unsure — a human should look). When in doubt, prefer 'escalate' over "
-    "'approve'. Respond with ONLY a JSON object: "
+    "'approve'. If the diff includes omitted evidence, your review is partial; do not return "
+    "'approve' for a partial diff. Respond with ONLY a JSON object: "
     '{"verdict": "approve|request_changes|escalate", "summary": str, "risks": [str], '
     '"suggestions": [str], "needs_human": bool}.'
 )
@@ -274,7 +275,24 @@ class Reviewer:
         raw = await self.llm.complete(
             [Message("system", system), Message("user", prompt)], json_mode=True
         )
-        return parse_review(raw)
+        return _guard_partial_diff_approval(parse_review(raw), diff, max_diff_chars)
+
+
+def _guard_partial_diff_approval(
+    result: ReviewResult, diff: str, max_diff_chars: int
+) -> ReviewResult:
+    if result.verdict != APPROVE or len(diff or "") <= max_diff_chars:
+        return result
+    return ReviewResult(
+        verdict=ESCALATE,
+        summary=result.summary or "reviewer approved a partial diff",
+        risks=["review evidence was partial; omitted diff evidence was not reviewed"] + result.risks,
+        suggestions=[
+            "Inspect omitted diff evidence or split the review by file before approval."
+        ]
+        + result.suggestions,
+        needs_human=True,
+    )
 
 
 __all__ = [

@@ -27,6 +27,17 @@ MEMORY_FIELDS = (
     "tests",
 )
 
+EVICT_MEMORY_FIELDS = (
+    "tests",
+    "commands",
+    "files",
+    "next_steps",
+    "risks",
+    "open_questions",
+    "claims",
+    "decisions",
+)
+
 FIELD_STATUS = {
     "verified_facts": "verified",
     "claims": "claimed",
@@ -173,6 +184,10 @@ def context_pack_to_text(pack: dict, *, max_chars: int = DEFAULT_CONTEXT_BUDGET_
         return text
 
     data = copy.deepcopy(data)
+    protected_memory = {
+        "constraints": _top_memory(data, "constraints", 3),
+        "verified_facts": _top_memory(data, "verified_facts", 3),
+    }
     omitted = data.setdefault("omitted", [])
     for section in ("dynamic_tail", "retrieved_evidence"):
         items = data.get(section)
@@ -186,10 +201,10 @@ def context_pack_to_text(pack: dict, *, max_chars: int = DEFAULT_CONTEXT_BUDGET_
                     "text": _as_str(_as_dict(removed).get("text"))[:160],
                 }
             )
-    for field in MEMORY_FIELDS:
+    for field in EVICT_MEMORY_FIELDS:
         items = data.get("working_memory", {}).get(field)
         while isinstance(items, list) and items and len(_dump(data)) > max_chars:
-            removed = items.pop()
+            removed = _pop_lowest_importance(items)
             omitted.append(
                 {
                     "kind": field,
@@ -202,6 +217,11 @@ def context_pack_to_text(pack: dict, *, max_chars: int = DEFAULT_CONTEXT_BUDGET_
     text = _dump(data)
     if len(text) <= max_chars:
         return text
+    while len(data.get("omitted", [])) > 8 and len(_dump(data)) > max_chars:
+        data["omitted"].pop(0)
+    text = _dump(data)
+    if len(text) <= max_chars:
+        return text
     minimal = normalize_context_pack(
         {
             "session_state": {
@@ -209,6 +229,10 @@ def context_pack_to_text(pack: dict, *, max_chars: int = DEFAULT_CONTEXT_BUDGET_
                 "summary": data["session_state"]["summary"][:800],
                 "status": data["session_state"]["status"],
                 "current_step": data["session_state"]["current_step"],
+            },
+            "working_memory": {
+                "constraints": protected_memory["constraints"],
+                "verified_facts": protected_memory["verified_facts"],
             },
             "omitted": data.get("omitted", [])[-20:]
             + [{"kind": "context_pack", "reason": "storage_budget", "source_refs": []}],
@@ -329,6 +353,20 @@ def _pack_goal(pack: dict) -> str:
 
 def _item_refs(item: object) -> list[str]:
     return _as_str_list(_as_dict(item).get("source_refs"))
+
+
+def _top_memory(data: dict, field: str, limit: int) -> list[dict]:
+    items = _as_items(_as_dict(data.get("working_memory")).get(field))
+    items.sort(key=lambda item: _as_int(item.get("importance"), 50), reverse=True)
+    return items[:limit]
+
+
+def _pop_lowest_importance(items: list[dict]) -> dict:
+    index = min(
+        range(len(items)),
+        key=lambda i: _as_int(_as_dict(items[i]).get("importance"), 50),
+    )
+    return items.pop(index)
 
 
 __all__ = [
