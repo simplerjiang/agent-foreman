@@ -458,6 +458,181 @@
     }));
   }
 
+  const INLINE_MARKDOWN_RE = /(\[[^\]\n]{1,200}\]\(([^)\s]+)(?:\s+"[^"]*")?\)|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*)/g;
+
+  function clampMarkdown(text, maxChars) {
+    const value = String(text || "");
+    return maxChars && value.length > maxChars ? `${value.slice(0, maxChars)}...` : value;
+  }
+
+  function safeMarkdownHref(href) {
+    const value = String(href || "").trim();
+    if (/^(https?:|mailto:)/i.test(value)) return value;
+    if (value.startsWith("#")) return value;
+    if (value.startsWith("/") && !value.startsWith("//")) return value;
+    return "";
+  }
+
+  function renderInline(text, keyPrefix) {
+    const value = String(text || "");
+    const inlineRe = new RegExp(INLINE_MARKDOWN_RE.source, "g");
+    const nodes = [];
+    const pushText = (value) => {
+      const parts = String(value || "").split("\n");
+      parts.forEach((part, index) => {
+        if (index > 0) nodes.push(html`<br key=${`${keyPrefix}-br-${nodes.length}`} />`);
+        if (part) nodes.push(part);
+      });
+    };
+    let last = 0;
+    let match;
+    while ((match = inlineRe.exec(value)) !== null) {
+      const token = match[0];
+      if (match.index > last) pushText(value.slice(last, match.index));
+      const key = `${keyPrefix}-in-${nodes.length}`;
+      if (token.startsWith("`")) {
+        nodes.push(html`<code key=${key}>${token.slice(1, -1)}</code>`);
+      } else if (token.startsWith("**")) {
+        nodes.push(html`<strong key=${key}>${renderInline(token.slice(2, -2), key)}</strong>`);
+      } else if (token.startsWith("~~")) {
+        nodes.push(html`<del key=${key}>${renderInline(token.slice(2, -2), key)}</del>`);
+      } else if (token.startsWith("*")) {
+        nodes.push(html`<em key=${key}>${renderInline(token.slice(1, -1), key)}</em>`);
+      } else if (token.startsWith("[")) {
+        const close = token.indexOf("](");
+        const label = token.slice(1, close);
+        const href = safeMarkdownHref(token.slice(close + 2, -1).replace(/\s+"[^"]*"$/, ""));
+        nodes.push(href
+          ? html`<a key=${key} href=${href} target="_blank" rel="noreferrer">${renderInline(label, key)}</a>`
+          : label);
+      } else {
+        pushText(token);
+      }
+      last = match.index + token.length;
+    }
+    if (last < value.length) pushText(value.slice(last));
+    return nodes;
+  }
+
+  function splitTableRow(line) {
+    let value = String(line || "").trim();
+    if (value.startsWith("|")) value = value.slice(1);
+    if (value.endsWith("|")) value = value.slice(0, -1);
+    return value.split("|").map((cell) => cell.trim());
+  }
+
+  function isTableSeparator(line) {
+    const cells = splitTableRow(line);
+    return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  }
+
+  function isMarkdownBlockStart(lines, index) {
+    const line = lines[index] || "";
+    if (/^\s*```/.test(line)) return true;
+    if (/^#{1,6}\s+/.test(line)) return true;
+    if (/^\s*>/.test(line)) return true;
+    if (/^\s*[-*+]\s+/.test(line)) return true;
+    if (/^\s*\d+[.)]\s+/.test(line)) return true;
+    return line.includes("|") && isTableSeparator(lines[index + 1] || "");
+  }
+
+  function renderMarkdownBlocks(text, keyPrefix) {
+    const lines = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    const nodes = [];
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line.trim()) {
+        index += 1;
+        continue;
+      }
+      const key = `${keyPrefix}-b-${nodes.length}`;
+      const fence = line.match(/^\s*```\s*([A-Za-z0-9_-]*)\s*$/);
+      if (fence) {
+        const body = [];
+        index += 1;
+        while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+          body.push(lines[index]);
+          index += 1;
+        }
+        if (index < lines.length) index += 1;
+        nodes.push(html`<pre key=${key}><code>${body.join("\n")}</code></pre>`);
+        continue;
+      }
+      const heading = line.match(/^(#{1,6})\s+(.+)$/);
+      if (heading) {
+        const Tag = `h${heading[1].length}`;
+        nodes.push(html`<${Tag} key=${key}>${renderInline(heading[2], key)}</${Tag}>`);
+        index += 1;
+        continue;
+      }
+      if (/^\s*>/.test(line)) {
+        const quote = [];
+        while (index < lines.length && /^\s*>/.test(lines[index])) {
+          quote.push(lines[index].replace(/^\s*>\s?/, ""));
+          index += 1;
+        }
+        nodes.push(html`<blockquote key=${key}>${renderMarkdownBlocks(quote.join("\n"), key)}</blockquote>`);
+        continue;
+      }
+      const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
+      const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+      if (unordered || ordered) {
+        const Tag = unordered ? "ul" : "ol";
+        const items = [];
+        const marker = unordered ? /^\s*[-*+]\s+(.+)$/ : /^\s*\d+[.)]\s+(.+)$/;
+        while (index < lines.length) {
+          const item = lines[index].match(marker);
+          if (!item) break;
+          items.push(item[1]);
+          index += 1;
+        }
+        nodes.push(html`<${Tag} key=${key}>${items.map((item, itemIndex) => html`<li key=${`${key}-li-${itemIndex}`}>${renderInline(item, `${key}-li-${itemIndex}`)}</li>`)}</${Tag}>`);
+        continue;
+      }
+      if (line.includes("|") && isTableSeparator(lines[index + 1] || "")) {
+        const header = splitTableRow(line);
+        const rows = [];
+        index += 2;
+        while (index < lines.length && lines[index].trim() && lines[index].includes("|")) {
+          rows.push(splitTableRow(lines[index]));
+          index += 1;
+        }
+        nodes.push(html`
+          <div className="markdown-table-wrap" key=${key}>
+            <table>
+              <thead><tr>${header.map((cell, cellIndex) => html`<th key=${`${key}-h-${cellIndex}`}>${renderInline(cell, `${key}-h-${cellIndex}`)}</th>`)}</tr></thead>
+              <tbody>
+                ${rows.map((row, rowIndex) => html`
+                  <tr key=${`${key}-r-${rowIndex}`}>
+                    ${row.map((cell, cellIndex) => html`<td key=${`${key}-c-${rowIndex}-${cellIndex}`}>${renderInline(cell, `${key}-c-${rowIndex}-${cellIndex}`)}</td>`)}
+                  </tr>
+                `)}
+              </tbody>
+            </table>
+          </div>`);
+        continue;
+      }
+      const paragraph = [];
+      while (
+        index < lines.length
+        && lines[index].trim()
+        && !isMarkdownBlockStart(lines, index)
+      ) {
+        paragraph.push(lines[index]);
+        index += 1;
+      }
+      nodes.push(html`<p key=${key}>${renderInline(paragraph.join("\n"), key)}</p>`);
+    }
+    return nodes;
+  }
+
+  function MarkdownBody({ text, className = "", maxChars = 0 }) {
+    const value = clampMarkdown(text, maxChars);
+    const cls = ["markdown-body", className].filter(Boolean).join(" ");
+    return html`<div className=${cls}>${renderMarkdownBlocks(value, "md")}</div>`;
+  }
+
   function extractAgentText(payload) {
     if (!payload || typeof payload !== "object") return "";
     if (typeof payload.text === "string") return payload.text;
@@ -1441,7 +1616,7 @@
                   `)}
                 </${A.Space}>
               `}
-              ${summary && html`<pre className="event-body">${summary.length > 2000 ? `${summary.slice(0, 2000)}...` : summary}</pre>`}
+              ${summary && html`<${MarkdownBody} text=${summary} className="event-body" maxChars=${2000} />`}
               ${debugMode && event.payload && Object.keys(event.payload).length > 0 && html`
                 <${A.Collapse}
                   ghost
@@ -1468,10 +1643,10 @@
                 return html`
                   <${A.List.Item} actions=${actions}>
                     <${A.List.Item.Meta}
-                      title=${card.summary || ""}
+                      title=${html`<${MarkdownBody} text=${card.summary || ""} className="markdown-title" />`}
                       description=${html`
                         <${A.Space} direction="vertical" size=${4}>
-                          <span>${card.audit_note || ""}</span>
+                          ${card.audit_note && html`<${MarkdownBody} text=${card.audit_note} className="markdown-compact" />`}
                           ${card.diff_stat && html`<${A.Tag}>${card.diff_stat}</${A.Tag}>`}
                         </${A.Space}>`}
                     />
@@ -1492,7 +1667,7 @@
                 >
                   <${A.List.Item.Meta}
                     title=${html`<${A.Tag} color="red">${approval.risk_level || "requires-approval"}</${A.Tag}>`}
-                    description=${approval.action || approval.diff_summary || ""}
+                    description=${html`<${MarkdownBody} text=${approval.action || approval.diff_summary || ""} className="markdown-compact" />`}
                   />
                 </${A.List.Item}>`}
             />`}
@@ -1531,7 +1706,7 @@
               <${A.List.Item}>
                 <${A.List.Item.Meta}
                   title=${html`<${A.Space}>${report.title || report.kind || d.briefings}<${A.Tag}>${formatDateTime(report.ts, lang)}</${A.Tag}></${A.Space}>`}
-                  description=${html`<pre className="report-body">${report.body_md || ""}</pre>`}
+                  description=${html`<${MarkdownBody} text=${report.body_md || ""} className="report-body" />`}
                 />
               </${A.List.Item}>`}
           />`}

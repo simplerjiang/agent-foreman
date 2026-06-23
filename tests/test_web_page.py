@@ -119,6 +119,24 @@ def test_decision_card_and_detail_wired(tmp_path):
     assert "renderDiff" in js and ".innerHTML" not in js
 
 
+def test_llm_markdown_rendering_wired_safely(tmp_path):
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+
+    assert "function MarkdownBody" in js and "renderMarkdownBlocks" in js
+    assert "text=${summary} className=\"event-body\"" in js
+    assert "text=${report.body_md || \"\"} className=\"report-body\"" in js
+    assert "text=${card.summary || \"\"} className=\"markdown-title\"" in js
+    assert "text=${card.audit_note} className=\"markdown-compact\"" in js
+    assert "approval.action || approval.diff_summary" in js
+    assert "<pre className=\"event-body\"" not in js
+    assert "<pre className=\"report-body\"" not in js
+    assert ".innerHTML" not in js
+    assert "dangerouslySetInnerHTML" not in js
+    assert ".markdown-body" in css and ".markdown-table-wrap" in css
+
+
 def test_admin_console_spa_ships_and_wires(tmp_path):
     """The new Ant Design console SPA ships and is served at /app.html and /admin.html (the
     back-compat alias). It's login-gated client-side and wires the admin dashboard endpoints."""
