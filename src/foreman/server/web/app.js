@@ -59,7 +59,7 @@
       noDefinitions: "暂无工作方式。", on: "启用中", off: "未启用",
       edit: "编辑", del: "删除", activate: "启用",
       defnKind: "类型", defnName: "名称", defnScope: "适用范围 (JSON)", defnBody: "内容", defnActivate: "保存即启用",
-      cancel: "取消", save: "保存", saved: "已保存", saveFailed: "保存失败", failed: "失败",
+      cancel: "取消", retry: "重试", save: "保存", saved: "已保存", saveFailed: "保存失败", failed: "失败",
       confirmDeleteTitle: "确认删除", confirmDelete: "确定删除这条工作方式？", confirmSessionDelete: "确定删除这个会话及其本地记录？",
       deleteSession: "删除会话", cancelSession: "取消会话", sessionCanceled: "已取消会话", notification: "通知",
       sessionBusy: "会话仍有后台任务未结束，请稍后再删除。",
@@ -146,7 +146,7 @@
       noDefinitions: "No playbook items yet.", on: "active", off: "off",
       edit: "Edit", del: "Delete", activate: "Activate",
       defnKind: "Kind", defnName: "Name", defnScope: "Scope (JSON)", defnBody: "Body", defnActivate: "Activate on save",
-      cancel: "Cancel", save: "Save", saved: "Saved", saveFailed: "Save failed", failed: "failed",
+      cancel: "Cancel", retry: "Retry", save: "Save", saved: "Saved", saveFailed: "Save failed", failed: "failed",
       confirmDeleteTitle: "Confirm delete", confirmDelete: "Delete this playbook item?", confirmSessionDelete: "Delete this session and its local records?",
       deleteSession: "Delete session", cancelSession: "Cancel session", sessionCanceled: "Session cancelled", notification: "Notification",
       sessionBusy: "A background task is still active; delete it after the task finishes.",
@@ -795,7 +795,7 @@
   function Workspace(props) {
     const { d, lang, dig, sessionRow, events, autonomy, openCalls, toggleCall, expandedSub, toggleSub,
       rightTab, setRightTab, onCard, onApproval, openDetail, composer, runCompact, compacting, compactStatus, onBriefing,
-      cards, approvals, onCancelSession, onDeleteSession, topControls } = props;
+      cards, approvals, onCancelSession, onRetrySession, onDeleteSession, topControls } = props;
     const threadNodes = threadExtras(dig, cards, approvals, sessionRow);
     const agentType = displayAgent(sessionRow && sessionRow.agent_type, d);
     const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
@@ -825,6 +825,7 @@
           </div>
           <button className="btn" onClick=${onBriefing}>${d.briefing}</button>
           ${sessionRow && live ? html`<button className="btn danger" onClick=${() => onCancelSession(sessionRow.id)}>${d.cancelSession}</button>` : null}
+          ${sessionRow && failed ? html`<button className="btn primary" onClick=${() => onRetrySession(sessionRow)}>${d.retry}</button>` : null}
           ${sessionRow && !live ? html`<button className="btn" onClick=${() => onDeleteSession(sessionRow.id)}>${d.deleteSession}</button>` : null}
         </div>
 
@@ -1616,6 +1617,21 @@
       } catch (e) { setDispatchStatus(`${d.dispatchFailed}: ${friendlyError(e, d)}`); }
       finally { setDispatching(false); }
     }
+    async function retrySession(row) {
+      if (!row || !row.goal) { setDispatchStatus(d.emptyGoal); return; }
+      const target = row.workspace || workspace;
+      if (!target) { setDispatchStatus(d.dispatchNoWorkspace); setView("settings"); return; }
+      setDispatching(true);
+      const body = { goal: row.goal, workspace: target, source: clientSource(), effort };
+      if (row.model) body.model = row.model;
+      try {
+        const res = await api("/api/tasks", { method: "POST", body });
+        setDispatchStatus(d.dispatched);
+        await loadSessions();
+        if (res.session_id) openTimeline(res.session_id);
+      } catch (e) { setDispatchStatus(`${d.dispatchFailed}: ${friendlyError(e, d)}`); }
+      finally { setDispatching(false); }
+    }
     function onAddStep(text) {
       if (!sessionRow) { toast(d.selectSessionHint, "error"); return; }
       const body = { goal: text, workspace: sessionRow.workspace || workspace, source: clientSource(), session_id: sessionRow.id, effort };
@@ -1824,6 +1840,7 @@
       openCalls, toggleCall, expandedSub, toggleSub, onCard, onApproval: decideApproval, openDetail, sessionRow,
       cards: openCards, approvals,
       onCancelSession: cancelSession,
+      onRetrySession: retrySession,
       onDeleteSession: deleteSession,
       topControls: html`<${TopCtrls} d=${d} lang=${lang} dark=${theme === "dark"} onToggleTheme=${() => setTheme(theme === "dark" ? "light" : "dark")} onToggleLang=${() => setLang(lang === "zh" ? "en" : "zh")} onPush=${enablePush} />`,
     };
@@ -1842,6 +1859,7 @@
             rightTab=${rightTab} setRightTab=${setRightTab} onCard=${onCard} onApproval=${decideApproval} openDetail=${openDetail}
             composer=${composerProps} runCompact=${runCompact} compacting=${compacting} compactStatus=${compactStatus} onBriefing=${runBriefing}
             cards=${openCards} approvals=${approvals} onCancelSession=${cancelSession} onDeleteSession=${deleteSession}
+            onRetrySession=${retrySession}
             topControls=${mainProps.topControls} />`
           : html`<div className="main">
               <div className="page-head">

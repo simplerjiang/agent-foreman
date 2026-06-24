@@ -176,6 +176,9 @@ def test_session_controls_and_custom_delete_confirm_wired():
     assert "/api/sessions/${encodeURIComponent(id)}/cancel" in js
     assert 'api(`/api/sessions/${encodeURIComponent(id)}`' in js
     assert "session_busy" in js and "!live" in js and "waiting_approval" in js
+    assert "async function retrySession(row)" in js
+    assert "onRetrySession(sessionRow)" in js and "${d.retry}" in js
+    assert "const body = { goal: row.goal, workspace: target, source: clientSource(), effort }" in js
     assert "window.confirm" not in js
     assert "confirmSessionDelete" in js and "confirmDefnDelete" in js
 
