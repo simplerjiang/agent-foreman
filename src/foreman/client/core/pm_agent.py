@@ -228,6 +228,12 @@ def parse_review(raw: str, *, language: str = "") -> PMReview:
     )
 
 
+def _tool_loop_incomplete_summary(language: str) -> str:
+    if normalize_lang(language) == "en":
+        return "PM could not finish planning within the configured loop limit; using a conservative plan."
+    return "PM 未能在当前循环上限内完成规划，先使用保守计划继续。"
+
+
 def build_plan_prompt(
     goal: str,
     *,
@@ -420,7 +426,7 @@ class PMAgent:
         *,
         language: str = "zh",
         max_runs: int = 3,
-        min_plan_rounds: int = 2,
+        min_plan_rounds: int = 1,
         max_plan_rounds: int = 3,
         tool_runtime_factory=None,
     ) -> None:
@@ -473,7 +479,9 @@ class PMAgent:
                     + "\n\n# PM tool runtime\n"
                     + build_tool_prompt_context(runtime)
                     + "\n\nUse tools for repository evidence before final_plan when useful. "
-                    + "Tool results are only valid when supplied by the runtime."
+                    + "Tool results are only valid when supplied by the runtime. "
+                    + "For simple greetings, status questions, or tasks that need no repository "
+                    + "evidence, return final_plan immediately without calling tools."
                 )
                 loop = PMToolLoop(
                     self.llm,
@@ -500,6 +508,7 @@ class PMAgent:
                     planning_rounds=outcome.rounds,
                 )
                 if outcome.incomplete:
+                    tool_plan.summary = _tool_loop_incomplete_summary(self.language)
                     tool_plan.deliberation.append(
                         "PM tool loop hit max rounds; using fallback plan."
                         if normalize_lang(self.language) == "en"

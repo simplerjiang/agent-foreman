@@ -39,6 +39,39 @@ def test_api_events(tmp_path):
     assert payloads["agent_output"] == {"text": "hi"}  # payload_json parsed back to an object
 
 
+def test_api_cancel_and_delete_session(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="g1", status="running"))
+    c = TestClient(create_app(load_config(), store, EventBus(), dispatcher=DispatchService(load_config(), store)))
+
+    cancelled = c.post("/api/sessions/s1/cancel")
+    assert cancelled.status_code == 200
+    assert store.get_session("s1").status == "cancelled"
+
+    deleted = c.delete("/api/sessions/s1")
+    assert deleted.status_code == 200
+    assert store.get_session("s1") is None
+
+
+def test_api_refuses_delete_live_session(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="g1", status="running"))
+    c = TestClient(create_app(load_config(), store, EventBus(), dispatcher=DispatchService(load_config(), store)))
+
+    deleted = c.delete("/api/sessions/s1")
+    assert deleted.status_code == 409
+    assert deleted.json()["detail"] == "session_busy"
+    assert store.get_session("s1") is not None
+
+
+def test_api_cancel_delete_require_dispatcher(tmp_path):
+    c = TestClient(create_app(load_config()))
+    assert c.post("/api/sessions/s1/cancel").status_code == 503
+    assert c.delete("/api/sessions/s1").status_code == 503
+
+
 def test_api_503_without_store():
     c = TestClient(create_app(load_config()))  # store=None
     assert c.get("/api/sessions").status_code == 503

@@ -30,6 +30,7 @@ from .models import (
     MemoryItem,
     PushSubscription,
     Report,
+    Review,
     Session,
     Task,
     WorkflowRun,
@@ -115,6 +116,7 @@ class Store:
     def add_event(self, event: AgentEvent) -> Event:
         """Persist an AgentEvent as an Event row (payload serialized to JSON)."""
         event_id = event.id or uuid.uuid4().hex
+        ts = event.ts or utc_now_iso()
         row = Event(
             id=event_id,
             session_id=event.session_id,
@@ -122,14 +124,55 @@ class Store:
             type=event.type,
             source=event.source,
             payload_json=json.dumps(event.payload),
-            ts=event.ts or utc_now_iso(),
+            ts=ts,
         )
         with self.session() as s:
             s.add(row)
+            if event.session_id:
+                sess = s.get(Session, event.session_id)
+                if sess is not None:
+                    sess.updated_at = utc_now_iso()
+                    s.add(sess)
             s.commit()
         event.id = event_id
         event.ts = row.ts
         return row
+
+    def delete_session(self, session_id: str) -> bool:
+        """Delete one local session and its local display/control records."""
+        with self.session() as s:
+            row = s.get(Session, session_id)
+            if row is None:
+                return False
+            tasks = list(s.exec(select(Task).where(Task.session_id == session_id)).all())
+            task_ids = [task.id for task in tasks]
+            actions = list(s.exec(select(Action).where(Action.session_id == session_id)).all())
+            action_ids = [action.id for action in actions]
+            if action_ids:
+                for audit in s.exec(select(Audit).where(col(Audit.action_id).in_(action_ids))).all():
+                    s.delete(audit)
+            if task_ids:
+                for review in s.exec(select(Review).where(col(Review.task_id).in_(task_ids))).all():
+                    s.delete(review)
+            for model, field in (
+                (Approval, Approval.session_id),
+                (Checkpoint, Checkpoint.session_id),
+                (ContextSnapshot, ContextSnapshot.session_id),
+                (DecisionCard, DecisionCard.session_id),
+                (Event, Event.session_id),
+                (MemoryItem, MemoryItem.session_id),
+                (Report, Report.session_id),
+                (WorkflowRun, WorkflowRun.session_id),
+            ):
+                for item in s.exec(select(model).where(field == session_id)).all():
+                    s.delete(item)
+            for action in actions:
+                s.delete(action)
+            for task in tasks:
+                s.delete(task)
+            s.delete(row)
+            s.commit()
+        return True
 
     def get_events(self, session_id: str) -> list[Event]:
         with self.session() as s:

@@ -130,6 +130,16 @@ def test_pm_review_rendered_in_thread():
     assert "todo_status" in js and "mergeTodoRows" in js
 
 
+def test_session_controls_and_custom_delete_confirm_wired():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "/api/sessions/${encodeURIComponent(id)}/cancel" in js
+    assert 'api(`/api/sessions/${encodeURIComponent(id)}`' in js
+    assert "session_busy" in js and "!live" in js and "waiting_approval" in js
+    assert "window.confirm" not in js
+    assert "confirmSessionDelete" in js and "confirmDefnDelete" in js
+
+
 def test_pm_settings_exposes_transport_picker():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
