@@ -576,6 +576,8 @@ async def test_pm_agent_tool_loop_persists_tool_events_before_launch(tmp_path):
         async def complete(self, messages, *, json_mode=False, model="", on_stream=None):
             if "reviewing a coding CLI" in messages[0].content:
                 return json.dumps({"done": True, "summary": "done", "reason": "", "follow_up": ""})
+            if on_stream is not None:
+                await on_stream({"kind": "output", "delta": "tool-loop-stream", "event_type": "chunk"})
             if not captured["plan_prompt"]:
                 captured["plan_prompt"] = messages[-1].content
             if "Runtime-generated tool_results" not in messages[-1].content:
@@ -643,6 +645,8 @@ async def test_pm_agent_tool_loop_persists_tool_events_before_launch(tmp_path):
         "tool_post",
     ]
     assert [e.type for e in rows].index("tool_post") < [e.type for e in rows].index("pm_plan")
+    pm_streams = [json.loads(e.payload_json) for e in rows if e.type == "pm_output"]
+    assert any(p.get("delta") == "tool-loop-stream" for p in pm_streams)
 
 
 async def test_pm_agent_plan_prompt_requires_selected_language(tmp_path):

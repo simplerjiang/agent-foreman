@@ -39,6 +39,41 @@ def _runtime(tmp_path: Path, **kwargs) -> PMToolRuntime:
     return PMToolRuntime(cfg, gate=Gate(Config().gates))
 
 
+async def test_pm_tool_loop_forwards_llm_stream_chunks(tmp_path: Path):
+    chunks: list[dict] = []
+
+    async def on_stream(chunk: dict) -> None:
+        chunks.append(chunk)
+
+    class FakeLLM:
+        async def complete(self, messages, *, json_mode=False, model="", on_stream=None):
+            assert on_stream is not None
+            await on_stream({"kind": "output", "delta": "planning", "event_type": "chunk"})
+            return json.dumps(
+                {
+                    "type": "final_plan",
+                    "summary": "streamed",
+                    "agent": "codex",
+                    "model": "",
+                    "effort": "high",
+                    "instruction": "do the work",
+                }
+            )
+
+    outcome = await PMToolLoop(
+        FakeLLM(),
+        _runtime(tmp_path),
+        on_stream=on_stream,
+    ).run(
+        [Message("user", "plan")],
+        fallback_plan={"agent": "codex", "model": "", "effort": "high", "instruction": "fallback"},
+        enabled_agents=["codex"],
+    )
+
+    assert outcome.final_plan["summary"] == "streamed"
+    assert chunks == [{"kind": "output", "delta": "planning", "event_type": "chunk"}]
+
+
 async def test_read_search_write_replace_and_path_guard(tmp_path: Path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "a.txt").write_text("alpha\nbeta\nalpha\n", encoding="utf-8")

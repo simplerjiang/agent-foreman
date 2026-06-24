@@ -379,6 +379,34 @@
     if (!lines.length && obj.body_md) lines.push(String(obj.body_md));
     return lines.join("\n\n").trim();
   }
+  function jsonStringPrefix(body, key) {
+    const m = String(body || "").match(new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)`));
+    if (!m) return "";
+    try { return JSON.parse(`"${m[1].replace(/\\$/, "")}"`).trim(); }
+    catch (e) { return m[1].replace(/\\"/g, '"').replace(/\\n/g, "\n").trim(); }
+  }
+  function jsonArrayStringPrefixes(body, key) {
+    const m = String(body || "").match(new RegExp(`"${key}"\\s*:\\s*\\[([\\s\\S]*)`));
+    if (!m) return [];
+    const fragment = m[1].split(/\]\s*[,}]/)[0] || "";
+    return [...fragment.matchAll(/"((?:\\.|[^"\\])*)(?:"|$)/g)]
+      .map((x) => {
+        try { return JSON.parse(`"${x[1].replace(/\\$/, "")}"`).trim(); }
+        catch (e) { return x[1].replace(/\\"/g, '"').replace(/\\n/g, "\n").trim(); }
+      })
+      .filter(Boolean)
+      .slice(0, 8);
+  }
+  function formatPartialPmJsonObject(body) {
+    const lines = [];
+    const summary = jsonStringPrefix(body, "summary");
+    if (summary) lines.push(summary);
+    const notes = jsonArrayStringPrefixes(body, "deliberation");
+    if (notes.length) lines.push(notes.map((x) => `- ${x}`).join("\n"));
+    const todos = jsonArrayStringPrefixes(body, "todo");
+    if (todos.length) lines.push(todos.map((x, i) => `${i + 1}. ${x}`).join("\n"));
+    return lines.join("\n\n").trim();
+  }
   function cleanPmStreamText(text) {
     const raw = String(text || "").trim();
     if (!raw) return "";
@@ -391,7 +419,7 @@
       return formatPmJsonObject(obj);
     } catch (e) {}
     if (/^[\{\[\]",:\s\}\]]/.test(body) || /"(summary|agent|model|effort|instruction|todo|deliberation|ready|done|reason|follow_up|todo_status)"\s*:/.test(body)) {
-      return "";
+      return formatPartialPmJsonObject(body);
     }
     return raw;
   }
@@ -586,6 +614,7 @@
         const txt = cleanPmStreamText(sid ? `${pmStreamBuffers.get(gk) || ""}${rawTxt}` : rawTxt);
         if (sid) pmStreamBuffers.set(gk, `${pmStreamBuffers.get(gk) || ""}${rawTxt}`);
         if (!txt) continue;
+        if (p.phase) hidePmStatus(p.phase);
         if (sid && streamGroups.has(gk)) {
           const idx = streamGroups.get(gk);
           nodes[idx].text = txt;

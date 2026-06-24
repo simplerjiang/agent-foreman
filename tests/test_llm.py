@@ -504,6 +504,28 @@ async def test_ws_responses_stream_callback_receives_output_and_reasoning():
     ]
 
 
+async def test_ws_tool_complete_forwards_stream_callback():
+    sent: list = []
+    frames = [
+        json.dumps({"type": "response.output_text.delta", "delta": "plan"}),
+        json.dumps({"type": "response.completed"}),
+    ]
+    chunks: list[dict] = []
+    c, _ = _ws_client(frames, sent)
+    out = await c.tool_complete(
+        [Message("user", "x")],
+        tools=[],
+        on_stream=lambda chunk: chunks.append(chunk),
+    )
+    await c.aclose()
+
+    assert out.text == "plan"
+    assert out.tool_calls == []
+    assert chunks == [
+        {"kind": "output", "delta": "plan", "event_type": "response.output_text.delta"}
+    ]
+
+
 async def test_settings_resolver_can_switch_transport_to_ws_after_construction():
     cfg = Config()
     cfg.llm.base_url = "https://example.test/v1"
