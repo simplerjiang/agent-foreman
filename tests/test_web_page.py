@@ -170,6 +170,31 @@ if (noVisibleFields !== "") {
     subprocess.run(["node", "-e", script], check=True)
 
 
+def test_zh_pm_stream_has_local_english_status_fallback():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function cleanPmStreamText")
+    end = js.index("function terminalText", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const d = { pmThinking: "PM 正在思考..." };
+if (displayPmStreamText("Thinking through the plan now", "zh", d) !== d.pmThinking) {
+  process.exit(1);
+}
+if (displayPmStreamText("PM 正在规划", "zh", d) !== "PM 正在规划") {
+  process.exit(2);
+}
+if (displayPmStreamText("Thinking through the plan now", "en", d) !== "Thinking through the plan now") {
+  process.exit(3);
+}
+const codeish = "read src/foreman/server/web/app.js";
+if (displayPmStreamText(codeish, "zh", d) !== codeish) {
+  process.exit(4);
+}
+'''
+    subprocess.run(["node", "-e", script], check=True)
+
+
 def test_session_controls_and_custom_delete_confirm_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

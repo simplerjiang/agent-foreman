@@ -31,7 +31,7 @@
       personalMode: "个人模式 · 离线优先",
       selectSessionHint: "从左侧选择一个会话，或在下方下发新任务。",
       running: "运行中", live: "运行中", done: "完成", queued: "排队", cancelled: "已取消",
-      autonomy: "自动权限", briefing: "生成简报",
+      autonomy: "自动权限", briefing: "生成简报", pmThinking: "PM 正在思考...",
       plan: "计划", approved: "已确认", active: "进行中",
       reply: "回复", commandsRun: "执行的命令", fileChanges: "文件改动",
       open: "展开", hide: "收起",
@@ -118,7 +118,7 @@
       personalMode: "Personal · offline-first",
       selectSessionHint: "Pick a session on the left, or dispatch a new task below.",
       running: "RUNNING", live: "LIVE", done: "done", queued: "queued", cancelled: "cancelled",
-      autonomy: "Autonomy", briefing: "Briefing",
+      autonomy: "Autonomy", briefing: "Briefing", pmThinking: "PM is thinking...",
       plan: "Plan", approved: "approved", active: "active",
       reply: "Reply", commandsRun: "Commands run", fileChanges: "File changes",
       open: "Open", hide: "Hide",
@@ -423,6 +423,17 @@
     }
     return raw;
   }
+  function looksEnglishPmStatus(text) {
+    const v = String(text || "").trim();
+    if (!v || /[\u3400-\u9fff]/.test(v) || v.length > 180) return false;
+    if (/```|[{}[\]<>]|https?:|[\\\/][\w.-]+/.test(v)) return false;
+    const letters = (v.match(/[A-Za-z]/g) || []).length;
+    const visible = v.replace(/\s/g, "").length || 1;
+    return letters >= 8 && letters / visible > 0.45;
+  }
+  function displayPmStreamText(text, lang, d) {
+    return lang === "zh" && looksEnglishPmStatus(text) ? d.pmThinking : text;
+  }
   function terminalText(payload) {
     const txt = extractAgentText(payload);
     if (txt) return txt;
@@ -599,19 +610,20 @@
         if (!rawTxt) continue;
         if (p.event_type === "status" || p.status === "working") {
           const key = p.phase || p.stream_id || "pm";
+          const statusText = displayPmStreamText(rawTxt, lang, d);
           if (statusNodes.has(key) && nodes[statusNodes.get(key)]) {
-            nodes[statusNodes.get(key)].text = rawTxt;
+            nodes[statusNodes.get(key)].text = statusText;
             nodes[statusNodes.get(key)].ts = e.ts;
           } else {
             statusNodes.set(key, nodes.length);
-            nodes.push({ kind: "pm-status", id: e.id || `ps-${nodes.length}`, ts: e.ts, text: rawTxt });
+            nodes.push({ kind: "pm-status", id: e.id || `ps-${nodes.length}`, ts: e.ts, text: statusText });
           }
           continue;
         }
         if (t === "pm_reasoning") continue;
         const sid = p.stream_id || "";
         const gk = `${t}-${e.source || ""}-${sid || "plain"}`;
-        const txt = cleanPmStreamText(sid ? `${pmStreamBuffers.get(gk) || ""}${rawTxt}` : rawTxt);
+        const txt = displayPmStreamText(cleanPmStreamText(sid ? `${pmStreamBuffers.get(gk) || ""}${rawTxt}` : rawTxt), lang, d);
         if (sid) pmStreamBuffers.set(gk, `${pmStreamBuffers.get(gk) || ""}${rawTxt}`);
         if (!txt) continue;
         if (p.phase) hidePmStatus(p.phase);
