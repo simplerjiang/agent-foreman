@@ -293,7 +293,8 @@ class LLMClient:
         for item in msg.get("tool_calls") or []:
             if not isinstance(item, dict):
                 continue
-            fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+            raw_function = item.get("function")
+            fn = raw_function if isinstance(raw_function, dict) else {}
             name = str(fn.get("name") or "").strip()
             if not name:
                 continue
@@ -381,11 +382,13 @@ class LLMClient:
             if block.get("type") == "text":
                 text_parts.append(str(block.get("text") or ""))
             elif block.get("type") == "tool_use":
+                raw_input = block.get("input")
+                arguments = raw_input if isinstance(raw_input, dict) else {}
                 calls.append(
                     LLMToolCall(
                         id=str(block.get("id") or "").strip(),
                         name=str(block.get("name") or "").strip(),
-                        arguments=block.get("input") if isinstance(block.get("input"), dict) else {},
+                        arguments=arguments,
                     )
                 )
         return LLMToolResponse(text="".join(text_parts), tool_calls=calls)

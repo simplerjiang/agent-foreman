@@ -6,11 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-SAFE = "safe"
-NEEDS_STRATEGY = "needs-strategy"
-REQUIRES_APPROVAL = "requires-approval"
-EXTERNAL_WEB = "external_web_content"
 Risk = Literal["safe", "needs-strategy", "requires-approval"]
+SAFE: Risk = "safe"
+NEEDS_STRATEGY: Risk = "needs-strategy"
+REQUIRES_APPROVAL: Risk = "requires-approval"
+EXTERNAL_WEB = "external_web_content"
 
 
 @dataclass(frozen=True)

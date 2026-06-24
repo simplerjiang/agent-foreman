@@ -482,7 +482,7 @@ class PMAgent:
                     fallback_plan=fallback_plan,
                     enabled_agents=enabled,
                 )
-                plan = PMPlan(
+                tool_plan = PMPlan(
                     agent=_as_str(outcome.final_plan.get("agent")) or fallback_plan["agent"],
                     model=_as_str(outcome.final_plan.get("model")),
                     effort=_as_str(outcome.final_plan.get("effort")),
@@ -495,8 +495,10 @@ class PMAgent:
                     planning_rounds=outcome.rounds,
                 )
                 if outcome.incomplete:
-                    plan.deliberation.append("PM tool loop hit max rounds; using fallback plan.")
-                return plan
+                    tool_plan.deliberation.append(
+                        "PM tool loop hit max rounds; using fallback plan."
+                    )
+                return tool_plan
             finally:
                 if hasattr(runtime, "aclose"):
                     await runtime.aclose()

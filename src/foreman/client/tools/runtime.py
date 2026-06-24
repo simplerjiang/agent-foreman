@@ -8,7 +8,7 @@ import os
 import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote_plus, urlparse
 
 import httpx
@@ -27,6 +27,9 @@ from .models import (
 )
 from .policy import PathGuard, ToolPolicyError, command_allowed, normalize_command
 
+if TYPE_CHECKING:
+    from .browser import BrowserRuntime
+
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "env", "node_modules", ".pytest_cache"}
 
 
@@ -44,7 +47,7 @@ class PMToolRuntime:
         self.auditor = auditor
         self.guard = PathGuard(cfg.workspace, cfg.allowed_roots)
         self._http = http_client
-        self._browser = None
+        self._browser: BrowserRuntime | None = None
 
     @classmethod
     def from_config(
@@ -630,9 +633,15 @@ def _truncate(text: str, limit: int) -> tuple[str, bool]:
 
 
 def _positive_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value if value > 0 else default
+    if not isinstance(value, (str, bytes, bytearray)):
+        return default
     try:
         out = int(value)
-    except (TypeError, ValueError):
+    except ValueError:
         return default
     return out if out > 0 else default
 
