@@ -488,6 +488,7 @@ class PMAgent:
                     runtime,
                     max_rounds=int(getattr(runtime.cfg, "max_rounds", 6)),
                     on_tool_event=on_tool_event,
+                    on_stream=on_stream,
                 )
                 outcome = await loop.run(
                     [Message("system", system), Message("user", prompt)],

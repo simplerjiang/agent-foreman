@@ -14,6 +14,7 @@ from .models import EXTERNAL_WEB, ToolCall, ToolResult
 from .runtime import PMToolRuntime
 
 ToolEventSink = Callable[[str, dict[str, Any]], Awaitable[None] | None]
+StreamSink = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
 @dataclass
@@ -31,11 +32,13 @@ class PMToolLoop:
         *,
         max_rounds: int = 6,
         on_tool_event: ToolEventSink | None = None,
+        on_stream: StreamSink | None = None,
     ) -> None:
         self.llm = llm
         self.runtime = runtime
         self.max_rounds = max(1, max_rounds)
         self.on_tool_event = on_tool_event
+        self.on_stream = on_stream
 
     async def run(
         self,
@@ -151,12 +154,22 @@ class PMToolLoop:
 
     async def _complete(self, messages: list[Message], *, model: str) -> dict[str, Any]:
         if hasattr(self.llm, "tool_complete"):
-            native = await self.llm.tool_complete(
-                messages,
-                tools=[spec.to_native() for spec in self.runtime.specs()],
-                model=model,
-                json_mode=True,
-            )
+            tools = [spec.to_native() for spec in self.runtime.specs()]
+            if self.on_stream is not None and _accepts_keyword(self.llm.tool_complete, "on_stream"):
+                native = await self.llm.tool_complete(
+                    messages,
+                    tools=tools,
+                    model=model,
+                    json_mode=True,
+                    on_stream=self.on_stream,
+                )
+            else:
+                native = await self.llm.tool_complete(
+                    messages,
+                    tools=tools,
+                    model=model,
+                    json_mode=True,
+                )
             return {
                 "text": native.text,
                 "tool_calls": [
@@ -164,7 +177,12 @@ class PMToolLoop:
                     for call in native.tool_calls
                 ],
             }
-        text = await self.llm.complete(messages, json_mode=True, model=model)
+        if self.on_stream is not None and _accepts_keyword(self.llm.complete, "on_stream"):
+            text = await self.llm.complete(
+                messages, json_mode=True, model=model, on_stream=self.on_stream
+            )
+        else:
+            text = await self.llm.complete(messages, json_mode=True, model=model)
         return {"text": text, "tool_calls": []}
 
     async def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
@@ -204,6 +222,16 @@ def build_tool_prompt_context(runtime: PMToolRuntime) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _accepts_keyword(fn, name: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return True
+    if name in sig.parameters:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
 def validate_final_plan(

@@ -8,6 +8,8 @@ redesign: untrusted agent output is rendered through React, never assigned to in
 
 from __future__ import annotations
 
+import subprocess
+
 from fastapi.testclient import TestClient
 
 from foreman.server.app import create_app
@@ -128,6 +130,44 @@ def test_pm_review_rendered_in_thread():
     js = c.get("/app.js").text
     assert 't === "pm_review"' in js and "follow_up" in js
     assert "todo_status" in js and "mergeTodoRows" in js
+
+
+def test_pm_stream_replaces_starting_status():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "const hidePmStatus" in js
+    assert 'if (p.phase) hidePmStatus(p.phase);' in js
+    assert "formatPartialPmJsonObject" in js
+
+
+def test_pm_partial_json_stream_text_is_readable():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function formatPmJsonObject")
+    end = js.index("function terminalText", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const partial = cleanPmStreamText(`{"type":"final_plan","summary":"PM is checking","todo":["inspect`);
+if (!partial.includes("PM is checking") || !partial.includes("1. inspect")) {
+  console.error(partial);
+  process.exit(1);
+}
+const finalText = cleanPmStreamText(JSON.stringify({
+  summary: "ready",
+  deliberation: ["evidence note"],
+  todo: ["verify"],
+}));
+if (!finalText.includes("ready") || !finalText.includes("- evidence note") || !finalText.includes("1. verify")) {
+  console.error(finalText);
+  process.exit(2);
+}
+const noVisibleFields = cleanPmStreamText(`{"type":"final_plan","agent":"codex"`);
+if (noVisibleFields !== "") {
+  console.error(noVisibleFields);
+  process.exit(3);
+}
+'''
+    subprocess.run(["node", "-e", script], check=True)
 
 
 def test_session_controls_and_custom_delete_confirm_wired():

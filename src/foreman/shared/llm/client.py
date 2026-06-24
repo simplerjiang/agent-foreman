@@ -195,6 +195,7 @@ class LLMClient:
         tools: list[dict],
         json_mode: bool = False,
         model: str = "",
+        on_stream: StreamCallback | None = None,
     ) -> LLMToolResponse:
         """Return assistant text plus provider-native tool calls when the transport supports them.
 
@@ -204,7 +205,9 @@ class LLMClient:
         """
         provider, base_url, model = self._resolve(model)
         if self._transport_mode() == "ws":
-            text = await self.complete(messages, json_mode=json_mode, model=model)
+            text = await self.complete(
+                messages, json_mode=json_mode, model=model, on_stream=on_stream
+            )
             return LLMToolResponse(text=text, tool_calls=[])
         if provider == "anthropic":
             return await self._anthropic_tools(messages, tools, base_url, model)
