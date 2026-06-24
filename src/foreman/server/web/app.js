@@ -30,7 +30,7 @@
       launchBrain: "唤醒 PM 大脑",
       personalMode: "个人模式 · 离线优先",
       selectSessionHint: "从左侧选择一个会话，或在下方下发新任务。",
-      running: "运行中", live: "运行中", done: "完成", queued: "排队",
+      running: "运行中", live: "运行中", done: "完成", queued: "排队", cancelled: "已取消",
       autonomy: "自动权限", briefing: "生成简报",
       plan: "计划", approved: "已确认", active: "进行中",
       reply: "回复", commandsRun: "执行的命令", fileChanges: "文件改动",
@@ -40,12 +40,12 @@
       context: "上下文", compact: "压缩上下文", compacting: "压缩中...", compactDone: "上下文已压缩", compactFailed: "压缩失败",
       attach: "附件", agentAuto: "执行 agent 由 PM 自动选择", modelPlaceholder: "模型·默认",
       fast: "快速", std: "标准", deep: "深度", send: "发送", sendHint: "发送",
-      composerPlaceholder: "继续和 PM 对话…  输入 @ 引用文件，选择档位，或直接下指令",
+      composerPlaceholder: "继续和 PM 对话… 可添加附件，选择档位，或直接下指令",
       mComposerPlaceholder: "继续下指令…",
-      tabTodos: "任务清单", tabSubagents: "子代理", tabTerminal: "终端",
+      tabTodos: "任务清单", tabSubagents: "子代理", tabTerminal: "原始输出",
       addStep: "添加一步… ⏎", todoHint: "清单由 PM 自动拆解；增一步会作为后续指令发给当前会话。",
       subSpawned: "派发了", subAgentsWord: "个子代理",
-      mTabChat: "对话", mTabTodo: "清单", mTabSub: "子代理", mTabTerm: "终端",
+      mTabChat: "对话", mTabTodo: "清单", mTabSub: "子代理", mTabTerm: "输出",
       decisions: "决策", decisionCards: "决策卡", approvals: "审批",
       noDecisions: "暂无待决策。", noApprovals: "没有待你处理的。", noCardsShort: "暂无决策卡。",
       apply: "采纳", dismiss: "忽略", approve: "批准", reject: "驳回",
@@ -59,7 +59,12 @@
       noDefinitions: "暂无工作方式。", on: "启用中", off: "未启用",
       edit: "编辑", del: "删除", activate: "启用",
       defnKind: "类型", defnName: "名称", defnScope: "适用范围 (JSON)", defnBody: "内容", defnActivate: "保存即启用",
-      cancel: "取消", save: "保存", saved: "已保存", saveFailed: "保存失败", confirmDelete: "确定删除这条工作方式？", imported: "已导入", importFailed: "导入失败", exportFailed: "导出失败",
+      cancel: "取消", save: "保存", saved: "已保存", saveFailed: "保存失败", failed: "失败",
+      confirmDeleteTitle: "确认删除", confirmDelete: "确定删除这条工作方式？", confirmSessionDelete: "确定删除这个会话及其本地记录？",
+      deleteSession: "删除会话", cancelSession: "取消会话", sessionCanceled: "已取消会话", notification: "通知",
+      sessionBusy: "会话仍有后台任务未结束，请稍后再删除。",
+      badScopeJson: "适用范围必须是 JSON 对象，例如 {\"lang\":\"py\"}。",
+      imported: "已导入", importFailed: "导入失败", exportFailed: "导出失败",
       workspaces: "工作区", projectPath: "项目路径", displayName: "显示名称", pathHint: "例如 E:\\AutoWorkAgent",
       browse: "浏览", addWorkspace: "添加 / 更新工作区", remove: "移除", connected: "已连接",
       refresh: "刷新", folderPickerUnavailable: "当前浏览器不支持选择文件夹，请手动输入路径。",
@@ -69,7 +74,7 @@
       pmBrain: "PM 大脑", pmBrainSub: "给 PM 审阅 / 简报调用的模型。Key 永远留在本地。",
       pmTools: "PM 工具", pmToolsSub: "PM 运行时工具开关和白名单。只读仓库工具默认开启。",
       fileRead: "读取文件", fileWrite: "写入文件", shellTool: "运行命令", webFetch: "抓取 URL", webSearch: "网页搜索", browserTool: "浏览器",
-      allowedCommands: "允许的命令", allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "最大工具轮次",
+      allowedCommands: "允许的命令", allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "循环 / 最大轮次",
       pmToolsSaved: "PM 工具设置已保存",
       provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key", transport: "传输方式",
       reasoningEffort: "推理强度",
@@ -78,10 +83,11 @@
       cloudConn: "云端连接", cloudSub: "把本机接入线上总机 —— 人不在电脑前也能在手机上看进度、点审批。总机不存你的代码与 Key。",
       cloudUrl: "云端地址", accessKey: "接入密钥 Access Key", accessKeyHint: "在云端 /keys.html 生成，一机一张、可单独吊销。",
       connect: "连接", disconnect: "断开", connecting: "连接中…", notConnected: "未连接", connFailed: "连接失败",
+      cloudNotConfigured: "请先填写云端地址和接入密钥。",
       cloudKeyHint: "已配置接入密钥。输入新密钥后保存可替换；留空不修改。", cloudKeyMissing: "未配置接入密钥。",
       cloudUnavailable: "当前服务不支持云端连接（仅本机 app 可用）。",
       interface: "界面与自动化", autoExec: "自动执行权限", autoExecHelp: "决定 Foreman 在没有你确认时能自动执行多少动作。",
-      auto0: "0 只报告", auto1: "1 安全自动", auto2: "2 策略弹卡", auto3: "3 拦危险",
+      auto0: "0 只报告", auto1: "1 凡事都问", auto2: "2 自动可逆", auto3: "3 只拦不可逆",
       theme: "主题", light: "浅色", dark: "深色", language: "语言",
       pushNotif: "手机通知", pushNotifSub: "决策与审批推到手机", enable: "开启",
       pushEnabled: "通知已开启", pushUnsupported: "此浏览器不支持通知", pushNotConfigured: "服务器未配置推送", pushDenied: "通知权限被拒绝", pushFailed: "开启通知失败",
@@ -93,6 +99,7 @@
       ev_action_executed: "已执行", ev_action_undone: "已回退", ev_context_compact: "上下文压缩",
       ev_review: "复查", ev_audit: "审查", ev_undo: "回退", ev_recover: "恢复", ev_stall: "卡住",
       noActiveSession: "暂无活动会话。", noAgent: "无 agent",
+      readOnlyLog: "只读日志", workspaceRisk: "当前工作区范围很大；工具全开时请确认这是你想授权的路径。",
     },
     en: {
       productSubtitle: "Local workbench",
@@ -110,7 +117,7 @@
       launchBrain: "Waking PM brain",
       personalMode: "Personal · offline-first",
       selectSessionHint: "Pick a session on the left, or dispatch a new task below.",
-      running: "RUNNING", live: "LIVE", done: "done", queued: "queued",
+      running: "RUNNING", live: "LIVE", done: "done", queued: "queued", cancelled: "cancelled",
       autonomy: "Autonomy", briefing: "Briefing",
       plan: "Plan", approved: "approved", active: "active",
       reply: "Reply", commandsRun: "Commands run", fileChanges: "File changes",
@@ -120,12 +127,12 @@
       context: "Context", compact: "Compact", compacting: "Compacting...", compactDone: "Context compacted", compactFailed: "Compact failed",
       attach: "Attach", agentAuto: "agent auto-picked by PM", modelPlaceholder: "model · default",
       fast: "Fast", std: "Std", deep: "Deep", send: "Send", sendHint: "send",
-      composerPlaceholder: "Continue with the PM…  type @ to reference files, pick a level, or just give an order",
+      composerPlaceholder: "Continue with the PM… add attachments, pick a level, or just give an order",
       mComposerPlaceholder: "Continue…",
-      tabTodos: "To-dos", tabSubagents: "Subagents", tabTerminal: "Terminal",
+      tabTodos: "To-dos", tabSubagents: "Subagents", tabTerminal: "Raw output",
       addStep: "Add a step… ⏎", todoHint: "Auto-drafted by the PM. Adding a step sends it as a follow-up to this session.",
       subSpawned: "spawned", subAgentsWord: "subagents",
-      mTabChat: "Chat", mTabTodo: "To-dos", mTabSub: "Agents", mTabTerm: "Term",
+      mTabChat: "Chat", mTabTodo: "To-dos", mTabSub: "Agents", mTabTerm: "Output",
       decisions: "Decisions", decisionCards: "Decision cards", approvals: "Approvals",
       noDecisions: "No decisions waiting.", noApprovals: "Nothing waiting on you.", noCardsShort: "No decision cards.",
       apply: "Apply", dismiss: "Dismiss", approve: "Approve", reject: "Reject",
@@ -139,7 +146,12 @@
       noDefinitions: "No playbook items yet.", on: "active", off: "off",
       edit: "Edit", del: "Delete", activate: "Activate",
       defnKind: "Kind", defnName: "Name", defnScope: "Scope (JSON)", defnBody: "Body", defnActivate: "Activate on save",
-      cancel: "Cancel", save: "Save", saved: "Saved", saveFailed: "Save failed", confirmDelete: "Delete this playbook item?", imported: "Imported", importFailed: "Import failed", exportFailed: "Export failed",
+      cancel: "Cancel", save: "Save", saved: "Saved", saveFailed: "Save failed", failed: "failed",
+      confirmDeleteTitle: "Confirm delete", confirmDelete: "Delete this playbook item?", confirmSessionDelete: "Delete this session and its local records?",
+      deleteSession: "Delete session", cancelSession: "Cancel session", sessionCanceled: "Session cancelled", notification: "Notification",
+      sessionBusy: "A background task is still active; delete it after the task finishes.",
+      badScopeJson: "Scope must be a JSON object, for example {\"lang\":\"py\"}.",
+      imported: "Imported", importFailed: "Import failed", exportFailed: "Export failed",
       workspaces: "Workspaces", projectPath: "Project path", displayName: "Name", pathHint: "e.g. E:\\AutoWorkAgent",
       browse: "Browse", addWorkspace: "Add / update", remove: "Remove", connected: "connected",
       refresh: "Refresh", folderPickerUnavailable: "This browser cannot open a folder picker. Enter the path manually.",
@@ -149,7 +161,7 @@
       pmBrain: "PM brain", pmBrainSub: "The model the PM uses to review & brief. Your key never leaves this machine.",
       pmTools: "PM tools", pmToolsSub: "PM runtime tool switches and allowlists. Read-only repo tools are on by default.",
       fileRead: "Read files", fileWrite: "Write files", shellTool: "Run commands", webFetch: "Fetch URL", webSearch: "Web search", browserTool: "Browser",
-      allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "Max tool rounds",
+      allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "Loop / max rounds",
       pmToolsSaved: "PM tool settings saved",
       provider: "Provider", model: "Model", baseUrl: "Base URL", apiKey: "API Key", transport: "Transport",
       reasoningEffort: "Reasoning effort",
@@ -158,10 +170,11 @@
       cloudConn: "Cloud connection", cloudSub: "Link this machine to the online relay — watch progress and approve from your phone. The relay never stores your code or keys.",
       cloudUrl: "Cloud URL", accessKey: "Access key", accessKeyHint: "Mint one at /keys.html on the relay — one per machine, individually revocable.",
       connect: "Connect", disconnect: "Disconnect", connecting: "Connecting…", notConnected: "Not connected", connFailed: "Connection failed",
+      cloudNotConfigured: "Enter the cloud URL and access key first.",
       cloudKeyHint: "Access key set. Enter a new key and save to replace it; blank keeps it.", cloudKeyMissing: "No access key configured.",
       cloudUnavailable: "This service does not support cloud connection (local app only).",
       interface: "Interface & automation", autoExec: "Auto-execution", autoExecHelp: "How much Foreman may do without your confirmation.",
-      auto0: "0 report", auto1: "1 safe", auto2: "2 policy", auto3: "3 danger",
+      auto0: "0 report", auto1: "1 ask first", auto2: "2 auto safe", auto3: "3 auto reversible",
       theme: "Theme", light: "Light", dark: "Dark", language: "Language",
       pushNotif: "Push notifications", pushNotifSub: "decisions & approvals to your phone", enable: "Enable",
       pushEnabled: "Notifications enabled", pushUnsupported: "Notifications are not supported in this browser", pushNotConfigured: "Push is not configured on the server", pushDenied: "Notification permission was denied", pushFailed: "Could not enable notifications",
@@ -173,6 +186,7 @@
       ev_action_executed: "Executed", ev_action_undone: "Undone", ev_context_compact: "Context compacted",
       ev_review: "Review", ev_audit: "Audit", ev_undo: "Undo", ev_recover: "Recover", ev_stall: "Stall",
       noActiveSession: "No active sessions yet.", noAgent: "no agent",
+      readOnlyLog: "Read-only log", workspaceRisk: "This workspace is very broad; confirm that full tool access is intentional.",
     },
   };
 
@@ -249,14 +263,28 @@
     const parts = String(p).replace(/\\/g, "/").split("/").filter(Boolean);
     return parts[parts.length - 1] || p;
   }
+  function isWideWorkspace(p) {
+    const v = String(p || "").trim().replace(/\//g, "\\");
+    return /^[A-Za-z]:\\?$/.test(v) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(v);
+  }
   function friendlyError(error, d) {
     const detail = String(error && error.message ? error.message : error || "");
     const map = {
       empty_goal: d.emptyGoal, no_workspace: d.dispatchNoWorkspace, workspace_not_allowed: d.workspaceMissing,
       unknown_agent: d.noEnabledAgent, no_enabled_agent: d.noEnabledAgent, no_dispatcher: d.noDispatcher,
-      "no dispatcher": d.noDispatcher, no_llm: d.briefNoLlm,
+      "no dispatcher": d.noDispatcher, no_llm: d.briefNoLlm, bad_scope_json: d.badScopeJson,
+      not_configured: d.cloudNotConfigured, cloud_unavailable: d.cloudUnavailable,
+      session_busy: d.sessionBusy,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
+  }
+  function jsonObjectError(text) {
+    try {
+      const obj = JSON.parse(text || "{}");
+      return obj && typeof obj === "object" && !Array.isArray(obj) ? "" : "bad_scope_json";
+    } catch (e) {
+      return "bad_scope_json";
+    }
   }
   function clientSource() {
     const ua = navigator.userAgent || "";
@@ -376,6 +404,11 @@
     }
     return "";
   }
+  function firstSubstantiveLine(text) {
+    const lines = String(text || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    const skip = /^(i['’]?m ready to help|what would you like me to|the user wants me to|i need to|we need to|i should)\b/i;
+    return (lines.find((line) => !skip.test(line)) || lines[0] || "").slice(0, 60);
+  }
 
   // ---- markdown (ported, minimal-safe) ----
   const INLINE_RE = /(\[[^\]\n]{1,200}\]\(([^)\s]+)(?:\s+"[^"]*")?\)|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*)/g;
@@ -491,8 +524,17 @@
     const terminal = [];
     const streamGroups = new Map(); // key -> nodeIndex for pm streams
     const pmStreamBuffers = new Map(); // key -> raw text buffer
+    const statusNodes = new Map(); // phase -> nodeIndex
 
     const callKey = (e) => e.task_id || `${e.source || "agent"}-${e.session_id || ""}`;
+    const hidePmStatus = (phase = "") => {
+      for (const [key, idx] of statusNodes.entries()) {
+        if (!phase || key === phase) {
+          if (nodes[idx]) nodes[idx].hidden = true;
+          statusNodes.delete(key);
+        }
+      }
+    };
     const ensureCall = (e) => {
       const k = callKey(e);
       if (!calls.has(k)) {
@@ -511,6 +553,7 @@
         const autoAgent = p.pm_agent && !(Array.isArray(p.direct_agents) && p.direct_agents.length);
         nodes.push({ kind: "user", id: e.id || `u-${nodes.length}`, ts: e.ts, goal: p.goal || "", chips: [autoAgent ? d.agentAuto : p.agent, p.model, p.effort].filter(Boolean) });
       } else if (t === "pm_plan") {
+        hidePmStatus("plan");
         const steps = Array.isArray(p.todo) ? p.todo.map((x) => String(x)) : (typeof p.todo === "string" && p.todo ? [p.todo] : []);
         lastPlan = { steps, summary: p.summary || "", instruction: p.instruction || "" };
         todos = todoRowsFrom(p.todo_status, steps);
@@ -521,12 +564,20 @@
         const status = p.done ? (lang === "zh" ? "复查通过" : "review passed") : (lang === "zh" ? "需要跟进" : "needs follow-up");
         const txt = [`**${status}**`, p.summary || "", p.reason || "", p.follow_up ? `→ ${p.follow_up}` : ""].filter(Boolean).join("\n\n");
         todos = mergeTodoRows(todos, p.todo_status, !!p.done);
+        if (p.done) hidePmStatus();
         nodes.push({ kind: "pm", id: e.id || `pr-${nodes.length}`, ts: e.ts, text: txt });
       } else if (t === "pm_output" || t === "pm_reasoning") {
         const rawTxt = extractAgentText(p);
         if (!rawTxt) continue;
         if (p.event_type === "status" || p.status === "working") {
-          nodes.push({ kind: "pm-status", id: e.id || `ps-${nodes.length}`, ts: e.ts, text: rawTxt });
+          const key = p.phase || p.stream_id || "pm";
+          if (statusNodes.has(key) && nodes[statusNodes.get(key)]) {
+            nodes[statusNodes.get(key)].text = rawTxt;
+            nodes[statusNodes.get(key)].ts = e.ts;
+          } else {
+            statusNodes.set(key, nodes.length);
+            nodes.push({ kind: "pm-status", id: e.id || `ps-${nodes.length}`, ts: e.ts, text: rawTxt });
+          }
           continue;
         }
         if (t === "pm_reasoning") continue;
@@ -544,6 +595,7 @@
           nodes.push(node);
         }
       } else if (t === "agent_start") {
+        hidePmStatus("launch");
         const c = ensureCall(e);
         const cmd = commandLine(p.command || p.cmd);
         const cwd = p.cwd || "";
@@ -579,14 +631,19 @@
       } else if (t === "briefing") {
         nodes.push({ kind: "pm", id: e.id || `b-${nodes.length}`, ts: e.ts, text: `**${p.title || d.briefing}**\n\n${p.body_md || p.summary || ""}` });
       } else if (t === "stop") {
+        hidePmStatus();
         for (const c of calls.values()) if (c.status === "active") c.status = "done";
         const out = terminalText(p);
         if (out) terminal.push({ kind: "out", text: out, ts: e.ts, agent: e.source });
         nodes.push({ kind: "system", id: e.id || `s-${nodes.length}`, ts: e.ts, label: d.ev_stop, tone: "green", text: "" });
       } else if (t === "error") {
+        hidePmStatus();
         const out = terminalText(p);
         if (out) terminal.push({ kind: "err", text: out, ts: e.ts, agent: e.source });
         nodes.push({ kind: "system", id: e.id || `e-${nodes.length}`, ts: e.ts, label: d.ev_error, tone: "red", text: p.msg || p.error || "" });
+      } else if (t === "notification") {
+        const label = p.label || p.title || (p.kind === "cancelled" ? d.sessionCanceled : d.notification);
+        nodes.push({ kind: "system", id: e.id || `n-${nodes.length}`, ts: e.ts, label, tone: "muted", text: p.msg || p.text || "" });
       } else if (["checkpoint", "gate", "action_executed", "action_undone", "review", "audit", "undo", "recover", "stall", "context_compact"].includes(t)) {
         nodes.push({ kind: "system", id: e.id || `sy-${nodes.length}`, ts: e.ts, label: d[`ev_${t}`] || t, tone: "muted", text: p.summary || p.note || p.disposition || "" });
       }
@@ -596,13 +653,13 @@
 
     // subagents from calls
     const subagents = Array.from(calls.values()).map((c) => ({
-      id: c.id, name: c.reply ? c.reply.split("\n")[0].slice(0, 60) : c.agent,
+      id: c.id, name: c.reply ? firstSubstantiveLine(c.reply) : c.agent,
       agent: c.agent, status: c.status,
-      act: c.commands.length ? c.commands[c.commands.length - 1] : (c.reply ? c.reply.split("\n")[0].slice(0, 60) : ""),
+      act: c.commands.length ? c.commands[c.commands.length - 1] : (c.reply ? firstSubstantiveLine(c.reply) : ""),
       detail: c.reply || "",
     }));
 
-    return { nodes, calls, todos, terminal, subagents };
+    return { nodes: nodes.filter((n) => !n.hidden), calls, todos, terminal, subagents };
   }
 
   // ---------------------------------------------------------------------------
@@ -709,10 +766,16 @@
   function Workspace(props) {
     const { d, lang, dig, sessionRow, events, autonomy, openCalls, toggleCall, expandedSub, toggleSub,
       rightTab, setRightTab, onCard, onApproval, openDetail, composer, runCompact, compacting, compactStatus, onBriefing,
-      cards, approvals } = props;
+      cards, approvals, onCancelSession, onDeleteSession, topControls } = props;
     const threadNodes = threadExtras(dig, cards, approvals, sessionRow);
     const agentType = displayAgent(sessionRow && sessionRow.agent_type, d);
-    const live = sessionRow && (sessionRow.status || "").toLowerCase().match(/run|active/);
+    const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
+    const statusKey = status.replace(/[\s-]+/g, "_");
+    const live = sessionRow && ["planning", "queued", "running", "active", "waiting_approval"].includes(statusKey);
+    const failed = status.includes("fail") || status.includes("error");
+    const cancelled = status.includes("cancel");
+    const done = status.includes("done") || status.includes("complete");
+    const statusText = live ? d.running : cancelled ? d.cancelled : failed ? d.failed : done ? d.done : ((sessionRow && sessionRow.status) || "");
     const onBars = Math.max(0, Math.min(4, autonomy + 1));
     return html`
       <div className="main">
@@ -720,17 +783,20 @@
           <div style=${{ minWidth: 0 }}>
             <div style=${{ display: "flex", alignItems: "center", gap: "9px" }}>
               <h2>${sessionRow ? (sessionRow.goal || sessionRow.id) : d.navWorkspace}</h2>
-              ${sessionRow ? html`<span className="tag green"><span className="dot live" style=${{ background: "var(--green)" }}></span>${live ? d.running : (sessionRow.status || "")}</span>` : null}
+              ${sessionRow ? html`<span className=${`tag ${failed ? "red" : done ? "green" : "plain"}`}><span className=${`dot${live ? " live" : ""}`} style=${{ background: failed ? "var(--red)" : done ? "var(--green)" : "var(--faint)" }}></span>${statusText}</span>` : null}
             </div>
             <div className="meta">${sessionRow ? `${shortPath(sessionRow.workspace, d)} · ${agentType}` : d.workspaceSubtitle}</div>
           </div>
           <div style=${{ flex: 1 }}></div>
+          ${topControls}
           <div className="autonomy-pill">
             <span className="label">${d.autonomy}</span>
             <div className="autonomy-bars">${[0, 1, 2, 3].map((i) => html`<span key=${i} className=${i < onBars ? "on" : ""}></span>`)}</div>
             <span className="lvl">L${autonomy}</span>
           </div>
           <button className="btn" onClick=${onBriefing}>${d.briefing}</button>
+          ${sessionRow && live ? html`<button className="btn danger" onClick=${() => onCancelSession(sessionRow.id)}>${d.cancelSession}</button>` : null}
+          ${sessionRow && !live ? html`<button className="btn" onClick=${() => onDeleteSession(sessionRow.id)}>${d.deleteSession}</button>` : null}
         </div>
 
         <div className="ws-body">
@@ -903,7 +969,7 @@
     const lines = terminal.slice(-200);
     const prefix = (l) => [l.agent, l.cwd ? shortPath(l.cwd, d) : ""].filter(Boolean).join(" ");
     return html`<div className="term-full">
-      <div className="bar"><span className="term-dotr" style=${{ background: "#e0584b" }}></span><span className="term-dotr" style=${{ background: "#e6b13e" }}></span><span className="term-dotr" style=${{ background: "#3fb37f" }}></span><span className="lbl">${shortPath(sessionRow && sessionRow.workspace, d)} — ${agentType}</span></div>
+      <div className="bar"><span className="lbl">${d.readOnlyLog} · ${shortPath(sessionRow && sessionRow.workspace, d)} · ${agentType}</span></div>
       <div className="lines">
         ${!lines.length ? html`<div className="cmd-dim">${d.selectSessionHint}</div>` :
           lines.map((l, i) => html`<div key=${i} className=${l.kind === "err" ? "cmd-err" : l.kind === "out" ? "cmd-dim" : ""}>
@@ -1079,6 +1145,8 @@
     const updatePmTools = (patch) => setPmTools((cur) => ({ ...(cur || {}), ...patch }));
     const lines = (value) => Array.isArray(value) ? value.join("\n") : "";
     const splitLines = (value) => String(value || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    const broadWorkspace = (workspaces || []).some((w) => isWideWorkspace(w.path));
+    const fullAccessAgent = (agentSettings || []).some((row) => row.enabled && row.full_access !== false);
     const sliderRef = useRef(null);
     const onSlide = (e) => {
       const box = sliderRef.current.getBoundingClientRect();
@@ -1091,6 +1159,7 @@
         <div className="card-title">${d.workspaces}<span className="spacer"></span><button className="btn sm" onClick=${loadWorkspaces}>⟳ ${d.refresh}</button></div>
         ${!workspaces.length ? html`<div className="alert warn" style=${{ marginBottom: 14 }}>⚠ ${d.dispatchNoWorkspace}</div>` :
           workspaces.map((w) => html`<div className="ws-item" key=${w.path}><span className="p">${w.path}</span><span className="state-on">● ${d.connected}</span><span className="del" style=${{ cursor: "pointer", color: "var(--red)", fontSize: 12 }} onClick=${() => deleteWorkspace(w.path)}>${d.remove}</span></div>`)}
+        ${broadWorkspace && fullAccessAgent ? html`<div className="alert warn" style=${{ marginBottom: 14 }}>⚠ ${d.workspaceRisk}</div>` : null}
         <div className="row col-2-1" style=${{ marginBottom: 12, marginTop: 4 }}>
           <div className="field"><span className="field-label">${d.projectPath}</span>
             <div style=${{ display: "flex", gap: 8 }}>
@@ -1254,7 +1323,8 @@
         </div>
         <div className="field"><span className="field-label">${d.defnName}</span><input className="input mono" value=${row.name || ""} disabled=${!!row.id} onChange=${(e) => update({ name: e.target.value })} placeholder="add-feature" /></div>
       </div>
-      <div className="field"><span className="field-label">${d.defnScope}</span><input className="input mono" value=${row.scope_json || "{}"} onChange=${(e) => update({ scope_json: e.target.value })} placeholder='{"lang":"py"}' /></div>
+      <div className="field"><span className="field-label">${d.defnScope}</span><input className="input mono" value=${row.scope_json || "{}"} onChange=${(e) => update({ scope_json: e.target.value, scopeError: "" })} placeholder='{"lang":"py"}' /></div>
+      ${row.scopeError ? html`<div className="alert error">${row.scopeError}</div>` : null}
       <div className="field"><span className="field-label">${d.defnBody}</span><textarea className="textarea mono" rows="11" value=${row.body || ""} onChange=${(e) => update({ body: e.target.value })}></textarea></div>
       <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}><input type="checkbox" checked=${row.activate !== false} onChange=${(e) => update({ activate: e.target.checked })} /> ${d.defnActivate}</label>
     </div>`;
@@ -1381,6 +1451,8 @@
     const [detail, setDetail] = useState({ raw: [], diff: { files: [] } });
     const [defnOpen, setDefnOpen] = useState(false);
     const [defnDraft, setDefnDraft] = useState(null);
+    const [confirmDefnDelete, setConfirmDefnDelete] = useState(null);
+    const [confirmSessionDelete, setConfirmSessionDelete] = useState(null);
     const [openCalls, setOpenCalls] = useState({});
     const [expandedSub, setExpandedSub] = useState(null);
     const [toasts, setToasts] = useState([]);
@@ -1531,6 +1603,26 @@
       try { await api("/api/reports/generate", { method: "POST", body: { kind: "active-briefing", session_id: selectedSession || "" } }); toast(d.saved, "success"); await loadReports(); setView("briefings"); }
       catch (e) { toast(`${d.briefFailed}: ${friendlyError(e, d)}`, "error"); }
     }
+    async function cancelSession(id) {
+      if (!id) return;
+      try { await api(`/api/sessions/${encodeURIComponent(id)}/cancel`, { method: "POST" }); toast(d.sessionCanceled, "success"); await loadSessions(); openTimeline(id); }
+      catch (e) { notifyError(e); }
+    }
+    function deleteSession(id) {
+      if (!id) return;
+      setConfirmSessionDelete({ id });
+    }
+    async function confirmDeleteSession() {
+      const id = confirmSessionDelete && confirmSessionDelete.id;
+      if (!id) return;
+      try {
+        await api(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+        setConfirmSessionDelete(null);
+        setSelectedSession("");
+        setEvents([]);
+        await loadSessions();
+      } catch (e) { notifyError(e); }
+    }
 
     async function onCard(cardId, option) {
       if (!cardId || !option) return;
@@ -1550,6 +1642,12 @@
     // definitions
     async function saveDefinition() {
       const draft = defnDraft || {};
+      const scopeError = jsonObjectError(draft.scope_json || "{}");
+      if (scopeError) {
+        setDefnDraft({ ...draft, scopeError: d.badScopeJson });
+        toast(d.badScopeJson, "error");
+        return;
+      }
       try {
         if (draft.id) {
           await api(`/api/definitions/${encodeURIComponent(draft.id)}`, { method: "PATCH", body: { body: draft.body || "", scope_json: draft.scope_json || "{}" } });
@@ -1561,7 +1659,13 @@
       } catch (e) { notifyError(e); }
     }
     async function activateDefinition(id) { try { await api(`/api/definitions/${encodeURIComponent(id)}/activate`, { method: "POST" }); await loadDefinitions(); } catch (e) { notifyError(e); } }
-    async function deleteDefinition(id) { if (!window.confirm(d.confirmDelete)) return; try { await api(`/api/definitions/${encodeURIComponent(id)}`, { method: "DELETE" }); await loadDefinitions(); } catch (e) { notifyError(e); } }
+    async function confirmDeleteDefinition() {
+      const id = confirmDefnDelete && confirmDefnDelete.id;
+      if (!id) return;
+      try { await api(`/api/definitions/${encodeURIComponent(id)}`, { method: "DELETE" }); setConfirmDefnDelete(null); await loadDefinitions(); }
+      catch (e) { notifyError(e); }
+    }
+    function deleteDefinition(id) { setConfirmDefnDelete({ id }); }
     async function exportDefinitions() {
       try { const bundle = await api("/api/definitions/export"); const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "foreman-definitions.json"; a.click(); URL.revokeObjectURL(a.href); }
       catch (e) { toast(d.exportFailed, "error"); }
@@ -1625,7 +1729,7 @@
     }
     async function connectCloud() {
       setCloudStatus(d.connecting);
-      try { const c = await api("/api/settings/cloud/connect", { method: "POST" }); setCloud((p) => ({ ...p, connected: !!c.connected, access_key: "" })); setCloudStatus(c.connected ? d.connected : (c.error ? `${d.connFailed}: ${c.error}` : d.connecting)); }
+      try { const c = await api("/api/settings/cloud/connect", { method: "POST" }); setCloud((p) => ({ ...p, connected: !!c.connected, access_key: "" })); setCloudStatus(c.connected ? d.connected : (c.error ? `${d.connFailed}: ${friendlyError(c.error, d)}` : d.connecting)); }
       catch (e) { setCloudStatus(`${d.connFailed}: ${friendlyError(e, d)}`); }
     }
     async function disconnectCloud() {
@@ -1680,7 +1784,7 @@
     };
     const decisionsProps = { d, lang, cards: openCards, approvals, onCard, onApproval: decideApproval, openDetail, onGoSession: openTimeline };
     const briefingsProps = { d, lang, reports, onCopy, toast };
-    const playbookProps = { d, lang, definitions, filter: defnFilter, setFilter: setDefnFilter, onNew: () => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }, onEdit: (row) => { setDefnDraft({ ...row, activate: false }); setDefnOpen(true); }, onActivate: activateDefinition, onDelete: deleteDefinition, onExport: exportDefinitions, onImportClick: () => fileRef.current && fileRef.current.click(), fileRef, onImport: importDefinitions };
+    const playbookProps = { d, lang, definitions, filter: defnFilter, setFilter: setDefnFilter, onNew: () => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }, onEdit: (row) => { setDefnDraft({ ...row, activate: !!row.is_active }); setDefnOpen(true); }, onActivate: activateDefinition, onDelete: deleteDefinition, onExport: exportDefinitions, onImportClick: () => fileRef.current && fileRef.current.click(), fileRef, onImport: importDefinitions };
 
     const launchSteps = { engine: status.online, agents: agentsLoaded, data: booted, pct: booted ? 100 : (status.online ? 60 : 25), version: status.version };
 
@@ -1690,6 +1794,9 @@
       playbook: playbookProps, settings: settingsProps, composer: composerProps,
       openCalls, toggleCall, expandedSub, toggleSub, onCard, onApproval: decideApproval, openDetail, sessionRow,
       cards: openCards, approvals,
+      onCancelSession: cancelSession,
+      onDeleteSession: deleteSession,
+      topControls: html`<${TopCtrls} d=${d} lang=${lang} dark=${theme === "dark"} onToggleTheme=${() => setTheme(theme === "dark" ? "light" : "dark")} onToggleLang=${() => setLang(lang === "zh" ? "en" : "zh")} onPush=${enablePush} />`,
     };
 
     return html`<div>
@@ -1705,7 +1812,8 @@
             openCalls=${openCalls} toggleCall=${toggleCall} expandedSub=${expandedSub} toggleSub=${toggleSub}
             rightTab=${rightTab} setRightTab=${setRightTab} onCard=${onCard} onApproval=${decideApproval} openDetail=${openDetail}
             composer=${composerProps} runCompact=${runCompact} compacting=${compacting} compactStatus=${compactStatus} onBriefing=${runBriefing}
-            cards=${openCards} approvals=${approvals} />`
+            cards=${openCards} approvals=${approvals} onCancelSession=${cancelSession} onDeleteSession=${deleteSession}
+            topControls=${mainProps.topControls} />`
           : html`<div className="main">
               <div className="page-head">
                 <div><h2>${d[`nav${view.charAt(0).toUpperCase()}${view.slice(1)}`] || d.navWorkspace}</h2><div className="sub">${d[`${view}Subtitle`] || ""}</div></div>
@@ -1730,6 +1838,12 @@
       ${detailOpen ? html`<${DetailModal} d=${d} lang=${lang} detail=${detail} onClose=${() => setDetailOpen(false)} />` : null}
       ${defnOpen ? html`<${Modal} title=${defnDraft && defnDraft.id ? d.edit : d.newBtn} onClose=${() => setDefnOpen(false)} footer=${[html`<button key="c" className="btn" onClick=${() => setDefnOpen(false)}>${d.cancel}</button>`, html`<button key="s" className="btn primary" onClick=${saveDefinition}>${d.save}</button>`]}>
         <${DefinitionEditor} d=${d} draft=${defnDraft} setDraft=${setDefnDraft} />
+      </${Modal}>` : null}
+      ${confirmDefnDelete ? html`<${Modal} title=${d.confirmDeleteTitle} onClose=${() => setConfirmDefnDelete(null)} footer=${[html`<button key="c" className="btn" onClick=${() => setConfirmDefnDelete(null)}>${d.cancel}</button>`, html`<button key="d" className="btn danger" onClick=${confirmDeleteDefinition}>${d.del}</button>`]}>
+        <div>${d.confirmDelete}</div>
+      </${Modal}>` : null}
+      ${confirmSessionDelete ? html`<${Modal} title=${d.confirmDeleteTitle} onClose=${() => setConfirmSessionDelete(null)} footer=${[html`<button key="c" className="btn" onClick=${() => setConfirmSessionDelete(null)}>${d.cancel}</button>`, html`<button key="d" className="btn danger" onClick=${confirmDeleteSession}>${d.deleteSession}</button>`]}>
+        <div>${d.confirmSessionDelete}</div>
       </${Modal}>` : null}
     </div>`;
   }

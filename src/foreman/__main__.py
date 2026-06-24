@@ -46,6 +46,10 @@ def app_cmd(
     # that instance's window instead of starting a rival engine that can't bind the port — the bug
     # where a second launch died with "local server did not start in time" (really EADDRINUSE).
     if is_running(host, port):
+        focused = _focus_existing_window("Foreman")
+        if focused:
+            rprint("[yellow]Foreman is already running[/] — focused the existing window")
+            return
         rprint(f"[yellow]Foreman is already running[/] — opening {url}")
         _open_window(url)
         return
@@ -116,6 +120,43 @@ def _open_window(url: str) -> None:
         min_size=WINDOW_MIN_SIZE,
     )
     webview.start()  # blocks until this window is closed
+
+
+def _focus_existing_window(title: str) -> bool:
+    """Best-effort Windows focus for the already-running pywebview window."""
+    import sys
+
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        found = wintypes.HWND()
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def enum_proc(hwnd, _lparam):
+            nonlocal found
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if title.lower() in buf.value.lower():
+                found = hwnd
+                return False
+            return True
+
+        user32.EnumWindows(enum_proc, 0)
+        if not found:
+            return False
+        user32.ShowWindow(found, 9)  # SW_RESTORE
+        return bool(user32.SetForegroundWindow(found))
+    except Exception:
+        return False
 
 
 class _DesktopApi:

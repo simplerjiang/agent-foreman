@@ -156,7 +156,8 @@ class _Renderer:
                   stroke_width=2, stroke_fill=_rgba((6, 10, 22), 210))
 
         # Downsample 2× → 1×
-        return frame.resize((W, H), Image.LANCZOS)
+        resampling = getattr(Image, "Resampling", Image)
+        return frame.resize((W, H), getattr(resampling, "LANCZOS", 1))
 
     @staticmethod
     def _arc_ring(draw, cx: float, cy: float, r: float, angle: float,
@@ -204,7 +205,6 @@ def _build_win32():
     if sys.platform != "win32":
         return None
     import ctypes
-    from ctypes import wintypes
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -357,13 +357,15 @@ class _Splash:
         import ctypes
         import time
 
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:
+        windll = getattr(ctypes, "windll", None)
+        if windll is not None:
             try:
-                ctypes.windll.user32.SetProcessDPIAware()
+                windll.shcore.SetProcessDpiAwareness(1)
             except Exception:
-                pass
+                try:
+                    windll.user32.SetProcessDPIAware()
+                except Exception:
+                    pass
 
         u, g, k = win.user32, win.gdi32, win.kernel32
         try:

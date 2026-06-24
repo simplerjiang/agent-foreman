@@ -93,6 +93,86 @@ async def test_create_persists_session_task_and_event(tmp_path):
     assert json.loads(dispatch_events[0].payload_json)["model"] == "sonnet"
 
 
+async def test_cancelled_session_is_not_overwritten_by_background_completion(tmp_path):
+    store = _store(tmp_path)
+    launched = asyncio.Event()
+    release = asyncio.Event()
+
+    class FakePM:
+        max_runs = 1
+
+        async def plan(self, goal, **_kw):
+            return PMPlan(agent="codex", model="", effort="", instruction="do it")
+
+        async def review(self, goal, plan, timeline, **_kw):
+            return PMReview(done=True, summary="done")
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            launched.set()
+            return object()
+
+        async def wait(self, handle):
+            await release.wait()
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    res = await svc.create("long task")
+    await asyncio.wait_for(launched.wait(), timeout=1)
+    assert (await svc.cancel(res["session_id"]))["status"] == "cancelled"
+    assert (await svc.delete(res["session_id"]))["error"] == "session_busy"
+
+    release.set()
+    await asyncio.gather(*list(svc._tasks))
+
+    assert store.get_session(res["session_id"]).status == "cancelled"
+    assert (await svc.delete(res["session_id"]))["ok"] is True
+    assert store.get_session(res["session_id"]) is None
+
+
+async def test_cancelled_session_is_not_overwritten_by_background_failure(tmp_path):
+    store = _store(tmp_path)
+    launched = asyncio.Event()
+    release = asyncio.Event()
+
+    class FakePM:
+        max_runs = 1
+
+        async def plan(self, goal, **_kw):
+            return PMPlan(agent="codex", model="", effort="", instruction="do it")
+
+        async def review(self, goal, plan, timeline, **_kw):
+            return PMReview(done=True, summary="done")
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            launched.set()
+            return object()
+
+        async def wait(self, handle):
+            await release.wait()
+            raise RuntimeError("agent failed after cancel")
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    res = await svc.create("long task")
+    await asyncio.wait_for(launched.wait(), timeout=1)
+    assert (await svc.cancel(res["session_id"]))["status"] == "cancelled"
+
+    release.set()
+    await asyncio.gather(*list(svc._tasks))
+
+    assert store.get_session(res["session_id"]).status == "cancelled"
+
+
 async def test_create_can_continue_existing_session_with_source(tmp_path):
     store = _store(tmp_path)
     cfg = _cfg(workspaces=[WorkspaceCfg(path="D:/proj")])
@@ -352,6 +432,7 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
             self.state_keys.append(state_key)
             assert "PM planned instruction" in plan.instruction
             if self.reviews == 1:
+                assert store.get_session(state_key.split(":", 1)[0]).status == "running"
                 assert todo_status == [
                     {"title": "inspect", "status": "in_progress"},
                     {"title": "test", "status": "pending"},
@@ -420,6 +501,7 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
     assert len(reviews) == 2
     assert [x["status"] for x in reviews[0]["todo_status"]] == ["done", "in_progress"]
     assert [x["status"] for x in reviews[1]["todo_status"]] == ["done", "done"]
+    assert store.get_session(res["session_id"]).status == "done"
 
 
 async def test_real_pm_agent_stream_chunks_are_persisted_and_published(tmp_path):

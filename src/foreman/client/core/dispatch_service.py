@@ -45,6 +45,8 @@ VALID_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high"})
 VALID_SOURCES: frozenset[str] = frozenset({"desktop", "phone", "api"})
 MAX_CONTEXT_CHARS = 12000
 PM_AUTO_AGENT = "pm-agent"
+LIVE_SESSION_STATUSES = {"planning", "running", "active", "waiting_approval", "queued"}
+TERMINAL_SESSION_STATUSES = {"failed", "cancelled"}
 AGENT_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code": ("claude-code", "claude code", "claude"),
     "codex": ("codex",),
@@ -98,6 +100,7 @@ class DispatchService:
         self.language_getter = language_getter
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
+        self._session_tasks: dict[str, set[asyncio.Task]] = {}
 
     # ── create a session (下发任务, §5.1) ─────────────────────────────────────────────────────
     async def create(
@@ -187,8 +190,7 @@ class DispatchService:
                     effort,
                 )
             )
-            self._tasks.add(launch_task)
-            launch_task.add_done_callback(self._tasks.discard)
+            self._track_launch_task(session.id, launch_task)
         elif pm_enabled:
             launch_task = asyncio.create_task(
                 self._safe_pm_launch(
@@ -201,8 +203,7 @@ class DispatchService:
                     resolved_effort,
                 )
             )
-            self._tasks.add(launch_task)
-            launch_task.add_done_callback(self._tasks.discard)
+            self._track_launch_task(session.id, launch_task)
         elif self.launcher is not None:
             # Fire-and-forget: a phone dispatch returns immediately; the agent runs in the
             # background (Runner pumps its events to store+bus, T1.7). Failures emit an `error`.
@@ -212,8 +213,7 @@ class DispatchService:
                     session.id, goal, ws, resolved_agent, resolved_model, resolved_effort
                 )
             )
-            self._tasks.add(launch_task)
-            launch_task.add_done_callback(self._tasks.discard)
+            self._track_launch_task(session.id, launch_task)
         return {
             "ok": True,
             "session_id": session.id,
@@ -277,6 +277,40 @@ class DispatchService:
             "summary_chars": len(summary),
             "snapshot_id": snapshot_id,
         }
+
+    async def cancel(self, session_id: str) -> dict:
+        """Mark one session cancelled so the UI has a real terminal state."""
+        if self.store is None or not hasattr(self.store, "get_session"):
+            return {"ok": False, "error": "no_store"}
+        session = self.store.get_session(session_id)
+        if session is None:
+            return {"ok": False, "error": "session_not_found"}
+        self._mark_session(session_id, "cancelled")
+        await self._persist_then_publish(
+            make_event(
+                "notification",
+                "dispatch",
+                session_id,
+                payload={
+                    "kind": "cancelled",
+                    "msg": "用户已取消会话。当前版本仅标记会话终止，不强杀已启动的外部 CLI 进程。",
+                },
+            )
+        )
+        return {"ok": True, "session_id": session_id, "status": "cancelled"}
+
+    async def delete(self, session_id: str) -> dict:
+        """Delete one local session and its local records."""
+        if self.store is None or not hasattr(self.store, "delete_session"):
+            return {"ok": False, "error": "no_store"}
+        session = self.store.get_session(session_id) if hasattr(self.store, "get_session") else None
+        if session is None:
+            return {"ok": False, "error": "session_not_found"}
+        if _is_live_session_status(session.status) or self._session_has_live_task(session_id):
+            return {"ok": False, "error": "session_busy"}
+        if not self.store.delete_session(session_id):
+            return {"ok": False, "error": "session_not_found"}
+        return {"ok": True, "session_id": session_id}
 
     def _resolve_agent(self, agent: str | None) -> tuple[str, str]:
         """Pick the agent: an explicit one must be enabled; else default to the first enabled.
@@ -416,6 +450,7 @@ class DispatchService:
         try:
             await self._pm_launch(session_id, task_id, goal, workspace, agent, pm_model, effort)
         except Exception as exc:  # noqa: BLE001 — PM failure must be visible, not crash the server
+            self._mark_session_unless_terminal(session_id, "failed")
             event = make_event(
                 "error",
                 "pm-agent",
@@ -440,6 +475,7 @@ class DispatchService:
                 session_id, task_id, goal, workspace, agents, model_override, effort_override
             )
         except Exception as exc:  # noqa: BLE001 - visible background failure, not a server crash
+            self._mark_session_unless_terminal(session_id, "failed")
             event = make_event(
                 "error",
                 "pm-agent",
@@ -482,6 +518,7 @@ class DispatchService:
             )
             handles.append(handle)
         await asyncio.gather(*(self.runner.wait(handle) for handle in handles))
+        self._mark_session_unless_terminal(session_id, "done")
 
     async def _pm_launch(
         self,
@@ -578,6 +615,7 @@ class DispatchService:
                 }
             )
             if review.done:
+                self._mark_session_unless_terminal(session_id, "done")
                 return
             if run_count >= self.pm_agent.max_runs:
                 await self._emit_pm_error(
@@ -594,6 +632,7 @@ class DispatchService:
                 )
                 return
             await self.runner.send(handle, review.follow_up)
+            self._mark_session_unless_terminal(session_id, "running")
             run_count += 1
             await self.runner.wait(handle)
 
@@ -683,6 +722,7 @@ class DispatchService:
         )
 
     async def _emit_pm_error(self, session_id: str, task_id: str, msg: str) -> None:
+        self._mark_session_unless_terminal(session_id, "failed")
         event = make_event(
             "error", "pm-agent", session_id, task_id=task_id, payload={"msg": msg}
         )
@@ -741,6 +781,7 @@ class DispatchService:
         try:
             await self.launcher(session_id, goal, workspace, agent, model, effort)
         except Exception as exc:  # noqa: BLE001 — a launch failure must not take down the server loop
+            self._mark_session_unless_terminal(session_id, "failed")
             event = make_event(
                 "error",
                 "dispatch",
@@ -754,6 +795,35 @@ class DispatchService:
             return ""
         session = self.store.get_session(session_id)
         return (session.plan or "").strip()[:MAX_CONTEXT_CHARS] if session else ""
+
+    def _mark_session(self, session_id: str, status: str) -> None:
+        if self.store is not None and hasattr(self.store, "update_session"):
+            self.store.update_session(session_id, status=status, updated_at=self._clock())
+
+    def _mark_session_unless_terminal(self, session_id: str, status: str) -> None:
+        if self.store is not None and hasattr(self.store, "get_session"):
+            session = self.store.get_session(session_id)
+            if session is not None and (session.status or "").strip().lower() in TERMINAL_SESSION_STATUSES:
+                return
+        self._mark_session(session_id, status)
+
+    def _track_launch_task(self, session_id: str, task: asyncio.Task) -> None:
+        self._tasks.add(task)
+        self._session_tasks.setdefault(session_id, set()).add(task)
+
+        def discard(done: asyncio.Task) -> None:
+            self._tasks.discard(done)
+            session_tasks = self._session_tasks.get(session_id)
+            if session_tasks is None:
+                return
+            session_tasks.discard(done)
+            if not session_tasks:
+                self._session_tasks.pop(session_id, None)
+
+        task.add_done_callback(discard)
+
+    def _session_has_live_task(self, session_id: str) -> bool:
+        return any(not task.done() for task in self._session_tasks.get(session_id, ()))
 
     async def _persist_then_publish(self, event) -> None:
         """Persist-first (so a late UI can backfill) then publish — mirrors Runner/Gate."""
@@ -1006,6 +1076,10 @@ def _direct_agent_summary(agent: str, language: str = "") -> str:
     if normalize_lang(language) == "en":
         return f"Foreman direct dispatch to {agent}."
     return f"Foreman 直接下发给 {agent}。"
+
+
+def _is_live_session_status(status: str | None) -> bool:
+    return (status or "").strip().lower() in LIVE_SESSION_STATUSES
 
 
 def _direct_agent_instruction(

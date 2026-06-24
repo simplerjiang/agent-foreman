@@ -1132,6 +1132,32 @@ def create_app(
         }.get(res.get("error", ""), 400)
         raise HTTPException(status_code=status, detail=res.get("error", "decline"))
 
+    @app.post("/api/sessions/{session_id}/cancel")
+    async def cancel_session(session_id: str) -> dict:
+        """Mark one local session cancelled. Process-level interrupt is a runner concern."""
+        if dispatcher is None or not hasattr(dispatcher, "cancel"):
+            raise HTTPException(status_code=503, detail="no dispatcher")
+        res = await dispatcher.cancel(session_id)
+        if res.get("ok"):
+            return res
+        status = {"session_not_found": 404, "no_store": 503}.get(res.get("error", ""), 400)
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(session_id: str) -> dict:
+        """Delete one local session and its local records."""
+        if dispatcher is None or not hasattr(dispatcher, "delete"):
+            raise HTTPException(status_code=503, detail="no dispatcher")
+        res = await dispatcher.delete(session_id)
+        if res.get("ok"):
+            return res
+        status = {
+            "session_not_found": 404,
+            "session_busy": 409,
+            "no_store": 503,
+        }.get(res.get("error", ""), 400)
+        raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
     @app.get("/api/settings/language")
     async def get_language() -> dict:
         """Effective UI/output language: config_kv override (if a store) else the config default."""
