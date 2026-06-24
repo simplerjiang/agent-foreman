@@ -86,6 +86,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     from .core.gate import Gate
     from .core.operator import Operator
     from .core.pm_agent import PMAgent
+    from .tools import PMToolRuntime
     from .monitor.hooks import HookReceiver
 
     # Optional at-rest encryption for definition bodies (DESIGN §765, T6.2). The key lives in a
@@ -130,12 +131,13 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
         return LLMClient(cfg, settings_resolver=_llm_settings)
 
     toolbelt = Toolbelt(gate=gate)
+    auditor = Auditor(_llm(), language=language)
     loop = DecisionLoop(
         store=store,
         gate=gate,
         cards=cards,
         operator=Operator(_llm(), language=language),
-        auditor=Auditor(_llm(), language=language),
+        auditor=auditor,
         bus=bus,
         runner=runner,
         toolbelt=toolbelt,
@@ -151,7 +153,17 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # through the PM agent first: PM plans the prompt/agent/model, waits for the CLI run, then
     # reviews and resumes if the work is incomplete.
     dispatcher = DispatchService(
-        cfg, store, bus=bus, runner=runner, pm_agent=PMAgent(_llm(), language=language)
+        cfg,
+        store,
+        bus=bus,
+        runner=runner,
+        pm_agent=PMAgent(
+            _llm(),
+            language=language,
+            tool_runtime_factory=lambda workspace: PMToolRuntime.from_config(
+                cfg, workspace, gate=gate, auditor=auditor
+            ),
+        ),
     )
     # BriefingService summarizes a session's activity with YOUR LLM → reports table + Web Push
     # (§5.5). Output language follows the runtime ui.language setting (§15, resolved above).

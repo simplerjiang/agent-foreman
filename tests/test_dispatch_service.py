@@ -17,6 +17,7 @@ from foreman.client.store.models import (
     DecisionCard,
     Session,
 )
+from foreman.client.tools import PMToolRuntime
 from foreman.shared.config import AgentCfg, Config, WorkspaceCfg
 from foreman.shared.events import EventBus, make_event
 
@@ -431,6 +432,84 @@ async def test_real_pm_agent_stream_chunks_are_persisted_and_published(tmp_path)
     while not q.empty():
         published.append(q.get_nowait().type)
     assert "pm_output" in published and "pm_reasoning" in published
+
+
+async def test_pm_agent_tool_loop_persists_tool_events_before_launch(tmp_path):
+    store = _store(tmp_path)
+    (tmp_path / "notes.txt").write_text("launch evidence", encoding="utf-8")
+    captured = {"plan_prompt": ""}
+
+    class FakeLLM:
+        async def complete(self, messages, *, json_mode=False, model="", on_stream=None):
+            if "reviewing a coding CLI" in messages[0].content:
+                return json.dumps({"done": True, "summary": "done", "reason": "", "follow_up": ""})
+            if not captured["plan_prompt"]:
+                captured["plan_prompt"] = messages[-1].content
+            if "Runtime-generated tool_results" not in messages[-1].content:
+                return json.dumps(
+                    {
+                        "type": "tool_calls",
+                        "tool_calls": [
+                            {
+                                "id": "read",
+                                "name": "read_file",
+                                "arguments": {"path": "notes.txt"},
+                            }
+                        ],
+                    }
+                )
+            return json.dumps(
+                {
+                    "type": "final_plan",
+                    "summary": "read evidence",
+                    "agent": "codex",
+                    "model": "",
+                    "effort": "high",
+                    "instruction": "Use the evidence from notes.txt and verify.",
+                    "todo": ["verify"],
+                    "ready": True,
+                }
+            )
+
+    class FakeHandle:
+        session_id = "s"
+
+    class FakeRunner:
+        def __init__(self):
+            self.launched = []
+
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            self.launched.append((agent, instruction))
+            handle = FakeHandle()
+            handle.session_id = session_id
+            store.add_event(make_event("stop", agent, session_id, payload={"result": "done"}))
+            return handle
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    pm = PMAgent(
+        FakeLLM(),
+        tool_runtime_factory=lambda workspace: PMToolRuntime.from_config(cfg, workspace),
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=pm)
+
+    res = await svc.create("inspect then run")
+    await asyncio.gather(*list(svc._tasks))
+
+    rows = store.get_events(res["session_id"])
+    assert "tool_schema" in captured["plan_prompt"]
+    assert "runtime_context" in captured["plan_prompt"]
+    assert "policy_context" in captured["plan_prompt"]
+    assert [e.type for e in rows if e.type in {"tool_pre", "tool_post"}] == [
+        "tool_pre",
+        "tool_post",
+    ]
+    assert [e.type for e in rows].index("tool_post") < [e.type for e in rows].index("pm_plan")
 
 
 async def test_pm_agent_plan_prompt_requires_selected_language(tmp_path):

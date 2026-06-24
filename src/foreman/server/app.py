@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from foreman.shared.autonomy import level_label, normalize_level
-from foreman.shared.config import AgentCfg, Config, WorkspaceCfg, default_agents
+from foreman.shared.config import AgentCfg, Config, PMToolsCfg, WorkspaceCfg, default_agents
 from foreman.shared.events import AgentEvent, EventBus, utc_now_iso
 from foreman.shared.i18n import normalize as normalize_lang
 from foreman.shared.ratelimit import SlidingWindowLimiter
@@ -38,6 +38,7 @@ _AUTH_RL_MAX_ATTEMPTS = 10
 _AUTH_RL_WINDOW_SECONDS = 300
 _WORKSPACES_SETTING = "workspaces.json"
 _AGENTS_SETTING = "agents.json"
+_PM_TOOLS_SETTING = "pm_tools.json"
 _LLM_KEY_ENV = "FOREMAN_LLM_API_KEY"
 _CLOUD_KEY_ENV = "FOREMAN_CLOUD_ACCESS_KEY"
 _VALID_AGENT_EFFORTS = frozenset({"", "low", "medium", "high"})
@@ -84,6 +85,21 @@ class _AgentSettingsRow(BaseModel):
 
 class _AgentSettingsBody(BaseModel):
     agents: list[_AgentSettingsRow]
+
+
+class _PMToolsSettingsBody(BaseModel):
+    file_read: bool | None = None
+    file_write: bool | None = None
+    shell: bool | None = None
+    web_fetch: bool | None = None
+    web_search: bool | None = None
+    browser: bool | None = None
+    allowed_commands: list[str] | None = None
+    allowed_origins: list[str] | None = None
+    web_search_provider: str | None = None
+    searxng_url: str | None = None
+    browser_headless: bool | None = None
+    max_rounds: int | None = None
 
 
 class _PushKeys(BaseModel):
@@ -610,6 +626,76 @@ def create_app(
     def _agent_setting_dicts() -> list[dict]:
         return [_agent_status(name, a) for name, a in sorted(_effective_agents().items())]
 
+    def _clean_pm_tools(raw: dict[str, Any] | None = None) -> PMToolsCfg:
+        raw = raw or {}
+        current = cfg.pm_tools
+
+        def flag(name: str, default: bool) -> bool:
+            return _bool_setting(raw.get(name), default)
+
+        commands = raw.get("allowed_commands", current.allowed_commands)
+        origins = raw.get("allowed_origins", current.allowed_origins)
+        provider = str(raw.get("web_search_provider", current.web_search_provider) or "").strip()
+        if provider not in {"duckduckgo", "searxng"}:
+            provider = "duckduckgo"
+        try:
+            max_rounds = int(raw.get("max_rounds", current.max_rounds))
+        except (TypeError, ValueError):
+            max_rounds = current.max_rounds
+        return PMToolsCfg(
+            file_read=flag("file_read", current.file_read),
+            file_write=flag("file_write", current.file_write),
+            shell=flag("shell", current.shell),
+            web_fetch=flag("web_fetch", current.web_fetch),
+            web_search=flag("web_search", current.web_search),
+            browser=flag("browser", current.browser),
+            allowed_commands=_clean_string_list(commands),
+            allowed_origins=_clean_string_list(origins),
+            web_search_provider=provider,
+            searxng_url=str(raw.get("searxng_url", current.searxng_url) or "").strip(),
+            browser_headless=flag("browser_headless", current.browser_headless),
+            max_rounds=max(1, min(max_rounds, 12)),
+        )
+
+    def _clean_string_list(value: Any) -> list[str]:
+        items = value if isinstance(value, list) else []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            text = str(item or "").strip()
+            key = text.casefold()
+            if text and key not in seen:
+                seen.add(key)
+                out.append(text)
+        return out
+
+    def _effective_pm_tools() -> PMToolsCfg:
+        next_cfg: PMToolsCfg | None = None
+        if store is not None and hasattr(store, "get_setting"):
+            raw = store.get_setting(_PM_TOOLS_SETTING)
+            if raw is not None:
+                try:
+                    data = json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    data = None
+                if isinstance(data, dict):
+                    next_cfg = _clean_pm_tools(data)
+        if next_cfg is None:
+            next_cfg = _clean_pm_tools(cfg.pm_tools.model_dump())
+        cfg.pm_tools = next_cfg
+        return next_cfg
+
+    def _pm_tools_dict() -> dict:
+        return _effective_pm_tools().model_dump()
+
+    def _save_pm_tools(body: _PMToolsSettingsBody) -> dict:
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        cfg.pm_tools = _clean_pm_tools(body.model_dump(exclude_none=True))
+        data = cfg.pm_tools.model_dump()
+        store.set_setting(_PM_TOOLS_SETTING, json.dumps(data, ensure_ascii=False))
+        return data
+
     def _which_spawnable(command: str) -> str:
         name = (command or "").strip()
         if not name:
@@ -817,6 +903,7 @@ def create_app(
 
     _effective_workspaces()
     _effective_agents()
+    _effective_pm_tools()
     _sync_runner_agents()
 
     def _auth_bucket(request: Request, scope: str) -> str:
@@ -959,6 +1046,16 @@ def create_app(
     async def set_agent_settings(body: _AgentSettingsBody) -> list[dict]:
         """Persist local CLI agent settings and refresh the live Runner adapters."""
         return _save_agents(body.agents)
+
+    @app.get("/api/settings/pm-tools")
+    async def get_pm_tool_settings() -> dict:
+        """PM tool runtime settings. Secrets, cookies, and browser state are never returned."""
+        return _pm_tools_dict()
+
+    @app.post("/api/settings/pm-tools")
+    async def set_pm_tool_settings(body: _PMToolsSettingsBody) -> dict:
+        """Persist PM tool runtime switches and allowlists."""
+        return _save_pm_tools(body)
 
     @app.get("/api/models")
     async def list_models(agent: str | None = None) -> dict:

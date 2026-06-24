@@ -503,6 +503,8 @@ class DispatchService:
         }
         if _accepts_keyword(self.pm_agent.plan, "on_stream"):
             plan_kwargs["on_stream"] = self._pm_stream_sink(session_id, task_id, "plan")
+        if _accepts_keyword(self.pm_agent.plan, "on_tool_event"):
+            plan_kwargs["on_tool_event"] = self._pm_tool_event_sink(session_id, task_id)
         plan = await self.pm_agent.plan(goal, **plan_kwargs)
         plan = self._sanitize_pm_plan(plan, pm_model)
         todo_status = _initial_todo_status(plan.todo)
@@ -692,6 +694,22 @@ class DispatchService:
                         "delta": delta,
                         "event_type": str(chunk.get("event_type") or ""),
                     },
+                )
+            )
+
+        return emit
+
+    def _pm_tool_event_sink(self, session_id: str, task_id: str | None):
+        async def emit(event_type: str, payload: dict[str, Any]) -> None:
+            if event_type not in {"tool_pre", "tool_post"}:
+                return
+            await self._persist_then_publish(
+                make_event(
+                    event_type,
+                    "pm-agent",
+                    session_id,
+                    task_id=task_id,
+                    payload=payload,
                 )
             )
 

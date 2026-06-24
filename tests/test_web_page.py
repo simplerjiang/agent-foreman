@@ -137,6 +137,15 @@ def test_pm_settings_exposes_transport_picker():
     assert "llm.reasoning_effort" in js and "reasoningEffort" in js and 'value="max"' in js
 
 
+def test_pm_tool_settings_frontend_wired():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "/api/settings/pm-tools" in js
+    assert "pmTools" in js and "savePmTools" in js and "loadPmTools" in js
+    assert "allowed_commands" in js and "allowed_origins" in js
+    assert "web_search_provider" in js and "browser_headless" in js
+
+
 def test_mobile_shell_drawer_and_bottom_tabs_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

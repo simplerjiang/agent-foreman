@@ -173,6 +173,21 @@ class AutonomyCfg(BaseModel):
     level: int = 1
 
 
+class PMToolsCfg(BaseModel):
+    file_read: bool = True
+    file_write: bool = False
+    shell: bool = False
+    web_fetch: bool = False
+    web_search: bool = False
+    browser: bool = False
+    allowed_commands: list[str] = Field(default_factory=lambda: ["python --version"])
+    allowed_origins: list[str] = Field(default_factory=list)
+    web_search_provider: str = "duckduckgo"  # duckduckgo | searxng
+    searxng_url: str = ""
+    browser_headless: bool = False
+    max_rounds: int = 6
+
+
 # Notification channels (DESIGN §776, T6.3). Structure (enabled flags / addresses / hosts) lives
 # here; the secrets (webhook URL / bot token / device key / SMTP password) live in .env / Secrets.
 # Each channel defaults to disabled — opt in per channel.
@@ -224,6 +239,7 @@ class Config(BaseModel):
     push: PushCfg = PushCfg()
     ui: UICfg = UICfg()
     autonomy: AutonomyCfg = AutonomyCfg()
+    pm_tools: PMToolsCfg = PMToolsCfg()
     notify: NotifyCfg = NotifyCfg()
 
     # Populated from .env, not from config.yaml.
