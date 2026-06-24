@@ -43,5 +43,5 @@ def test_pm_tool_settings_defaults_and_save(tmp_path):
     assert saved["allowed_commands"] == ["python --version"]
     assert saved["allowed_origins"] == ["http://example.test"]
     assert saved["web_search_provider"] == "searxng"
-    assert saved["max_rounds"] == 12
+    assert saved["max_rounds"] == 99
     assert cfg.pm_tools.shell is True
