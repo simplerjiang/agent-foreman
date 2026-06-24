@@ -80,7 +80,11 @@ def test_autonomy_dial_wired_in_page():
     assert "/api/settings/autonomy" in js and "loadAutonomy" in js and "saveAutonomy" in js
     assert "slider-wrap" in js and "autoExec" in js
     assert "自动执行权限" in js
+    assert 'const autonomyName = d[`auto${autonomy}`]' in js
+    assert 'title=${`${d.autonomy}: ${autonomyName}`}' in js
+    assert 'className="name">${autonomyName}' in js
     assert ".slider-wrap" in css and ".slider-knob" in css
+    assert ".autonomy-pill .name" in css
 
 
 def test_workspace_chat_thread_and_right_panel_wired():
