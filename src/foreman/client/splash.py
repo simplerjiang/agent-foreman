@@ -1,7 +1,9 @@
-"""Native splash screen — dark sci-fi rotating-rings animation.
+"""Native splash screen — sci-fi rotating-rings animation with transparent background.
 
-Renders at 2× via Pillow with anti-aliasing + gaussian-blur glow, downsampled to 1× LANCZOS.
-Runs on a daemon thread; call close_splash() when the main pywebview window is visible.
+Renders at 2× via Pillow with anti-aliasing, downsampled to 1× LANCZOS. Uses tkinter with
+a chroma-key transparent color so the rings float directly over the desktop. A dark halo is
+drawn behind each element to ensure visibility against any wallpaper. Runs on a daemon thread;
+call close_splash() when the main pywebview window is visible.
 """
 
 from __future__ import annotations
@@ -14,20 +16,23 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Palette
 # ---------------------------------------------------------------------------
-BG = (10, 14, 26)  # dark sci-fi background
 ACCENT = (42, 111, 219)
 GLOW = (91, 148, 240)
 VIOLET = (107, 91, 217)
 VIOLET_LIGHT = (152, 137, 232)
-WHITE = (242, 239, 231)
-DIM = (110, 104, 89)
-BG_KEY_HEX = "#f0f0f0"
+WHITE = (255, 255, 255)
+DIM = (180, 174, 161)
+SHADOW = (8, 10, 20)
 
-# Layout
+# Chroma key: bright magenta — never appears in content, punched out by tkinter
+BG_KEY = (255, 0, 255)
+BG_KEY_HEX = "#ff00ff"
+
+# Layout (1× logical; rendered at 2×)
 W, H = 340, 380
 SS = 2
 RW, RH = W * SS, H * SS
-CX, CY = RW // 2, RH // 2 - 40  # centre of the ring system (shifted up for text below)
+CX, CY = RW // 2, RH // 2 - 40
 FPS = 24
 FRAME_MS = 1000 // FPS
 
@@ -61,8 +66,6 @@ class _Splash:
             except Exception:
                 pass
 
-    # ------------------------------------------------------------------
-
     def _run(self) -> None:
         try:
             import tkinter as tk
@@ -70,8 +73,6 @@ class _Splash:
         except ImportError:
             return
 
-        # Make this process DPI-aware so tkinter uses physical pixels (prevents Windows from
-        # bitmap-scaling the window, which makes it blurry and oversized).
         try:
             import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -111,9 +112,8 @@ class _Splash:
         self._label.pack()
 
         from PIL import ImageFont as IF
-        self._font_title = self._try_font(IF, ["segoeuib.ttf", "Segoe UI Bold", "Segoe UI", "arial.ttf"], 44)
+        self._font_title = self._try_font(IF, ["segoeuib.ttf", "Segoe UI Bold", "Segoe UI"], 44)
         self._font_sub = self._try_font(IF, ["consola.ttf", "Consolas", "Courier New"], 18)
-        self._font_ver = self._try_font(IF, ["consola.ttf", "Consolas", "Courier New"], 14)
 
         self._tkimg = None
         self._animate()
@@ -144,107 +144,102 @@ class _Splash:
         self._tick += 1
         elapsed = t / FPS
 
-        # Main frame (dark background with rounded-rect mask)
-        frame = Image.new("RGBA", (RW, RH), (0, 0, 0, 0))
-        # Draw rounded dark rectangle as the splash body
-        body = Image.new("RGBA", (RW, RH), (0, 0, 0, 0))
-        bdraw = ImageDraw.Draw(body)
-        corner = 32
-        bdraw.rounded_rectangle((0, 0, RW - 1, RH - 1), radius=corner, fill=_rgba(BG))
-        # Subtle border
-        bdraw.rounded_rectangle((0, 0, RW - 1, RH - 1), radius=corner, outline=_rgba(ACCENT, 40), width=2)
-        frame = Image.alpha_composite(frame, body)
+        # 1) Shadow layer: draw all elements in dark color, then blur → creates halo
+        shadow = Image.new("RGBA", (RW, RH), (0, 0, 0, 0))
+        sdraw = ImageDraw.Draw(shadow)
 
-        draw = ImageDraw.Draw(frame)
-
-        # Glow layer (for bloom effects)
-        glow = Image.new("RGBA", (RW, RH), (0, 0, 0, 0))
-        gdraw = ImageDraw.Draw(glow)
-
-        # ---- Ambient radial glow behind rings ----
-        for i in range(6):
-            r = R_OUTER + 30 - i * 8
-            a = 12 + i * 3
-            gdraw.ellipse((CX - r, CY - r, CX + r, CY + r), fill=_rgba(ACCENT, a))
-
-        # ---- Outer ring (clockwise, 8s) ----
         ang_outer = elapsed * (360 / 8)
-        self._draw_dashed_ring(draw, CX, CY, R_OUTER, ang_outer,
-                               color=ACCENT, alpha=120, width=3, dash=8, gap=12, segs=90)
-        # Outer ring dots
-        for offset, sz, col in [(0, 8, GLOW), (90, 6, GLOW), (200, 5, ACCENT)]:
+        ang_mid = -elapsed * (360 / 6)
+        ang_inner = elapsed * (360 / 4)
+
+        # Shadow rings (thicker than content for spread)
+        self._draw_arc_ring(sdraw, CX, CY, R_OUTER, ang_outer, SHADOW, 10, 40, 20)
+        self._draw_arc_ring(sdraw, CX, CY, R_MID, ang_mid, SHADOW, 10, 30, 15)
+        self._draw_arc_ring(sdraw, CX, CY, R_INNER, ang_inner, SHADOW, 12, 25, 20)
+
+        # Shadow dots
+        for offset, sz in [(0, 14), (120, 12), (240, 11)]:
             a = math.radians(ang_outer + offset)
             dx, dy = CX + R_OUTER * math.cos(a), CY + R_OUTER * math.sin(a)
-            draw.ellipse((dx - sz, dy - sz, dx + sz, dy + sz), fill=_rgba(col))
-            gdraw.ellipse((dx - sz * 3, dy - sz * 3, dx + sz * 3, dy + sz * 3), fill=_rgba(col, 35))
-
-        # ---- Middle ring (counter-clockwise, 6s) ----
-        ang_mid = -elapsed * (360 / 6)
-        self._draw_dashed_ring(draw, CX, CY, R_MID, ang_mid,
-                               color=VIOLET, alpha=140, width=3, dash=4, gap=8, segs=72)
-        for offset, sz, col in [(0, 6, VIOLET_LIGHT), (140, 5, VIOLET_LIGHT)]:
+            sdraw.ellipse((dx - sz, dy - sz, dx + sz, dy + sz), fill=_rgba(SHADOW))
+        for offset, sz in [(0, 12), (180, 11)]:
             a = math.radians(ang_mid + offset)
             dx, dy = CX + R_MID * math.cos(a), CY + R_MID * math.sin(a)
-            draw.ellipse((dx - sz, dy - sz, dx + sz, dy + sz), fill=_rgba(col))
-            gdraw.ellipse((dx - sz * 3, dy - sz * 3, dx + sz * 3, dy + sz * 3), fill=_rgba(col, 30))
+            sdraw.ellipse((dx - sz, dy - sz, dx + sz, dy + sz), fill=_rgba(SHADOW))
 
-        # ---- Inner ring (clockwise, 4s) ----
-        ang_inner = elapsed * (360 / 4)
-        self._draw_dashed_ring(draw, CX, CY, R_INNER, ang_inner,
-                               color=ACCENT, alpha=160, width=4, dash=3, gap=5, segs=54)
+        # Shadow centre
+        sdraw.ellipse((CX - 34, CY - 34, CX + 34, CY + 34), fill=_rgba(SHADOW))
 
-        # ---- Centre pulse ----
-        pulse = (math.sin(elapsed * math.pi / 1.0) + 1) / 2  # 2s cycle
-        cr = int(14 + 6 * pulse)
-        ca = int(180 + 75 * pulse)
-        draw.ellipse((CX - cr, CY - cr, CX + cr, CY + cr), fill=_rgba(GLOW, ca))
-        # Centre glow
-        for i in range(4):
-            gr = cr + 10 + i * 12
-            ga = int(40 * (1 - i * 0.25) * (0.5 + 0.5 * pulse))
-            gdraw.ellipse((CX - gr, CY - gr, CX + gr, CY + gr), fill=_rgba(GLOW, ga))
-        # Faint outer halo
-        draw.ellipse((CX - 28, CY - 28, CX + 28, CY + 28), outline=_rgba(GLOW, 50), width=1)
-
-        # ---- Crosshair lines (subtle) ----
-        line_len = R_INNER - 24
-        for angle_deg in [0, 90, 180, 270]:
-            a = math.radians(angle_deg)
-            x1 = CX + 24 * math.cos(a)
-            y1 = CY + 24 * math.sin(a)
-            x2 = CX + line_len * math.cos(a)
-            y2 = CY + line_len * math.sin(a)
-            draw.line([(x1, y1), (x2, y2)], fill=_rgba(GLOW, 30), width=1)
-
-        # ---- Composite glow ----
-        glow_b = glow.filter(ImageFilter.GaussianBlur(radius=14))
-        frame = Image.alpha_composite(frame, glow_b)
-        draw = ImageDraw.Draw(frame)
-
-        # ---- Text: "Foreman" ----
+        # Shadow text
         text_y = CY + R_OUTER + 40
         tb = self._font_title.getbbox("Foreman")
         tw = tb[2] - tb[0]
-        draw.text((CX - tw // 2, text_y), "Foreman", font=self._font_title, fill=_rgba(WHITE))
-
-        # ---- Breathing dots ----
+        sdraw.text((CX - tw // 2, text_y), "Foreman", font=self._font_title, fill=_rgba(SHADOW))
         dot_y = text_y + 56
         for i in range(3):
-            p = (math.sin(elapsed * math.pi / 0.6 - i * 1.05) + 1) / 2
-            a = int(60 + 195 * p)
             dx = CX + (i - 1) * 24
-            draw.ellipse((dx - 5, dot_y - 5, dx + 5, dot_y + 5), fill=_rgba(GLOW, a))
-
-        # ---- "Initializing…" ----
+            sdraw.ellipse((dx - 10, dot_y - 10, dx + 10, dot_y + 10), fill=_rgba(SHADOW))
         sub = "Initializing…"
         sb = self._font_sub.getbbox(sub)
         sw = sb[2] - sb[0]
-        draw.text((CX - sw // 2, dot_y + 22), sub, font=self._font_sub, fill=_rgba(DIM))
+        sdraw.text((CX - sw // 2, dot_y + 22), sub, font=self._font_sub, fill=_rgba(SHADOW))
+
+        # Blur the shadow for a soft halo
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=8))
+
+        # 2) Content layer on top of shadow
+        frame = Image.alpha_composite(shadow, Image.new("RGBA", (RW, RH), (0, 0, 0, 0)))
+        draw = ImageDraw.Draw(frame)
+
+        # ---- Outer ring (clockwise, 8s) ----
+        self._draw_arc_ring(draw, CX, CY, R_OUTER, ang_outer,
+                            color=ACCENT, width=5, arc_deg=40, gap_deg=20)
+        for offset, sz, col in [(0, 10, GLOW), (120, 8, ACCENT), (240, 7, GLOW)]:
+            a = math.radians(ang_outer + offset)
+            dx, dy = CX + R_OUTER * math.cos(a), CY + R_OUTER * math.sin(a)
+            draw.ellipse((dx - sz, dy - sz, dx + sz, dy + sz), fill=col + (255,))
+
+        # ---- Middle ring (counter-clockwise, 6s) ----
+        self._draw_arc_ring(draw, CX, CY, R_MID, ang_mid,
+                            color=VIOLET, width=5, arc_deg=30, gap_deg=15)
+        for offset, sz, col in [(0, 8, VIOLET_LIGHT), (180, 7, VIOLET_LIGHT)]:
+            a = math.radians(ang_mid + offset)
+            dx, dy = CX + R_MID * math.cos(a), CY + R_MID * math.sin(a)
+            draw.ellipse((dx - sz, dy - sz, dx + sz, dy + sz), fill=col + (255,))
+
+        # ---- Inner ring (clockwise, 4s) ----
+        self._draw_arc_ring(draw, CX, CY, R_INNER, ang_inner,
+                            color=ACCENT, width=6, arc_deg=25, gap_deg=20)
+
+        # ---- Centre pulse ----
+        pulse = (math.sin(elapsed * math.pi) + 1) / 2
+        cr = int(16 + 6 * pulse)
+        draw.ellipse((CX - cr, CY - cr, CX + cr, CY + cr), fill=GLOW + (255,))
+        draw.ellipse((CX - 30, CY - 30, CX + 30, CY + 30), outline=GLOW + (255,), width=2)
+
+        # ---- Crosshair lines ----
+        for angle_deg in [0, 90, 180, 270]:
+            a = math.radians(angle_deg)
+            x1, y1 = CX + 32 * math.cos(a), CY + 32 * math.sin(a)
+            x2, y2 = CX + (R_INNER - 10) * math.cos(a), CY + (R_INNER - 10) * math.sin(a)
+            draw.line([(x1, y1), (x2, y2)], fill=GLOW + (255,), width=1)
+
+        # ---- Text ----
+        draw.text((CX - tw // 2, text_y), "Foreman", font=self._font_title, fill=WHITE + (255,))
+
+        for i in range(3):
+            p = (math.sin(elapsed * math.pi / 0.6 - i * 1.05) + 1) / 2
+            a = int(140 + 115 * p)
+            dx = CX + (i - 1) * 24
+            draw.ellipse((dx - 6, dot_y - 6, dx + 6, dot_y + 6), fill=GLOW + (a,))
+
+        draw.text((CX - sw // 2, dot_y + 22), sub, font=self._font_sub, fill=DIM + (255,))
 
         # ---- Downsample 2× → 1× ----
         small = frame.resize((W, H), Image.LANCZOS)
-        # Alpha→chroma-key: paste onto bg key
-        bg = self._Image.new("RGBA", (W, H), (240, 240, 240, 255))
+
+        # ---- Composite onto chroma-key background ----
+        bg = Image.new("RGB", (W, H), BG_KEY)
         bg.paste(small, (0, 0), small)
 
         self._tkimg = self._ImageTk.PhotoImage(bg)
@@ -259,18 +254,22 @@ class _Splash:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _draw_dashed_ring(self, draw, cx: float, cy: float, r: float,
-                          angle: float, color: tuple[int, int, int], alpha: int,
-                          width: int, dash: int, gap: int, segs: int) -> None:
-        period = dash + gap
-        for i in range(segs):
-            if i % period >= dash:
-                continue
-            a0 = math.radians(angle + i * 360 / segs)
-            a1 = math.radians(angle + (i + 1) * 360 / segs)
-            x0, y0 = cx + r * math.cos(a0), cy + r * math.sin(a0)
-            x1, y1 = cx + r * math.cos(a1), cy + r * math.sin(a1)
-            draw.line([(x0, y0), (x1, y1)], fill=_rgba(color, alpha), width=width)
+    @staticmethod
+    def _draw_arc_ring(draw, cx: float, cy: float, r: float, angle: float,
+                       color: tuple[int, int, int], width: int,
+                       arc_deg: float, gap_deg: float) -> None:
+        step = arc_deg + gap_deg
+        steps_per_arc = max(2, int(arc_deg / 2))
+        n_arcs = int(360 / step)
+        fill = color + (255,)
+        for arc_i in range(n_arcs):
+            start = angle + arc_i * step
+            for j in range(steps_per_arc):
+                a0 = math.radians(start + j * arc_deg / steps_per_arc)
+                a1 = math.radians(start + (j + 1) * arc_deg / steps_per_arc)
+                x0, y0 = cx + r * math.cos(a0), cy + r * math.sin(a0)
+                x1, y1 = cx + r * math.cos(a1), cy + r * math.sin(a1)
+                draw.line([(x0, y0), (x1, y1)], fill=fill, width=width)
 
 
 # ---------------------------------------------------------------------------
