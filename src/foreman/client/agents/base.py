@@ -6,7 +6,7 @@ See docs/ARCHITECTURE.md for the contract and docs/DESIGN.zh-CN.md §4.2.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -22,6 +22,8 @@ class AgentHandle:
     pid: int | None = None
     native_session_id: str | None = None  # e.g. Claude Code --resume id
     model: str = ""
+    command: list[str] = field(default_factory=list)
+    cwd: str = ""
     # Reasoning effort/速度档位 for this run (low|medium|high; "" = the CLI default). Remembered on
     # the handle so a resume (`send`) re-spawns with the same level. How it reaches the CLI differs
     # per adapter: codex passes a `-c model_reasoning_effort=` flag; claude sets an env var (§4.2).

@@ -88,10 +88,13 @@ async def test_stream_parses_lines(tmp_path):
     h = await a.start("x", tmp_path, "s")
     events = [e async for e in a.stream(h)]
 
-    assert [e.type for e in events] == ["agent_output", "stop"]
-    assert events[0].source == "codex"
-    assert events[0].payload == {"text": "plain codex output line"}
-    assert events[1].payload["result"] == "ok"
+    assert [e.type for e in events] == ["agent_start", "agent_output", "stop"]
+    assert events[0].payload["command"] == [
+        "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "x",
+    ]
+    assert events[1].source == "codex"
+    assert events[1].payload == {"text": "plain codex output line"}
+    assert events[2].payload["result"] == "ok"
 
 
 async def test_stream_classifies_reasoning_json_lines(tmp_path):
@@ -103,9 +106,9 @@ async def test_stream_classifies_reasoning_json_lines(tmp_path):
     h = await a.start("x", tmp_path, "s")
     events = [e async for e in a.stream(h)]
 
-    assert [e.type for e in events] == ["agent_reasoning", "stop"]
-    assert events[0].source == "codex"
-    assert events[0].payload["delta"] == "thinking"
+    assert [e.type for e in events] == ["agent_start", "agent_reasoning", "stop"]
+    assert events[1].source == "codex"
+    assert events[1].payload["delta"] == "thinking"
 
 
 async def test_stream_classifies_nested_reasoning_items(tmp_path):
@@ -117,8 +120,8 @@ async def test_stream_classifies_nested_reasoning_items(tmp_path):
     h = await a.start("x", tmp_path, "s")
     events = [e async for e in a.stream(h)]
 
-    assert [e.type for e in events] == ["agent_reasoning", "stop"]
-    assert events[0].payload["item"]["content"][0]["summary"] == "plan"
+    assert [e.type for e in events] == ["agent_start", "agent_reasoning", "stop"]
+    assert events[1].payload["item"]["content"][0]["summary"] == "plan"
 
 
 async def test_stream_reports_nonzero_exit_with_stderr(tmp_path):
@@ -130,10 +133,10 @@ async def test_stream_reports_nonzero_exit_with_stderr(tmp_path):
     h = await a.start("x", tmp_path, "s")
     events = [e async for e in a.stream(h)]
 
-    assert [e.type for e in events] == ["error"]
-    assert events[0].source == "codex"
-    assert events[0].payload["returncode"] == 2
-    assert "codex failed" in events[0].payload["msg"]
+    assert [e.type for e in events] == ["agent_start", "error"]
+    assert events[1].source == "codex"
+    assert events[1].payload["returncode"] == 2
+    assert "codex failed" in events[1].payload["msg"]
 
 
 async def test_stop_terminates(tmp_path):

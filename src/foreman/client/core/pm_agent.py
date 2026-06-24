@@ -12,7 +12,7 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Any
 
-from foreman.shared.i18n import language_directive
+from foreman.shared.i18n import language_directive, normalize as normalize_lang
 from foreman.shared.llm import LLMClient, Message
 
 from .context_compression import context_pack_to_text, parse_context_pack
@@ -210,10 +210,15 @@ def parse_plan(
     )
 
 
-def parse_review(raw: str) -> PMReview:
+def parse_review(raw: str, *, language: str = "") -> PMReview:
     obj = _extract_json_object(raw)
     if obj is None:
-        return PMReview(done=False, summary="PM review was not valid JSON")
+        summary = (
+            "PM review was not valid JSON"
+            if normalize_lang(language) == "en"
+            else "PM 复查返回的内容不是有效 JSON"
+        )
+        return PMReview(done=False, summary=summary)
     return PMReview(
         done=bool(obj.get("done", False)),
         summary=_as_str(obj.get("summary")),
@@ -497,6 +502,8 @@ class PMAgent:
                 if outcome.incomplete:
                     tool_plan.deliberation.append(
                         "PM tool loop hit max rounds; using fallback plan."
+                        if normalize_lang(self.language) == "en"
+                        else "PM 工具循环已达到轮次上限；将使用降级计划。"
                     )
                 return tool_plan
             finally:
@@ -584,7 +591,7 @@ class PMAgent:
         if state_key and _accepts_keyword(self.llm.complete, "state_key"):
             kwargs["state_key"] = state_key
         raw = await self.llm.complete([Message("system", system), Message("user", prompt)], **kwargs)
-        return parse_review(raw)
+        return parse_review(raw, language=self.language)
 
     async def compact(
         self,

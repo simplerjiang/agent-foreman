@@ -10,6 +10,7 @@ import math
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Palette
@@ -44,7 +45,16 @@ def _rgba(c: tuple[int, int, int], a: int = 255) -> tuple[int, int, int, int]:
 class _Splash:
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
-        self._root = None  # type: ignore[assignment]
+        self._root: Any | None = None
+        self._label: Any | None = None
+        self._tkimg: Any | None = None
+        self._Image: Any | None = None
+        self._ImageDraw: Any | None = None
+        self._ImageFilter: Any | None = None
+        self._ImageTk: Any | None = None
+        self._font_title: Any | None = None
+        self._font_sub: Any | None = None
+        self._font_ver: Any | None = None
         self._alive = True
         self._tick = 0
 
@@ -66,7 +76,7 @@ class _Splash:
     def _run(self) -> None:
         try:
             import tkinter as tk
-            from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
+            from PIL import Image, ImageDraw, ImageFilter, ImageTk
         except ImportError:
             return
 
@@ -74,11 +84,15 @@ class _Splash:
         # bitmap-scaling the window, which makes it blurry and oversized).
         try:
             import ctypes
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            windll = getattr(ctypes, "windll", None)
+            if windll is not None:
+                windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             try:
                 import ctypes
-                ctypes.windll.user32.SetProcessDPIAware()
+                windll = getattr(ctypes, "windll", None)
+                if windll is not None:
+                    windll.user32.SetProcessDPIAware()
             except Exception:
                 pass
 
@@ -139,6 +153,14 @@ class _Splash:
         Image = self._Image
         ImageDraw = self._ImageDraw
         ImageFilter = self._ImageFilter
+        ImageTk = self._ImageTk
+        font_title = self._font_title
+        font_sub = self._font_sub
+        if (
+            Image is None or ImageDraw is None or ImageFilter is None or ImageTk is None
+            or font_title is None or font_sub is None
+        ):
+            return
 
         t = self._tick
         self._tick += 1
@@ -164,8 +186,8 @@ class _Splash:
         # ---- Ambient radial glow behind rings ----
         for i in range(6):
             r = R_OUTER + 30 - i * 8
-            a = 12 + i * 3
-            gdraw.ellipse((CX - r, CY - r, CX + r, CY + r), fill=_rgba(ACCENT, a))
+            alpha = 12 + i * 3
+            gdraw.ellipse((CX - r, CY - r, CX + r, CY + r), fill=_rgba(ACCENT, alpha))
 
         # ---- Outer ring (clockwise, 8s) ----
         ang_outer = elapsed * (360 / 8)
@@ -173,8 +195,8 @@ class _Splash:
                                color=ACCENT, alpha=120, width=3, dash=8, gap=12, segs=90)
         # Outer ring dots
         for offset, sz, col in [(0, 8, GLOW), (90, 6, GLOW), (200, 5, ACCENT)]:
-            a = math.radians(ang_outer + offset)
-            dx, dy = CX + R_OUTER * math.cos(a), CY + R_OUTER * math.sin(a)
+            rad = math.radians(ang_outer + offset)
+            dx, dy = CX + R_OUTER * math.cos(rad), CY + R_OUTER * math.sin(rad)
             draw.ellipse((dx - sz, dy - sz, dx + sz, dy + sz), fill=_rgba(col))
             gdraw.ellipse((dx - sz * 3, dy - sz * 3, dx + sz * 3, dy + sz * 3), fill=_rgba(col, 35))
 
@@ -183,8 +205,8 @@ class _Splash:
         self._draw_dashed_ring(draw, CX, CY, R_MID, ang_mid,
                                color=VIOLET, alpha=140, width=3, dash=4, gap=8, segs=72)
         for offset, sz, col in [(0, 6, VIOLET_LIGHT), (140, 5, VIOLET_LIGHT)]:
-            a = math.radians(ang_mid + offset)
-            dx, dy = CX + R_MID * math.cos(a), CY + R_MID * math.sin(a)
+            rad = math.radians(ang_mid + offset)
+            dx, dy = CX + R_MID * math.cos(rad), CY + R_MID * math.sin(rad)
             draw.ellipse((dx - sz, dy - sz, dx + sz, dy + sz), fill=_rgba(col))
             gdraw.ellipse((dx - sz * 3, dy - sz * 3, dx + sz * 3, dy + sz * 3), fill=_rgba(col, 30))
 
@@ -209,11 +231,11 @@ class _Splash:
         # ---- Crosshair lines (subtle) ----
         line_len = R_INNER - 24
         for angle_deg in [0, 90, 180, 270]:
-            a = math.radians(angle_deg)
-            x1 = CX + 24 * math.cos(a)
-            y1 = CY + 24 * math.sin(a)
-            x2 = CX + line_len * math.cos(a)
-            y2 = CY + line_len * math.sin(a)
+            rad = math.radians(angle_deg)
+            x1 = CX + 24 * math.cos(rad)
+            y1 = CY + 24 * math.sin(rad)
+            x2 = CX + line_len * math.cos(rad)
+            y2 = CY + line_len * math.sin(rad)
             draw.line([(x1, y1), (x2, y2)], fill=_rgba(GLOW, 30), width=1)
 
         # ---- Composite glow ----
@@ -223,9 +245,9 @@ class _Splash:
 
         # ---- Text: "Foreman" ----
         text_y = CY + R_OUTER + 40
-        tb = self._font_title.getbbox("Foreman")
+        tb = font_title.getbbox("Foreman")
         tw = tb[2] - tb[0]
-        draw.text((CX - tw // 2, text_y), "Foreman", font=self._font_title, fill=_rgba(WHITE))
+        draw.text((CX - tw // 2, text_y), "Foreman", font=font_title, fill=_rgba(WHITE))
 
         # ---- Breathing dots ----
         dot_y = text_y + 56
@@ -237,21 +259,26 @@ class _Splash:
 
         # ---- "Initializing…" ----
         sub = "Initializing…"
-        sb = self._font_sub.getbbox(sub)
+        sb = font_sub.getbbox(sub)
         sw = sb[2] - sb[0]
-        draw.text((CX - sw // 2, dot_y + 22), sub, font=self._font_sub, fill=_rgba(DIM))
+        draw.text((CX - sw // 2, dot_y + 22), sub, font=font_sub, fill=_rgba(DIM))
 
         # ---- Downsample 2× → 1× ----
         small = frame.resize((W, H), Image.LANCZOS)
         # Alpha→chroma-key: paste onto bg key
-        bg = self._Image.new("RGBA", (W, H), (240, 240, 240, 255))
+        bg = Image.new("RGBA", (W, H), (240, 240, 240, 255))
         bg.paste(small, (0, 0), small)
 
-        self._tkimg = self._ImageTk.PhotoImage(bg)
-        self._label.configure(image=self._tkimg)
+        self._tkimg = ImageTk.PhotoImage(bg)
+        label = self._label
+        if label is None:
+            return
+        label.configure(image=self._tkimg)
 
         try:
-            self._root.after(FRAME_MS, self._animate)
+            root = self._root
+            if root is not None:
+                root.after(FRAME_MS, self._animate)
         except Exception:
             pass
 

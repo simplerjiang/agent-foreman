@@ -108,8 +108,9 @@ class SubprocessCliAdapter:
     ) -> AgentHandle:
         effective_model = self._effective_model(model)
         effective_effort = self._effective_effort(effort)
+        cmd = self._build_cmd(instruction, effective_model, effective_effort)
         proc = await self._spawn(
-            self._build_cmd(instruction, effective_model, effective_effort),
+            cmd,
             workspace,
             self._env_overrides(effective_model, effective_effort),
         )
@@ -118,6 +119,8 @@ class SubprocessCliAdapter:
             session_id=session_id,
             pid=proc.pid,
             model=effective_model,
+            command=cmd,
+            cwd=str(workspace),
             effort=effective_effort,
         )
         self._procs[handle.id] = proc
@@ -129,6 +132,18 @@ class SubprocessCliAdapter:
         proc = self._procs.get(handle.id)
         if proc is None:
             return
+        yield make_event(
+            "agent_start",
+            self.name,
+            handle.session_id,
+            payload={
+                "pid": handle.pid,
+                "command": handle.command,
+                "cwd": handle.cwd,
+                "model": handle.model,
+                "effort": handle.effort,
+            },
+        )
         stderr_task = (
             asyncio.create_task(_read_pipe_text(proc.stderr))
             if getattr(proc, "stderr", None) is not None
@@ -195,13 +210,16 @@ class SubprocessCliAdapter:
         else:
             # No captured session id yet → fall back to a fresh run with the follow-up text.
             cmd = self._build_cmd(text, handle.model, handle.effort)
+        workspace = self._workspaces.get(handle.id, Path("."))
         proc = await self._spawn(
             cmd,
-            self._workspaces.get(handle.id, Path(".")),
+            workspace,
             self._env_overrides(handle.model, handle.effort),
         )
         self._procs[handle.id] = proc
         handle.pid = proc.pid
+        handle.command = cmd
+        handle.cwd = str(workspace)
 
     async def interrupt(self, handle: AgentHandle) -> None:
         """Pause/interrupt the running process (the first rung of the stall ladder, DESIGN §5.6).

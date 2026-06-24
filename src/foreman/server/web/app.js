@@ -67,10 +67,10 @@
       agentDisabled: "已禁用", agentNotFound: "未找到命令", agentsSaved: "Agent 设置已保存", noEnabledAgent: "至少要启用一个 Agent。",
       effortDefault: "默认", modelDefaultHint: "留空 = 使用配置默认模型",
       pmBrain: "PM 大脑", pmBrainSub: "给 PM 审阅 / 简报调用的模型。Key 永远留在本地。",
-      pmTools: "PM tools", pmToolsSub: "PM runtime tool switches and allowlists. Read-only repo tools are on by default.",
-      fileRead: "Read files", fileWrite: "Write files", shellTool: "Run commands", webFetch: "Fetch URL", webSearch: "Web search", browserTool: "Browser",
-      allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "Max tool rounds",
-      pmToolsSaved: "PM tool settings saved",
+      pmTools: "PM 工具", pmToolsSub: "PM 运行时工具开关和白名单。只读仓库工具默认开启。",
+      fileRead: "读取文件", fileWrite: "写入文件", shellTool: "运行命令", webFetch: "抓取 URL", webSearch: "网页搜索", browserTool: "浏览器",
+      allowedCommands: "允许的命令", allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "最大工具轮次",
+      pmToolsSaved: "PM 工具设置已保存",
       provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key", transport: "传输方式",
       reasoningEffort: "推理强度",
       pmKeyHint: "已配置 API Key。输入新 key 后保存可替换；留空不修改。", pmKeyMissing: "未检测到 API Key。可在这里输入并保存。",
@@ -331,6 +331,51 @@
     return [...parts, ...contentParts].filter(Boolean);
   }
   function extractAgentText(payload) { return extractTextParts(payload).join("\n").trim(); }
+  function shellQuote(value) {
+    const text = String(value || "");
+    return /\s|["']/.test(text) ? `"${text.replace(/"/g, '\\"')}"` : text;
+  }
+  function commandLine(value) {
+    if (Array.isArray(value)) return value.map(shellQuote).join(" ");
+    return String(value || "").trim();
+  }
+  function formatPmJsonObject(obj) {
+    if (!obj || typeof obj !== "object") return "";
+    const lines = [];
+    if (obj.summary) lines.push(String(obj.summary));
+    const notes = Array.isArray(obj.deliberation) ? obj.deliberation.filter(Boolean) : [];
+    if (notes.length) lines.push(notes.map((x) => `- ${x}`).join("\n"));
+    const todos = Array.isArray(obj.todo) ? obj.todo.filter(Boolean) : [];
+    if (todos.length) lines.push(todos.map((x, i) => `${i + 1}. ${x}`).join("\n"));
+    if (obj.follow_up) lines.push(`→ ${obj.follow_up}`);
+    if (!lines.length && obj.body_md) lines.push(String(obj.body_md));
+    return lines.join("\n\n").trim();
+  }
+  function cleanPmStreamText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "";
+    let body = raw;
+    if (body.startsWith("```")) {
+      body = body.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+    }
+    try {
+      const obj = JSON.parse(body);
+      return formatPmJsonObject(obj);
+    } catch (e) {}
+    if (/^[\{\[\]",:\s\}\]]/.test(body) || /"(summary|agent|model|effort|instruction|todo|deliberation|ready|done|reason|follow_up|todo_status)"\s*:/.test(body)) {
+      return "";
+    }
+    return raw;
+  }
+  function terminalText(payload) {
+    const txt = extractAgentText(payload);
+    if (txt) return txt;
+    if (!payload || typeof payload !== "object") return String(payload || "");
+    for (const key of ["stdout", "stderr", "output", "result", "msg", "error"]) {
+      if (payload[key]) return String(payload[key]);
+    }
+    return "";
+  }
 
   // ---- markdown (ported, minimal-safe) ----
   const INLINE_RE = /(\[[^\]\n]{1,200}\]\(([^)\s]+)(?:\s+"[^"]*")?\)|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*)/g;
@@ -445,6 +490,7 @@
     const calls = new Map(); // taskId -> call
     const terminal = [];
     const streamGroups = new Map(); // key -> nodeIndex for pm streams
+    const pmStreamBuffers = new Map(); // key -> raw text buffer
 
     const callKey = (e) => e.task_id || `${e.source || "agent"}-${e.session_id || ""}`;
     const ensureCall = (e) => {
@@ -468,7 +514,7 @@
         const steps = Array.isArray(p.todo) ? p.todo.map((x) => String(x)) : (typeof p.todo === "string" && p.todo ? [p.todo] : []);
         lastPlan = { steps, summary: p.summary || "", instruction: p.instruction || "" };
         todos = todoRowsFrom(p.todo_status, steps);
-        nodes.push({ kind: "plan", id: e.id || `p-${nodes.length}`, ts: e.ts, steps, summary: p.summary || "", deliberation: Array.isArray(p.deliberation) ? p.deliberation : [] });
+        nodes.push({ kind: "plan", id: e.id || `p-${nodes.length}`, ts: e.ts, steps, summary: p.summary || "", deliberation: Array.isArray(p.deliberation) ? p.deliberation : [], instruction: p.instruction || "" });
       } else if (t === "pm_review") {
         // The PM's post-run review (after each agent run): show its verdict + summary/follow-up so
         // "done" / "needs follow-up" status surfaces in the thread (DispatchService._emit_pm_review).
@@ -477,22 +523,41 @@
         todos = mergeTodoRows(todos, p.todo_status, !!p.done);
         nodes.push({ kind: "pm", id: e.id || `pr-${nodes.length}`, ts: e.ts, text: txt });
       } else if (t === "pm_output" || t === "pm_reasoning") {
-        const txt = extractAgentText(p);
-        if (!txt) continue;
+        const rawTxt = extractAgentText(p);
+        if (!rawTxt) continue;
+        if (p.event_type === "status" || p.status === "working") {
+          nodes.push({ kind: "pm-status", id: e.id || `ps-${nodes.length}`, ts: e.ts, text: rawTxt });
+          continue;
+        }
+        if (t === "pm_reasoning") continue;
         const sid = p.stream_id || "";
         const gk = `${t}-${e.source || ""}-${sid || "plain"}`;
+        const txt = cleanPmStreamText(sid ? `${pmStreamBuffers.get(gk) || ""}${rawTxt}` : rawTxt);
+        if (sid) pmStreamBuffers.set(gk, `${pmStreamBuffers.get(gk) || ""}${rawTxt}`);
+        if (!txt) continue;
         if (sid && streamGroups.has(gk)) {
           const idx = streamGroups.get(gk);
-          nodes[idx].text = (typeof p.delta === "string") ? nodes[idx].text + (p.delta || "") : (nodes[idx].text + "\n\n" + txt);
+          nodes[idx].text = txt;
         } else {
           const node = { kind: "pm", id: e.id || `pm-${nodes.length}`, ts: e.ts, text: txt };
           if (sid) streamGroups.set(gk, nodes.length);
           nodes.push(node);
         }
+      } else if (t === "agent_start") {
+        const c = ensureCall(e);
+        const cmd = commandLine(p.command || p.cmd);
+        const cwd = p.cwd || "";
+        if (cmd) {
+          c.commands.push(cmd);
+          terminal.push({ kind: "cmd", text: cmd, ts: e.ts, agent: e.source, cwd });
+        }
+        c.ts = e.ts;
+        if (!nodes.some((n) => n.kind === "call" && n.callId === c.id)) nodes.push({ kind: "call", id: `call-${c.id}`, callId: c.id, ts: e.ts });
       } else if (t === "agent_output" || t === "agent_reasoning") {
         const c = ensureCall(e);
         const txt = extractAgentText(p);
         if (txt) c.reply = c.reply ? `${c.reply}\n${txt}` : txt;
+        if (txt && t === "agent_output") terminal.push({ kind: "out", text: txt, ts: e.ts, agent: e.source });
         c.ts = e.ts;
         if (!nodes.some((n) => n.kind === "call" && n.callId === c.id)) nodes.push({ kind: "call", id: `call-${c.id}`, callId: c.id, ts: e.ts });
       } else if (t === "tool_pre") {
@@ -501,7 +566,7 @@
         if (cmd) { c.commands.push(String(cmd)); terminal.push({ kind: "cmd", text: String(cmd), ts: e.ts }); }
       } else if (t === "tool_post") {
         const out = p.output || p.result || "";
-        if (out) terminal.push({ kind: "out", text: String(out).split("\n").slice(0, 4).join("\n"), ts: e.ts });
+        if (out) terminal.push({ kind: "out", text: String(out).slice(0, 4000), ts: e.ts, agent: e.source });
       } else if (t === "git_diff") {
         const c = ensureCall(e);
         const file = p.path || p.file || (p.files && p.files[0] && p.files[0].path) || "";
@@ -515,8 +580,12 @@
         nodes.push({ kind: "pm", id: e.id || `b-${nodes.length}`, ts: e.ts, text: `**${p.title || d.briefing}**\n\n${p.body_md || p.summary || ""}` });
       } else if (t === "stop") {
         for (const c of calls.values()) if (c.status === "active") c.status = "done";
+        const out = terminalText(p);
+        if (out) terminal.push({ kind: "out", text: out, ts: e.ts, agent: e.source });
         nodes.push({ kind: "system", id: e.id || `s-${nodes.length}`, ts: e.ts, label: d.ev_stop, tone: "green", text: "" });
       } else if (t === "error") {
+        const out = terminalText(p);
+        if (out) terminal.push({ kind: "err", text: out, ts: e.ts, agent: e.source });
         nodes.push({ kind: "system", id: e.id || `e-${nodes.length}`, ts: e.ts, label: d.ev_error, tone: "red", text: p.msg || p.error || "" });
       } else if (["checkpoint", "gate", "action_executed", "action_undone", "review", "audit", "undo", "recover", "stall", "context_compact"].includes(t)) {
         nodes.push({ kind: "system", id: e.id || `sy-${nodes.length}`, ts: e.ts, label: d[`ev_${t}`] || t, tone: "muted", text: p.summary || p.note || p.disposition || "" });
@@ -707,15 +776,23 @@
       </div></div>`;
     }
     if (n.kind === "plan") {
+      const notes = Array.isArray(n.deliberation) ? n.deliberation.filter(Boolean) : [];
       return html`<div className="plan-card">
         <div className="plan-head">
           <span className="badge">PM</span><span className="ttl">${d.plan}</span>
           <span className="meta">${n.steps.length} ${lang === "zh" ? "步" : "steps"}</span>
         </div>
-        ${n.steps.length ? html`<div className="plan-body">
+        <div className="plan-body">
+          ${n.summary ? html`<div className="plan-summary"><${MD} text=${n.summary} maxChars=${1200} /></div>` : null}
+          ${notes.length ? html`<div className="plan-notes">${notes.map((x, i) => html`<div key=${i}>${x}</div>`)}</div>` : null}
+          ${n.steps.length ? html`
           ${n.steps.map((s, i) => html`<div className="plan-step" key=${i}><span className="num">${i + 1}</span><span className="txt">${s}</span></div>`)}
-        </div>` : (n.summary ? html`<div className="plan-body" style=${{ paddingTop: 12 }}><${MD} text=${n.summary} maxChars=${1200} /></div>` : null)}
+          ` : null}
+        </div>
       </div>`;
+    }
+    if (n.kind === "pm-status") {
+      return html`<div className="pm-status"><span className="spin"></span><span>${n.text}</span></div>`;
     }
     if (n.kind === "pm") {
       return html`<div className="pm-note"><div className="pm-avatar">PM</div><div className="body"><${MD} text=${n.text} maxChars=${4000} /></div></div>`;
@@ -824,11 +901,14 @@
 
   function TermPanel({ d, terminal, agentType, sessionRow }) {
     const lines = terminal.slice(-200);
+    const prefix = (l) => [l.agent, l.cwd ? shortPath(l.cwd, d) : ""].filter(Boolean).join(" ");
     return html`<div className="term-full">
       <div className="bar"><span className="term-dotr" style=${{ background: "#e0584b" }}></span><span className="term-dotr" style=${{ background: "#e6b13e" }}></span><span className="term-dotr" style=${{ background: "#3fb37f" }}></span><span className="lbl">${shortPath(sessionRow && sessionRow.workspace, d)} — ${agentType}</span></div>
       <div className="lines">
         ${!lines.length ? html`<div className="cmd-dim">${d.selectSessionHint}</div>` :
-          lines.map((l, i) => html`<div key=${i} className=${l.kind === "out" ? "cmd-dim" : ""}>${l.kind === "cmd" ? html`<span><span className="cmd-prompt">$</span> ${l.text}</span>` : l.text}</div>`)}
+          lines.map((l, i) => html`<div key=${i} className=${l.kind === "err" ? "cmd-err" : l.kind === "out" ? "cmd-dim" : ""}>
+            ${l.kind === "cmd" ? html`<span>${prefix(l) ? html`<span className="cmd-src">${prefix(l)}</span> ` : null}<span className="cmd-prompt">$</span> ${l.text}</span>` : html`<span>${prefix(l) ? html`<span className="cmd-src">${prefix(l)}</span> ` : null}${l.text}</span>`}
+          </div>`)}
         <div className="cmd-note">›<span className="term-cursor"></span></div>
       </div>
     </div>`;

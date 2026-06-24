@@ -49,10 +49,10 @@ async def test_launch_persists_and_publishes(tmp_path):
 
     # persisted (order-independent: same-microsecond ts isn't a stable sort key)
     persisted = store.get_events("s1")
-    assert {e.type for e in persisted} == {"agent_output", "stop"}
-    assert len(persisted) == 2
+    assert {e.type for e in persisted} == {"agent_start", "agent_output", "stop"}
+    assert len(persisted) == 3
     # published in stream order
-    assert [e.type for e in received] == ["agent_output", "stop"]
+    assert [e.type for e in received] == ["agent_start", "agent_output", "stop"]
 
 
 async def test_launch_unknown_agent_raises(tmp_path):
