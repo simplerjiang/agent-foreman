@@ -756,11 +756,21 @@
       </aside>`;
   }
 
+  function sessionStatusLabel(status, d) {
+    const st = String(status || "").toLowerCase();
+    if (st.includes("run") || st.includes("active")) return d.running;
+    if (st.includes("cancel")) return d.cancelled;
+    if (st.includes("fail") || st.includes("error")) return d.failed;
+    if (st.includes("done") || st.includes("complete")) return d.done;
+    if (st.includes("queue")) return d.queued;
+    return status || "-";
+  }
+
   function SessionItem({ s, d, lang, active, onClick }) {
     const st = (s.status || "").toLowerCase();
     const dotColor = st.includes("run") || st.includes("active") ? "var(--accent)" : (s.pending_approvals || s.open_cards) ? "var(--amber)" : st.includes("done") || st.includes("complete") ? "var(--green)" : "var(--faint)";
     const live = st.includes("run") || st.includes("active");
-    const metaBits = [s.agent_type || "-", s.status || "-", formatTime(s.updated_at || s.last_event_ts || s.created_at, lang)].filter(Boolean);
+    const metaBits = [s.agent_type || "-", sessionStatusLabel(s.status, d), formatTime(s.updated_at || s.last_event_ts || s.created_at, lang)].filter(Boolean);
     return html`
       <div className=${`sess${active ? " active" : ""}`} onClick=${onClick}>
         <div className="sess-head">
