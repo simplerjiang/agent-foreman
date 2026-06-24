@@ -35,6 +35,7 @@ client = [
     "pystray>=0.19",
     "websockets>=12.0",  # outbound wss dialer to the team relay (DESIGN §8.5; lazily imported)
     "cryptography>=42.0",  # optional at-rest encryption of definition bodies (DESIGN §765, T6.2)
+    "playwright>=1.40",
 ]
 # Team server: relay + REST/WS + display-cache store + Web Push.
 server = [

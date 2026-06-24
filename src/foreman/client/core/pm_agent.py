@@ -16,6 +16,7 @@ from foreman.shared.i18n import language_directive
 from foreman.shared.llm import LLMClient, Message
 
 from .context_compression import context_pack_to_text, parse_context_pack
+from ..tools.loop import PMToolLoop, build_tool_prompt_context
 
 VALID_AGENTS = {"claude-code", "codex"}
 VALID_EFFORTS = {"low", "medium", "high"}
@@ -416,12 +417,14 @@ class PMAgent:
         max_runs: int = 3,
         min_plan_rounds: int = 2,
         max_plan_rounds: int = 3,
+        tool_runtime_factory=None,
     ) -> None:
         self.llm = llm
         self.language = language
         self.max_runs = max(1, int(max_runs))
         self.min_plan_rounds = max(1, int(min_plan_rounds))
         self.max_plan_rounds = max(self.min_plan_rounds, int(max_plan_rounds))
+        self.tool_runtime_factory = tool_runtime_factory
 
     async def plan(
         self,
@@ -435,9 +438,68 @@ class PMAgent:
         fallback_instruction: str,
         context: str = "",
         on_stream=None,
+        on_tool_event=None,
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
         enabled = [_as_str(a.get("name")) for a in available_agents]
+        if self.tool_runtime_factory is not None:
+            runtime = self.tool_runtime_factory(workspace)
+            try:
+                fallback_plan = {
+                    "agent": requested_agent or (enabled[0] if enabled else "claude-code"),
+                    "model": "",
+                    "effort": requested_effort,
+                    "instruction": fallback_instruction,
+                }
+                prompt = build_plan_prompt(
+                    goal,
+                    workspace=workspace,
+                    available_agents=available_agents,
+                    requested_agent=requested_agent,
+                    pm_model=pm_model,
+                    requested_effort=requested_effort,
+                    context=context,
+                    round_no=1,
+                    min_rounds=1,
+                    max_rounds=max(1, int(getattr(runtime.cfg, "max_rounds", 6))),
+                )
+                prompt = (
+                    prompt
+                    + "\n\n# PM tool runtime\n"
+                    + build_tool_prompt_context(runtime)
+                    + "\n\nUse tools for repository evidence before final_plan when useful. "
+                    + "Tool results are only valid when supplied by the runtime."
+                )
+                loop = PMToolLoop(
+                    self.llm,
+                    runtime,
+                    max_rounds=int(getattr(runtime.cfg, "max_rounds", 6)),
+                    on_tool_event=on_tool_event,
+                )
+                outcome = await loop.run(
+                    [Message("system", system), Message("user", prompt)],
+                    model=pm_model,
+                    fallback_plan=fallback_plan,
+                    enabled_agents=enabled,
+                )
+                plan = PMPlan(
+                    agent=_as_str(outcome.final_plan.get("agent")) or fallback_plan["agent"],
+                    model=_as_str(outcome.final_plan.get("model")),
+                    effort=_as_str(outcome.final_plan.get("effort")),
+                    instruction=_as_str(outcome.final_plan.get("instruction"))
+                    or fallback_instruction,
+                    summary=_as_str(outcome.final_plan.get("summary")),
+                    todo=_as_str_list(outcome.final_plan.get("todo")),
+                    deliberation=_as_str_list(outcome.final_plan.get("deliberation")),
+                    ready=_as_bool(outcome.final_plan.get("ready"), default=True),
+                    planning_rounds=outcome.rounds,
+                )
+                if outcome.incomplete:
+                    plan.deliberation.append("PM tool loop hit max rounds; using fallback plan.")
+                return plan
+            finally:
+                if hasattr(runtime, "aclose"):
+                    await runtime.aclose()
         rounds: list[dict[str, Any]] = []
         plan: PMPlan | None = None
         for round_no in range(1, self.max_plan_rounds + 1):

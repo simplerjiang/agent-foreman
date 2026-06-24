@@ -67,6 +67,10 @@
       agentDisabled: "已禁用", agentNotFound: "未找到命令", agentsSaved: "Agent 设置已保存", noEnabledAgent: "至少要启用一个 Agent。",
       effortDefault: "默认", modelDefaultHint: "留空 = 使用配置默认模型",
       pmBrain: "PM 大脑", pmBrainSub: "给 PM 审阅 / 简报调用的模型。Key 永远留在本地。",
+      pmTools: "PM tools", pmToolsSub: "PM runtime tool switches and allowlists. Read-only repo tools are on by default.",
+      fileRead: "Read files", fileWrite: "Write files", shellTool: "Run commands", webFetch: "Fetch URL", webSearch: "Web search", browserTool: "Browser",
+      allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "Max tool rounds",
+      pmToolsSaved: "PM tool settings saved",
       provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key", transport: "传输方式",
       reasoningEffort: "推理强度",
       pmKeyHint: "已配置 API Key。输入新 key 后保存可替换；留空不修改。", pmKeyMissing: "未检测到 API Key。可在这里输入并保存。",
@@ -143,6 +147,10 @@
       agentDisabled: "Disabled", agentNotFound: "Command not found", agentsSaved: "Agent settings saved", noEnabledAgent: "Enable at least one agent.",
       effortDefault: "Default", modelDefaultHint: "blank = configured default model",
       pmBrain: "PM brain", pmBrainSub: "The model the PM uses to review & brief. Your key never leaves this machine.",
+      pmTools: "PM tools", pmToolsSub: "PM runtime tool switches and allowlists. Read-only repo tools are on by default.",
+      fileRead: "Read files", fileWrite: "Write files", shellTool: "Run commands", webFetch: "Fetch URL", webSearch: "Web search", browserTool: "Browser",
+      allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "Max tool rounds",
+      pmToolsSaved: "PM tool settings saved",
       provider: "Provider", model: "Model", baseUrl: "Base URL", apiKey: "API Key", transport: "Transport",
       reasoningEffort: "Reasoning effort",
       pmKeyHint: "API key is set. Enter a new key and save to replace it; blank keeps it.", pmKeyMissing: "No API key detected. You can enter and save one here.",
@@ -984,9 +992,13 @@
     const { d, lang, workspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace, browseFolder, deleteWorkspace, loadWorkspaces,
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
+      pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
       cloud, setCloud, saveCloud, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2, setLang } = props;
     const updateAgent = (name, patch) => setAgentSettings((rows) => (rows || []).map((r) => (r.name === name ? { ...r, ...patch } : r)));
+    const updatePmTools = (patch) => setPmTools((cur) => ({ ...(cur || {}), ...patch }));
+    const lines = (value) => Array.isArray(value) ? value.join("\n") : "";
+    const splitLines = (value) => String(value || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
     const sliderRef = useRef(null);
     const onSlide = (e) => {
       const box = sliderRef.current.getBoundingClientRect();
@@ -1065,6 +1077,38 @@
         <div className=${`alert ${llm.api_key_set ? "info" : "warn"}`} style=${{ marginBottom: 14 }}>ⓘ ${llm.api_key_set ? d.pmKeyHint : d.pmKeyMissing}</div>
         ${llmStatus ? html`<div className=${`alert ${llmStatus === d.saved ? "ok" : "error"}`} style=${{ marginBottom: 14 }}>${llmStatus}</div>` : null}
         <div style=${{ display: "flex", gap: 9 }}><button className="btn primary" onClick=${saveLlm}>${d.save}</button><button className="btn danger" onClick=${clearLlmKey}>${d.clearKey}</button></div>
+      </div>
+
+      <!-- PM tools -->
+      <div className="card">
+        <div className="card-title">${d.pmTools}<span className="spacer"></span><button className="btn sm" onClick=${loadPmTools}>⟳ ${d.refresh}</button></div>
+        <div className="card-sub">${d.pmToolsSub}</div>
+        <div style=${{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14 }}>
+          ${[
+            ["file_read", d.fileRead],
+            ["file_write", d.fileWrite],
+            ["shell", d.shellTool],
+            ["web_fetch", d.webFetch],
+            ["web_search", d.webSearch],
+            ["browser", d.browserTool],
+          ].map(([key, label]) => html`<label key=${key} style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${label} <${Switch} on=${key === "file_read" ? pmTools[key] !== false : !!pmTools[key]} onChange=${(v) => updatePmTools({ [key]: v })} /></label>`)}
+        </div>
+        <div className="row cols2" style=${{ marginBottom: 13 }}>
+          <div className="field"><span className="field-label">${d.allowedCommands}</span><textarea className="input mono" style=${{ minHeight: 92 }} value=${lines(pmTools.allowed_commands)} onChange=${(e) => updatePmTools({ allowed_commands: splitLines(e.target.value) })}></textarea></div>
+          <div className="field"><span className="field-label">${d.allowedOrigins}</span><textarea className="input mono" style=${{ minHeight: 92 }} value=${lines(pmTools.allowed_origins)} onChange=${(e) => updatePmTools({ allowed_origins: splitLines(e.target.value) })}></textarea></div>
+        </div>
+        <div className="row cols2" style=${{ marginBottom: 13 }}>
+          <div className="field"><span className="field-label">${d.provider}</span>
+            <select className="select" value=${pmTools.web_search_provider || "duckduckgo"} onChange=${(e) => updatePmTools({ web_search_provider: e.target.value })}><option value="duckduckgo">DuckDuckGo</option><option value="searxng">SearXNG</option></select>
+          </div>
+          <div className="field"><span className="field-label">${d.searxngUrl}</span><input className="input mono" value=${pmTools.searxng_url || ""} onChange=${(e) => updatePmTools({ searxng_url: e.target.value })} placeholder="https://search.example.com" /></div>
+        </div>
+        <div style=${{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+          <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${d.browserHeadless} <${Switch} on=${!!pmTools.browser_headless} onChange=${(v) => updatePmTools({ browser_headless: v })} /></label>
+          <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${d.maxRounds}<input className="input mono" style=${{ width: 76 }} value=${pmTools.max_rounds || 6} onChange=${(e) => updatePmTools({ max_rounds: Number(e.target.value) || 6 })} /></label>
+        </div>
+        ${pmToolsStatus ? html`<div className=${`alert ${pmToolsStatus === d.pmToolsSaved ? "ok" : "error"}`} style=${{ marginBottom: 14 }}>${pmToolsStatus}</div>` : null}
+        <button className="btn primary" onClick=${savePmTools}>${d.save}</button>
       </div>
 
       <!-- cloud connection -->
@@ -1247,6 +1291,8 @@
     const [llm, setLlm] = useState({ provider: "openai", model: "", base_url: "", transport: "http", reasoning_effort: "", api_key_set: true, api_key: "" });
     const [llmStatus, setLlmStatus] = useState("");
     const [agentStatus, setAgentStatus] = useState("");
+    const [pmTools, setPmTools] = useState({ file_read: true, file_write: false, shell: false, web_fetch: false, web_search: false, browser: false, allowed_commands: ["python --version"], allowed_origins: [], web_search_provider: "duckduckgo", searxng_url: "", browser_headless: false, max_rounds: 6 });
+    const [pmToolsStatus, setPmToolsStatus] = useState("");
     const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false });
     const [cloudStatus, setCloudStatus] = useState("");
     const [cloudAvailable, setCloudAvailable] = useState(true);
@@ -1284,6 +1330,7 @@
       } catch (e) { setWorkspaces([]); }
     }, []);
     const loadAgentSettings = useCallback(async () => { try { setAgentSettings(await api("/api/settings/agents") || []); } catch (e) { setAgentSettings([]); } finally { setAgentsLoaded(true); } }, []);
+    const loadPmTools = useCallback(async () => { try { setPmTools(await api("/api/settings/pm-tools") || {}); } catch (e) { /* server mode */ } }, []);
     const loadModels = useCallback(async () => { try { const data = await api("/api/models"); setModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, max_tokens: m.max_tokens, source: m.source }))); } catch (e) { setModelOptions([]); } }, []);
     const loadPmModels = useCallback(async (draft) => {
       const cur = draft || {};
@@ -1326,8 +1373,9 @@
       });
       loadAgentSettings();
       loadLlm();
+      loadPmTools();
       loadModels();
-    }, [loadWorkspaces, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadAgentSettings, loadLlm, loadModels]);
+    }, [loadWorkspaces, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadAgentSettings, loadLlm, loadPmTools, loadModels]);
     useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
 
     // polling for cards/approvals/sessions
@@ -1475,6 +1523,13 @@
       try { const data = await api("/api/settings/llm", { method: "POST", body: { api_key: "" } }); setLlm({ ...data, api_key: "" }); setLlmStatus(d.saved); }
       catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
     }
+    async function savePmTools() {
+      try {
+        const data = await api("/api/settings/pm-tools", { method: "POST", body: pmTools });
+        setPmTools(data || {});
+        setPmToolsStatus(d.pmToolsSaved);
+      } catch (e) { setPmToolsStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
+    }
     async function saveAutonomy(value) {
       setAutonomyState(value);
       try { setAutonomyState((await api("/api/settings/autonomy", { method: "POST", body: { level: value } })).level); }
@@ -1539,6 +1594,7 @@
       d, lang, workspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace, browseFolder, deleteWorkspace, loadWorkspaces,
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
+      pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
       cloud, setCloud, saveCloud, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2: lang, setLang, onPush: enablePush,
     };

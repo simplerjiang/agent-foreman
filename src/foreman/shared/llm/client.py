@@ -32,6 +32,19 @@ class Message:
     content: str
 
 
+@dataclass
+class LLMToolCall:
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class LLMToolResponse:
+    text: str
+    tool_calls: list[LLMToolCall]
+
+
 class LLMConfigError(RuntimeError):
     """Raised before a request when the PM brain is not configured enough to call."""
 
@@ -175,6 +188,28 @@ class LLMClient:
             return await self._anthropic(messages, json_mode, base_url, model)
         return await self._openai(messages, json_mode, base_url, model, on_stream=on_stream)
 
+    async def tool_complete(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[dict],
+        json_mode: bool = False,
+        model: str = "",
+    ) -> LLMToolResponse:
+        """Return assistant text plus provider-native tool calls when the transport supports them.
+
+        The Responses WebSocket path currently returns plain text and lets the PM loop use its JSON
+        fallback protocol. This keeps the existing WS stream contract small and avoids pretending
+        tool results were acknowledged by the provider when Foreman owns the runtime execution.
+        """
+        provider, base_url, model = self._resolve(model)
+        if self._transport_mode() == "ws":
+            text = await self.complete(messages, json_mode=json_mode, model=model)
+            return LLMToolResponse(text=text, tool_calls=[])
+        if provider == "anthropic":
+            return await self._anthropic_tools(messages, tools, base_url, model)
+        return await self._openai_tools(messages, tools, json_mode, base_url, model)
+
     async def list_models(self) -> list[str]:
         """Return model ids from the configured PM provider's `/models` endpoint.
 
@@ -227,6 +262,50 @@ class LLMClient:
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
+    async def _openai_tools(
+        self,
+        messages: list[Message],
+        tools: list[dict],
+        json_mode: bool,
+        base_url: str,
+        model: str,
+    ) -> LLMToolResponse:
+        payload: dict = {
+            "model": model,
+            "max_tokens": self.max_tokens,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "tools": [_openai_tool_schema(tool) for tool in tools],
+            "tool_choice": "auto",
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        effort = self._reasoning_effort()
+        if effort:
+            payload["reasoning_effort"] = effort
+        r = await self._client.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self._api_key()}"},
+            json=payload,
+        )
+        r.raise_for_status()
+        msg = r.json()["choices"][0]["message"]
+        calls: list[LLMToolCall] = []
+        for item in msg.get("tool_calls") or []:
+            if not isinstance(item, dict):
+                continue
+            fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+            name = str(fn.get("name") or "").strip()
+            if not name:
+                continue
+            calls.append(
+                LLMToolCall(
+                    id=str(item.get("id") or "").strip(),
+                    name=name,
+                    arguments=_json_args(fn.get("arguments")),
+                )
+            )
+        return LLMToolResponse(text=msg.get("content") or "", tool_calls=calls)
+
     async def _openai_stream(
         self, payload: dict, base_url: str, on_stream: StreamCallback
     ) -> str:
@@ -272,6 +351,44 @@ class LLMClient:
         r.raise_for_status()
         blocks = r.json().get("content", [])
         return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+
+    async def _anthropic_tools(
+        self, messages: list[Message], tools: list[dict], base_url: str, model: str
+    ) -> LLMToolResponse:
+        system = "\n".join(m.content for m in messages if m.role == "system")
+        turns = [
+            {"role": m.role, "content": m.content} for m in messages if m.role != "system"
+        ]
+        payload: dict = {
+            "model": model,
+            "max_tokens": self.max_tokens,
+            "messages": turns,
+            "tools": [_anthropic_tool_schema(tool) for tool in tools],
+        }
+        if system:
+            payload["system"] = system
+        r = await self._client.post(
+            f"{base_url}/messages",
+            headers={"x-api-key": self._api_key(), "anthropic-version": "2023-06-01"},
+            json=payload,
+        )
+        r.raise_for_status()
+        text_parts: list[str] = []
+        calls: list[LLMToolCall] = []
+        for block in r.json().get("content", []):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text_parts.append(str(block.get("text") or ""))
+            elif block.get("type") == "tool_use":
+                calls.append(
+                    LLMToolCall(
+                        id=str(block.get("id") or "").strip(),
+                        name=str(block.get("name") or "").strip(),
+                        arguments=block.get("input") if isinstance(block.get("input"), dict) else {},
+                    )
+                )
+        return LLMToolResponse(text="".join(text_parts), tool_calls=calls)
 
     async def _responses_ws(
         self,
@@ -544,3 +661,34 @@ def _positive_int(value: object) -> int | None:
     else:
         return None
     return out if out > 0 else None
+
+
+def _openai_tool_schema(tool: dict) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": str(tool.get("name") or ""),
+            "description": str(tool.get("description") or ""),
+            "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
+        },
+    }
+
+
+def _anthropic_tool_schema(tool: dict) -> dict:
+    return {
+        "name": str(tool.get("name") or ""),
+        "description": str(tool.get("description") or ""),
+        "input_schema": tool.get("input_schema") or {"type": "object", "properties": {}},
+    }
+
+
+def _json_args(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            obj = json.loads(value)
+            return obj if isinstance(obj, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+    return {}

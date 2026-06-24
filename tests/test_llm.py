@@ -66,6 +66,95 @@ async def test_openai_request_and_parse():
     ]
 
 
+async def test_openai_tool_complete_builds_native_tool_request():
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "tool-model"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["json"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":"README.md"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    out = await c.tool_complete(
+        [Message("user", "inspect")],
+        tools=[
+            {
+                "name": "read_file",
+                "description": "Read file",
+                "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+            }
+        ],
+    )
+    await c.aclose()
+
+    assert cap["json"]["tools"][0]["type"] == "function"
+    assert cap["json"]["tool_choice"] == "auto"
+    assert out.tool_calls[0].name == "read_file"
+    assert out.tool_calls[0].arguments == {"path": "README.md"}
+
+
+async def test_anthropic_tool_complete_parses_tool_use():
+    cfg = Config()
+    cfg.llm.provider = "anthropic"
+    cfg.llm.base_url = "https://anthropic.test/v1"
+    cfg.llm.model = "claude"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["json"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "text", "text": "need file"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "list_files",
+                        "input": {"path": "."},
+                    },
+                ]
+            },
+        )
+
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    out = await c.tool_complete(
+        [Message("system", "sys"), Message("user", "inspect")],
+        tools=[{"name": "list_files", "description": "List", "input_schema": {"type": "object"}}],
+    )
+    await c.aclose()
+
+    assert cap["json"]["tools"][0]["name"] == "list_files"
+    assert out.text == "need file"
+    assert out.tool_calls[0].arguments == {"path": "."}
+
+
 async def test_settings_resolver_overrides_model_and_base_url():
     # A runtime settings page (config_kv) can switch model/base_url WITHOUT restarting — the resolver
     # is consulted per request (DESIGN §15 PM brain settings).
