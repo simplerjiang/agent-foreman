@@ -25,10 +25,21 @@ def _app(tmp_path, *, with_service=True):
     return app, store
 
 
+# Description is required on create now (P0). These endpoint tests check OTHER behavior, so inject a
+# default metadata_json (with a description) unless the call sets its own. Negative cases trip an
+# earlier check (bad_kind / no service → 503), which still fires because the gate runs last.
+_DEFAULT_META = '{"description": "test fixture: does X; use when Y"}'
+
+
+def _newdef(c, **fields):
+    fields.setdefault("metadata_json", _DEFAULT_META)
+    return c.post("/api/definitions", json=fields)
+
+
 def test_create_list_get(tmp_path):
     app, _ = _app(tmp_path)
     c = TestClient(app)
-    r = c.post("/api/definitions", json={"kind": "workflow", "name": "add-feature", "body": "steps: []"})
+    r = _newdef(c, **{"kind": "workflow", "name": "add-feature", "body": "steps: []"})
     assert r.status_code == 200
     d = r.json()["definition"]
     assert d["is_active"] is True
@@ -45,22 +56,22 @@ def test_create_list_get(tmp_path):
 def test_create_bad_kind_400(tmp_path):
     app, _ = _app(tmp_path)
     c = TestClient(app)
-    r = c.post("/api/definitions", json={"kind": "nope", "name": "x", "body": "y"})
+    r = _newdef(c, **{"kind": "nope", "name": "x", "body": "y"})
     assert r.status_code == 400
 
 
 def test_create_duplicate_version_409(tmp_path):
     app, _ = _app(tmp_path)
     c = TestClient(app)
-    c.post("/api/definitions", json={"kind": "skill", "name": "s", "version": 1, "body": "a"})
-    r = c.post("/api/definitions", json={"kind": "skill", "name": "s", "version": 1, "body": "b"})
+    _newdef(c, **{"kind": "skill", "name": "s", "version": 1, "body": "a"})
+    r = _newdef(c, **{"kind": "skill", "name": "s", "version": 1, "body": "b"})
     assert r.status_code == 409
 
 
 def test_update_in_place(tmp_path):
     app, _ = _app(tmp_path)
     c = TestClient(app)
-    d = c.post("/api/definitions", json={"kind": "skill", "name": "s", "body": "old"}).json()["definition"]
+    d = _newdef(c, **{"kind": "skill", "name": "s", "body": "old"}).json()["definition"]
     r = c.patch(f"/api/definitions/{d['id']}", json={"body": "new"})
     assert r.status_code == 200 and r.json()["definition"]["body"] == "new"
 
@@ -74,8 +85,8 @@ def test_update_unknown_404(tmp_path):
 def test_activate_rolls_back(tmp_path):
     app, _ = _app(tmp_path)
     c = TestClient(app)
-    v1 = c.post("/api/definitions", json={"kind": "qa_rubric", "name": "r", "body": "v1"}).json()["definition"]
-    c.post("/api/definitions", json={"kind": "qa_rubric", "name": "r", "body": "v2"})  # v2 live
+    v1 = _newdef(c, **{"kind": "qa_rubric", "name": "r", "body": "v1"}).json()["definition"]
+    _newdef(c, **{"kind": "qa_rubric", "name": "r", "body": "v2"})  # v2 live
     r = c.post(f"/api/definitions/{v1['id']}/activate")
     assert r.status_code == 200 and r.json()["definition"]["is_active"] is True
     live = {d["version"]: d["is_active"] for d in c.get("/api/definitions?name=r").json()}
@@ -85,7 +96,7 @@ def test_activate_rolls_back(tmp_path):
 def test_delete(tmp_path):
     app, _ = _app(tmp_path)
     c = TestClient(app)
-    d = c.post("/api/definitions", json={"kind": "skill", "name": "s", "body": "x"}).json()["definition"]
+    d = _newdef(c, **{"kind": "skill", "name": "s", "body": "x"}).json()["definition"]
     assert c.delete(f"/api/definitions/{d['id']}").status_code == 200
     assert c.get(f"/api/definitions/{d['id']}").status_code == 404
     assert c.delete(f"/api/definitions/{d['id']}").status_code == 404  # already gone
@@ -96,7 +107,7 @@ def test_no_service_returns_503(tmp_path):
     app, _ = _app(tmp_path, with_service=False)
     c = TestClient(app)
     assert c.get("/api/definitions").status_code == 503
-    assert c.post("/api/definitions", json={"kind": "skill", "name": "s"}).status_code == 503
+    assert _newdef(c, **{"kind": "skill", "name": "s"}).status_code == 503
 
 
 # ── export / import endpoints (T6.2) ─────────────────────────────────────────────────────────────
@@ -106,8 +117,8 @@ def test_export_import_round_trip(tmp_path):
     (tmp_path / "b").mkdir()
     app, _ = _app(tmp_path / "a")
     c = TestClient(app)
-    c.post("/api/definitions", json={"kind": "workflow", "name": "wf", "body": "steps: []"})
-    c.post("/api/definitions", json={"kind": "skill", "name": "sk", "body": "# skill"})
+    _newdef(c, **{"kind": "workflow", "name": "wf", "body": "steps: []"})
+    _newdef(c, **{"kind": "skill", "name": "sk", "body": "# skill"})
     bundle = c.get("/api/definitions/export").json()
     assert bundle["format"] == "foreman-definitions"
     assert len(bundle["definitions"]) == 2

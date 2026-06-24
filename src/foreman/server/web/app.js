@@ -20,7 +20,7 @@
       workspaceSubtitle: "选择工作区，给本机 agent 下发任务。",
       decisionsSubtitle: "处理需要你确认的卡片和审批。",
       briefingsSubtitle: "把当前进展整理成可读状态。",
-      rulesSubtitle: "维护工作流、技能、代码规范和验收标准 —— agent 干活时会自动注入。",
+      rulesSubtitle: "维护工作流、技能、代码规范和验收标准 —— PM 规划时按相关性选用，干活时按需取用。",
       settingsSubtitle: "配置工作区、PM 大脑和界面偏好。",
       sessions: "会话", newSession: "新会话",
       launchTag: "正在唤醒你的工程包工头 —— 把活儿交给本地 agent，PM 大脑替你盯着。",
@@ -59,11 +59,16 @@
       noDefinitions: "暂无工作方式。", on: "启用中", off: "未启用",
       edit: "编辑", del: "删除", activate: "启用",
       defnKind: "类型", defnName: "名称", defnScope: "适用范围 (JSON)", defnBody: "内容", defnActivate: "保存即启用",
+      defnDescription: "描述（必填 · ≤1024 字，说明做什么 + 何时用）",
+      defnDescriptionHint: "L0 选择信号：PM 据此判断这条工作方式该不该用。空描述不进自动选择。",
+      workMode: "工作方式", workModePick: "手选工作方式", workModeNone: "暂无可选工作方式", workModeAuto: "自动（PM 按相关性选）",
       cancel: "取消", save: "保存", saved: "已保存", saveFailed: "保存失败", failed: "失败",
       confirmDeleteTitle: "确认删除", confirmDelete: "确定删除这条工作方式？", confirmSessionDelete: "确定删除这个会话及其本地记录？",
       deleteSession: "删除会话", cancelSession: "取消会话", sessionCanceled: "已取消会话", notification: "通知",
       sessionBusy: "会话仍有后台任务未结束，请稍后再删除。",
       badScopeJson: "适用范围必须是 JSON 对象，例如 {\"lang\":\"py\"}。",
+      missingDescription: "请填写描述（说明做什么 + 何时用），否则不会进入自动选择。",
+      descriptionTooLong: "描述太长了，请控制在 1024 字以内。",
       imported: "已导入", importFailed: "导入失败", exportFailed: "导出失败",
       workspaces: "工作区", projectPath: "项目路径", displayName: "显示名称", pathHint: "例如 E:\\AutoWorkAgent",
       browse: "浏览", addWorkspace: "添加 / 更新工作区", remove: "移除", connected: "已连接",
@@ -107,7 +112,7 @@
       workspaceSubtitle: "Pick a workspace and dispatch work to the local agent.",
       decisionsSubtitle: "Handle the cards and approvals that need you.",
       briefingsSubtitle: "Turn current progress into readable status.",
-      rulesSubtitle: "Maintain workflows, skills, code standards & QA rubrics — auto-injected when agents work.",
+      rulesSubtitle: "Maintain workflows, skills, code standards & QA rubrics — selected by relevance and pulled in on demand.",
       settingsSubtitle: "Configure workspaces, the PM brain, and UI preferences.",
       sessions: "Sessions", newSession: "New session",
       launchTag: "Waking your engineering foreman — hand work to local agents, the PM brain watches over it.",
@@ -146,11 +151,16 @@
       noDefinitions: "No playbook items yet.", on: "active", off: "off",
       edit: "Edit", del: "Delete", activate: "Activate",
       defnKind: "Kind", defnName: "Name", defnScope: "Scope (JSON)", defnBody: "Body", defnActivate: "Activate on save",
+      defnDescription: "Description (required · ≤1024 chars: what it does + when to use)",
+      defnDescriptionHint: "L0 selection signal: the PM decides relevance from this. Blank → excluded from auto-select.",
+      workMode: "Work modes", workModePick: "Pick work modes", workModeNone: "No work modes available", workModeAuto: "Auto (PM picks by relevance)",
       cancel: "Cancel", save: "Save", saved: "Saved", saveFailed: "Save failed", failed: "failed",
       confirmDeleteTitle: "Confirm delete", confirmDelete: "Delete this playbook item?", confirmSessionDelete: "Delete this session and its local records?",
       deleteSession: "Delete session", cancelSession: "Cancel session", sessionCanceled: "Session cancelled", notification: "Notification",
       sessionBusy: "A background task is still active; delete it after the task finishes.",
       badScopeJson: "Scope must be a JSON object, for example {\"lang\":\"py\"}.",
+      missingDescription: "Please add a description (what it does + when to use), or it won't be auto-selected.",
+      descriptionTooLong: "Description is too long — keep it under 1024 characters.",
       imported: "Imported", importFailed: "Import failed", exportFailed: "Export failed",
       workspaces: "Workspaces", projectPath: "Project path", displayName: "Name", pathHint: "e.g. E:\\AutoWorkAgent",
       browse: "Browse", addWorkspace: "Add / update", remove: "Remove", connected: "connected",
@@ -275,6 +285,7 @@
       "no dispatcher": d.noDispatcher, no_llm: d.briefNoLlm, bad_scope_json: d.badScopeJson,
       not_configured: d.cloudNotConfigured, cloud_unavailable: d.cloudUnavailable,
       session_busy: d.sessionBusy,
+      missing_description: d.missingDescription, description_too_long: d.descriptionTooLong,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
   }
@@ -1012,8 +1023,17 @@
   function Composer(props) {
     const { d, lang, workspaces, workspace, setWorkspace, task, setTask, model, setModel, modelOptions, llm, effort, setEffort,
       attachments, addAttach, removeAttach, dispatching, runDispatch, dispatchStatus, sessionRow, events,
-      compacting, runCompact, compactStatus } = props;
+      compacting, runCompact, compactStatus, definitions, selectedWorkModeIds, setSelectedWorkModeIds } = props;
     const wsOpts = workspaces.length ? workspaces : [];
+    const [wmOpen, setWmOpen] = useState(false);
+    // Only active definitions are pickable work modes; ignore archived/draft siblings.
+    const wmOptions = (definitions || []).filter((x) => x && x.is_active);
+    const wmSelected = selectedWorkModeIds || [];
+    const toggleWm = (id) => {
+      if (!setSelectedWorkModeIds) return;
+      setSelectedWorkModeIds(wmSelected.includes(id) ? wmSelected.filter((x) => x !== id) : [...wmSelected, id]);
+    };
+    const wmDesc = (row) => { try { const m = JSON.parse(row.metadata_json || "{}"); if (m && m.description) return m.description; } catch (e) {} return (row.body || "").slice(0, 80); };
     const est = estTokens(events || []);
     const contextLimit = contextLimitFor(modelOptions, model, llm && llm.model);
     const pct = Math.min(95, Math.round((est / contextLimit) * 100));
@@ -1037,6 +1057,16 @@
             <input className="ws-select model-pick" value=${model} onChange=${(e) => setModel(e.target.value)} list="composer-models" placeholder=${d.modelPlaceholder} aria-label=${d.model} />
             <datalist id="composer-models">${(modelOptions || []).map((o) => html`<option key=${o.value} value=${o.value}></option>`)}</datalist>
             <span className="tool-chip dashed">🤖 ${d.agentAuto}</span>
+            ${wmOptions.length ? html`<div style=${{ position: "relative" }}>
+              <button className=${`tool-chip${wmSelected.length ? " on" : ""}`} onClick=${() => setWmOpen(!wmOpen)} title=${d.workModePick}>🧩 ${d.workMode}${wmSelected.length ? ` (${wmSelected.length})` : ""}</button>
+              ${wmOpen ? html`<div className="wm-pop" style=${{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, zIndex: 30, minWidth: 240, maxWidth: 340, maxHeight: 260, overflow: "auto", background: "var(--surface, #fff)", border: "1px solid var(--border, #ddd)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.16)", padding: 8 }}>
+                <div style=${{ fontSize: 11, opacity: 0.7, padding: "2px 6px 6px" }}>${wmSelected.length ? d.workModePick : d.workModeAuto}</div>
+                ${wmOptions.map((row) => html`<label key=${row.id} style=${{ display: "flex", gap: 8, alignItems: "flex-start", padding: "5px 6px", cursor: "pointer", borderRadius: 6 }}>
+                  <input type="checkbox" checked=${wmSelected.includes(row.id)} onChange=${() => toggleWm(row.id)} />
+                  <span style=${{ minWidth: 0 }}><span style=${{ display: "block", fontSize: 12, fontWeight: 600 }}>${d[KIND_LABEL[row.kind]] || row.kind} · ${row.name}</span><span style=${{ display: "block", fontSize: 11, opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${wmDesc(row)}</span></span>
+                </label>`)}
+              </div>` : null}
+            </div>` : null}
             <div className="seg">
               <button className=${`opt${effort === "low" ? " on" : ""}`} onClick=${() => setEffort("low")}>${d.fast}</button>
               <button className=${`opt${effort === "medium" ? " on" : ""}`} onClick=${() => setEffort("medium")}>${d.std}</button>
@@ -1147,7 +1177,7 @@
             <span style=${{ marginLeft: "auto" }} className=${row.is_active ? "state-on" : "state-off"}>${row.is_active ? "●" : "○"} ${row.is_active ? d.on : d.off}</span>
           </div>
           <div className="nm">${row.name}</div>
-          <div className="desc"><${MD} text=${(row.body || "").slice(0, 160)} className="markdown-compact" /></div>
+          <div className="desc"><${MD} text=${(() => { try { const m = JSON.parse(row.metadata_json || "{}"); if (m && m.description) return m.description; } catch (e) {} return (row.body || "").slice(0, 160); })()} className="markdown-compact" /></div>
           <div className="foot">
             <span className="scope">${(() => { try { const o = JSON.parse(row.scope_json || "{}"); return Object.keys(o).length ? JSON.stringify(o) : (lang === "zh" ? "全局" : "global"); } catch (e) { return lang === "zh" ? "全局" : "global"; } })()}</span>
             <span className="acts">
@@ -1352,6 +1382,9 @@
         </div>
         <div className="field"><span className="field-label">${d.defnName}</span><input className="input mono" value=${row.name || ""} disabled=${!!row.id} onChange=${(e) => update({ name: e.target.value })} placeholder="add-feature" /></div>
       </div>
+      <div className="field"><span className="field-label">${d.defnDescription}</span>
+        <textarea className="textarea" rows="3" maxLength=${1024} value=${row.description || ""} onChange=${(e) => update({ description: e.target.value })} placeholder=${d.defnDescriptionHint}></textarea>
+      </div>
       <div className="field"><span className="field-label">${d.defnScope}</span><input className="input mono" value=${row.scope_json || "{}"} onChange=${(e) => update({ scope_json: e.target.value, scopeError: "" })} placeholder='{"lang":"py"}' /></div>
       ${row.scopeError ? html`<div className="alert error">${row.scopeError}</div>` : null}
       <div className="field"><span className="field-label">${d.defnBody}</span><textarea className="textarea mono" rows="11" value=${row.body || ""} onChange=${(e) => update({ body: e.target.value })}></textarea></div>
@@ -1462,6 +1495,9 @@
     const [task, setTask] = useState("");
     const [model, setModel] = useState("");
     const [effort, setEffort] = useState("medium");
+    // Manually-picked work-mode definition ids (D4, UI-first). P0 sends them; the backend accepts but
+    // does NOT yet consume them — resolver pass-through wiring lands in P1.
+    const [selectedWorkModeIds, setSelectedWorkModeIds] = useState([]);
     const [attachments, setAttachments] = useState([]);
     const [dispatching, setDispatching] = useState(false);
     const [dispatchStatus, setDispatchStatus] = useState("");
@@ -1607,6 +1643,8 @@
       const body = { goal, workspace: target, source: clientSource(), effort };
       if (sessionRow) body.session_id = sessionRow.id;
       if (model.trim()) body.model = model.trim();
+      // D4: manually-picked work modes ride along (backend accepts but doesn't consume yet — P1).
+      if (selectedWorkModeIds && selectedWorkModeIds.length) body.work_mode_ids = selectedWorkModeIds;
       try {
         const res = await api("/api/tasks", { method: "POST", body });
         setTask(""); setAttachments([]);
@@ -1669,6 +1707,18 @@
     }
 
     // definitions
+    // Assemble metadata_json: preserve existing keys (e.g. example), stamp the L0 schema, write the
+    // structured description. The server enforces description-required fail-closed (P0 task 5); this
+    // just sends the field the editor now collects.
+    function buildDefnMeta(draft) {
+      let meta = {};
+      try { meta = JSON.parse(draft.metadata_json || "{}") || {}; } catch (e) { meta = {}; }
+      if (typeof meta !== "object" || Array.isArray(meta)) meta = {};
+      meta.schema = "foreman.workmode.meta/1";
+      const desc = (draft.description || "").trim();
+      if (desc) meta.description = desc; else delete meta.description;
+      return JSON.stringify(meta);
+    }
     async function saveDefinition() {
       const draft = defnDraft || {};
       const scopeError = jsonObjectError(draft.scope_json || "{}");
@@ -1677,12 +1727,15 @@
         toast(d.badScopeJson, "error");
         return;
       }
+      // Client-side mirror of the server gate, for a friendly message instead of a raw 400.
+      if (!(draft.description || "").trim()) { toast(d.missingDescription, "error"); return; }
+      const metadata_json = buildDefnMeta(draft);
       try {
         if (draft.id) {
-          await api(`/api/definitions/${encodeURIComponent(draft.id)}`, { method: "PATCH", body: { body: draft.body || "", scope_json: draft.scope_json || "{}" } });
+          await api(`/api/definitions/${encodeURIComponent(draft.id)}`, { method: "PATCH", body: { body: draft.body || "", scope_json: draft.scope_json || "{}", metadata_json } });
           if (draft.activate) await api(`/api/definitions/${encodeURIComponent(draft.id)}/activate`, { method: "POST" });
         } else {
-          await api("/api/definitions", { method: "POST", body: { kind: draft.kind || "workflow", name: (draft.name || "").trim(), body: draft.body || "", scope_json: draft.scope_json || "{}", activate: draft.activate !== false } });
+          await api("/api/definitions", { method: "POST", body: { kind: draft.kind || "workflow", name: (draft.name || "").trim(), body: draft.body || "", scope_json: draft.scope_json || "{}", metadata_json, activate: draft.activate !== false } });
         }
         setDefnOpen(false); setDefnDraft(null); await loadDefinitions(); toast(d.saved, "success");
       } catch (e) { notifyError(e); }
@@ -1802,6 +1855,7 @@
       workspaces, workspace, setWorkspace: (v) => { setWorkspace(v); if (v) localStorage.setItem(WORKSPACE_KEY, v); },
       task, setTask, model, setModel, modelOptions, llm, effort, setEffort, attachments, addAttach, removeAttach,
       dispatching, runDispatch, dispatchStatus, onAddStep,
+      definitions, selectedWorkModeIds, setSelectedWorkModeIds,
     };
     const settingsProps = {
       d, lang, workspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace, browseFolder, deleteWorkspace, loadWorkspaces,
@@ -1813,7 +1867,7 @@
     };
     const decisionsProps = { d, lang, cards: openCards, approvals, onCard, onApproval: decideApproval, openDetail, onGoSession: openTimeline };
     const briefingsProps = { d, lang, reports, onCopy, toast };
-    const playbookProps = { d, lang, definitions, filter: defnFilter, setFilter: setDefnFilter, onNew: () => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }, onEdit: (row) => { setDefnDraft({ ...row, activate: !!row.is_active }); setDefnOpen(true); }, onActivate: activateDefinition, onDelete: deleteDefinition, onExport: exportDefinitions, onImportClick: () => fileRef.current && fileRef.current.click(), fileRef, onImport: importDefinitions };
+    const playbookProps = { d, lang, definitions, filter: defnFilter, setFilter: setDefnFilter, onNew: () => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }, onEdit: (row) => { let desc = ""; try { desc = (JSON.parse(row.metadata_json || "{}") || {}).description || ""; } catch (e) {} setDefnDraft({ ...row, description: desc, activate: !!row.is_active }); setDefnOpen(true); }, onActivate: activateDefinition, onDelete: deleteDefinition, onExport: exportDefinitions, onImportClick: () => fileRef.current && fileRef.current.click(), fileRef, onImport: importDefinitions };
 
     const launchSteps = { engine: status.online, agents: agentsLoaded, data: booted, pct: booted ? 100 : (status.online ? 60 : 25), version: status.version };
 

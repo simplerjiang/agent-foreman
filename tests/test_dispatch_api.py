@@ -79,6 +79,19 @@ def test_dispatch_empty_goal_400(tmp_path):
     assert TestClient(app).post("/api/tasks", json={"goal": "  "}).status_code == 400
 
 
+def test_dispatch_accepts_work_mode_ids_without_consuming(tmp_path):
+    """D4 (P0, UI-first): the composer sends work_mode_ids; the backend must ACCEPT the field (no
+    422/400) but NOT consume it yet — resolver pass-through wiring lands in P1. An OLD request with no
+    such field still works (backward-compat)."""
+    app, _ = _app(tmp_path)
+    c = TestClient(app)
+    with_ids = c.post("/api/tasks", json={"goal": "do it", "work_mode_ids": ["id-a", "id-b"]})
+    assert with_ids.status_code == 200 and with_ids.json()["ok"] is True
+    # the legacy shape (no work_mode_ids) is unaffected
+    legacy = c.post("/api/tasks", json={"goal": "do it"})
+    assert legacy.status_code == 200 and legacy.json()["ok"] is True
+
+
 def test_dispatch_503_without_dispatcher():
     c = TestClient(create_app(Config()))
     assert c.post("/api/tasks", json={"goal": "x"}).status_code == 503

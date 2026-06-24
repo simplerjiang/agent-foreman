@@ -253,6 +253,57 @@ def seed_examples_cmd(
         rprint(f"[dim]skipped {len(skipped)} already present: {', '.join(skipped)}[/]")
 
 
+@app.command("backfill-descriptions")
+def backfill_descriptions_cmd(
+    config: str = typer.Option("config.yaml", help="Path to config.yaml"),
+    apply: bool = typer.Option(
+        False, "--apply", help="Persist the proposals (default: dry-run — propose, write nothing)"
+    ),
+) -> None:
+    """LLM-backfill metadata.description for legacy definitions that lack one (P0 / D3).
+
+    Defaults to a DRY RUN: it prints the description each definition WOULD get, so you can eyeball
+    them before committing. Re-run with [cyan]--apply[/] to write them back. Needed so the
+    description-required gate doesn't strand pre-existing rows out of auto-selection (DESIGN §4.3).
+    Uses YOUR configured PM LLM; the 秘方 bodies never leave the local process."""
+    import asyncio
+
+    from foreman.client.core.description_backfill import backfill_descriptions
+    from foreman.client.core.definition_service import DefinitionService
+    from foreman.client.store import Store
+    from foreman.shared.crypto import cipher_from_config
+    from foreman.shared.llm import LLMClient
+
+    cfg = load_config(config)
+    cipher = cipher_from_config(cfg.secrets.definition_key)
+    store = Store(cfg.store.db_path, cipher=cipher)
+    store.init()
+
+    def _llm_settings() -> dict:
+        return {
+            "provider": store.get_setting("llm.provider") or "",
+            "model": store.get_setting("llm.model") or "",
+            "base_url": store.get_setting("llm.base_url") or "",
+            "transport": store.get_setting("llm.transport") or cfg.llm.transport,
+            "api_key": cfg.secrets.llm_api_key,
+        }
+
+    llm = LLMClient(cfg, settings_resolver=_llm_settings)
+    service = DefinitionService(store, cipher=cipher)
+    result = asyncio.run(backfill_descriptions(store, service, llm, apply=apply))
+
+    proposals = result["proposals"]
+    if not proposals and not result["errors"]:
+        rprint("[green]nothing to backfill[/] — every definition already has a description.")
+        return
+    mode = "[green]applied[/]" if apply else "[yellow]dry-run[/] (re-run with --apply to write)"
+    rprint(f"backfill {mode}: {len(proposals)} proposal(s), {result['written']} written")
+    for p in proposals:
+        rprint(f"  [cyan]{p['kind']}/{p['name']}[/]: {p['description']}")
+    for e in result["errors"]:
+        rprint(f"  [red]error[/] {e.get('id')}: {e.get('error')}")
+
+
 @app.command("create-admin")
 def create_admin_cmd(
     username: str = typer.Argument(..., help="Admin username"),

@@ -187,6 +187,9 @@ class _DispatchBody(BaseModel):
     effort: str = ""  # reasoning level / 速度档位: low | medium | high ("" = the CLI default)
     session_id: str = ""  # when set, append a new task to an existing conversation
     source: str = ""  # desktop | phone | api
+    # D4 (P0, UI-first): manually-picked work-mode definition ids. Accepted here so the new composer
+    # field doesn't 422, but NOT consumed yet — the resolver pass-through (selected_ids) lands in P1.
+    work_mode_ids: list[str] = []
 
 
 class _CloudSettingsBody(BaseModel):
@@ -1460,6 +1463,7 @@ def create_app(
     _DEFN_ERR_STATUS = {
         "bad_kind": 400, "bad_name": 400, "body_too_large": 400,
         "bad_scope_json": 400, "bad_metadata_json": 400, "bad_status": 400,
+        "missing_description": 400, "description_too_long": 400,
         "version_exists": 409, "not_found": 404, "no_store": 503,
     }
 
