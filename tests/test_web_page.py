@@ -64,6 +64,39 @@ def test_i18n_and_language_sync_wired():
     assert "navWorkspace" in js and "navSettings" in js
 
 
+def test_friendly_error_maps_backend_codes_and_network_errors():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function friendlyError")
+    end = js.index("function jsonObjectError", start)
+    helper = js[start:end]
+    script = helper + r'''
+const d = {
+  emptyGoal: "empty", dispatchNoWorkspace: "workspace", workspaceMissing: "missing",
+  noEnabledAgent: "agent", noDispatcher: "dispatcher", briefNoLlm: "llm",
+  badScopeJson: "scope", cloudNotConfigured: "cloud", cloudUnavailable: "unavailable",
+  sessionBusy: "busy", noContext: "no context", noStore: "no store",
+  sessionNotFound: "session missing", requestDeclined: "declined", networkError: "network",
+};
+for (const [code, expected] of Object.entries({
+  no_context: "no context",
+  no_store: "no store",
+  session_not_found: "session missing",
+  decline: "declined",
+})) {
+  const actual = friendlyError(new Error(code), d);
+  if (actual !== expected || actual === code) {
+    console.error({ code, actual, expected });
+    process.exit(1);
+  }
+}
+if (friendlyError(new TypeError("Failed to fetch"), d) !== "network") {
+  process.exit(2);
+}
+'''
+    subprocess.run(["node", "-e", script], check=True)
+
+
 def test_five_nav_views_present():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
