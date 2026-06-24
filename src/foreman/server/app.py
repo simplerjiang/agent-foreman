@@ -654,7 +654,7 @@ def create_app(
             web_search_provider=provider,
             searxng_url=str(raw.get("searxng_url", current.searxng_url) or "").strip(),
             browser_headless=flag("browser_headless", current.browser_headless),
-            max_rounds=max(1, min(max_rounds, 12)),
+            max_rounds=max(1, max_rounds),
         )
 
     def _clean_string_list(value: Any) -> list[str]:
