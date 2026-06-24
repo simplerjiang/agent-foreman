@@ -38,6 +38,7 @@ def app_cmd(
         is_running,
         start_local_app,
     )
+    from foreman.client.splash import close_splash, show_splash
 
     url = f"http://{host}:{port}/"
     # Single instance: the engine owns the local SQLite store + gates, so only one may run per
@@ -49,10 +50,14 @@ def app_cmd(
         _open_window(url)
         return
 
+    # Splash screen: show immediately so the user gets visual feedback while the engine boots.
+    show_splash()
+
     cfg = load_config(config)
     try:
         local = start_local_app(cfg, host=host, port=port)
     except PortInUseError:
+        close_splash()
         rprint(f"[red]Port {port} is already in use[/] by another program — close it, or start "
                "Foreman on a different port with [cyan]--port[/].")
         raise typer.Exit(code=1) from None
@@ -61,6 +66,7 @@ def app_cmd(
     try:
         import webview  # pywebview, in the .[client] extra (imported lazily — desktop only)
     except ImportError:
+        close_splash()
         rprint("[yellow]pywebview not installed — serving headless.[/] Open "
                f"{local.url} in a browser; Ctrl+C to stop. (pip install \".[client]\" for the window.)")
         try:
@@ -73,7 +79,7 @@ def app_cmd(
             local.stop()
         return
 
-    webview.create_window(
+    window = webview.create_window(
         "Foreman",
         local.url,
         js_api=_DesktopApi(),
@@ -81,6 +87,7 @@ def app_cmd(
         height=WINDOW_HEIGHT,
         min_size=WINDOW_MIN_SIZE,
     )
+    window.events.shown += close_splash
     try:
         webview.start()  # blocks until the window is closed
     finally:
