@@ -148,12 +148,13 @@ async def test_stream_parses_stream_json(tmp_path):
     events = [e async for e in a.stream(h)]
 
     assert [e.type for e in events] == [
-        "agent_output", "agent_output", "agent_output", "agent_output", "stop",
+        "agent_start", "agent_output", "agent_output", "agent_output", "agent_output", "stop",
     ]
     assert all(e.source == "claude-code" and e.session_id == "s" and e.ts for e in events)
-    assert events[2].payload == {"text": "not json at all"}
-    assert events[3].payload == {"text": "42"}
-    assert events[4].payload["result"] == "done"
+    assert events[0].payload["command"][:2] == ["claude", "-p"]
+    assert events[3].payload == {"text": "not json at all"}
+    assert events[4].payload == {"text": "42"}
+    assert events[5].payload["result"] == "done"
 
 
 async def test_stream_captures_native_session_id(tmp_path):
@@ -177,5 +178,5 @@ async def test_stream_classifies_thinking_blocks(tmp_path):
     h = await a.start("x", tmp_path, "s")
     events = [e async for e in a.stream(h)]
 
-    assert [e.type for e in events] == ["agent_reasoning", "stop"]
-    assert events[0].source == "claude-code"
+    assert [e.type for e in events] == ["agent_start", "agent_reasoning", "stop"]
+    assert events[1].source == "claude-code"

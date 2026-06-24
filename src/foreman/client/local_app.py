@@ -152,6 +152,9 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # DispatchService creates Root Sessions from the phone (§5.1). In the local app it is wired
     # through the PM agent first: PM plans the prompt/agent/model, waits for the CLI run, then
     # reviews and resumes if the work is incomplete.
+    def _current_language() -> str:
+        return normalize_lang(store.get_setting("ui.language") or cfg.ui.language)
+
     dispatcher = DispatchService(
         cfg,
         store,
@@ -164,11 +167,13 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
                 cfg, workspace, gate=gate, auditor=auditor
             ),
         ),
+        language_getter=_current_language,
     )
     # BriefingService summarizes a session's activity with YOUR LLM → reports table + Web Push
     # (§5.5). Output language follows the runtime ui.language setting (§15, resolved above).
     briefings = BriefingService(
-        _llm(), store, bus=bus, pusher=pusher, language=language
+        _llm(), store, bus=bus, pusher=pusher, language=language,
+        language_getter=_current_language,
     )
     # DefinitionService is the UI editor for the four 秘方 blocks (workflow/skill/code_standard/
     # qa_rubric, §11.2). Injected like the Gate/CardService so app.py stays shared-only; definitions

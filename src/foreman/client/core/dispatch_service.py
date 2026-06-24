@@ -85,6 +85,7 @@ class DispatchService:
         launcher=None,
         runner=None,
         pm_agent=None,
+        language_getter=None,
         clock=None,
     ) -> None:
         self.cfg = cfg
@@ -94,6 +95,7 @@ class DispatchService:
         self.launcher = launcher
         self.runner = runner
         self.pm_agent = pm_agent
+        self.language_getter = language_getter
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
 
@@ -125,8 +127,11 @@ class DispatchService:
         existing_session = self._get_existing_session(session_id)
         if session_id and existing_session is None:
             return {"ok": False, "error": "session_not_found"}
+        pm_enabled = self.pm_agent is not None and self.runner is not None
+        self._sync_pm_language()
+        existing_agent = "" if pm_enabled else (existing_session.agent_type if existing_session else "")
         resolved_agent, err = self._resolve_agent(
-            agent or (existing_session.agent_type if existing_session else "")
+            agent or existing_agent
         )
         if err:
             return {"ok": False, "error": err}
@@ -135,9 +140,7 @@ class DispatchService:
         )
         if err:
             return {"ok": False, "error": err}
-        pm_enabled = self.pm_agent is not None and self.runner is not None
-        enabled_agents = sorted(k for k, a in self.cfg.agents.items() if a.enabled)
-        direct_agents = _explicit_agent_targets(goal, enabled_agents) if pm_enabled else []
+        direct_agents: list[str] = []
         resolved_model = (
             ""
             if direct_agents
@@ -230,6 +233,7 @@ class DispatchService:
         """Compact a session's event timeline into ``Session.plan`` for later follow-up prompts."""
         if self.store is None or not hasattr(self.store, "get_session"):
             return {"ok": False, "error": "no_store"}
+        self._sync_pm_language()
         session = self.store.get_session(session_id)
         if session is None:
             return {"ok": False, "error": "session_not_found"}
@@ -313,6 +317,20 @@ class DispatchService:
     def _resolve_source(self, source: str | None) -> str:
         value = (source or "").strip().lower()
         return value if value in VALID_SOURCES else "api"
+
+    def _current_language(self) -> str:
+        if self.language_getter is None:
+            return normalize_lang(getattr(self.pm_agent, "language", ""))
+        try:
+            return normalize_lang(self.language_getter())
+        except Exception:  # noqa: BLE001 - language lookup must not block dispatch
+            return normalize_lang(getattr(self.pm_agent, "language", ""))
+
+    def _sync_pm_language(self) -> str:
+        lang = self._current_language()
+        if self.pm_agent is not None and hasattr(self.pm_agent, "language"):
+            self.pm_agent.language = lang
+        return lang
 
     def _resolve_model(self, agent: str, model: str | None) -> str:
         override = (model or "").strip()
@@ -442,7 +460,7 @@ class DispatchService:
         effort_override: str | None,
     ) -> None:
         multi = len(agents) > 1
-        language = getattr(self.pm_agent, "language", "")
+        language = self._sync_pm_language()
         handles = []
         for agent in agents:
             model = self._resolve_model(agent, model_override)
@@ -475,6 +493,7 @@ class DispatchService:
         pm_model: str,
         effort: str,
     ) -> None:
+        language = self._sync_pm_language()
         enabled_agents = [
             {
                 "name": name,
@@ -490,7 +509,7 @@ class DispatchService:
             session_id,
             task_id,
             "plan",
-            "PM is planning agent choice, todo list, and launch instruction...",
+            _pm_status_text(language, "plan"),
         )
         plan_kwargs = {
             "workspace": workspace,
@@ -498,7 +517,7 @@ class DispatchService:
             "requested_agent": "",
             "pm_model": pm_model,
             "requested_effort": "high",
-            "fallback_instruction": _fallback_instruction(goal, context),
+            "fallback_instruction": _fallback_instruction(goal, context, language),
             "context": context,
         }
         if _accepts_keyword(self.pm_agent.plan, "on_stream"):
@@ -513,7 +532,7 @@ class DispatchService:
             session_id,
             task_id,
             "launch",
-            f"PM selected {plan.agent}; launching the coding agent...",
+            _pm_status_text(language, "launch", plan.agent),
         )
         handle = await self.runner.launch(
             plan.agent, plan.instruction, Path(workspace), session_id,
@@ -564,14 +583,14 @@ class DispatchService:
                 await self._emit_pm_error(
                     session_id,
                     task_id,
-                    "PM review still thinks the task is incomplete, but the run limit was reached.",
+                    _run_limit_text(language),
                 )
                 return
             if not review.follow_up:
                 await self._emit_pm_error(
                     session_id,
                     task_id,
-                    "PM review asked to continue but did not provide a follow-up prompt.",
+                    _empty_followup_text(language),
                 )
                 return
             await self.runner.send(handle, review.follow_up)
@@ -852,16 +871,47 @@ def _stream_delta(chunk: dict) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _fallback_instruction(goal: str, context: str = "") -> str:
-    parts = [
-        "You are working under Foreman's PM supervision. Complete the user task, verify the result, "
-        "and report honestly what changed and what could not be verified. Use your available file "
-        "read/write/edit, shell command, and web/search tools as needed. Do not push, merge, or "
-        "deploy unless the user explicitly requested it.",
-    ]
+def _pm_status_text(language: str, phase: str, agent: str = "") -> str:
+    if normalize_lang(language) == "en":
+        if phase == "launch":
+            return f"PM selected {agent}; launching the coding agent..."
+        return "PM is planning agent choice, todo list, and launch instruction..."
+    if phase == "launch":
+        return f"PM 已选择 {agent}，正在启动执行 agent..."
+    return "PM 正在规划 agent 选择、任务清单和执行指令..."
+
+
+def _run_limit_text(language: str) -> str:
+    if normalize_lang(language) == "en":
+        return "PM review still thinks the task is incomplete, but the run limit was reached."
+    return "PM 复查仍认为任务未完成，但已达到运行次数上限。"
+
+
+def _empty_followup_text(language: str) -> str:
+    if normalize_lang(language) == "en":
+        return "PM review asked to continue but did not provide a follow-up prompt."
+    return "PM 复查要求继续，但没有给出后续指令。"
+
+
+def _fallback_instruction(goal: str, context: str = "", language: str = "") -> str:
+    if normalize_lang(language) == "en":
+        parts = [
+            "You are working under Foreman's PM supervision. Complete the user task, verify the "
+            "result, and report honestly what changed and what could not be verified. Use your "
+            "available file read/write/edit, shell command, and web/search tools as needed. Do not "
+            "push, merge, or deploy unless the user explicitly requested it.",
+        ]
+    else:
+        parts = [
+            "你正在 Foreman 的 PM 监督下工作。完成用户任务，验证结果，并诚实汇报改动内容和"
+            "无法验证的部分。按需使用可用的文件读写编辑、命令行、网页/搜索工具。除非用户"
+            "明确要求，不要推送、合并或部署。",
+        ]
     if context:
-        parts.append(f"Existing session context:\n{context}")
-    parts.append(f"User task:\n{goal}")
+        label = "Existing session context" if normalize_lang(language) == "en" else "已有会话上下文"
+        parts.append(f"{label}:\n{context}")
+    label = "User task" if normalize_lang(language) == "en" else "用户任务"
+    parts.append(f"{label}:\n{goal}")
     return "\n\n".join(parts)
 
 
@@ -962,6 +1012,12 @@ def _direct_agent_instruction(
     goal: str, agent: str, *, multi: bool, language: str = ""
 ) -> str:
     if not multi:
+        if normalize_lang(language) == "zh":
+            return (
+                f"{goal}\n\n"
+                "Foreman 已用这个 CLI 可用的文件读写编辑、命令行和网页/搜索工具启动你。"
+                "按需使用这些能力，验证结果，并且除非用户明确要求，不要推送、合并或部署。"
+            )
         return (
             f"{goal}\n\n"
             "Foreman has launched you with the available file read/write/edit, shell command, "

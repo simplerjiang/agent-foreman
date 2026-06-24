@@ -87,7 +87,10 @@ def app_cmd(
         height=WINDOW_HEIGHT,
         min_size=WINDOW_MIN_SIZE,
     )
-    window.events.shown += close_splash
+    if window is not None:
+        window.events.shown += close_splash
+    else:
+        close_splash()
     try:
         webview.start()  # blocks until the window is closed
     finally:

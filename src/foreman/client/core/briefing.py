@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from foreman.shared.events import make_event, utc_now_iso
-from foreman.shared.i18n import language_directive
+from foreman.shared.i18n import language_directive, normalize as normalize_lang
 from foreman.shared.llm import LLMClient, Message
 
 from ..store.models import Report
@@ -78,7 +78,7 @@ def _extract_json_object(raw: str) -> dict | None:
     return None
 
 
-def parse_brief(raw: str) -> BriefingResult:
+def parse_brief(raw: str, *, language: str = "zh") -> BriefingResult:
     """Parse an LLM reply into a ``BriefingResult``; degrade gracefully on unparseable output.
 
     A briefing is informational (not a safety gate), so unlike the Auditor/Reviewer there is no
@@ -86,10 +86,12 @@ def parse_brief(raw: str) -> BriefingResult:
     human sees *something* rather than an empty card.
     """
     obj = _extract_json_object(raw)
+    title_fallback = "Briefing" if normalize_lang(language) == "en" else "简报"
+    empty_fallback = "(Briefing output was empty.)" if normalize_lang(language) == "en" else "（简报输出为空）"
     if obj is None:
         text = (raw or "").strip()
-        return BriefingResult(title="简报", body_md=text[:4000] or "（简报输出为空）")
-    title = _as_str(obj.get("title")) or "简报"
+        return BriefingResult(title=title_fallback, body_md=text[:4000] or empty_fallback)
+    title = _as_str(obj.get("title")) or title_fallback
     body = _as_str(obj.get("body_md")) or _as_str(obj.get("body"))
     return BriefingResult(title=title, body_md=body)
 
@@ -112,6 +114,25 @@ def _friendly_llm_error(exc: Exception) -> str:
         return (
             "接口地址格式不正确。请在「PM 大脑」里填写完整的 http(s) 地址。"
             f"原始错误：{text[:300] or name}"
+        )
+    return f"{name}: {text[:300]}" if text else name
+
+
+def _friendly_llm_error_en(exc: Exception) -> str:
+    name = type(exc).__name__
+    text = str(exc).strip()
+    if name == "LLMConfigError":
+        return "PM brain API key is not configured. Set `FOREMAN_LLM_API_KEY` in `.env`, then restart Foreman."
+    if name == "LocalProtocolError":
+        return (
+            "HTTP protocol error. Check that the PM brain Base URL is a complete URL "
+            "(for example https://api.openai.com/v1) and that transport/base_url match. "
+            f"Raw error: {text[:300] or name}"
+        )
+    if "InvalidURI" in name or "InvalidURL" in name:
+        return (
+            "Base URL is invalid. Enter a complete http(s) URL in PM brain settings. "
+            f"Raw error: {text[:300] or name}"
         )
     return f"{name}: {text[:300]}" if text else name
 
@@ -148,6 +169,7 @@ class BriefingService:
         bus: Any = None,
         pusher: Any = None,
         language: str = "zh",
+        language_getter=None,
         clock=None,
         max_events: int = DEFAULT_MAX_EVENTS,
     ) -> None:
@@ -156,6 +178,7 @@ class BriefingService:
         self.bus = bus
         self.pusher = pusher
         self.language = language
+        self.language_getter = language_getter
         self._clock = clock or utc_now_iso
         self.max_events = max_events
 
@@ -169,6 +192,7 @@ class BriefingService:
             return {"ok": False, "error": "no_store"}
         if self.llm is None:
             return {"ok": False, "error": "no_llm"}
+        self._sync_language()
         kind = kind if kind in VALID_KINDS else DEFAULT_KIND
         goal, activity = self._gather_activity(session_id)
         result = await self._run_llm(goal, activity, kind)
@@ -193,6 +217,16 @@ class BriefingService:
         return [_report_to_dict(r) for r in self.store.get_reports(session_id)]
 
     # ── internals ─────────────────────────────────────────────────────────────────────────────
+    def _sync_language(self) -> str:
+        if self.language_getter is None:
+            self.language = normalize_lang(self.language)
+            return self.language
+        try:
+            self.language = normalize_lang(self.language_getter())
+        except Exception:  # noqa: BLE001 - language lookup must not block a briefing
+            self.language = normalize_lang(self.language)
+        return self.language
+
     async def _run_llm(self, goal: str, activity: str, kind: str) -> BriefingResult:
         """Call the LLM; a transient failure degrades to a note rather than 500'ing the request."""
         assert self.llm is not None  # generate() returns no_llm before reaching here
@@ -205,6 +239,15 @@ class BriefingService:
         except Exception as exc:  # noqa: BLE001 — a phone "generate" tap shouldn't error out
             # The common cause is a misconfigured PM brain (missing key / wrong base_url / model), so
             # point the human at the fix rather than surfacing a bare exception name (issue #2).
+            if normalize_lang(self.language) == "en":
+                return BriefingResult(
+                    title="Briefing failed",
+                    body_md=(
+                        f"PM brain call failed: {_friendly_llm_error_en(exc)}\n\nCheck:\n"
+                        "1. `FOREMAN_LLM_API_KEY` in `.env`\n"
+                        "2. Provider / Model / Base URL in Settings -> PM brain\n"
+                    ),
+                )
             return BriefingResult(
                 title="简报生成失败",
                 body_md=(
@@ -213,7 +256,7 @@ class BriefingService:
                     "2. 「PM 大脑」设置页的 服务商 / 模型 / 接口地址\n"
                 ),
             )
-        return parse_brief(raw)
+        return parse_brief(raw, language=self.language)
 
     def _gather_activity(self, session_id: str | None) -> tuple[str, str]:
         """Collect (goal, activity_text) for the briefing — one session or a roster of all of them."""

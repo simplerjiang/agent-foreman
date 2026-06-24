@@ -39,8 +39,8 @@ async def test_run_dispatch_persists_events(tmp_path):
     sid, n = await run_dispatch(
         Config(), "do X", str(tmp_path), "claude-code", store=st, bus=bus, runner=runner
     )
-    assert n == 2
-    assert len(st.get_events(sid)) == 2
+    assert n == 3
+    assert [e.type for e in st.get_events(sid)] == ["agent_start", "agent_output", "stop"]
 
 
 def test_cli_dispatch_wires(monkeypatch, tmp_path):

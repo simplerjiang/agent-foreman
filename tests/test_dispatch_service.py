@@ -112,6 +112,57 @@ async def test_create_can_continue_existing_session_with_source(tmp_path):
     assert json.loads(dispatch_events[-1].payload_json)["continued"] is True
 
 
+async def test_continue_pm_agent_session_stays_with_pm(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        language = "zh"
+        max_runs = 1
+
+        async def plan(self, goal, **_kw):
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="high",
+                instruction=f"执行：{goal}",
+                summary="PM 已规划。",
+                todo=["执行任务"],
+            )
+
+        async def review(self, *_args, **_kw):
+            return PMReview(done=True, summary="完成")
+
+    class FakeHandle:
+        session_id = ""
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            handle = FakeHandle()
+            handle.session_id = session_id
+            store.add_event(make_event("stop", agent, session_id, payload={"result": "done"}))
+            return handle
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    first = await svc.create("第一条", source="desktop")
+    await asyncio.gather(*list(svc._tasks))
+    second = await svc.create("继续说明", session_id=first["session_id"], source="desktop")
+    await asyncio.gather(*list(svc._tasks))
+
+    assert second["ok"] is True
+    assert second["agent"] == "pm-agent"
+    assert second["continued"] is True
+    dispatches = [json.loads(e.payload_json) for e in store.get_events(first["session_id"]) if e.type == "dispatch"]
+    assert dispatches[-1]["pm_agent"] is True
+
+
 async def test_continue_missing_session_errors(tmp_path):
     svc = DispatchService(_cfg(workspaces=[WorkspaceCfg(path="D:/proj")]), _store(tmp_path))
     res = await svc.create("follow up", session_id="missing")
@@ -635,12 +686,31 @@ async def test_pm_model_override_is_not_passed_to_coding_agent(tmp_path):
     assert json.loads(pm_plan.payload_json)["model"] == ""
 
 
-async def test_explicit_multi_agent_request_directly_launches_named_agents(tmp_path):
+async def test_explicit_agent_names_still_go_through_pm(tmp_path):
     store = _store(tmp_path)
 
-    class ExplodingPM:
-        async def plan(self, *_a, **_kw):
-            raise AssertionError("direct agent request should not call PM planning")
+    class FakePM:
+        language = "zh"
+        max_runs = 1
+
+        def __init__(self):
+            self.plan_goal = ""
+
+        async def plan(self, goal, **kw):
+            self.plan_goal = goal
+            assert "codex" in goal and "claude" in goal
+            assert {row["name"] for row in kw["available_agents"]} == {"claude-code", "codex"}
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="high",
+                instruction="由 PM 统一规划后交给 codex 执行。",
+                summary="PM 已统一规划。",
+                todo=["执行任务"],
+            )
+
+        async def review(self, *_args, **_kw):
+            return PMReview(done=True, summary="完成")
 
     class FakeHandle:
         session_id = ""
@@ -667,34 +737,41 @@ async def test_explicit_multi_agent_request_directly_launches_named_agents(tmp_p
         workspaces=[WorkspaceCfg(path=str(tmp_path))],
     )
     runner = FakeRunner()
-    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=ExplodingPM())
+    pm = FakePM()
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=pm)
 
     res = await svc.create("\u53ebcodex\u548cclaude\u7ed9\u6211\u62a5\u4e2a\u5230", model="gpt-5.5")
-    assert res["agent"] == "codex+claude-code"
-    assert res["model"] == ""
-    assert res["direct_agents"] == ["codex", "claude-code"]
-    assert store.get_session(res["session_id"]).agent_type == "codex+claude-code"
+    assert res["agent"] == "pm-agent"
+    assert res["model"] == "gpt-5.5"
+    assert res["direct_agents"] == []
+    assert store.get_session(res["session_id"]).agent_type == "pm-agent"
     await asyncio.gather(*list(svc._tasks))
 
-    assert [call[0] for call in runner.launched] == ["codex", "claude-code"]
-    assert [call[3] for call in runner.launched] == ["", ""]  # PM model is not a CLI model
-    assert all("不要通过 shell 调用其他编码 agent" in call[1] for call in runner.launched)
+    assert pm.plan_goal == "\u53ebcodex\u548cclaude\u7ed9\u6211\u62a5\u4e2a\u5230"
+    assert [call[0] for call in runner.launched] == ["codex"]
+    assert [call[3] for call in runner.launched] == [""]  # PM model is not a CLI model
     plans = [json.loads(e.payload_json) for e in store.get_events(res["session_id"]) if e.type == "pm_plan"]
-    assert [p["agent"] for p in plans] == ["codex", "claude-code"]
-    assert [p["summary"] for p in plans] == [
-        "Foreman 直接下发给 codex。",
-        "Foreman 直接下发给 claude-code。",
-    ]
+    assert [p["agent"] for p in plans] == ["codex"]
+    assert plans[0]["summary"] == "PM 已统一规划。"
 
 
-async def test_explicit_multi_agent_request_launches_before_waiting(tmp_path):
+async def test_pm_launches_selected_agent_before_waiting(tmp_path):
     store = _store(tmp_path)
 
     class FakePM:
         language = "en"
 
         async def plan(self, *_a, **_kw):
-            raise AssertionError("direct agent request should not call PM planning")
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="high",
+                instruction="PM-selected work",
+                summary="PM picked codex.",
+            )
+
+        async def review(self, *_args, **_kw):
+            return PMReview(done=True, summary="done")
 
     class FakeHandle:
         def __init__(self, agent, session_id):
@@ -728,7 +805,7 @@ async def test_explicit_multi_agent_request_launches_before_waiting(tmp_path):
     await svc.create("ask codex and claude to report", model="pm-model")
     await asyncio.wait_for(runner.wait_started.wait(), timeout=1)
     try:
-        assert runner.launched == ["codex", "claude-code"]
+        assert runner.launched == ["codex"]
     finally:
         runner.release_waits.set()
         await asyncio.gather(*list(svc._tasks))
