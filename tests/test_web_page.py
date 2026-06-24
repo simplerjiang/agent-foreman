@@ -170,6 +170,30 @@ if (noVisibleFields !== "") {
     subprocess.run(["node", "-e", script], check=True)
 
 
+def test_first_substantive_line_skips_common_opening_meta_text():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function isOpeningMetaLine")
+    end = js.index("// ---- markdown", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const cases = [
+  ["Let me inspect that first.\nActual fix summary", "Actual fix summary"],
+  ["Sure, I can help.\nUse the retry button after failure", "Use the retry button after failure"],
+  ["好的，我来检查。\n真正的摘要内容", "真正的摘要内容"],
+  ["我们需要先看日志。\n保留第二行", "保留第二行"],
+];
+for (const [input, expected] of cases) {
+  const actual = firstSubstantiveLine(input);
+  if (actual !== expected) {
+    console.error({ input, expected, actual });
+    process.exit(1);
+  }
+}
+'''
+    subprocess.run(["node", "-e", script], check=True)
+
+
 def test_session_controls_and_custom_delete_confirm_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
