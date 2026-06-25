@@ -1631,12 +1631,22 @@
     const loadDefinitions = useCallback(async () => { try { const path = defnFilter ? `/api/definitions?kind=${encodeURIComponent(defnFilter)}` : "/api/definitions"; setDefinitions(await api(path) || []); } catch (e) { setDefinitions([]); } }, [defnFilter]);
     const loadLlm = useCallback(async () => { try { const next = { ...(await api("/api/settings/llm")), api_key: "" }; setLlm(next); await loadPmModels(next); } catch (e) { /* server mode */ } }, [loadPmModels]);
     const loadAutonomy = useCallback(async () => { try { setAutonomyState((await api("/api/settings/autonomy")).level); } catch (e) { /* keep */ } }, []);
-    const loadCloud = useCallback(async () => {
+    const loadCloud = useCallback(async (opts = {}) => {
       try {
         const c = await api("/api/settings/cloud");
-        setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected });
+        // The 8s background poll must NOT clobber the user's in-progress typing: it only refreshes
+        // live status (connected / access_key_set), keeping the url + access_key fields as edited.
+        // A full reset happens only on explicit loads (boot / after save / connect / clear).
+        setCloud((prev) => opts.background
+          ? { ...prev, access_key_set: !!c.access_key_set, connected: !!c.connected }
+          : { url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected });
         setCloudAvailable(c.available !== false);
-      } catch (e) { setCloudAvailable(false); }
+      } catch (e) {
+        // A transient fetch error must NOT latch the card off: availability is a structural fact
+        // (the server's `available` flag), and the only post-boot caller is gated by `cloudAvailable`
+        // — so forcing it false here used to permanently stop cloud polling for the whole session
+        // after a single network blip. Leave it as-is; the next poll re-reads the real flag.
+      }
     }, []);
 
     // boot
@@ -1675,7 +1685,7 @@
           loadSessions();
           loadCards();
           loadApprovals();
-          if (cloudAvailable) loadCloud();
+          if (cloudAvailable) loadCloud({ background: true });
         }
       }, 8000);
       return () => clearInterval(id);

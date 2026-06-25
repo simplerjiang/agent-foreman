@@ -36,17 +36,27 @@
 
     <!-- Key management. Shown only after login. -->
     <section id="keys-pane" aria-label="Access keys" hidden>
+      <!-- Relay address: exactly what to paste into the local app's「云端连接 → 云端地址」.
+           Derived from THIS page's own origin (window.location) so it's always right — the
+           prod relay (foreman.kongsites.com) or any self-hosted box — with no server round-trip. -->
+      <div id="relay-card" class="card" style="margin-bottom:18px;">
+        <p style="margin:0 0 9px;"><strong data-i18n="relayAddr">Relay address</strong></p>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <code id="relay-url" class="input mono" style="flex:1;min-width:180px;background:var(--bg2);word-break:break-all;">—</code>
+          <button id="relay-copy" type="button" class="pill" data-i18n="copy">Copy</button>
+        </div>
+        <p class="hint" style="margin:9px 0 0;color:var(--muted);font-size:12.5px;" data-i18n="relayHint">把这串填进本地 App 的「云端连接 → 云端地址」，再配上下面生成的接入密钥即可连上。</p>
+      </div>
+
       <h2 data-i18n="mintKey">Generate access key</h2>
       <p class="hint" data-i18n="mintHint">一台机器一张，一个账号可发多张；丢了 / 换机可单独吊销。</p>
       <form id="mint-form">
-        <div class="defn-row">
-          <label><span data-i18n="label">Label (machine name)</span>
-            <input id="key-label" autocomplete="off" placeholder="我的台式机" />
-          </label>
-          <label><span data-i18n="expiresIn">Expires in (days, 0 = never)</span>
-            <input id="key-expiry" type="number" min="0" step="1" value="0" />
-          </label>
-        </div>
+        <label style="display:block;margin-bottom:11px;"><span data-i18n="label">Label (machine name)</span>
+          <input id="key-label" class="input" autocomplete="off" placeholder="我的台式机" required style="max-width:340px;margin-top:5px;" />
+        </label>
+        <label style="display:block;margin-bottom:13px;"><span data-i18n="expiresIn">Expires in (days, 0 = never)</span>
+          <input id="key-expiry" class="input" type="number" min="0" step="1" value="0" style="max-width:340px;margin-top:5px;" />
+        </label>
         <button type="submit" data-i18n="mintKey">Generate access key</button>
         <p id="mint-status" class="hint" hidden></p>
       </form>
