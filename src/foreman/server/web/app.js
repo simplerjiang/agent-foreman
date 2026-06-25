@@ -32,6 +32,9 @@
       personalMode: "个人模式 · 离线优先",
       selectSessionHint: "从左侧选择一个会话，或在下方下发新任务。",
       running: "运行中", live: "运行中", done: "完成", queued: "排队", cancelled: "已取消",
+      stalled: "已卡住",
+      reasonWallClock: "规划超时（墙钟）", reasonNoProgress: "长时间无进展",
+      reasonRepetition: "模型复读，已自动终止", reasonStalled: "规划被看门狗终止",
       autonomy: "自动权限", briefing: "生成简报", pmThinking: "PM 正在思考...",
       plan: "计划", approved: "已确认", active: "进行中",
       reply: "回复", commandsRun: "执行的命令", fileChanges: "文件改动",
@@ -128,6 +131,9 @@
       personalMode: "Personal · offline-first",
       selectSessionHint: "Pick a session on the left, or dispatch a new task below.",
       running: "RUNNING", live: "LIVE", done: "done", queued: "queued", cancelled: "cancelled",
+      stalled: "stalled",
+      reasonWallClock: "planning timed out (wall clock)", reasonNoProgress: "no progress for too long",
+      reasonRepetition: "model repeated its output — auto-aborted", reasonStalled: "planning aborted by watchdog",
       autonomy: "Autonomy", briefing: "Briefing", pmThinking: "PM is thinking...",
       plan: "Plan", approved: "approved", active: "active",
       reply: "Reply", commandsRun: "Commands run", fileChanges: "File changes",
@@ -715,7 +721,12 @@
         hidePmStatus();
         const out = terminalText(p);
         if (out) terminal.push({ kind: "err", text: out, ts: e.ts, agent: e.source });
-        nodes.push({ kind: "system", id: e.id || `e-${nodes.length}`, ts: e.ts, label: d.ev_error, tone: "red", text: p.msg || p.error || "" });
+        // Lead with a localized watchdog reason (wall-clock / no-progress / repetition) when the
+        // dispatch error carries one, then the raw technical message (T0.5).
+        const reasonLine = friendlyReason(p.reason, d);
+        const rawMsg = p.msg || p.error || "";
+        const errText = reasonLine && reasonLine !== rawMsg ? [reasonLine, rawMsg].filter(Boolean).join("\n\n") : rawMsg;
+        nodes.push({ kind: "system", id: e.id || `e-${nodes.length}`, ts: e.ts, label: d.ev_error, tone: "red", text: errText });
       } else if (t === "notification") {
         const label = p.label || p.title || (p.kind === "cancelled" ? d.sessionCanceled : d.notification);
         nodes.push({ kind: "system", id: e.id || `n-${nodes.length}`, ts: e.ts, label, tone: "muted", text: p.msg || p.text || "" });
@@ -806,15 +817,44 @@
     const st = String(status || "").toLowerCase();
     if (st.includes("run") || st.includes("active")) return d.running;
     if (st.includes("cancel")) return d.cancelled;
+    if (st.includes("stall")) return d.stalled;
     if (st.includes("fail") || st.includes("error")) return d.failed;
     if (st.includes("done") || st.includes("complete")) return d.done;
     if (st.includes("queue")) return d.queued;
     return status || "-";
   }
 
+  // Map a watchdog reason code (dispatch_service error payload) to a human line. Unknown codes
+  // fall back to the raw code so a new reason is never silently swallowed.
+  function friendlyReason(reason, d) {
+    const code = String(reason || "").trim().toLowerCase();
+    if (!code) return "";
+    if (code === "wall_clock_timeout") return d.reasonWallClock;
+    if (code === "no_progress_timeout") return d.reasonNoProgress;
+    if (code === "structured_repetition") return d.reasonRepetition;
+    return reason;
+  }
+
+  // Latest terminal-failure explanation for the header: the most recent `error` event's reason
+  // code (preferred), else a generic stalled note, else the raw message — so a hung/aborted PM
+  // turn always shows WHY instead of an empty spinner (T0.5).
+  function lastFailureReason(events, d) {
+    for (let i = (events || []).length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (!e || e.type !== "error") continue;
+      const p = e.payload || {};
+      const reason = friendlyReason(p.reason, d);
+      if (reason) return reason;
+      if (String(p.status || "").toLowerCase() === "stalled") return d.reasonStalled;
+      if (p.msg || p.error) return String(p.msg || p.error);
+      return "";
+    }
+    return "";
+  }
+
   function SessionItem({ s, d, lang, active, onClick }) {
     const st = (s.status || "").toLowerCase();
-    const dotColor = st.includes("run") || st.includes("active") ? "var(--accent)" : (s.pending_approvals || s.open_cards) ? "var(--amber)" : st.includes("done") || st.includes("complete") ? "var(--green)" : "var(--faint)";
+    const dotColor = st.includes("run") || st.includes("active") ? "var(--accent)" : (s.pending_approvals || s.open_cards) ? "var(--amber)" : st.includes("done") || st.includes("complete") ? "var(--green)" : st.includes("stall") || st.includes("fail") || st.includes("error") ? "var(--red)" : "var(--faint)";
     const live = st.includes("run") || st.includes("active");
     const metaBits = [s.agent_type || "-", sessionStatusLabel(s.status, d), formatTime(s.updated_at || s.last_event_ts || s.created_at, lang)].filter(Boolean);
     return html`
@@ -858,9 +898,14 @@
     const statusKey = status.replace(/[\s-]+/g, "_");
     const live = sessionRow && ["planning", "queued", "running", "active", "waiting_approval"].includes(statusKey);
     const failed = status.includes("fail") || status.includes("error");
+    const stalled = status.includes("stall");
     const cancelled = status.includes("cancel");
     const done = status.includes("done") || status.includes("complete");
-    const statusText = live ? d.running : cancelled ? d.cancelled : failed ? d.failed : done ? d.done : ((sessionRow && sessionRow.status) || "");
+    // A watchdog-aborted PM turn lands as `stalled`; surface it as a terminal failure (red tag +
+    // retry) so a hung plan never shows as a perpetual "running" spinner (T0.4 → T0.5).
+    const terminalFail = failed || stalled;
+    const statusText = live ? d.running : cancelled ? d.cancelled : stalled ? d.stalled : failed ? d.failed : done ? d.done : ((sessionRow && sessionRow.status) || "");
+    const failReason = terminalFail ? lastFailureReason(events, d) : "";
     const onBars = Math.max(0, Math.min(4, autonomy + 1));
     const autonomyName = d[`auto${autonomy}`] || `L${autonomy}`;
     return html`
@@ -869,9 +914,10 @@
           <div style=${{ minWidth: 0 }}>
             <div style=${{ display: "flex", alignItems: "center", gap: "9px" }}>
               <h2>${sessionRow ? (sessionRow.goal || sessionRow.id) : d.navWorkspace}</h2>
-              ${sessionRow ? html`<span className=${`tag ${failed ? "red" : done ? "green" : "plain"}`}><span className=${`dot${live ? " live" : ""}`} style=${{ background: failed ? "var(--red)" : done ? "var(--green)" : "var(--faint)" }}></span>${statusText}</span>` : null}
+              ${sessionRow ? html`<span className=${`tag ${terminalFail ? "red" : done ? "green" : "plain"}`} title=${failReason || ""}><span className=${`dot${live ? " live" : ""}`} style=${{ background: terminalFail ? "var(--red)" : done ? "var(--green)" : "var(--faint)" }}></span>${statusText}</span>` : null}
             </div>
             <div className="meta">${sessionRow ? `${shortPath(sessionRow.workspace, d)} · ${agentType}` : d.workspaceSubtitle}</div>
+            ${failReason ? html`<div className="meta" style=${{ color: "var(--red)" }}>${failReason}</div>` : null}
           </div>
           <div style=${{ flex: 1 }}></div>
           ${topControls}
@@ -883,7 +929,7 @@
           </div>
           <button className="btn" onClick=${onBriefing}>${d.briefing}</button>
           ${sessionRow && live ? html`<button className="btn danger" onClick=${() => onCancelSession(sessionRow.id)}>${d.cancelSession}</button>` : null}
-          ${sessionRow && failed ? html`<button className="btn primary" onClick=${() => onRetrySession(sessionRow)}>${d.retry}</button>` : null}
+          ${sessionRow && terminalFail ? html`<button className="btn primary" onClick=${() => onRetrySession(sessionRow)}>${d.retry}</button>` : null}
           ${sessionRow && !live ? html`<button className="btn" onClick=${() => onDeleteSession(sessionRow.id)}>${d.deleteSession}</button>` : null}
         </div>
 

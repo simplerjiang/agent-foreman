@@ -8,10 +8,15 @@ from threading import Thread
 
 from foreman.client.core.gate import Gate
 from foreman.client.tools import EXTERNAL_WEB, PMToolLoop, PMToolRuntime, ToolCall
-from foreman.client.tools.loop import _calls_from_json, validate_final_plan
+from foreman.client.tools.loop import (
+    SUBMIT_PLAN_TOOL,
+    _calls_from_json,
+    submit_plan_tool_spec,
+    validate_final_plan,
+)
 from foreman.client.tools.models import ToolRuntimeConfig
 from foreman.shared.config import Config, GatesCfg
-from foreman.shared.llm import Message
+from foreman.shared.llm import LLMToolCall, LLMToolResponse, Message
 
 
 class _TextHandler(BaseHTTPRequestHandler):
@@ -450,3 +455,149 @@ def test_json_fallback_accepts_flat_tool_arguments():
         ("browser_type", {"ref": "ref-2", "text": "hello"}),
         ("browser_click", {"ref": "ref-3"}),
     ]
+
+
+def test_submit_plan_tool_spec_constrains_agent_enum():
+    spec = submit_plan_tool_spec(["codex"])
+    assert spec["name"] == SUBMIT_PLAN_TOOL
+    schema = spec["input_schema"]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["agent"]["enum"] == ["codex"]
+    # Empty/None enabled set falls back to both supported agents.
+    assert submit_plan_tool_spec([])["input_schema"]["properties"]["agent"]["enum"] == [
+        "claude-code",
+        "codex",
+    ]
+
+
+class _ScriptedToolLLM:
+    """A ws-style LLM whose ``tool_complete`` returns pre-scripted tool calls per round and records
+    the ``tool_choice`` each round received (so the test can assert auto vs forced submit)."""
+
+    def __init__(self, scripted: list[LLMToolResponse]) -> None:
+        self.scripted = scripted
+        self.tool_choices: list[object] = []
+        self.tools_seen: list[list[str]] = []
+        self._round = 0
+
+    async def tool_complete(
+        self, messages, *, tools, model="", json_mode=False, tool_choice="auto", on_stream=None
+    ) -> LLMToolResponse:
+        self.tool_choices.append(tool_choice)
+        self.tools_seen.append([t["name"] for t in tools])
+        resp = self.scripted[min(self._round, len(self.scripted) - 1)]
+        self._round += 1
+        return resp
+
+
+def _submit_call(**overrides) -> LLMToolCall:
+    args = {
+        "summary": "ship it",
+        "agent": "codex",
+        "model": "",
+        "effort": "high",
+        "instruction": "do the work",
+        "todo": ["inspect"],
+        "deliberation": ["evidence read"],
+        "ready": True,
+    }
+    args.update(overrides)
+    return LLMToolCall(id="submit-1", name=SUBMIT_PLAN_TOOL, arguments=args)
+
+
+async def test_pm_loop_submit_plan_tool_terminates_on_auto_round(tmp_path: Path):
+    # T1.4: an evidence (auto) round can read a file, then the model calls submit_plan natively to
+    # terminate — the plan arrives as validated tool arguments, no regex over free text.
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+    scripted = [
+        LLMToolResponse(
+            text="",
+            tool_calls=[LLMToolCall(id="c1", name="read_file", arguments={"path": "README.md"})],
+        ),
+        LLMToolResponse(text="", tool_calls=[_submit_call()]),
+    ]
+    llm = _ScriptedToolLLM(scripted)
+    events: list[tuple[str, dict]] = []
+    outcome = await PMToolLoop(
+        llm, _runtime(tmp_path), max_rounds=6, on_tool_event=lambda t, p: events.append((t, p))
+    ).run(
+        [Message("user", "plan")],
+        fallback_plan={"agent": "codex", "model": "", "effort": "high", "instruction": "fallback"},
+        enabled_agents=["codex"],
+    )
+
+    assert outcome.incomplete is False
+    assert outcome.final_plan["summary"] == "ship it"
+    assert outcome.final_plan["instruction"] == "do the work"
+    assert outcome.final_plan["todo"] == ["inspect"]
+    # The evidence round really ran read_file, and submit_plan was offered as a tool on auto.
+    assert "read_file" in [p["tool"] for t, p in events if t == "tool_pre"]
+    assert SUBMIT_PLAN_TOOL in llm.tools_seen[0]
+    assert llm.tool_choices[0] == "auto"
+
+
+async def test_pm_loop_forces_submit_plan_on_final_round_no_fallback(tmp_path: Path):
+    # T1.4 root fix for #39: a model that would otherwise loop forever (always asking for more
+    # evidence — the repetition/stall shape) is FORCED to submit_plan on the final round, so the
+    # loop ends with a REAL plan instead of degrading to the conservative fallback.
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    evidence = LLMToolResponse(
+        text="", tool_calls=[LLMToolCall(id="e", name="read_file", arguments={"path": "a.txt"})]
+    )
+    submit = LLMToolResponse(text="", tool_calls=[_submit_call(instruction="forced plan")])
+
+    class _ForcedLLM:
+        def __init__(self) -> None:
+            self.tool_choices: list[object] = []
+
+        async def tool_complete(
+            self, messages, *, tools, model="", json_mode=False, tool_choice="auto", on_stream=None
+        ) -> LLMToolResponse:
+            self.tool_choices.append(tool_choice)
+            # Only submit when the loop forces the submit_plan tool_choice (final round).
+            if tool_choice == {"type": "function", "name": SUBMIT_PLAN_TOOL}:
+                return submit
+            return evidence
+
+    llm = _ForcedLLM()
+    outcome = await PMToolLoop(llm, _runtime(tmp_path), max_rounds=3).run(
+        [Message("user", "plan")],
+        fallback_plan={"agent": "codex", "model": "", "effort": "high", "instruction": "fallback"},
+        enabled_agents=["codex"],
+    )
+
+    assert outcome.incomplete is False  # did NOT degrade to fallback
+    assert outcome.final_plan["instruction"] == "forced plan"
+    assert llm.tool_choices[:2] == ["auto", "auto"]  # evidence rounds were auto
+    assert llm.tool_choices[2] == {"type": "function", "name": SUBMIT_PLAN_TOOL}  # final forced
+
+
+async def test_pm_loop_rejects_submit_plan_until_web_search_verified(tmp_path: Path):
+    # The web_search → verify guard must apply to the native submit_plan path too, not just the
+    # legacy final_plan text path: a submit_plan straight after web_search is rejected; once a
+    # local read verifies the leads, the next submit_plan is accepted.
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+    scripted = [
+        LLMToolResponse(
+            text="",
+            tool_calls=[LLMToolCall(id="s", name="web_search", arguments={"query": "foreman"})],
+        ),
+        LLMToolResponse(text="", tool_calls=[_submit_call(summary="too early")]),
+        LLMToolResponse(
+            text="",
+            tool_calls=[LLMToolCall(id="r", name="read_file", arguments={"path": "README.md"})],
+        ),
+        LLMToolResponse(text="", tool_calls=[_submit_call(summary="verified")]),
+    ]
+    llm = _ScriptedToolLLM(scripted)
+    rt = _runtime(tmp_path, web_search=True)
+    outcome = await PMToolLoop(llm, rt, max_rounds=6).run(
+        [Message("user", "plan")],
+        fallback_plan={"agent": "codex", "model": "", "effort": "high", "instruction": "fallback"},
+        enabled_agents=["codex"],
+    )
+
+    # The first submit (round 2) is rejected as unverified; the verified submit (round 4) lands.
+    assert [r for r in outcome.rounds if r.get("error") == "web_search_leads_unverified"]
+    assert outcome.incomplete is False
+    assert outcome.final_plan["summary"] == "verified"
