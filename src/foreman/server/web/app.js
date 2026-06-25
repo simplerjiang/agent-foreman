@@ -63,6 +63,11 @@
       confirmDeleteTitle: "确认删除", confirmDelete: "确定删除这条工作方式？", confirmSessionDelete: "确定删除这个会话及其本地记录？",
       deleteSession: "删除会话", cancelSession: "取消会话", sessionCanceled: "已取消会话", notification: "通知",
       sessionBusy: "会话仍有后台任务未结束，请稍后再删除。",
+      noContext: "当前会话还没有可压缩的上下文。",
+      noStore: "本地数据存储不可用，请重启 Foreman 后重试。",
+      sessionNotFound: "没有找到这个会话，请刷新后重试。",
+      requestDeclined: "操作未被执行，请检查当前状态后重试。",
+      networkError: "网络异常，请检查连接后重试。",
       badScopeJson: "适用范围必须是 JSON 对象，例如 {\"lang\":\"py\"}。",
       imported: "已导入", importFailed: "导入失败", exportFailed: "导出失败",
       workspaces: "工作区", projectPath: "项目路径", displayName: "显示名称", pathHint: "例如 E:\\AutoWorkAgent",
@@ -150,6 +155,11 @@
       confirmDeleteTitle: "Confirm delete", confirmDelete: "Delete this playbook item?", confirmSessionDelete: "Delete this session and its local records?",
       deleteSession: "Delete session", cancelSession: "Cancel session", sessionCanceled: "Session cancelled", notification: "Notification",
       sessionBusy: "A background task is still active; delete it after the task finishes.",
+      noContext: "This session has no context to compact yet.",
+      noStore: "Local storage is unavailable. Restart Foreman and try again.",
+      sessionNotFound: "This session was not found. Refresh and try again.",
+      requestDeclined: "The operation was not completed. Check the current state and try again.",
+      networkError: "Network error. Check the connection and try again.",
       badScopeJson: "Scope must be a JSON object, for example {\"lang\":\"py\"}.",
       imported: "Imported", importFailed: "Import failed", exportFailed: "Export failed",
       workspaces: "Workspaces", projectPath: "Project path", displayName: "Name", pathHint: "e.g. E:\\AutoWorkAgent",
@@ -269,12 +279,14 @@
   }
   function friendlyError(error, d) {
     const detail = String(error && error.message ? error.message : error || "");
+    if (/failed to fetch|networkerror|network error|load failed/i.test(detail)) return d.networkError;
     const map = {
       empty_goal: d.emptyGoal, no_workspace: d.dispatchNoWorkspace, workspace_not_allowed: d.workspaceMissing,
       unknown_agent: d.noEnabledAgent, no_enabled_agent: d.noEnabledAgent, no_dispatcher: d.noDispatcher,
       "no dispatcher": d.noDispatcher, no_llm: d.briefNoLlm, bad_scope_json: d.badScopeJson,
       not_configured: d.cloudNotConfigured, cloud_unavailable: d.cloudUnavailable,
-      session_busy: d.sessionBusy,
+      session_busy: d.sessionBusy, no_context: d.noContext, no_store: d.noStore,
+      session_not_found: d.sessionNotFound, decline: d.requestDeclined,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
   }
