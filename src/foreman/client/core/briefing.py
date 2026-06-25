@@ -22,6 +22,7 @@ from typing import Any
 
 from foreman.shared.events import make_event, utc_now_iso
 from foreman.shared.i18n import language_directive, normalize as normalize_lang
+from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
 
 from ..store.models import Report
@@ -54,28 +55,8 @@ def _as_str(value: object) -> str:
 
 
 def _extract_json_object(raw: str) -> dict | None:
-    """Pull the first JSON object out of an LLM reply (handles ```json fences / surrounding prose)."""
-    if not raw:
-        return None
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1] if "\n" in text else ""
-        if "```" in text:
-            text = text[: text.rfind("```")]
-        text = text.strip()
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except (ValueError, TypeError):
-        pass
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            obj = json.loads(text[start : end + 1])
-            return obj if isinstance(obj, dict) else None
-        except (ValueError, TypeError):
-            return None
-    return None
+    """First balanced JSON object in an LLM reply (fences / prose / repeats)."""
+    return first_json_object(raw)
 
 
 def parse_brief(raw: str, *, language: str = "zh") -> BriefingResult:

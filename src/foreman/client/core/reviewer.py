@@ -25,10 +25,10 @@ exercised here via a mock transport (see tests). The diff itself comes from the 
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
 from foreman.shared.i18n import language_directive
+from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
 
 # Verdicts (DESIGN §4.1). request_changes/escalate keep the agent honest; only approve continues.
@@ -79,30 +79,8 @@ def _as_str_list(value: object) -> list[str]:
 
 
 def _extract_json_object(raw: str) -> dict | None:
-    """Pull the first JSON object out of an LLM reply (handles ```json fences / surrounding prose)."""
-    if not raw:
-        return None
-    text = raw.strip()
-    if text.startswith("```"):
-        # Drop a leading ```/```json fence line and any trailing fence.
-        text = text.split("\n", 1)[-1] if "\n" in text else ""
-        if "```" in text:
-            text = text[: text.rfind("```")]
-        text = text.strip()
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except (ValueError, TypeError):
-        pass
-    # Fallback: grab the outermost {...} span and try that.
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            obj = json.loads(text[start : end + 1])
-            return obj if isinstance(obj, dict) else None
-        except (ValueError, TypeError):
-            return None
-    return None
+    """First balanced JSON object in an LLM reply (fences / prose / repeats)."""
+    return first_json_object(raw)
 
 
 def parse_review(raw: str) -> ReviewResult:

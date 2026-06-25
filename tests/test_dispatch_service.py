@@ -380,6 +380,34 @@ def test_parse_plan_extracts_todo_and_deliberation():
     assert plan.ready is False
 
 
+def test_parse_plan_recovers_from_repetition_loop():
+    # Regression for #39: the PM fell into a loop and emitted the same plan JSON
+    # 47x. The old "first { .. last }" slice spanned all 47 copies, failed to
+    # parse, and degraded to an empty fallback plan (instruction/todo lost). The
+    # early-cut must take the FIRST complete object instead.
+    one = {
+        "summary": "use codex",
+        "agent": "codex",
+        "effort": "high",
+        "instruction": "do the thing",
+        "todo": ["inspect", "test"],
+        "deliberation": ["codex has repo tools"],
+        "ready": True,
+    }
+    blob = (json.dumps(one) + "\n") * 47
+    plan = parse_plan(
+        blob,
+        enabled_agents=["codex"],
+        fallback_agent="codex",
+        fallback_model="",
+        fallback_effort="low",
+        fallback_instruction="FALLBACK-should-not-appear",
+    )
+    assert plan.summary == "use codex"
+    assert plan.instruction == "do the thing"  # real plan, not the fallback
+    assert plan.todo == ["inspect", "test"]
+
+
 async def test_create_runs_launcher_in_background(tmp_path):
     calls: list[tuple] = []
 
