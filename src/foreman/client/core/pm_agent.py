@@ -247,6 +247,54 @@ def _tool_loop_incomplete_summary(language: str) -> str:
     return "PM 未能在当前循环上限内完成规划，先使用保守计划继续。"
 
 
+def _simple_reply_plan(
+    goal: str,
+    *,
+    enabled_agents: list[str],
+    requested_agent: str,
+    requested_effort: str,
+    language: str,
+) -> PMPlan | None:
+    text = " ".join(str(goal or "").split())
+    lowered = text.lower()
+    if not text or len(text) > 80:
+        return None
+    work_terms = (
+        "修复", "实现", "文件", "代码", "测试", "部署", "提交", "合并", "issue", "pr", "bug",
+        "fix", "implement", "file", "code", "test", "deploy", "commit", "merge",
+    )
+    if any(term in lowered for term in work_terms):
+        return None
+    simple_terms = (
+        "确认收到", "收到本消息", "回复收到", "一句中文", "一句话", "报个到", "打个招呼",
+        "confirm receipt", "acknowledge", "say hello", "one sentence", "reply with",
+    )
+    if not any(term in lowered for term in simple_terms):
+        return None
+    allowed = [a for a in enabled_agents if a in VALID_AGENTS] or ["claude-code"]
+    agent = requested_agent if requested_agent in allowed else allowed[0]
+    effort = requested_effort if requested_effort in VALID_EFFORTS else "low"
+    if normalize_lang(language) == "en":
+        return PMPlan(
+            agent=agent,
+            model="",
+            effort=effort,
+            instruction=f"Reply directly to the user as requested. Do not inspect files or run tools. User request: {text}",
+            summary="Simple reply request; skipped PM tool planning.",
+            todo=["Reply directly as requested"],
+            deliberation=["The request needs no repository evidence or tool planning."],
+        )
+    return PMPlan(
+        agent=agent,
+        model="",
+        effort=effort,
+        instruction=f"按用户要求直接回复。不要查看文件、运行工具或修改代码。用户原话：{text}",
+        summary="简单回复请求，已跳过 PM 工具规划。",
+        todo=["直接按要求回复用户"],
+        deliberation=["该请求不需要仓库证据或工具规划。"],
+    )
+
+
 def build_plan_prompt(
     goal: str,
     *,
@@ -477,6 +525,15 @@ class PMAgent:
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
         enabled = [_as_str(a.get("name")) for a in available_agents]
+        simple_plan = _simple_reply_plan(
+            goal,
+            enabled_agents=enabled,
+            requested_agent=requested_agent,
+            requested_effort=requested_effort,
+            language=self.language,
+        )
+        if simple_plan is not None:
+            return simple_plan
         if self.tool_runtime_factory is not None:
             runtime = self.tool_runtime_factory(workspace)
             # Attach the per-task work-mode resolver so work_mode_search / work_mode_get can pull

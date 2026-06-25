@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import cast
 
 import typer
@@ -67,6 +68,7 @@ def app_cmd(
         raise typer.Exit(code=1) from None
     rprint(f"[bold green]Foreman[/] online — {local.url}  (close the window to go offline)")
 
+    _apply_webview_capture_safe_flags()
     try:
         import webview  # pywebview, in the .[client] extra (imported lazily — desktop only)
     except ImportError:
@@ -106,6 +108,7 @@ def _open_window(url: str) -> None:
     """Open a native window onto an already-running local server (no engine of our own). Falls back
     to a hint when pywebview isn't installed (headless build). Closing this window leaves the
     running instance untouched — we never started it, so we don't stop it."""
+    _apply_webview_capture_safe_flags()
     try:
         import webview  # pywebview, in the .[client] extra (imported lazily — desktop only)
     except ImportError:
@@ -120,6 +123,20 @@ def _open_window(url: str) -> None:
         min_size=WINDOW_MIN_SIZE,
     )
     webview.start()  # blocks until this window is closed
+
+
+def _apply_webview_capture_safe_flags() -> None:
+    """Opt-in WebView2 software-composition fallback for capture tools that see a black window."""
+    if os.environ.get("FOREMAN_WEBVIEW_CAPTURE_SAFE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
+    flags = ["--disable-gpu", "--disable-gpu-compositing"]
+    existing = os.environ.get(key, "")
+    parts = existing.split()
+    for flag in flags:
+        if flag not in parts:
+            parts.append(flag)
+    os.environ[key] = " ".join(parts).strip()
 
 
 def _focus_existing_window(title: str) -> bool:
