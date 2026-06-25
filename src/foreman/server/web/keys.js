@@ -261,18 +261,39 @@ async function doRevoke(id) {
 async function init() {
   applyLang();
 
-  // Show the relay dial-in address and let the user copy it with one click.
+  // Show the relay dial-in address and let the user copy it with one click. The async clipboard
+  // API only exists in a secure context (https / localhost); on a plain-http self-hosted relay it's
+  // undefined, so fall back to selecting the <code> and execCommand('copy'). If even that fails we
+  // leave the text highlighted so the user can just hit Ctrl/⌘-C.
   const relay = relayUrl();
-  $('relay-url').textContent = relay;
+  const relayBox = $('relay-url');
+  relayBox.textContent = relay;
+  const selectRelay = () => {
+    const range = document.createRange();
+    range.selectNodeContents(relayBox);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  };
+  let copyResetTimer = 0;
   $('relay-copy').addEventListener('click', async () => {
     const btn = $('relay-copy');
+    let ok = false;
     try {
-      await navigator.clipboard.writeText(relay);
-      btn.textContent = t('copied');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(relay);
+        ok = true;
+      } else {
+        selectRelay();
+        ok = !!(document.execCommand && document.execCommand('copy'));
+      }
     } catch (e) {
-      btn.textContent = t('copyFail');
+      try { selectRelay(); ok = !!(document.execCommand && document.execCommand('copy')); } catch (e2) { ok = false; }
     }
-    setTimeout(() => { btn.textContent = t('copy'); }, 1600);
+    if (!ok) selectRelay();  // last resort: leave it selected for a manual copy
+    btn.textContent = t(ok ? 'copied' : 'copyFail');
+    clearTimeout(copyResetTimer);  // don't let an earlier timer clear a later click's feedback
+    copyResetTimer = setTimeout(() => { btn.textContent = t('copy'); }, 1600);
   });
 
   $('lang-toggle').addEventListener('click', () => {

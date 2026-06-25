@@ -1582,7 +1582,12 @@
           ? { ...prev, access_key_set: !!c.access_key_set, connected: !!c.connected }
           : { url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected });
         setCloudAvailable(c.available !== false);
-      } catch (e) { setCloudAvailable(false); }
+      } catch (e) {
+        // A transient fetch error must NOT latch the card off: availability is a structural fact
+        // (the server's `available` flag), and the only post-boot caller is gated by `cloudAvailable`
+        // — so forcing it false here used to permanently stop cloud polling for the whole session
+        // after a single network blip. Leave it as-is; the next poll re-reads the real flag.
+      }
     }, []);
 
     // boot
