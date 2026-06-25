@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from foreman.shared.i18n import language_directive, normalize as normalize_lang
+from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
 
 from .context_compression import context_pack_to_text, parse_context_pack
@@ -157,27 +158,8 @@ def _accepts_keyword(fn, name: str) -> bool:
 
 
 def _extract_json_object(raw: str) -> dict | None:
-    text = (raw or "").strip()
-    if not text:
-        return None
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1] if "\n" in text else ""
-        if "```" in text:
-            text = text[: text.rfind("```")]
-        text = text.strip()
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except (TypeError, ValueError):
-        pass
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            obj = json.loads(text[start : end + 1])
-            return obj if isinstance(obj, dict) else None
-        except (TypeError, ValueError):
-            return None
-    return None
+    """First balanced JSON object in an LLM reply (fences / prose / repeats)."""
+    return first_json_object(raw)
 
 
 def parse_plan(

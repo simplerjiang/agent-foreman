@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
 
 from .models import EXTERNAL_WEB, ToolCall, ToolResult
@@ -265,27 +266,8 @@ def validate_final_plan(
 
 
 def _extract_json_object(raw: str) -> dict[str, Any] | None:
-    text = (raw or "").strip()
-    if not text:
-        return None
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1] if "\n" in text else ""
-        if "```" in text:
-            text = text[: text.rfind("```")]
-        text = text.strip()
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except (TypeError, ValueError):
-        pass
-    start, end = text.find("{"), text.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            obj = json.loads(text[start : end + 1])
-            return obj if isinstance(obj, dict) else None
-        except (TypeError, ValueError):
-            return None
-    return None
+    """First balanced JSON object in an LLM reply (fences / prose / repeats)."""
+    return first_json_object(raw)
 
 
 def _calls_from_json(obj: dict[str, Any] | None) -> list[ToolCall]:

@@ -45,10 +45,10 @@ the Operator (revise) / Gate+card (escalate) is the decision loop in T4.3+.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
 from foreman.shared.i18n import language_directive
+from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
 
 # Verdicts (DESIGN §6.7 / §7.1 audits.verdict). escalate is the default-on-doubt / default-on-danger.
@@ -127,28 +127,8 @@ def _as_str_list(value: object) -> list[str]:
 
 
 def _extract_json_object(raw: str) -> dict | None:
-    """Pull the first JSON object out of an LLM reply (handles ```json fences / surrounding prose)."""
-    if not raw:
-        return None
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1] if "\n" in text else ""
-        if "```" in text:
-            text = text[: text.rfind("```")]
-        text = text.strip()
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except (ValueError, TypeError):
-        pass
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            obj = json.loads(text[start : end + 1])
-            return obj if isinstance(obj, dict) else None
-        except (ValueError, TypeError):
-            return None
-    return None
+    """First balanced JSON object in an LLM reply (fences / prose / repeats)."""
+    return first_json_object(raw)
 
 
 def _synthesize_verdict(verdict: str, goal_quality: str, risk_severity: str) -> str:
