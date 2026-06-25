@@ -502,15 +502,25 @@
   function MemberView({ me, onLogout, dark, onToggleTheme }) {
     const procs = useAsync(() => api("/api/processes"));
     const keys = useAsync(() => api("/api/keys"));
+    const [minting, setMinting] = useState(false);
+    const [form] = A.Form.useForm();
 
-    const newKey = async () => {
+    // Relay 接入地址：本机进程拨号的总机 WS 端点。http→ws / https→wss，路径固定 /relay
+    // (server: @app.websocket("/relay"); client/core/cloud.py 也接受裸 host 自动补 /relay)。
+    const relayUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/relay";
+
+    const onMint = async (v) => {
       try {
-        const r = await api("/api/keys", { method: "POST", body: { label: "" } });
+        const body = { label: (v.label || "").trim() };
+        if (v.expires_in_days) body.expires_in_days = Number(v.expires_in_days);
+        const r = await api("/api/keys", { method: "POST", body });
+        setMinting(false);
+        form.resetFields();
+        keys.reload();
         ui.modal && ui.modal.info({
           title: "新的访问密钥（仅显示一次）",
           content: html`<${A.Typography.Paragraph} copyable=${{ text: r.key }} style=${{ fontFamily: "monospace", wordBreak: "break-all" }}>${r.key}</${A.Typography.Paragraph}>`,
         });
-        keys.reload();
       } catch (e) { toast.err("创建失败: " + e.message); }
     };
     const revoke = async (id) => { try { await api("/api/keys/" + id, { method: "DELETE" }); toast.ok("已吊销"); keys.reload(); } catch (e) { toast.err(e.message); } };
@@ -535,7 +545,11 @@
                 { title: "最后心跳", dataIndex: "last_heartbeat", render: fmtTime },
               ]} dataSource=${procs.data || []} />
           </${A.Card}>
-          <${A.Card} title="访问密钥" extra=${html`<${A.Button} size="small" type="primary" onClick=${newKey}>新建密钥</${A.Button}>`}>
+          <${A.Card} size="small" style=${{ marginBottom: 16 }}>
+            <${A.Typography.Text} type="secondary" style=${{ fontSize: 12 }}>Relay 接入地址 · 复制到本机 Foreman「云端连接设置 → 云端地址」</${A.Typography.Text}>
+            <${A.Typography.Paragraph} copyable=${{ text: relayUrl }} style=${{ fontFamily: "monospace", margin: "4px 0 0", wordBreak: "break-all" }}>${relayUrl}</${A.Typography.Paragraph}>
+          </${A.Card}>
+          <${A.Card} title="访问密钥" extra=${html`<${A.Button} size="small" type="primary" onClick=${() => setMinting(true)}>新建密钥</${A.Button}>`}>
             <${A.Table} rowKey="id" loading=${keys.loading} pagination=${false} size="small"
               locale=${{ emptyText: "还没有访问密钥" }}
               columns=${[
@@ -545,6 +559,22 @@
                 { title: "操作", key: "ops", render: (_, r) => (r.active ? html`<${A.Popconfirm} title="吊销该密钥？" onConfirm=${() => revoke(r.id)} okText="吊销" cancelText="取消"><${A.Button} size="small" danger>吊销</${A.Button}></${A.Popconfirm}>` : null) },
               ]} dataSource=${keys.data || []} />
           </${A.Card}>
+          <${A.Modal} title="新建访问密钥" open=${minting} onCancel=${() => setMinting(false)} onOk=${() => form.submit()} okText="生成" cancelText="取消" destroyOnClose>
+            <${A.Form} form=${form} layout="vertical" onFinish=${onMint} requiredMark=${false} preserve=${false} initialValues=${{ expires_in_days: 0 }}>
+              <${A.Form.Item} name="label" label="标签" rules=${[{ required: true, message: "请给这台机器起个标签，便于日后辨认 / 吊销" }]}>
+                <${A.Input} placeholder="例如：我的台式机" maxLength=${60} autoFocus />
+              </${A.Form.Item}>
+              <${A.Form.Item} name="expires_in_days" label="有效期" tooltip="到期后该密钥自动失效；选「永久」则永不过期。">
+                <${A.Select} options=${[
+                  { value: 0, label: "永久" },
+                  { value: 7, label: "7 天" },
+                  { value: 30, label: "30 天" },
+                  { value: 90, label: "90 天" },
+                  { value: 365, label: "365 天" },
+                ]} />
+              </${A.Form.Item}>
+            </${A.Form}>
+          </${A.Modal}>
         </${A.Layout.Content}>
       </${A.Layout}>`;
   }
