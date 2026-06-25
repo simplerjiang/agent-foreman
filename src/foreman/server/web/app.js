@@ -92,6 +92,7 @@
       cloudNotConfigured: "请先填写云端地址和接入密钥。",
       cloudKeyHint: "已配置接入密钥。输入新密钥后保存可替换；留空不修改。", cloudKeyMissing: "未配置接入密钥。",
       cloudUnavailable: "当前服务不支持云端连接（仅本机 app 可用）。",
+      remoteExec: "允许远端执行", remoteExecHelp: "开启后，已连接的云端可向本机派发任务 / 审批并真正执行（高风险，仅在你信任的总机上开启）。关闭时云端只能远程查看，不在本机执行任何命令。",
       machine: "机器", machineOffline: "目标机器离线，请先让本机连接云端。", relayUnavailable: "云端总机不可用。",
       remoteDisabled: "本机未开启远端执行。", remoteProcessRequired: "请选择目标机器。", remoteRateLimited: "远端请求过快，请稍后再试。",
       notificationsWaiting: "有待处理事项",
@@ -187,6 +188,7 @@
       cloudNotConfigured: "Enter the cloud URL and access key first.",
       cloudKeyHint: "Access key set. Enter a new key and save to replace it; blank keeps it.", cloudKeyMissing: "No access key configured.",
       cloudUnavailable: "This service does not support cloud connection (local app only).",
+      remoteExec: "Allow remote execution", remoteExecHelp: "When on, the connected cloud can dispatch tasks / approvals to this machine and actually run them (high-risk; enable only on a relay you trust). When off, the cloud can only view remotely — no commands run on this machine.",
       machine: "Machine", machineOffline: "The target machine is offline. Connect the PC to the cloud relay first.", relayUnavailable: "The relay is unavailable.",
       remoteDisabled: "Remote execution is disabled on the PC.", remoteProcessRequired: "Choose a target machine.", remoteRateLimited: "Remote requests are rate limited. Try again shortly.",
       notificationsWaiting: "Pending items",
@@ -221,7 +223,11 @@
   // ---------------------------------------------------------------------------
   // token + fetch
   // ---------------------------------------------------------------------------
-  const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
+  // Team members reach this dashboard via the console (admin-app.js, served at /app.html), which
+  // stores its session token under "foreman_token". Fall back to it so arriving from
+  // 「我的机器 → 控制」 keeps the member logged in instead of bouncing to the raw-token prompt.
+  // (Personal mode never sets that key, so the fallback is a no-op there.)
+  const getToken = () => localStorage.getItem(TOKEN_KEY) || localStorage.getItem("foreman_token") || "";
   const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
   let promptedForToken = false;
   function promptForToken() {
@@ -1229,7 +1235,7 @@
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
       pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
-      cloud, setCloud, saveCloud, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
+      cloud, setCloud, saveCloud, saveRemoteExec, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2, setLang } = props;
     const updateAgent = (name, patch) => setAgentSettings((rows) => (rows || []).map((r) => (r.name === name ? { ...r, ...patch } : r)));
     const updatePmTools = (patch) => setPmTools((cur) => ({ ...(cur || {}), ...patch }));
@@ -1360,6 +1366,11 @@
         <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.cloudUrl}</span><input className="input mono" value=${cloud.url || ""} onChange=${(e) => setCloud({ ...cloud, url: e.target.value })} placeholder="wss://foreman.yourteam.dev/relay" disabled=${!cloudAvailable} /></div>
         <div className="field" style=${{ marginBottom: 11 }}><span className="field-label">${d.accessKey}</span><input className="input mono" type="password" value=${cloud.access_key || ""} onChange=${(e) => setCloud({ ...cloud, access_key: e.target.value })} placeholder=${cloud.access_key_set ? "••••••••••••" : "fk_live_…"} disabled=${!cloudAvailable} /></div>
         <div className="alert info" style=${{ marginBottom: 14 }}>ⓘ ${d.accessKeyHint}</div>
+        <label className="field" style=${{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 6, cursor: cloudAvailable ? "pointer" : "default" }}>
+          <input type="checkbox" checked=${!!cloud.remote_execution_enabled} disabled=${!cloudAvailable} onChange=${(e) => saveRemoteExec(e.target.checked)} style=${{ marginTop: 3 }} />
+          <span style=${{ fontWeight: 600 }}>${d.remoteExec}</span>
+        </label>
+        <div className="card-sub" style=${{ marginBottom: 14 }}>${d.remoteExecHelp}</div>
         ${cloudStatus ? html`<div className=${`alert ${cloudStatus.includes(d.connFailed) ? "error" : "ok"}`} style=${{ marginBottom: 14 }}>${cloudStatus}</div>` : null}
         <div style=${{ display: "flex", gap: 9 }}>
           <button className="btn" onClick=${saveCloud} disabled=${!cloudAvailable}>${d.save}</button>
@@ -1537,7 +1548,7 @@
     const [agentStatus, setAgentStatus] = useState("");
     const [pmTools, setPmTools] = useState({ file_read: true, file_write: false, shell: false, web_fetch: false, web_search: false, browser: false, allowed_commands: ["python --version"], allowed_origins: [], web_search_provider: "duckduckgo", searxng_url: "", browser_headless: false, max_rounds: 6 });
     const [pmToolsStatus, setPmToolsStatus] = useState("");
-    const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false });
+    const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false, remote_execution_enabled: false });
     const [cloudStatus, setCloudStatus] = useState("");
     const [cloudAvailable, setCloudAvailable] = useState(true);
     const [teamMode, setTeamMode] = useState(false);
@@ -1638,8 +1649,8 @@
         // live status (connected / access_key_set), keeping the url + access_key fields as edited.
         // A full reset happens only on explicit loads (boot / after save / connect / clear).
         setCloud((prev) => opts.background
-          ? { ...prev, access_key_set: !!c.access_key_set, connected: !!c.connected }
-          : { url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected });
+          ? { ...prev, access_key_set: !!c.access_key_set, connected: !!c.connected, remote_execution_enabled: !!c.remote_execution_enabled }
+          : { url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected, remote_execution_enabled: !!c.remote_execution_enabled });
         setCloudAvailable(c.available !== false);
       } catch (e) {
         // A transient fetch error must NOT latch the card off: availability is a structural fact
@@ -1962,8 +1973,18 @@
         const body = { url: (cloud.url || "").trim() };
         if ((cloud.access_key || "").trim()) body.access_key = cloud.access_key.trim();
         const c = await api("/api/settings/cloud", { method: "POST", body });
-        setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected }); setCloudStatus(d.saved);
+        setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected, remote_execution_enabled: !!c.remote_execution_enabled }); setCloudStatus(d.saved);
       } catch (e) { setCloudStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
+    }
+    async function saveRemoteExec(enabled) {
+      setCloud((p) => ({ ...p, remote_execution_enabled: enabled }));  // optimistic — the checkbox follows the click
+      try {
+        const c = await api("/api/settings/cloud", { method: "POST", body: { remote_execution_enabled: enabled } });
+        setCloud((p) => ({ ...p, remote_execution_enabled: !!c.remote_execution_enabled })); setCloudStatus(d.saved);
+      } catch (e) {
+        setCloud((p) => ({ ...p, remote_execution_enabled: !enabled }));  // revert on failure
+        setCloudStatus(`${d.saveFailed}: ${friendlyError(e, d)}`);
+      }
     }
     async function connectCloud() {
       setCloudStatus(d.connecting);
@@ -1975,7 +1996,7 @@
       catch (e) { notifyError(e); }
     }
     async function clearCloudKey() {
-      try { const c = await api("/api/settings/cloud", { method: "POST", body: { access_key: "" } }); setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected }); setCloudStatus(d.saved); }
+      try { const c = await api("/api/settings/cloud", { method: "POST", body: { access_key: "" } }); setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected, remote_execution_enabled: !!c.remote_execution_enabled }); setCloudStatus(d.saved); }
       catch (e) { setCloudStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
     }
 
@@ -2018,7 +2039,7 @@
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
       pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
-      cloud, setCloud, saveCloud, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
+      cloud, setCloud, saveCloud, saveRemoteExec, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2: lang, setLang, onPush: enablePush,
     };
     const decisionsProps = { d, lang, cards: openCards, approvals, onCard, onApproval: decideApproval, openDetail, onGoSession: openTimeline };
