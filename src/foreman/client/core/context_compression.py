@@ -10,6 +10,8 @@ import copy
 import json
 from typing import Any, Iterable, cast
 
+from foreman.shared.jsonscan import first_json_object
+
 
 CONTEXT_PACK_VERSION = 1
 DEFAULT_CONTEXT_BUDGET_CHARS = 12000
@@ -66,28 +68,14 @@ FIELD_KIND = {
 
 
 def extract_json_object(raw: str) -> dict | None:
-    """Extract a JSON object from a model reply."""
-    text = (raw or "").strip()
-    if not text:
-        return None
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1] if "\n" in text else ""
-        if "```" in text:
-            text = text[: text.rfind("```")]
-        text = text.strip()
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except (TypeError, ValueError):
-        pass
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            obj = json.loads(text[start : end + 1])
-            return obj if isinstance(obj, dict) else None
-        except (TypeError, ValueError):
-            return None
-    return None
+    """First balanced JSON object in a compactor reply (fences / prose / repeats).
+
+    Shares the early-cut scanner with every other PM parser (T0.2/T0.6): a repeated or
+    prose-wrapped compactor reply now yields the FIRST complete object instead of the old
+    "first ``{`` → last ``}``" slice, which concatenated repeats into invalid JSON and
+    silently dropped the whole pack to the conservative fallback.
+    """
+    return first_json_object(raw)
 
 
 def parse_context_pack(

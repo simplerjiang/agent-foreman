@@ -17,6 +17,62 @@ from .runtime import PMToolRuntime
 ToolEventSink = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 StreamSink = Callable[[dict[str, Any]], Awaitable[None] | None]
 
+# A1 terminal tool (design §5). The PM gathers evidence with the runtime tools on `auto` rounds,
+# then calls `submit_plan` exactly once to emit the launch plan. Forcing `tool_choice` to it on the
+# submit round makes plan repetition impossible at the protocol level — the turn ends on one
+# complete tool_use block, not on parsing free text that a stalled model may repeat (#39).
+SUBMIT_PLAN_TOOL = "submit_plan"
+_SUBMIT_PLAN_CHOICE = {"type": "function", "name": SUBMIT_PLAN_TOOL}
+_DEFAULT_PLAN_AGENTS = ("claude-code", "codex")
+
+
+def submit_plan_tool_spec(enabled_agents: list[str] | None = None) -> dict[str, Any]:
+    """Schema for the terminal ``submit_plan`` tool; ``agent`` is constrained to the enabled set.
+
+    Fields mirror ``PMPlan`` so ``validate_final_plan`` (and downstream ``parse_plan``) need no
+    change: the only difference is the plan dict now arrives as validated tool arguments instead of
+    a regex-sliced text blob. ``maxItems``/``maxLength`` are the structural bounds that replace the
+    old token ceiling.
+    """
+    agents = [agent for agent in (enabled_agents or []) if agent] or list(_DEFAULT_PLAN_AGENTS)
+    return {
+        "name": SUBMIT_PLAN_TOOL,
+        "description": "Emit exactly one launch plan for the selected coding agent. Call once.",
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "summary", "agent", "effort", "instruction", "todo", "deliberation", "ready",
+            ],
+            "properties": {
+                "summary": {"type": "string", "maxLength": 600},
+                "agent": {"type": "string", "enum": agents},
+                "model": {"type": "string", "maxLength": 80},
+                "effort": {"type": "string", "enum": ["low", "medium", "high", ""]},
+                "instruction": {"type": "string", "maxLength": 6000},
+                "todo": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {"type": "string", "maxLength": 200},
+                },
+                "deliberation": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {"type": "string", "maxLength": 300},
+                },
+                "ready": {"type": "boolean"},
+            },
+        },
+    }
+
+
+def _submit_plan_args(calls: list[ToolCall]) -> dict[str, Any] | None:
+    """Return the arguments of the first ``submit_plan`` tool call (the plan), else None."""
+    for call in calls:
+        if call.name == SUBMIT_PLAN_TOOL and isinstance(call.arguments, dict):
+            return call.arguments
+    return None
+
 
 @dataclass
 class ToolLoopOutcome:
@@ -54,16 +110,31 @@ class PMToolLoop:
         rounds: list[dict[str, Any]] = []
         search_needs_verification = False
         for round_no in range(1, self.max_rounds + 1):
-            response = await self._complete(transcript, model=model)
+            # Evidence rounds let the model pick any tool (auto); the final round forces the terminal
+            # submit_plan so a repeated/stalled stream still ends with a real plan instead of silently
+            # degrading to the conservative fallback (A1, T1.4 — root fix for #39).
+            force_submit = round_no >= self.max_rounds
+            response = await self._complete(
+                transcript,
+                model=model,
+                enabled_agents=enabled_agents,
+                tool_choice=_SUBMIT_PLAN_CHOICE if force_submit else "auto",
+            )
             calls = response["tool_calls"]
             raw = response["text"]
             obj = _extract_json_object(raw)
             if not calls:
                 calls = _calls_from_json(obj)
-            if obj and str(obj.get("type") or "").strip() == "final_plan":
+            # Terminal plan: a native submit_plan tool call (preferred — args ARE the plan, no regex)
+            # OR the legacy final_plan JSON in text (back-compat until the regex path is removed in
+            # T3.1). Both validate through the same schema, so PMPlan semantics are unchanged.
+            plan_args = _submit_plan_args(calls)
+            if plan_args is None and obj and str(obj.get("type") or "").strip() == "final_plan":
+                plan_args = obj
+            if plan_args is not None:
                 try:
                     plan = validate_final_plan(
-                        obj,
+                        plan_args,
                         enabled_agents=enabled_agents,
                         fallback_plan=fallback_plan,
                     )
@@ -71,8 +142,8 @@ class PMToolLoop:
                     transcript.append(
                         Message(
                             "user",
-                            f"Final plan validator rejected the response: {exc}. "
-                            "Return a corrected final_plan or call tools for more evidence.",
+                            f"Plan validator rejected the response: {exc}. "
+                            "Call submit_plan with corrected arguments or call tools for evidence.",
                         )
                     )
                     rounds.append({"round": round_no, "error": str(exc)})
@@ -82,26 +153,28 @@ class PMToolLoop:
                     transcript.append(
                         Message(
                             "user",
-                            "Final plan validator rejected the response: "
+                            "Plan validator rejected the response: "
                             f"{reason}. web_search returns leads only; call fetch_url on a "
-                            "source or use local evidence before final_plan.",
+                            "source or use local evidence before submit_plan.",
                         )
                     )
                     rounds.append({"round": round_no, "error": reason})
                     continue
                 return ToolLoopOutcome(plan, rounds=rounds)
-            if not calls:
+            # Otherwise run the requested evidence tools (submit_plan, if any, was terminal above).
+            evidence_calls = [call for call in calls if call.name != SUBMIT_PLAN_TOOL]
+            if not evidence_calls:
                 transcript.append(
                     Message(
                         "user",
-                        "Protocol error: respond with JSON final_plan or tool_calls. "
+                        "Protocol error: call submit_plan to finish or request evidence tools. "
                         "Do not invent tool results.",
                     )
                 )
                 rounds.append({"round": round_no, "error": "no_tool_calls_or_final_plan"})
                 continue
             results: list[ToolResult] = []
-            for idx, call in enumerate(calls, start=1):
+            for idx, call in enumerate(evidence_calls, start=1):
                 if not call.id:
                     call.id = f"call-{round_no}-{idx}"
                 await self._emit("tool_pre", _call_payload(call, taint))
@@ -117,7 +190,7 @@ class PMToolLoop:
             rounds.append(
                 {
                     "round": round_no,
-                    "tool_calls": [_call_payload(call, taint) for call in calls],
+                    "tool_calls": [_call_payload(call, taint) for call in evidence_calls],
                     "tool_results": [result.to_dict() for result in results],
                 }
             )
@@ -127,7 +200,7 @@ class PMToolLoop:
                     json.dumps(
                         {
                             "type": "tool_calls",
-                            "tool_calls": [_transcript_call(call) for call in calls],
+                            "tool_calls": [_transcript_call(call) for call in evidence_calls],
                         },
                         ensure_ascii=False,
                     ),
@@ -138,7 +211,7 @@ class PMToolLoop:
                     "user",
                     "# Runtime-generated tool_results\n"
                     + json.dumps([result.to_dict() for result in results], ensure_ascii=False)
-                    + "\nReturn final_plan when enough evidence exists. "
+                    + "\nCall submit_plan when enough evidence exists. "
                     + "Never fabricate tool results. If a result has invalid_args or "
                     + "missing_or_unknown_ref, correct the next tool call arguments. "
                     + "For browser_click/browser_type, use a ref or exact name from the latest "
@@ -153,24 +226,23 @@ class PMToolLoop:
         plan["tool_loop_incomplete"] = True
         return ToolLoopOutcome(plan, rounds=rounds, incomplete=True)
 
-    async def _complete(self, messages: list[Message], *, model: str) -> dict[str, Any]:
+    async def _complete(
+        self,
+        messages: list[Message],
+        *,
+        model: str,
+        enabled_agents: list[str],
+        tool_choice: object = "auto",
+    ) -> dict[str, Any]:
         if hasattr(self.llm, "tool_complete"):
             tools = [spec.to_native() for spec in self.runtime.specs()]
+            tools.append(submit_plan_tool_spec(enabled_agents))
+            kwargs: dict[str, Any] = {"tools": tools, "model": model, "json_mode": True}
+            if _accepts_keyword(self.llm.tool_complete, "tool_choice"):
+                kwargs["tool_choice"] = tool_choice
             if self.on_stream is not None and _accepts_keyword(self.llm.tool_complete, "on_stream"):
-                native = await self.llm.tool_complete(
-                    messages,
-                    tools=tools,
-                    model=model,
-                    json_mode=True,
-                    on_stream=self.on_stream,
-                )
-            else:
-                native = await self.llm.tool_complete(
-                    messages,
-                    tools=tools,
-                    model=model,
-                    json_mode=True,
-                )
+                kwargs["on_stream"] = self.on_stream
+            native = await self.llm.tool_complete(messages, **kwargs)
             return {
                 "text": native.text,
                 "tool_calls": [
@@ -218,7 +290,11 @@ def build_tool_prompt_context(runtime: PMToolRuntime) -> str:
                     "deliberation": ["short visible note"],
                     "ready": True,
                 },
-                "rule": "Only runtime-generated tool_results are evidence.",
+                "rule": (
+                    "Only runtime-generated tool_results are evidence. To finish, call the "
+                    "submit_plan tool with the plan fields (preferred); the final_plan JSON above "
+                    "is a legacy fallback for transports without native tool calls."
+                ),
             },
         },
         ensure_ascii=False,

@@ -1,6 +1,11 @@
 import json
 
-from foreman.client.core.context_compression import context_pack_to_text, normalize_context_pack
+from foreman.client.core.context_compression import (
+    context_pack_to_text,
+    extract_json_object,
+    normalize_context_pack,
+    parse_context_pack,
+)
 
 
 def test_context_pack_budget_fallback_stays_valid_json():
@@ -61,3 +66,26 @@ def test_context_pack_budget_keeps_constraints_and_verified_facts_first():
     assert data["working_memory"]["constraints"][0]["text"].startswith("Do not deploy")
     assert data["working_memory"]["verified_facts"][0]["text"] == "pytest failed in test_auth.py"
     assert data["omitted"]
+
+
+def test_extract_json_object_recovers_from_repetition_loop():
+    # Regression for #39 (T0.6): a stalled compactor that repeats the SAME pack object N times
+    # used to slice first "{" → last "}", concatenate them into invalid JSON, and drop the whole
+    # pack to the conservative fallback. Early-cut now takes the FIRST complete object.
+    one = {"session_state": {"goal_quote": "ship auth", "summary": "use codex"}}
+    blob = (json.dumps(one, ensure_ascii=False) + "\n") * 47
+
+    obj = extract_json_object(blob)
+    assert obj == one
+
+    pack = parse_context_pack(blob, goal="ship auth", timeline="raw events")
+    # Not the fallback: the fallback injects a telltale open question.
+    questions = [q.get("text", "") for q in pack["working_memory"]["open_questions"]]
+    assert not any("fallback" in q.lower() for q in questions)
+    assert pack["session_state"]["summary"] == "use codex"
+
+
+def test_extract_json_object_unwraps_code_fence():
+    # T0.6: compactor sometimes wraps the pack in a ```json fence; early-cut still finds it.
+    fenced = '```json\n{"session_state": {"summary": "wrapped"}}\n```'
+    assert extract_json_object(fenced) == {"session_state": {"summary": "wrapped"}}

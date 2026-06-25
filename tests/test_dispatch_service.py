@@ -409,6 +409,35 @@ def test_parse_plan_recovers_from_repetition_loop():
     assert plan.todo == ["inspect", "test"]
 
 
+def test_parse_plan_accepts_tool_arguments_dict():
+    # T1.5: a submit_plan tool call hands parse_plan a dict directly (no regex over text). The
+    # PMPlan field semantics must be identical to the legacy text path.
+    args = {
+        "summary": "from tool",
+        "agent": "codex",
+        "model": "gpt-5.5",
+        "effort": "high",
+        "instruction": "do it",
+        "todo": ["a", "b"],
+        "deliberation": ["because evidence"],
+        "ready": True,
+    }
+    plan = parse_plan(
+        args,
+        enabled_agents=["codex"],
+        fallback_agent="codex",
+        fallback_model="",
+        fallback_effort="low",
+        fallback_instruction="FALLBACK-should-not-appear",
+    )
+    assert plan.summary == "from tool"
+    assert plan.instruction == "do it"
+    assert plan.todo == ["a", "b"]
+    assert plan.model == "gpt-5.5"
+    assert plan.effort == "high"
+    assert plan.deliberation == ["because evidence"]
+
+
 async def test_create_runs_launcher_in_background(tmp_path):
     calls: list[tuple] = []
 

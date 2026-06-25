@@ -163,7 +163,7 @@ def _extract_json_object(raw: str) -> dict | None:
 
 
 def parse_plan(
-    raw: str,
+    raw: str | dict,
     *,
     enabled_agents: list[str],
     fallback_agent: str,
@@ -171,7 +171,9 @@ def parse_plan(
     fallback_effort: str,
     fallback_instruction: str,
 ) -> PMPlan:
-    obj = _extract_json_object(raw) or {}
+    # A1 path (T1.5): a submit_plan tool call already hands us validated arguments as a dict — take
+    # it directly, no regex. A str still runs the early-cut scanner for the legacy text protocol.
+    obj = raw if isinstance(raw, dict) else (_extract_json_object(raw) or {})
     allowed = [a for a in enabled_agents if a in VALID_AGENTS] or [fallback_agent]
     agent = _as_str(obj.get("agent"))
     if agent not in allowed:
