@@ -525,6 +525,14 @@
     };
     const revoke = async (id) => { try { await api("/api/keys/" + id, { method: "DELETE" }); toast.ok("已吊销"); keys.reload(); } catch (e) { toast.err(e.message); } };
 
+    // 「控制」入口：把成员送进真正的控制台 PWA（index.html → app.js），那里有目标机器选择 +
+    // 远端派发 / 审批 / 快照。同源 localStorage，所以先把要操控的机器写进 app.js 的 PROCESS_KEY
+    // （"foreman.process"），让控制台开屏即选中这台；token 由 app.js 回落读 "foreman_token" 自动带过去。
+    const control = (row) => {
+      if (row && row.id) localStorage.setItem("foreman.process", row.id);
+      location.href = "/index.html";
+    };
+
     return html`
       <${A.Layout} style=${{ minHeight: "100vh" }}>
         <${A.Layout.Header} style=${{ padding: "0 16px", display: "flex", alignItems: "center", background: dark ? "#1f1f1f" : "#fff" }}>
@@ -543,7 +551,9 @@
                 { title: "机器", dataIndex: "name", render: (t) => t || "—" },
                 { title: "状态", dataIndex: "online", render: (o) => html`<${A.Badge} status=${o ? "success" : "default"} text=${o ? "在线" : "离线"} />` },
                 { title: "最后心跳", dataIndex: "last_heartbeat", render: fmtTime },
+                { title: "操作", key: "ops", width: 96, render: (_, r) => html`<${A.Tooltip} title=${r.online ? "进入控制台：远程查看会话 / 派发任务 / 审批" : "机器离线，无法控制"}><${A.Button} size="small" type="link" disabled=${!r.online} onClick=${() => control(r)}>控制</${A.Button}></${A.Tooltip}>` },
               ]} dataSource=${procs.data || []} />
+            <${A.Typography.Text} type="secondary" style=${{ fontSize: 12 }}>点「控制」进入控制台：可远程查看该机器的会话与卡片；要远程派发任务 / 审批，需先在该机器本地 Foreman 开启「远端执行」。</${A.Typography.Text}>
           </${A.Card}>
           <${A.Card} size="small" style=${{ marginBottom: 16 }}>
             <${A.Typography.Text} type="secondary" style=${{ fontSize: 12 }}>Relay 接入地址 · 复制到本机 Foreman「云端连接设置 → 云端地址」</${A.Typography.Text}>

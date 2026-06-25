@@ -170,6 +170,20 @@ def test_remote_control_ui_wires_process_target_and_approve_endpoint():
     assert "machine-select" in js and ".m-machine" in css
 
 
+def test_member_console_has_control_entry_into_dashboard():
+    """A team member's 我的机器 card must offer a 「控制」 entry into the control dashboard, and the
+    dashboard must accept the console session token so the hand-off does not log the member out."""
+    c = TestClient(create_app(load_config()))
+    admin_js = c.get("/admin-app.js").text
+    app_js = c.get("/app.js").text
+    # MemberView: per-machine 控制 button → seed the dashboard's target machine + navigate to it.
+    assert "控制" in admin_js
+    assert 'localStorage.setItem("foreman.process"' in admin_js
+    assert 'location.href = "/index.html"' in admin_js
+    # Dashboard authenticates from the console session ("foreman_token") instead of prompting.
+    assert 'localStorage.getItem("foreman_token")' in app_js
+
+
 def test_dispatch_model_picker_and_no_explicit_agent():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

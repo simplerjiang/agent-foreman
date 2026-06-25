@@ -221,7 +221,11 @@
   // ---------------------------------------------------------------------------
   // token + fetch
   // ---------------------------------------------------------------------------
-  const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
+  // Team members reach this dashboard via the console (admin-app.js, served at /app.html), which
+  // stores its session token under "foreman_token". Fall back to it so arriving from
+  // 「我的机器 → 控制」 keeps the member logged in instead of bouncing to the raw-token prompt.
+  // (Personal mode never sets that key, so the fallback is a no-op there.)
+  const getToken = () => localStorage.getItem(TOKEN_KEY) || localStorage.getItem("foreman_token") || "";
   const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
   let promptedForToken = false;
   function promptForToken() {
