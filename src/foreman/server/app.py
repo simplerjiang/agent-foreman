@@ -24,7 +24,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from foreman.shared.autonomy import level_label, normalize_level
-from foreman.shared.config import AgentCfg, Config, PMToolsCfg, WorkspaceCfg, default_agents
+from foreman.shared.config import (
+    REMOTE_EXEC_SETTING,
+    AgentCfg,
+    Config,
+    PMToolsCfg,
+    WorkspaceCfg,
+    default_agents,
+    remote_execution_enabled,
+)
 from foreman.shared.events import AgentEvent, EventBus, utc_now_iso
 from foreman.shared.i18n import normalize as normalize_lang
 from foreman.shared.protocol import KIND_SNAPSHOT_REQ, Envelope, command_envelope, new_id
@@ -229,6 +237,9 @@ class _CloudSettingsBody(BaseModel):
 
     url: str | None = None
     access_key: str | None = None
+    # The per-machine remote-execution breaker (§8.5). None leaves it as-is; True/False persists the
+    # owner's choice to config_kv. Read live by the relay gate (client/core/cloud.py), default OFF.
+    remote_execution_enabled: bool | None = None
 
 
 class _BriefBody(BaseModel):
@@ -1314,6 +1325,11 @@ def create_app(
             "access_key_set": bool((cfg.secrets.cloud_access_key or "").strip()),
             "connected": bool(cloud.status().get("connected")) if cloud is not None else False,
             "error": (cloud.status().get("error") if cloud is not None else "") or "",
+            # Effective remote-exec breaker (config_kv override else cfg baseline) — the same value the
+            # gate enforces, so the toggle in the UI reflects what actually happens (§8.5).
+            "remote_execution_enabled": remote_execution_enabled(
+                store, bool(getattr(cfg.server, "remote_execution_enabled", False))
+            ),
         }
         if extra:
             out.update(extra)
@@ -1333,10 +1349,14 @@ def create_app(
             store.set_setting("cloud.url", body.url.strip())
         if body.access_key is not None:
             _save_cloud_key(body.access_key)
+        if body.remote_execution_enabled is not None:
+            store.set_setting(REMOTE_EXEC_SETTING, "1" if body.remote_execution_enabled else "0")
         # Reconcile the live link with the saved config: a changed/cleared URL or key must not leave
         # the old relay connection — connected OR still retrying in the background — alive with stale
-        # credentials (codex review). Drop any dialer on save; the user reconnects via Connect.
-        if cloud is not None:
+        # credentials (codex review). Drop any dialer on save; the user reconnects via Connect. A pure
+        # remote-exec toggle must NOT tear down a live connection — the gate reads it per command, so
+        # the change takes effect without reconnecting.
+        if cloud is not None and (body.url is not None or body.access_key is not None):
             await asyncio.to_thread(cloud.disconnect)
         return _cloud_state()
 

@@ -163,6 +163,24 @@ async def test_cloud_manager_command_disabled_by_default():
     assert reply.payload == {"ok": False, "error": "disabled"}
 
 
+async def test_cloud_manager_command_enabled_via_config_kv():
+    """Toggling 允许远端执行 (config_kv override) lets a command past the breaker without a restart —
+    the gate reads the effective flag per command, so the next frame is no longer 'disabled'."""
+    cfg = load_config()
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    store = FakeStore()
+    store.set_setting("cloud.remote_execution_enabled", "1")
+    mgr = CloudManager(store=store, cfg=cfg)
+    env = Envelope(kind=KIND_COMMAND, id="cmd-on", seq=1, nonce="n", ts=1.0)
+    attach_mac(env, hashlib.sha256(b"fk_live_test").hexdigest())
+    reply = await mgr._on_frame(env)
+    assert reply.kind == KIND_ACK
+    # Past the breaker: no app loop is bound in this unit, so it reaches the runner and reports
+    # not_ready — the point is it is NOT 'disabled'.
+    assert reply.payload != {"ok": False, "error": "disabled"}
+    assert reply.payload == {"ok": False, "error": "not_ready"}
+
+
 async def test_cloud_manager_replay_check_happens_before_idempotency_cache():
     cfg = load_config()
     cfg.secrets.cloud_access_key = "fk_live_test"
@@ -256,6 +274,47 @@ def test_cloud_endpoints_save_and_status(tmp_path):
     # disconnect is idempotent → offline
     off = c.post("/api/settings/cloud/disconnect").json()
     assert off["connected"] is False
+
+
+def test_remote_execution_enabled_helper_override_and_parse():
+    """The shared resolver: config_kv override wins over the cfg baseline; truthiness is lenient."""
+    from foreman.shared.config import remote_execution_enabled
+
+    s = FakeStore()
+    assert remote_execution_enabled(s, default=False) is False
+    assert remote_execution_enabled(s, default=True) is True  # no override → baseline
+    assert remote_execution_enabled(None, default=True) is True  # no store → baseline
+    s.set_setting("cloud.remote_execution_enabled", "1")
+    assert remote_execution_enabled(s, default=False) is True
+    s.set_setting("cloud.remote_execution_enabled", "0")
+    assert remote_execution_enabled(s, default=True) is False  # override wins over a True baseline
+
+
+def test_cloud_remote_execution_toggle_persists_without_dropping_connection(tmp_path):
+    cfg = load_config(tmp_path / "none.yaml")
+    cfg.env_path = str(tmp_path / ".env")
+    store = FakeStore()
+    mgr = CloudManager(store=store, cfg=cfg, connector_factory=_factory(ack_ok=True))
+    c = TestClient(create_app(cfg, store=store, cloud=mgr))
+
+    # default OFF, surfaced in status so the UI toggle reflects the gate
+    assert c.get("/api/settings/cloud").json()["remote_execution_enabled"] is False
+
+    # configure + connect a live link
+    c.post("/api/settings/cloud", json={"url": "wss://relay.example/relay", "access_key": "fk_live_abc"})
+    assert c.post("/api/settings/cloud/connect").json()["connected"] is True
+
+    # toggle ON: persists to config_kv, reported effective, and a pure toggle must NOT drop the link
+    on = c.post("/api/settings/cloud", json={"remote_execution_enabled": True}).json()
+    assert on["remote_execution_enabled"] is True
+    assert on["connected"] is True
+    assert store.get_setting("cloud.remote_execution_enabled") == "1"
+
+    # toggle OFF likewise persists and keeps the connection
+    off = c.post("/api/settings/cloud", json={"remote_execution_enabled": False}).json()
+    assert off["remote_execution_enabled"] is False
+    assert off["connected"] is True
+    assert store.get_setting("cloud.remote_execution_enabled") == "0"
 
 
 def test_cloud_endpoints_unavailable_without_manager(tmp_path):

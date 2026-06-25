@@ -184,6 +184,16 @@ def test_member_console_has_control_entry_into_dashboard():
     assert 'localStorage.getItem("foreman_token")' in app_js
 
 
+def test_local_dashboard_has_remote_execution_toggle():
+    """The machine owner can grant/revoke remote execution from the local 云端连接 card; the toggle
+    POSTs the breaker flag and reads it back from /api/settings/cloud."""
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "saveRemoteExec" in js
+    assert "remote_execution_enabled" in js
+    assert "d.remoteExec" in js and "remoteExec:" in js
+
+
 def test_dispatch_model_picker_and_no_explicit_agent():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

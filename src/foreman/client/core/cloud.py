@@ -27,6 +27,7 @@ import uuid
 from typing import Any, Callable
 
 from foreman.client.relay import RelayAuthError, RelayConnector
+from foreman.shared.config import remote_execution_enabled
 from foreman.shared.events import AgentEvent
 from foreman.shared.protocol import (
     KIND_ACK,
@@ -215,7 +216,10 @@ class CloudManager:
         cached = self._ack_cache.get(env.id)
         if cached is not None:
             return Envelope(kind=KIND_ACK, id=env.id, payload=cached)
-        if not bool(getattr(getattr(self._cfg, "server", None), "remote_execution_enabled", False)):
+        # Effective breaker: config_kv override (toggled live from 本机 Settings → 云端连接) wins over
+        # the cfg baseline. Read per command so the owner can grant/revoke remote control instantly.
+        cfg_default = bool(getattr(getattr(self._cfg, "server", None), "remote_execution_enabled", False))
+        if not remote_execution_enabled(self._store, cfg_default):
             return self._ack(env, ok=False, error="disabled")
         try:
             result = await self._run_remote_command(env.payload)

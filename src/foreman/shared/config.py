@@ -253,6 +253,25 @@ class Config(BaseModel):
     env_path: str = ""
 
 
+# config_kv key for the per-machine remote-execution breaker (DESIGN §8.5). Stored as "1"/"0" so the
+# machine owner can toggle 「允许远端执行」 live from the local Settings → 云端连接 card (no restart).
+REMOTE_EXEC_SETTING = "cloud.remote_execution_enabled"
+
+
+def remote_execution_enabled(store: object, default: bool) -> bool:
+    """Effective remote-command breaker. A config_kv override (toggled live from the local UI) wins
+    over the cfg baseline (ServerCfg.remote_execution_enabled, default OFF). Shared by the client
+    gate (cloud.py, which decides whether to run an inbound command) and the settings API
+    (server/app.py, which reports + persists the flag) so the key + truthiness parse never drift
+    across the §14 boundary. Read per command, so a flip takes effect without a restart."""
+    get = getattr(store, "get_setting", None)
+    if callable(get):
+        raw = get(REMOTE_EXEC_SETTING)
+        if raw is not None and str(raw).strip() != "":
+            return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    return bool(default)
+
+
 def load_config(path: str | Path = "config.yaml") -> Config:
     """Load config.yaml (falling back to defaults if absent) and merge secrets from .env."""
     data: dict = {}
