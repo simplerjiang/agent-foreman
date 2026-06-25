@@ -90,6 +90,9 @@
       cloudUrl: "云端地址", accessKey: "接入密钥 Access Key", accessKeyHint: "在云端 /keys.html 生成，一机一张、可单独吊销。",
       connect: "连接", disconnect: "断开", connecting: "连接中…", notConnected: "未连接", connFailed: "连接失败",
       cloudNotConfigured: "请先填写云端地址和接入密钥。",
+      cloudAuthFailed: "接入密钥无效或已吊销，请在云端 /keys.html 重新生成。",
+      cloudTimeout: "连接超时，请检查网络、代理或云端地址。",
+      cloudUnreachable: "无法连接云端，请检查网络、代理或云端地址。",
       cloudKeyHint: "已配置接入密钥。输入新密钥后保存可替换；留空不修改。", cloudKeyMissing: "未配置接入密钥。",
       cloudUnavailable: "当前服务不支持云端连接（仅本机 app 可用）。",
       machine: "机器", machineOffline: "目标机器离线，请先让本机连接云端。", relayUnavailable: "云端总机不可用。",
@@ -185,6 +188,9 @@
       cloudUrl: "Cloud URL", accessKey: "Access key", accessKeyHint: "Mint one at /keys.html on the relay — one per machine, individually revocable.",
       connect: "Connect", disconnect: "Disconnect", connecting: "Connecting…", notConnected: "Not connected", connFailed: "Connection failed",
       cloudNotConfigured: "Enter the cloud URL and access key first.",
+      cloudAuthFailed: "The access key is invalid or revoked. Generate a new key at /keys.html.",
+      cloudTimeout: "Connection timed out. Check the network, proxy, or cloud URL.",
+      cloudUnreachable: "Could not reach the cloud relay. Check the network, proxy, or cloud URL.",
       cloudKeyHint: "Access key set. Enter a new key and save to replace it; blank keeps it.", cloudKeyMissing: "No access key configured.",
       cloudUnavailable: "This service does not support cloud connection (local app only).",
       machine: "Machine", machineOffline: "The target machine is offline. Connect the PC to the cloud relay first.", relayUnavailable: "The relay is unavailable.",
@@ -296,7 +302,8 @@
       session_not_found: d.sessionNotFound, decline: d.requestDeclined,
       machine_offline: d.machineOffline, relay_unavailable: d.relayUnavailable,
       disabled: d.remoteDisabled, process_required: d.remoteProcessRequired,
-      rate_limited: d.remoteRateLimited,
+      rate_limited: d.remoteRateLimited, auth: d.cloudAuthFailed,
+      timeout: d.cloudTimeout, unreachable: d.cloudUnreachable,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
   }

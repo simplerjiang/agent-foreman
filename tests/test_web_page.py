@@ -79,6 +79,7 @@ const d = {
   sessionNotFound: "session missing", requestDeclined: "declined", networkError: "network",
   machineOffline: "offline", relayUnavailable: "relay", remoteDisabled: "remote disabled",
   remoteProcessRequired: "process", remoteRateLimited: "limited",
+  cloudAuthFailed: "cloud auth", cloudTimeout: "cloud timeout", cloudUnreachable: "cloud unreachable",
 };
 for (const [code, expected] of Object.entries({
   no_context: "no context",
@@ -90,6 +91,9 @@ for (const [code, expected] of Object.entries({
   disabled: "remote disabled",
   process_required: "process",
   rate_limited: "limited",
+  auth: "cloud auth",
+  timeout: "cloud timeout",
+  unreachable: "cloud unreachable",
 })) {
   const actual = friendlyError(new Error(code), d);
   if (actual !== expected || actual === code) {
