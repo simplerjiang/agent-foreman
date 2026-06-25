@@ -9,7 +9,8 @@ class Session(SQLModel, table=True):
     id: str = Field(primary_key=True)
     goal: str
     plan: str = ""
-    status: str = "planning"  # planning|running|idle|blocked|waiting_approval|done|failed|cancelled|paused
+    # planning|running|idle|blocked|waiting_approval|done|failed|stalled|cancelled|paused
+    status: str = "planning"
     workspace: str = ""
     agent_type: str = ""  # claude-code|codex
     created_at: str = ""

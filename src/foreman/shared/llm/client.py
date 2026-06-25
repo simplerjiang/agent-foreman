@@ -20,6 +20,7 @@ import inspect
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -47,6 +48,15 @@ class LLMToolResponse:
 
 class LLMConfigError(RuntimeError):
     """Raised before a request when the PM brain is not configured enough to call."""
+
+
+class LLMStalledError(RuntimeError):
+    """Raised when a streaming LLM turn is aborted by Foreman's call-level watchdog."""
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        self.reason = reason
+        message = reason if not detail else f"{reason}: {detail}"
+        super().__init__(message)
 
 
 StreamCallback = Callable[[dict], Awaitable[None] | None]
@@ -177,12 +187,17 @@ class LLMClient:
     ) -> str:
         """Return the assistant's text. Set json_mode=True to nudge structured JSON output.
 
-        On the ws transport json_mode is a no-op (the Responses path has no response_format; callers
-        already instruct the model to emit JSON and parse tolerantly)."""
+        On the ws transport json_mode still does not request provider-side response_format, but it
+        enables Foreman's structured repetition watchdog for JSON-shaped PM streams."""
         provider, base_url, model = self._resolve(model)
         if self._transport_mode() == "ws":
             return await self._responses_ws(
-                messages, base_url, model, on_stream=on_stream, state_key=state_key
+                messages,
+                base_url,
+                model,
+                json_mode=json_mode,
+                on_stream=on_stream,
+                state_key=state_key,
             )
         if provider == "anthropic":
             return await self._anthropic(messages, json_mode, base_url, model)
@@ -196,22 +211,25 @@ class LLMClient:
         json_mode: bool = False,
         model: str = "",
         on_stream: StreamCallback | None = None,
+        tool_choice: object | None = "auto",
     ) -> LLMToolResponse:
-        """Return assistant text plus provider-native tool calls when the transport supports them.
-
-        The Responses WebSocket path currently returns plain text and lets the PM loop use its JSON
-        fallback protocol. This keeps the existing WS stream contract small and avoids pretending
-        tool results were acknowledged by the provider when Foreman owns the runtime execution.
-        """
+        """Return assistant text plus provider-native tool calls when the transport supports them."""
         provider, base_url, model = self._resolve(model)
         if self._transport_mode() == "ws":
-            text = await self.complete(
-                messages, json_mode=json_mode, model=model, on_stream=on_stream
+            return await self._responses_ws_tool(
+                messages,
+                base_url,
+                model,
+                tools=tools,
+                tool_choice=tool_choice,
+                json_mode=json_mode,
+                on_stream=on_stream,
             )
-            return LLMToolResponse(text=text, tool_calls=[])
         if provider == "anthropic":
             return await self._anthropic_tools(messages, tools, base_url, model)
-        return await self._openai_tools(messages, tools, json_mode, base_url, model)
+        return await self._openai_tools(
+            messages, tools, json_mode, base_url, model, tool_choice=tool_choice
+        )
 
     async def list_models(self) -> list[str]:
         """Return model ids from the configured PM provider's `/models` endpoint.
@@ -272,14 +290,17 @@ class LLMClient:
         json_mode: bool,
         base_url: str,
         model: str,
+        *,
+        tool_choice: object | None = "auto",
     ) -> LLMToolResponse:
         payload: dict = {
             "model": model,
             "max_tokens": self.max_tokens,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "tools": [_openai_tool_schema(tool) for tool in tools],
-            "tool_choice": "auto",
         }
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         effort = self._reasoning_effort()
@@ -402,27 +423,61 @@ class LLMClient:
         base_url: str,
         model: str,
         *,
+        json_mode: bool = False,
         on_stream: StreamCallback | None = None,
         state_key: str = "",
     ) -> str:
         """Run one turn over the Responses-API WebSocket and return the accumulated assistant text.
 
-        Sends a `response.create` frame; accumulates `response.output_text.delta` deltas; stops at
-        `response.completed`; raises on an `error` frame or if the stream closes early. Each receive
-        is bounded by the configured request timeout so a stalled upstream can't hang the loop."""
+        The whole turn is bounded by a wall-clock watchdog. JSON-mode streams also get a small
+        structured repetition detector so PM-style repeated objects fail loudly instead of hanging.
+        """
         previous_id = self._response_state.get(state_key, "") if state_key else ""
         try:
-            return await self._responses_ws_once(
-                messages, base_url, model, on_stream=on_stream, state_key=state_key,
+            out = await self._responses_ws_once(
+                messages,
+                base_url,
+                model,
+                json_mode=json_mode,
+                on_stream=on_stream,
+                state_key=state_key,
                 previous_response_id=previous_id,
             )
+            return out.text
         except RuntimeError as exc:
             if not previous_id or "previous_response" not in str(exc).lower():
                 raise
             self._response_state.pop(state_key, None)
-            return await self._responses_ws_once(
-                messages, base_url, model, on_stream=on_stream, state_key=state_key
+            out = await self._responses_ws_once(
+                messages,
+                base_url,
+                model,
+                json_mode=json_mode,
+                on_stream=on_stream,
+                state_key=state_key,
             )
+            return out.text
+
+    async def _responses_ws_tool(
+        self,
+        messages: list[Message],
+        base_url: str,
+        model: str,
+        *,
+        tools: list[dict],
+        tool_choice: object | None,
+        json_mode: bool = False,
+        on_stream: StreamCallback | None = None,
+    ) -> LLMToolResponse:
+        return await self._responses_ws_once(
+            messages,
+            base_url,
+            model,
+            tools=tools,
+            tool_choice=tool_choice,
+            json_mode=json_mode,
+            on_stream=on_stream,
+        )
 
     async def _responses_ws_once(
         self,
@@ -430,10 +485,13 @@ class LLMClient:
         base_url: str,
         model: str,
         *,
+        tools: list[dict] | None = None,
+        tool_choice: object | None = None,
+        json_mode: bool = False,
         on_stream: StreamCallback | None = None,
         state_key: str = "",
         previous_response_id: str = "",
-    ) -> str:
+    ) -> LLMToolResponse:
         instructions, items = _messages_to_responses_input(messages)
         request: dict = {
             "type": "response.create",
@@ -451,44 +509,120 @@ class LLMClient:
             request["previous_response_id"] = previous_response_id
         if instructions:
             request["instructions"] = instructions
+        if tools:
+            request["tools"] = [_responses_tool_schema(tool) for tool in tools]
+            if tool_choice is not None:
+                request["tool_choice"] = _responses_tool_choice(tool_choice)
         headers = {"Authorization": f"Bearer {self._api_key()}"}
         buf: list[str] = []
+        tool_items: dict[str, dict[str, Any]] = {}
+        last_tool_key = ""
         reasoning_streamed = False
         response_id = ""
+        wall_timeout = max(float(self.timeout or 0), 0.001)
+        stall_timeout = min(30.0, max(15.0, wall_timeout / 2))
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        last_progress_at = started_at
+        repeat_watch = _StructuredRepeatWatch() if json_mode else None
         async with self._ws_connect(_ws_url(base_url), headers, self.timeout) as ws:
             await ws.send(json.dumps(request))
-            while True:
-                raw = await asyncio.wait_for(ws.recv(), self.timeout)
-                try:
-                    obj = json.loads(raw)
-                except (TypeError, ValueError):
-                    continue  # ignore a non-JSON keepalive/marker frame
-                etype = obj.get("type")
-                response_id = _response_id(obj) or response_id
-                chunk = _stream_chunk(obj)
-                if chunk is not None and on_stream is not None:
-                    if chunk["kind"] == "reasoning":
-                        reasoning_streamed = True
-                    await _call_stream(on_stream, chunk)
-                if etype == "response.output_text.delta":
-                    buf.append(str(obj.get("delta", "")))
-                elif etype == "response.completed":
-                    if on_stream is not None and not reasoning_streamed:
-                        for text in _completed_reasoning_summaries(obj):
-                            await _call_stream(
-                                on_stream,
-                                {
-                                    "kind": "reasoning",
-                                    "delta": text,
-                                    "event_type": str(etype or ""),
-                                },
-                            )
-                    break
-                elif etype == "error":
-                    raise RuntimeError(f"responses ws error: {obj.get('error')}")
+            try:
+                while True:
+                    timeout = _recv_timeout(
+                        loop, started_at, last_progress_at, wall_timeout, stall_timeout
+                    )
+                    raw = await asyncio.wait_for(ws.recv(), timeout)
+                    try:
+                        obj = json.loads(raw)
+                    except (TypeError, ValueError):
+                        _check_watchdog(
+                            loop, started_at, last_progress_at, wall_timeout, stall_timeout
+                        )
+                        continue  # ignore a non-JSON keepalive/marker frame
+                    etype = str(obj.get("type") or "")
+                    response_id = _response_id(obj) or response_id
+                    chunk = _stream_chunk(obj)
+                    made_progress = chunk is not None or _is_ws_progress_event(etype)
+                    if chunk is not None and on_stream is not None:
+                        if chunk["kind"] == "reasoning":
+                            reasoning_streamed = True
+                        await _call_stream(on_stream, chunk)
+                    if etype == "response.output_text.delta":
+                        delta = str(obj.get("delta", ""))
+                        buf.append(delta)
+                        if repeat_watch is not None:
+                            reason = repeat_watch.feed(delta)
+                            if reason:
+                                raise LLMStalledError(
+                                    reason, "stream emitted another complete JSON object"
+                                )
+                    elif etype == "response.output_item.added":
+                        key = _merge_ws_tool_item(tool_items, obj, fallback=last_tool_key)
+                        last_tool_key = key or last_tool_key
+                    elif etype == "response.function_call_arguments.delta":
+                        key = _ws_tool_key(obj, fallback=last_tool_key)
+                        if key:
+                            item = tool_items.setdefault(key, _new_ws_tool_state(key))
+                            item["arguments_parts"].append(str(obj.get("delta") or ""))
+                            last_tool_key = key
+                    elif etype == "response.function_call_arguments.done":
+                        key = _ws_tool_key(obj, fallback=last_tool_key)
+                        if key:
+                            item = tool_items.setdefault(key, _new_ws_tool_state(key))
+                            if obj.get("arguments") is not None:
+                                item["arguments"] = str(obj.get("arguments") or "")
+                            item["done"] = True
+                            last_tool_key = key
+                        if tools and _ws_tool_calls(tool_items):
+                            break
+                    elif etype == "response.output_item.done":
+                        key = _merge_ws_tool_item(tool_items, obj, fallback=last_tool_key)
+                        if key:
+                            tool_items.setdefault(key, _new_ws_tool_state(key))["done"] = True
+                            last_tool_key = key
+                        if tools and key:
+                            break
+                    elif etype == "response.completed":
+                        if on_stream is not None and not reasoning_streamed:
+                            for text in _completed_reasoning_summaries(obj):
+                                await _call_stream(
+                                    on_stream,
+                                    {
+                                        "kind": "reasoning",
+                                        "delta": text,
+                                        "event_type": str(etype or ""),
+                                    },
+                                )
+                        break
+                    elif etype == "error":
+                        raise RuntimeError(f"responses ws error: {obj.get('error')}")
+                    if made_progress:
+                        last_progress_at = loop.time()
+                    else:
+                        _check_watchdog(
+                            loop, started_at, last_progress_at, wall_timeout, stall_timeout
+                        )
+            except asyncio.TimeoutError as exc:
+                now = loop.time()
+                wall_left = wall_timeout - (now - started_at)
+                stall_left = stall_timeout - (now - last_progress_at)
+                reason = (
+                    "wall_clock_timeout"
+                    if now - started_at >= wall_timeout or wall_left <= stall_left
+                    else "no_progress_timeout"
+                )
+                detail = f"responses ws did not finish within {wall_timeout:.1f}s"
+                if reason == "no_progress_timeout":
+                    detail = f"responses ws made no progress for {stall_timeout:.1f}s"
+                await _close_ws(ws)
+                raise LLMStalledError(reason, detail) from exc
+            except LLMStalledError:
+                await _close_ws(ws)
+                raise
         if state_key and response_id:
             self._response_state[state_key] = response_id
-        return "".join(buf)
+        return LLMToolResponse(text="".join(buf), tool_calls=_ws_tool_calls(tool_items))
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -525,6 +659,231 @@ def _response_id(obj: dict) -> str:
     if etype in {"response.created", "response.in_progress", "response.completed"}:
         return str(obj.get("id") or "").strip()
     return ""
+
+
+def _recv_timeout(
+    loop: asyncio.AbstractEventLoop,
+    started_at: float,
+    last_progress_at: float,
+    wall_timeout: float,
+    stall_timeout: float,
+) -> float:
+    _check_watchdog(loop, started_at, last_progress_at, wall_timeout, stall_timeout)
+    now = loop.time()
+    wall_left = wall_timeout - (now - started_at)
+    stall_left = stall_timeout - (now - last_progress_at)
+    return max(0.001, min(wall_left, stall_left))
+
+
+def _check_watchdog(
+    loop: asyncio.AbstractEventLoop,
+    started_at: float,
+    last_progress_at: float,
+    wall_timeout: float,
+    stall_timeout: float,
+) -> None:
+    now = loop.time()
+    if now - started_at >= wall_timeout:
+        raise LLMStalledError(
+            "wall_clock_timeout", f"responses ws did not finish within {wall_timeout:.1f}s"
+        )
+    if now - last_progress_at >= stall_timeout:
+        raise LLMStalledError(
+            "no_progress_timeout", f"responses ws made no progress for {stall_timeout:.1f}s"
+        )
+
+
+def _is_ws_progress_event(etype: str) -> bool:
+    return etype in {
+        "response.created",
+        "response.in_progress",
+        "response.output_item.added",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.output_item.done",
+        "response.completed",
+        "error",
+    }
+
+
+async def _close_ws(ws) -> None:
+    close = getattr(ws, "close", None)
+    if not callable(close):
+        return
+    try:
+        res = close()
+        if inspect.isawaitable(res):
+            await res
+    except Exception:  # noqa: BLE001 - watchdog close is best-effort cleanup
+        return
+
+
+class _StructuredRepeatWatch:
+    """Detect a second complete top-level JSON object in JSON-mode streaming output."""
+
+    def __init__(self) -> None:
+        self._buf: list[str] = []
+        self._depth = 0
+        self._in_string = False
+        self._escape = False
+        self._completed = False
+        self._seen: set[str] = set()
+
+    def feed(self, text: str) -> str:
+        for ch in text:
+            if self._depth == 0:
+                if ch == "{":
+                    if self._completed:
+                        return "structured_repetition"
+                    self._buf = [ch]
+                    self._depth = 1
+                    self._in_string = False
+                    self._escape = False
+                continue
+            self._buf.append(ch)
+            if self._in_string:
+                if self._escape:
+                    self._escape = False
+                elif ch == "\\":
+                    self._escape = True
+                elif ch == '"':
+                    self._in_string = False
+                continue
+            if ch == '"':
+                self._in_string = True
+            elif ch == "{":
+                self._depth += 1
+            elif ch == "}":
+                self._depth -= 1
+                if self._depth == 0:
+                    fingerprint = _json_fingerprint("".join(self._buf))
+                    self._buf = []
+                    if not fingerprint:
+                        continue
+                    if fingerprint in self._seen:
+                        return "structured_repetition"
+                    self._seen.add(fingerprint)
+                    self._completed = True
+        return ""
+
+
+def _json_fingerprint(text: str) -> str:
+    try:
+        obj = json.loads(text)
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(obj, dict):
+        return ""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _responses_tool_schema(tool: dict) -> dict:
+    if not isinstance(tool, dict):
+        return {"type": "function", "name": "", "parameters": {"type": "object"}}
+    if str(tool.get("type") or "") == "function" and str(tool.get("name") or "").strip():
+        out = {
+            "type": "function",
+            "name": str(tool.get("name") or "").strip(),
+            "description": str(tool.get("description") or ""),
+            "parameters": tool.get("parameters")
+            or tool.get("input_schema")
+            or {"type": "object", "properties": {}},
+        }
+        return out
+    raw_function = tool.get("function")
+    fn = raw_function if isinstance(raw_function, dict) else {}
+    name = str(tool.get("name") or fn.get("name") or "").strip()
+    return {
+        "type": "function",
+        "name": name,
+        "description": str(tool.get("description") or fn.get("description") or ""),
+        "parameters": (
+            tool.get("input_schema")
+            or tool.get("parameters")
+            or fn.get("parameters")
+            or {"type": "object", "properties": {}}
+        ),
+    }
+
+
+def _responses_tool_choice(choice: object) -> object:
+    if not isinstance(choice, dict):
+        return choice
+    raw_function = choice.get("function")
+    fn = raw_function if isinstance(raw_function, dict) else {}
+    name = str(choice.get("name") or fn.get("name") or "").strip()
+    if str(choice.get("type") or "") == "function" and name:
+        return {"type": "function", "name": name}
+    return choice
+
+
+def _new_ws_tool_state(key: str) -> dict[str, Any]:
+    return {"id": key, "name": "", "arguments_parts": [], "arguments": "", "done": False}
+
+
+def _function_call_item(obj: dict) -> dict:
+    item = obj.get("item")
+    if isinstance(item, dict) and item.get("type") == "function_call":
+        return item
+    return {}
+
+
+def _ws_tool_key(obj: dict, item: dict | None = None, *, fallback: str = "") -> str:
+    item = item or {}
+    values = (
+        obj.get("item_id"),
+        item.get("id"),
+        item.get("call_id"),
+        obj.get("call_id"),
+        fallback,
+        obj.get("output_index"),
+    )
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _merge_ws_tool_item(
+    tool_items: dict[str, dict[str, Any]], obj: dict, *, fallback: str = ""
+) -> str:
+    item = _function_call_item(obj)
+    if not item:
+        return ""
+    key = _ws_tool_key(obj, item, fallback=fallback or str(len(tool_items)))
+    state = tool_items.setdefault(key, _new_ws_tool_state(key))
+    call_id = str(item.get("call_id") or item.get("id") or state["id"] or key).strip()
+    name = str(item.get("name") or state["name"] or "").strip()
+    if call_id:
+        state["id"] = call_id
+    if name:
+        state["name"] = name
+    if item.get("arguments") is not None:
+        args = item.get("arguments")
+        state["arguments"] = (
+            json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args or "")
+        )
+    return key
+
+
+def _ws_tool_calls(tool_items: dict[str, dict[str, Any]]) -> list[LLMToolCall]:
+    calls: list[LLMToolCall] = []
+    for key, state in tool_items.items():
+        name = str(state.get("name") or "").strip()
+        if not name:
+            continue
+        raw_args = str(state.get("arguments") or "")
+        if not raw_args:
+            raw_args = "".join(str(part) for part in state.get("arguments_parts") or [])
+        calls.append(
+            LLMToolCall(
+                id=str(state.get("id") or key),
+                name=name,
+                arguments=_json_args(raw_args),
+            )
+        )
+    return calls
 
 
 def _openai_stream_chunks(obj: dict) -> list[dict]:
