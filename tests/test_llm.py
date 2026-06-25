@@ -7,13 +7,14 @@ asyncio_mode=auto, so plain `async def` tests are collected.)
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
 import pytest
 
 from foreman.shared.config import Config
-from foreman.shared.llm import LLMClient, LLMConfigError, Message
+from foreman.shared.llm import LLMClient, LLMConfigError, LLMStalledError, Message
 
 
 def _client(provider: str, captured: dict) -> LLMClient:
@@ -368,6 +369,7 @@ class _FakeWS:
     def __init__(self, frames, sent):
         self._frames = list(frames)
         self._sent = sent
+        self.closed = False
 
     async def __aenter__(self):
         return self
@@ -382,6 +384,9 @@ class _FakeWS:
         if not self._frames:
             raise AssertionError("recv past end of script")
         return self._frames.pop(0)
+
+    async def close(self):
+        self.closed = True
 
 
 def _ws_client(frames, sent):
@@ -524,6 +529,113 @@ async def test_ws_tool_complete_forwards_stream_callback():
     assert chunks == [
         {"kind": "output", "delta": "plan", "event_type": "response.output_text.delta"}
     ]
+
+
+async def test_ws_tool_complete_sends_tools_choice_and_parses_function_call():
+    sent: list = []
+    frames = [
+        json.dumps(
+            {
+                "type": "response.output_item.added",
+                "output_index": 1,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                },
+            }
+        ),
+        json.dumps({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": '{"'}),
+        json.dumps({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": 'city'}),
+        json.dumps({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": '":"'}),
+        json.dumps({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": 'Paris'}),
+        json.dumps({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": '"}'}),
+        json.dumps({"type": "response.function_call_arguments.done", "output_index": 1}),
+    ]
+    c, _ = _ws_client(frames, sent)
+    out = await c.tool_complete(
+        [Message("user", "weather")],
+        tools=[
+            {
+                "name": "get_weather",
+                "description": "Get weather",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+        tool_choice={"type": "function", "name": "get_weather"},
+    )
+    await c.aclose()
+
+    req = json.loads(sent[0])
+    assert req["tools"] == [
+        {
+            "type": "function",
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        }
+    ]
+    assert req["tool_choice"] == {"type": "function", "name": "get_weather"}
+    assert out.text == ""
+    assert len(out.tool_calls) == 1
+    assert out.tool_calls[0].id == "call_1"
+    assert out.tool_calls[0].name == "get_weather"
+    assert out.tool_calls[0].arguments == {"city": "Paris"}
+
+
+async def test_ws_json_mode_repetition_watchdog_closes_stream():
+    ws = _FakeWS(
+        [
+            json.dumps({"type": "response.output_text.delta", "delta": '{"ready":true}'}),
+            json.dumps({"type": "response.output_text.delta", "delta": '{"ready":true}'}),
+        ],
+        [],
+    )
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "gpt-5.5"
+    cfg.llm.transport = "ws"
+    cfg.secrets.llm_api_key = "secret-key"
+    c = LLMClient(cfg, ws_connect=lambda _url, _headers, _timeout: ws)
+
+    with pytest.raises(LLMStalledError, match="structured_repetition"):
+        await c.complete([Message("user", "x")], json_mode=True)
+    await c.aclose()
+
+    assert ws.closed is True
+
+
+async def test_ws_wall_clock_watchdog_aborts_never_completed_delta_stream():
+    class SlowDeltaWS(_FakeWS):
+        async def recv(self):
+            await asyncio.sleep(0.01)
+            return json.dumps({"type": "response.output_text.delta", "delta": "x"})
+
+    ws = SlowDeltaWS([], [])
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "gpt-5.5"
+    cfg.llm.transport = "ws"
+    cfg.secrets.llm_api_key = "secret-key"
+    c = LLMClient(cfg, ws_connect=lambda _url, _headers, _timeout: ws)
+    c.timeout = 0.03
+
+    with pytest.raises(LLMStalledError, match="wall_clock_timeout"):
+        await c.complete([Message("user", "x")])
+    await c.aclose()
+
+    assert ws.closed is True
 
 
 async def test_settings_resolver_can_switch_transport_to_ws_after_construction():

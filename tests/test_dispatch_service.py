@@ -20,6 +20,7 @@ from foreman.client.store.models import (
 from foreman.client.tools import PMToolRuntime
 from foreman.shared.config import AgentCfg, Config, WorkspaceCfg
 from foreman.shared.events import EventBus, make_event
+from foreman.shared.llm import LLMStalledError
 
 
 def _store(tmp_path) -> Store:
@@ -950,6 +951,33 @@ async def test_launcher_failure_records_error_event(tmp_path):
     await asyncio.sleep(0.02)
     errors = [e for e in store.get_events(res["session_id"]) if e.type == "error"]
     assert errors and "RuntimeError" in (errors[0].payload_json or "")
+
+
+async def test_pm_watchdog_failure_marks_session_stalled_with_reason(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        async def plan(self, *_a, **_kw):
+            raise LLMStalledError("wall_clock_timeout", "responses ws did not finish")
+
+    class FakeRunner:
+        async def launch(self, *_a, **_kw):
+            raise AssertionError("stalled PM plan must not launch an agent")
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    res = await svc.create("do x")
+    await asyncio.gather(*list(svc._tasks))
+
+    assert store.get_session(res["session_id"]).status == "stalled"
+    errors = [json.loads(e.payload_json) for e in store.get_events(res["session_id"]) if e.type == "error"]
+    assert errors[-1]["status"] == "stalled"
+    assert errors[-1]["reason"] == "wall_clock_timeout"
+    assert "LLMStalledError" in errors[-1]["msg"]
 
 
 async def test_default_agent_when_no_agents_configured(tmp_path):

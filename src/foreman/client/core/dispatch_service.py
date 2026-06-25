@@ -28,6 +28,7 @@ from typing import Any
 from foreman.shared.config import Config
 from foreman.shared.events import make_event, utc_now_iso
 from foreman.shared.i18n import normalize as normalize_lang
+from foreman.shared.llm import LLMStalledError
 
 from ..dispatch import build_session_task
 from ..store.models import ContextSnapshot, MemoryItem, Task
@@ -46,7 +47,7 @@ VALID_SOURCES: frozenset[str] = frozenset({"desktop", "phone", "api"})
 MAX_CONTEXT_CHARS = 12000
 PM_AUTO_AGENT = "pm-agent"
 LIVE_SESSION_STATUSES = {"planning", "running", "active", "waiting_approval", "queued"}
-TERMINAL_SESSION_STATUSES = {"failed", "cancelled"}
+TERMINAL_SESSION_STATUSES = {"failed", "cancelled", "stalled"}
 AGENT_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code": ("claude-code", "claude code", "claude"),
     "codex": ("codex",),
@@ -450,13 +451,19 @@ class DispatchService:
         try:
             await self._pm_launch(session_id, task_id, goal, workspace, agent, pm_model, effort)
         except Exception as exc:  # noqa: BLE001 — PM failure must be visible, not crash the server
-            self._mark_session_unless_terminal(session_id, "failed")
+            status = "stalled" if isinstance(exc, LLMStalledError) else "failed"
+            reason = getattr(exc, "reason", "") if isinstance(exc, LLMStalledError) else ""
+            self._mark_session_unless_terminal(session_id, status)
             event = make_event(
                 "error",
                 "pm-agent",
                 session_id,
                 task_id=task_id,
-                payload={"msg": f"{type(exc).__name__}: {str(exc)[:200]}"},
+                payload={
+                    "msg": f"{type(exc).__name__}: {str(exc)[:200]}",
+                    "status": status,
+                    "reason": reason,
+                },
             )
             await self._persist_then_publish(event)
 
