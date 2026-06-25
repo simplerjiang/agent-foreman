@@ -1060,7 +1060,10 @@
     const est = estTokens(events || []);
     const contextLimit = contextLimitFor(modelOptions, model, llm && llm.model);
     const pct = Math.min(95, Math.round((est / contextLimit) * 100));
-    const onKey = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runDispatch(); } };
+    const onKey = (e) => {
+      if (e.key === "@") { e.preventDefault(); addAttach(); return; }
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runDispatch(); }
+    };
     return html`<div className="composer">
       <div className="composer-inner">
         ${(events && events.length) ? html`<div className="ctx-meter">
@@ -1446,7 +1449,7 @@
       </div>
       ${view === "workspace" && mTab === "chat" ? html`<div className="m-composer">
         <button className="burger" onClick=${mainProps.composer.addAttach}>📎</button>
-        <div className="box"><input value=${mainProps.composer.task} onChange=${(e) => mainProps.composer.setTask(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter") { e.preventDefault(); mainProps.composer.runDispatch(); } }} placeholder=${d.mComposerPlaceholder} /></div>
+        <div className="box"><input value=${mainProps.composer.task} onChange=${(e) => mainProps.composer.setTask(e.target.value)} onKeyDown=${(e) => { if (e.key === "@") { e.preventDefault(); mainProps.composer.addAttach(); return; } if (e.key === "Enter") { e.preventDefault(); mainProps.composer.runDispatch(); } }} placeholder=${d.mComposerPlaceholder} /></div>
         <button className="btn primary icon" onClick=${mainProps.composer.runDispatch} disabled=${mainProps.composer.dispatching}>↑</button>
       </div>` : null}
       ${view === "workspace" ? html`<div className="m-bottom">

@@ -147,6 +147,8 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert "contextLimitFor" in js and "context_length" in js and "max_tokens" in js
     assert "contextLength - outputReserve" in js
     assert ".ctx-meter" in css and ".seg" in css
+    assert 'e.key === "@"' in js and "addAttach(); return;" in js
+    assert 'attachments.map((a) => `@${a.name}`).join(" ")' in js
 
 
 def test_dispatch_model_picker_and_no_explicit_agent():
