@@ -280,25 +280,36 @@ class DispatchService:
         }
 
     async def cancel(self, session_id: str) -> dict:
-        """Mark one session cancelled so the UI has a real terminal state."""
+        """Mark one session cancelled AND abort its in-flight PM ws call so Stop really stops (T2.3)."""
         if self.store is None or not hasattr(self.store, "get_session"):
             return {"ok": False, "error": "no_store"}
         session = self.store.get_session(session_id)
         if session is None:
             return {"ok": False, "error": "session_not_found"}
+        # Mark terminal first so the task, as it unwinds from CancelledError, can't flip the status
+        # back via `_mark_session_unless_terminal` (cancelled ∈ TERMINAL_SESSION_STATUSES).
         self._mark_session(session_id, "cancelled")
+        aborted = self._cancel_session_tasks(session_id)
+        msg = (
+            "用户已取消会话：已请求中止正在运行的 PM 规划调用（关闭 ws）。"
+            "已启动的外部 CLI 进程不在本次强杀范围内。"
+            if aborted
+            else "用户已取消会话。当前没有正在运行的 PM 调用；已启动的外部 CLI 进程不在本次强杀范围内。"
+        )
         await self._persist_then_publish(
             make_event(
                 "notification",
                 "dispatch",
                 session_id,
-                payload={
-                    "kind": "cancelled",
-                    "msg": "用户已取消会话。当前版本仅标记会话终止，不强杀已启动的外部 CLI 进程。",
-                },
+                payload={"kind": "cancelled", "msg": msg, "aborted_tasks": aborted},
             )
         )
-        return {"ok": True, "session_id": session_id, "status": "cancelled"}
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "status": "cancelled",
+            "aborted_tasks": aborted,
+        }
 
     async def delete(self, session_id: str) -> dict:
         """Delete one local session and its local records."""
@@ -831,6 +842,21 @@ class DispatchService:
 
     def _session_has_live_task(self, session_id: str) -> bool:
         return any(not task.done() for task in self._session_tasks.get(session_id, ()))
+
+    def _cancel_session_tasks(self, session_id: str) -> int:
+        """Cancel the session's in-flight launch tasks (e.g. a running PM ws plan call).
+
+        Cancelling the asyncio task raises CancelledError inside the awaited ``ws.recv()``, so the
+        ``async with ws`` context in ``_responses_ws_once`` exits and the socket actually closes —
+        the PM LLM call stops instead of streaming to completion in the background after the UI
+        already marked the session cancelled (T2.3). CancelledError is a BaseException, so the
+        ``_safe_*`` launch wrappers' ``except Exception`` does not swallow it; the task ends
+        cancelled and its done-callback prunes ``_session_tasks``.
+        """
+        tasks = [t for t in self._session_tasks.get(session_id, ()) if not t.done()]
+        for task in tasks:
+            task.cancel()
+        return len(tasks)
 
     async def _persist_then_publish(self, event) -> None:
         """Persist-first (so a late UI can backfill) then publish — mirrors Runner/Gate."""

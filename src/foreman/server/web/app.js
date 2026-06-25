@@ -656,7 +656,8 @@
             nodes[statusNodes.get(key)].ts = e.ts;
           } else {
             statusNodes.set(key, nodes.length);
-            nodes.push({ kind: "pm-status", id: e.id || `ps-${nodes.length}`, ts: e.ts, text: statusText });
+            // `started` anchors the live "已 N 秒" planning timer (T2.2); kept across text updates.
+            nodes.push({ kind: "pm-status", id: e.id || `ps-${nodes.length}`, ts: e.ts, started: e.ts, text: statusText });
           }
           continue;
         }
@@ -753,6 +754,15 @@
   // ---------------------------------------------------------------------------
   function Empty({ icon, text }) { return html`<div className="empty"><div className="empty-icon">${icon || "✶"}</div><div>${text}</div></div>`; }
   function Switch({ on, onChange }) { return html`<button className=${`switch${on ? " on" : ""}`} onClick=${() => onChange(!on)} aria-pressed=${on} type="button"></button>`; }
+  // Self-ticking elapsed counter for the live plan phase: shows the PM step is alive even when no
+  // new reasoning delta has arrived for a while, so it never reads as a frozen "正在规划…" (T2.2).
+  function PmElapsed({ start, lang }) {
+    const startMs = useMemo(() => { const t = new Date(start).getTime(); return Number.isNaN(t) ? Date.now() : t; }, [start]);
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
+    const secs = Math.max(0, Math.round((now - startMs) / 1000));
+    return html`<span className="pm-elapsed">· ${lang === "zh" ? `已 ${secs} 秒` : `${secs}s`}</span>`;
+  }
 
   // ---------------------------------------------------------------------------
   // Launch overlay
@@ -959,7 +969,7 @@
               <button className=${`rp-tab${rightTab === "term" ? " on" : ""}`} onClick=${() => setRightTab("term")}>${d.tabTerminal}</button>
             </div>
             <div className="rp-body">
-              ${rightTab === "todo" ? html`<${TodoPanel} d=${d} todos=${dig.todos} onAddStep=${composer.onAddStep} />` : null}
+              ${rightTab === "todo" ? html`<${TodoPanel} key=${sessionRow ? sessionRow.id : "none"} d=${d} todos=${dig.todos} onAddStep=${composer.onAddStep} />` : null}
               ${rightTab === "sub" ? html`<${SubPanel} d=${d} subagents=${dig.subagents} expandedSub=${expandedSub} toggleSub=${toggleSub} />` : null}
               ${rightTab === "term" ? html`<${TermPanel} d=${d} terminal=${dig.terminal} agentType=${agentType} sessionRow=${sessionRow} />` : null}
             </div>
@@ -992,7 +1002,7 @@
       </div>`;
     }
     if (n.kind === "pm-status") {
-      return html`<div className="pm-status"><span className="spin"></span><span>${n.text}</span></div>`;
+      return html`<div className="pm-status"><span className="spin"></span><span>${n.text}</span>${n.started ? html`<${PmElapsed} start=${n.started} lang=${lang} />` : null}</div>`;
     }
     if (n.kind === "pm") {
       return html`<div className="pm-note"><div className="pm-avatar">PM</div><div className="body"><${MD} text=${n.text} maxChars=${4000} /></div></div>`;
@@ -1060,13 +1070,27 @@
 
   function TodoPanel({ d, todos, onAddStep }) {
     const [val, setVal] = useState("");
+    // Reveal todos one-by-one as the count grows (e.g. an 8-item plan lands at once): they cascade
+    // in instead of dumping, so the plan visibly "fills up" (T2.1). A panel that already mounts with
+    // its todos full (reopened session) snaps to all-revealed — no replayed animation.
+    const [revealed, setRevealed] = useState(todos.length);
+    useEffect(() => {
+      if (todos.length <= revealed) { setRevealed(todos.length); return; }
+      const id = setInterval(() => setRevealed((r) => {
+        const next = r + 1;
+        if (next >= todos.length) clearInterval(id);
+        return Math.min(next, todos.length);
+      }), 240);
+      return () => clearInterval(id);
+    }, [todos.length]);
+    const shown = todos.slice(0, revealed);
     const doneCount = todos.filter((t) => t.status === "done").length;
     const pct = todos.length ? Math.round((doneCount / todos.length) * 100) : 0;
     const submit = () => { const v = val.trim(); if (!v) return; onAddStep(v); setVal(""); };
     return html`<div>
       ${todos.length ? html`<div className="todo-progress"><div className="track"><span style=${{ width: `${pct}%` }}></span></div><span className="lbl">${doneCount}/${todos.length}</span></div>` : null}
       ${!todos.length ? html`<${Empty} icon="☑" text=${d.selectSessionHint} /> ` :
-        todos.map((t) => html`<div className=${`todo-row ${t.status}`} key=${t.id}>
+        shown.map((t) => html`<div className=${`todo-row ${t.status}`} key=${t.id}>
           <span className=${`todo-ic ${t.status}`}>${t.status === "done" ? "✓" : t.status === "blocked" ? "!" : ""}</span>
           <div style=${{ flex: 1, minWidth: 0 }}><div className="todo-title">${t.title}</div></div>
         </div>`)}

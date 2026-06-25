@@ -124,12 +124,13 @@ async def test_cancelled_session_is_not_overwritten_by_background_completion(tmp
 
     res = await svc.create("long task")
     await asyncio.wait_for(launched.wait(), timeout=1)
+    tasks = list(svc._session_tasks.get(res["session_id"], ()))
     assert (await svc.cancel(res["session_id"]))["status"] == "cancelled"
-    assert (await svc.delete(res["session_id"]))["error"] == "session_busy"
 
-    release.set()
-    await asyncio.gather(*list(svc._tasks))
-
+    # T2.3: cancel aborts the in-flight task (held in runner.wait); it doesn't run to completion, so
+    # the background path can't flip the cancelled status back to "done". `release` is never set.
+    await asyncio.gather(*tasks, return_exceptions=True)
+    assert all(t.cancelled() for t in tasks)
     assert store.get_session(res["session_id"]).status == "cancelled"
     assert (await svc.delete(res["session_id"]))["ok"] is True
     assert store.get_session(res["session_id"]) is None
@@ -166,12 +167,66 @@ async def test_cancelled_session_is_not_overwritten_by_background_failure(tmp_pa
 
     res = await svc.create("long task")
     await asyncio.wait_for(launched.wait(), timeout=1)
+    tasks = list(svc._session_tasks.get(res["session_id"], ()))
     assert (await svc.cancel(res["session_id"]))["status"] == "cancelled"
 
-    release.set()
-    await asyncio.gather(*list(svc._tasks))
-
+    # T2.3: the held runner.wait is cancelled before its post-`release` failure can fire, so the
+    # cancelled status is not overwritten by a background error either. `release` is never set.
+    await asyncio.gather(*tasks, return_exceptions=True)
+    assert all(t.cancelled() for t in tasks)
     assert store.get_session(res["session_id"]).status == "cancelled"
+
+
+async def test_cancel_aborts_in_flight_pm_call(tmp_path):
+    """Stop truly cancels the running PM call, not just flags the session (T2.3).
+
+    A PM whose plan() hangs (a stuck ws/LLM round) must be cancelled by `cancel()`: the launch task
+    ends cancelled and plan() never returns, instead of running to completion in the background.
+    """
+    store = _store(tmp_path)
+    planning = asyncio.Event()
+    state = {"plan_completed": False}
+
+    class HangingPM:
+        max_runs = 1
+
+        async def plan(self, goal, **_kw):
+            planning.set()
+            await asyncio.Event().wait()  # never resolves — models a stuck PM ws call
+            state["plan_completed"] = True
+            return PMPlan(agent="codex", model="", effort="", instruction="never")
+
+        async def review(self, *_a, **_kw):
+            return PMReview(done=True, summary="done")
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            return object()
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=HangingPM())
+
+    res = await svc.create("stuck task")
+    sid = res["session_id"]
+    await asyncio.wait_for(planning.wait(), timeout=1)
+    tasks = list(svc._session_tasks.get(sid, ()))
+    assert tasks and not all(t.done() for t in tasks)
+    assert (await svc.delete(sid))["error"] == "session_busy"  # a live PM task blocks delete
+
+    out = await svc.cancel(sid)
+    assert out["status"] == "cancelled"
+    assert out["aborted_tasks"] >= 1
+
+    await asyncio.gather(*tasks, return_exceptions=True)
+    assert all(t.cancelled() for t in tasks)
+    assert state["plan_completed"] is False
+    assert store.get_session(sid).status == "cancelled"
 
 
 async def test_create_can_continue_existing_session_with_source(tmp_path):

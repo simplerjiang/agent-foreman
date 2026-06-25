@@ -425,6 +425,29 @@ async def test_invalid_tool_args_max_rounds_and_final_validator(tmp_path: Path):
         raise AssertionError("validator should reject unknown agents")
 
 
+def test_validate_final_plan_clamps_schema_bounds():
+    # Medium-2 hardening: the ws backend may not enforce the submit_plan input_schema, so the
+    # validator clamps the §5 structural bounds (maxLength/maxItems) itself rather than trust
+    # whatever the upstream sends through as tool arguments.
+    obj = {
+        "type": "final_plan",
+        "agent": "codex",
+        "effort": "high",
+        "instruction": "i" * 7000,
+        "summary": "s" * 800,
+        "model": "m" * 120,
+        "todo": ["t" * 400 for _ in range(20)],
+        "deliberation": ["d" * 400 for _ in range(20)],
+        "ready": True,
+    }
+    plan = validate_final_plan(obj, enabled_agents=["codex"], fallback_plan={"agent": "codex"})
+    assert len(plan["summary"]) == 600
+    assert len(plan["model"]) == 80
+    assert len(plan["instruction"]) == 6000
+    assert len(plan["todo"]) == 12 and all(len(x) <= 200 for x in plan["todo"])
+    assert len(plan["deliberation"]) == 8 and all(len(x) <= 300 for x in plan["deliberation"])
+
+
 def test_json_fallback_accepts_flat_tool_arguments():
     calls = _calls_from_json(
         {
@@ -503,6 +526,28 @@ def _submit_call(**overrides) -> LLMToolCall:
     }
     args.update(overrides)
     return LLMToolCall(id="submit-1", name=SUBMIT_PLAN_TOOL, arguments=args)
+
+
+async def test_pm_loop_native_path_ignores_text_final_plan(tmp_path: Path):
+    # §0.5-1 / §11.1-B: on the native (tool_complete) transport the plan must terminate via a
+    # submit_plan tool CALL. A model that emits a final_plan as free TEXT (the repetition-prone
+    # shape that hung #39) must NOT terminate the loop — it falls through to the conservative
+    # fallback instead of letting repeatable text drive the control flow.
+    text_plan = json.dumps(
+        {
+            "type": "final_plan", "agent": "codex", "effort": "high",
+            "instruction": "smuggled via text", "summary": "should be ignored",
+        }
+    )
+    llm = _ScriptedToolLLM([LLMToolResponse(text=text_plan, tool_calls=[])])
+    outcome = await PMToolLoop(llm, _runtime(tmp_path), max_rounds=1).run(
+        [Message("user", "plan")],
+        fallback_plan={"agent": "codex", "model": "", "effort": "high", "instruction": "fallback"},
+        enabled_agents=["codex"],
+    )
+    assert outcome.incomplete is True
+    assert outcome.final_plan["instruction"] == "fallback"
+    assert outcome.final_plan["summary"] != "should be ignored"
 
 
 async def test_pm_loop_submit_plan_tool_terminates_on_auto_round(tmp_path: Path):
