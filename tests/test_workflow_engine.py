@@ -363,10 +363,10 @@ async def test_begin_step_injects_into_workspace(tmp_path):
     out = eng.begin_step(res["run_id"])
     assert out["ok"] and out["injection"]["ok"] is True
     # CLAUDE.md (the session's agent is claude-code) carries the step's standards in a managed block,
-    # and the skill landed as its own file (事前注入, §11.2 D).
+    # and the skill landed as a native Claude Code skill (P2 §7: progressive disclosure).
     claude = (ws / "CLAUDE.md").read_text(encoding="utf-8")
     assert MARKER_BEGIN in claude and "test-naming" in claude
-    assert (ws / ".foreman" / "skills" / "how-to-test.md").exists()
+    assert (ws / ".claude" / "skills" / "foreman-how-to-test" / "SKILL.md").exists()
 
 
 async def test_run_finish_clears_injection(tmp_path):

@@ -179,11 +179,17 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     def _current_language() -> str:
         return normalize_lang(store.get_setting("ui.language") or cfg.ui.language)
 
+    # Coding-agent channel (P2 §7): writes selected work modes into the workspace before launch and
+    # clears them after. allowed_roots mirrors the dispatch workspace allowlist (defense in depth).
+    from .core.injector import WorkspaceInjector
+
+    injector = WorkspaceInjector(allowed_roots=[w.path for w in cfg.workspaces] or None)
     dispatcher = DispatchService(
         cfg,
         store,
         bus=bus,
         runner=runner,
+        injector=injector,
         pm_agent=PMAgent(
             _llm(),
             language=language,

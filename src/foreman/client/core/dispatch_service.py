@@ -102,6 +102,7 @@ class DispatchService:
         pm_agent=None,
         language_getter=None,
         clock=None,
+        injector=None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -110,6 +111,9 @@ class DispatchService:
         self.launcher = launcher
         self.runner = runner
         self.pm_agent = pm_agent
+        # WorkspaceInjector (P2 §7): writes selected work modes into the workspace before launch and
+        # clears them after. None = no coding-agent channel (zero injection, zero residue).
+        self.injector = injector
         self.language_getter = language_getter
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
@@ -502,6 +506,15 @@ class DispatchService:
                 payload={"msg": f"{type(exc).__name__}: {str(exc)[:200]}"},
             )
             await self._persist_then_publish(event)
+        finally:
+            # P2 (§7.3): clear THIS task's injected work-mode files once the task truly ends (not per
+            # follow-up). task_id-scoped so a concurrent task's scaffolding is untouched; best-effort
+            # so cleanup never masks the real outcome. agents=None strips both guidance files' blocks.
+            if self.injector is not None:
+                try:
+                    self.injector.clear(workspace, agents=None, task_id=task_id)
+                except Exception:  # noqa: BLE001 — cleanup is best-effort
+                    pass
 
     async def _safe_direct_launch(
         self,
@@ -645,6 +658,15 @@ class DispatchService:
             "launch",
             _pm_status_text(language, "launch", plan.agent),
         )
+        # P2 (§7): inject the selected work modes into the workspace BEFORE launch so the coding agent
+        # reads them on startup (claude-code native .claude/skills / codex .foreman/skills + managed
+        # block). Best-effort — an injection failure must never abort the dispatch.
+        if self.injector is not None:
+            material = self._build_work_mode_material(plan.instruction, wm_index, work_mode_resolver)
+            try:
+                self.injector.inject(workspace, material, agents=plan.agent, task_id=task_id)
+            except Exception:  # noqa: BLE001 — injection is best-effort
+                pass
         handle = await self.runner.launch(
             plan.agent, plan.instruction, Path(workspace), session_id,
             model=plan.model, effort=plan.effort,
@@ -747,6 +769,27 @@ class DispatchService:
             ready=plan.ready,
             planning_rounds=plan.planning_rounds,
         )
+
+    def _build_work_mode_material(
+        self, instruction: str, wm_index: list[dict[str, Any]], resolver: WorkModeResolver
+    ) -> dict:
+        """Turn the selected L0 index into injection material (§7): skills + code_standards with their
+        bodies (pulled from the same resolver as work_mode_get). Skills go to the coding-agent file
+        channel; standards go full-text into the managed block (D1). qa_rubric/workflow are not file-
+        injected here (rubric is a review-side concern; workflow is P5)."""
+        skills: list[dict] = []
+        standards: list[dict] = []
+        for entry in wm_index:
+            kind = entry.get("kind")
+            name = entry.get("name")
+            if kind not in ("skill", "code_standard") or not name:
+                continue
+            body, _ = resolver.body(name=name, kind=kind)
+            if not body:
+                continue
+            item = {"name": name, "body": body, "description": entry.get("description", "")}
+            (skills if kind == "skill" else standards).append(item)
+        return {"instruction": instruction, "skills": skills, "standards": standards}
 
     async def _emit_work_mode(
         self,
