@@ -822,6 +822,7 @@
     const done = status.includes("done") || status.includes("complete");
     const statusText = live ? d.running : cancelled ? d.cancelled : failed ? d.failed : done ? d.done : ((sessionRow && sessionRow.status) || "");
     const onBars = Math.max(0, Math.min(4, autonomy + 1));
+    const autonomyName = d[`auto${autonomy}`] || `L${autonomy}`;
     return html`
       <div className="main">
         <div className="sess-header">
@@ -834,10 +835,11 @@
           </div>
           <div style=${{ flex: 1 }}></div>
           ${topControls}
-          <div className="autonomy-pill">
+          <div className="autonomy-pill" title=${`${d.autonomy}: ${autonomyName}`}>
             <span className="label">${d.autonomy}</span>
             <div className="autonomy-bars">${[0, 1, 2, 3].map((i) => html`<span key=${i} className=${i < onBars ? "on" : ""}></span>`)}</div>
             <span className="lvl">L${autonomy}</span>
+            <span className="name">${autonomyName}</span>
           </div>
           <button className="btn" onClick=${onBriefing}>${d.briefing}</button>
           ${sessionRow && live ? html`<button className="btn danger" onClick=${() => onCancelSession(sessionRow.id)}>${d.cancelSession}</button>` : null}
