@@ -310,6 +310,26 @@ class LLMClient:
         r.raise_for_status()
         return _model_infos(r.json())
 
+    async def embed(self, texts: list[str], *, model: str = "") -> list[list[float]]:
+        """One embedding vector per input text via the configured provider's /embeddings (work-mode
+        P3 §3.2). Reuses _resolve()/_api_key()/self._client like complete(). Only the OpenAI-compatible
+        shape is native; anthropic (no embeddings endpoint) raises so the caller can fall back to a
+        local embedder. Empty input → []. Always plain HTTP POST (embeddings are transport-agnostic)."""
+        if not texts:
+            return []
+        provider, base_url, _model = self._resolve(model)
+        if provider == "anthropic":
+            raise LLMConfigError("anthropic provider has no /embeddings; use a local fallback")
+        emb_model = (model or "").strip() or self.model
+        r = await self._client.post(
+            f"{base_url}/embeddings",
+            headers={"Authorization": f"Bearer {self._api_key()}"},
+            json={"model": emb_model, "input": texts},
+        )
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        return [list(item.get("embedding") or []) for item in data]
+
     async def _openai(
         self,
         messages: list[Message],

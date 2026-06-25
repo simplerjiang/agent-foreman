@@ -224,6 +224,17 @@ class NotifyCfg(BaseModel):
     email: EmailCfg = EmailCfg()
 
 
+class WorkModeCfg(BaseModel):
+    """Work-mode semantic-retrieval switches (P3 §3.5). Default OFF → pure lexical (P0/P1 behavior),
+    byte-for-byte unchanged unless explicitly enabled."""
+
+    # off = lexical only; auto = use embeddings if a channel works else lexical; on = force (still
+    # falls back to lexical on failure).
+    semantic_search: str = "off"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dim: int = 256  # local fallback embedder dimension
+
+
 class DebugCfg(BaseModel):
     """Debug/observability switches (work-mode P1b-trace, §8C). All default OFF / safe."""
 
@@ -258,6 +269,7 @@ class Config(BaseModel):
     pm_tools: PMToolsCfg = PMToolsCfg()
     notify: NotifyCfg = NotifyCfg()
     debug: DebugCfg = DebugCfg()
+    work_mode: WorkModeCfg = WorkModeCfg()
 
     # Populated from .env, not from config.yaml.
     secrets: Secrets = Field(default_factory=Secrets)

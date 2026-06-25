@@ -302,7 +302,7 @@ class PMToolRuntime:
             if call.name.startswith("browser_"):
                 return await self._browser_call(ToolCall(call.id, call.name, args))
             if call.name == "work_mode_search":
-                return self._work_mode_search(call.id, args)
+                return await self._work_mode_search(call.id, args)
             if call.name == "work_mode_get":
                 return self._work_mode_get(call.id, args)
             return ToolResult(call.id, call.name, False, error="unknown_tool", risk=REQUIRES_APPROVAL)
@@ -320,9 +320,10 @@ class PMToolRuntime:
         if self._http is not None:
             await self._http.aclose()
 
-    def _work_mode_search(self, cid: str, args: dict[str, Any]) -> ToolResult:
+    async def _work_mode_search(self, cid: str, args: dict[str, Any]) -> ToolResult:
         """L1 discovery: return the L0 index (metadata only, never a body) of work modes applicable
-        to this task. Read-only, local-only (§6/§8.3)."""
+        to this task. Read-only, local-only (§6/§8.3). Async so the resolver can semantically re-rank
+        (P3) when enabled; pure lexical otherwise."""
         resolver = self._work_mode_resolver
         if resolver is None:
             return ToolResult(cid, "work_mode_search", False, error="work_mode_unavailable")
@@ -330,7 +331,7 @@ class PMToolRuntime:
         limit = int(raw_limit) if isinstance(raw_limit, (int, float)) and not isinstance(
             raw_limit, bool
         ) else None
-        rows = resolver.index(
+        rows = await resolver.aindex(
             query=str(args.get("query") or ""), kind=args.get("kind"), limit=limit
         )
         return ToolResult(cid, "work_mode_search", True, {"modes": rows})

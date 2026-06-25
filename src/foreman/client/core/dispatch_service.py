@@ -40,10 +40,12 @@ from .context_budget import (
 from .context_compression import extract_json_object, memory_items_from_pack
 from .pm_agent import PMPlan, events_to_text
 from .work_mode_context import (
+    WORKMODE_BODY_MAX_CHARS,
     WORKMODE_INDEX_MAX_TOKENS,
     WorkModeResolver,
     approx_tokens,
     fit_l0_index,
+    make_scorer,
     render_l0_index,
 )
 
@@ -103,6 +105,7 @@ class DispatchService:
         language_getter=None,
         clock=None,
         injector=None,
+        embedder=None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -114,6 +117,9 @@ class DispatchService:
         # WorkspaceInjector (P2 §7): writes selected work modes into the workspace before launch and
         # clears them after. None = no coding-agent channel (zero injection, zero residue).
         self.injector = injector
+        # Optional async embedder (P3): enables semantic work-mode retrieval when work_mode.
+        # semantic_search is on. None or off → pure lexical (default).
+        self._embedder = embedder
         self.language_getter = language_getter
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
@@ -619,12 +625,16 @@ class DispatchService:
         # index (no bodies) goes into the plan prompt; the same resolver backs the work_mode_search /
         # work_mode_get tools so the PM can pull bodies on demand. Manual picks (work_mode_ids) pass
         # straight through the funnel. With no active definitions this is a cheap empty resolve.
+        wm_mode = getattr(getattr(self.cfg, "work_mode", None), "semantic_search", "off")
         work_mode_resolver = WorkModeResolver(
             self.store, workspace=workspace, goal=goal, agent=agent,
             manual_ids=list(work_mode_ids or []),
+            scorer=make_scorer(wm_mode, self._embedder),
         )
-        wm_resolved = work_mode_resolver.resolve()
+        wm_resolved = await work_mode_resolver.aresolve()
         wm_index = fit_l0_index(wm_resolved["selected"], max_tokens=WORKMODE_INDEX_MAX_TOKENS)
+        # P4 (§9, D2): soft-constraint review guidance (selected rubric bodies + standard check refs).
+        review_guidance = self._build_review_guidance(wm_index)
         plan_kwargs: dict[str, Any] = {
             "workspace": workspace,
             "available_agents": enabled_agents,
@@ -711,6 +721,8 @@ class DispatchService:
                 )
             if _accepts_keyword(self.pm_agent.review, "state_key"):
                 review_kwargs["state_key"] = review_state_key
+            if review_guidance and _accepts_keyword(self.pm_agent.review, "qa_rubric"):
+                review_kwargs["qa_rubric"] = review_guidance
             with trace_context(
                 session_id=session_id, task_id=task_id, phase=f"review-{run_count}"
             ):
@@ -718,7 +730,9 @@ class DispatchService:
             todo_status = _merge_todo_status(todo_status, review.todo_status, done=review.done)
             review.todo_status = todo_status
             reviewed_event_id = (
-                await self._emit_pm_review(session_id, task_id, review, run_count)
+                await self._emit_pm_review(
+                    session_id, task_id, review, run_count, rubric_active=bool(review_guidance)
+                )
             ) or review_cutoff_id
             review_notes.append(
                 {
@@ -791,6 +805,48 @@ class DispatchService:
             (skills if kind == "skill" else standards).append(item)
         return {"instruction": instruction, "skills": skills, "standards": standards}
 
+    def _build_review_guidance(self, wm_index: list[dict[str, Any]]) -> str:
+        """Soft-constraint review text (P4 §9, D2): selected qa_rubric bodies + code_standard check
+        fields, capped. Fed to PMAgent.review as the acceptance standard so it shapes done/follow_up.
+        The check command is shown as a JUDGMENT REFERENCE only — it is NOT executed (the hard check
+        gate is deferred to V2). Returns "" when no rubric/standard was selected (no-op, back-compat)."""
+        get = getattr(self.store, "get_active_definition", None) if self.store is not None else None
+        if get is None:
+            return ""
+        parts: list[str] = []
+        for entry in wm_index:
+            kind, name = entry.get("kind"), entry.get("name")
+            if not name:
+                continue
+            if kind == "qa_rubric":
+                row = get("qa_rubric", name)
+                body = (getattr(row, "body", "") or "").strip() if row is not None else ""
+                if body:
+                    parts.append(f"## QA rubric: {name}\n{body}")
+            elif kind == "code_standard":
+                cmd = self._standard_check_cmd(get, name)
+                if cmd:
+                    parts.append(
+                        f"## Code standard check ({name})\n"
+                        f"The change should pass `{cmd}` (use as a judgment reference; not executed)."
+                    )
+        return "\n\n".join(parts)[:WORKMODE_BODY_MAX_CHARS]
+
+    @staticmethod
+    def _standard_check_cmd(get_active, name: str) -> str:
+        """The `metadata.check.cmd` of an active code_standard (P4), or "" if none / non-command."""
+        row = get_active("code_standard", name)
+        if row is None:
+            return ""
+        try:
+            meta = json.loads(getattr(row, "metadata_json", "{}") or "{}")
+        except (TypeError, ValueError):
+            return ""
+        chk = meta.get("check") if isinstance(meta, dict) else None
+        if isinstance(chk, dict) and chk.get("type") == "command":
+            return str(chk.get("cmd") or "").strip()
+        return ""
+
     async def _emit_work_mode(
         self,
         session_id: str,
@@ -830,6 +886,8 @@ class DispatchService:
                         "l1_bodies": body_tokens,
                         "session_memory": session_memory_tokens,
                     },
+                    "scorer": getattr(resolver, "last_scorer", "lexical"),
+                    "embed_calls": getattr(resolver, "embed_calls", 0),
                 },
             )
         )
@@ -862,7 +920,11 @@ class DispatchService:
         )
         await self._persist_then_publish(event)
 
-    async def _emit_pm_review(self, session_id: str, task_id: str, review, run_count: int) -> str:
+    async def _emit_pm_review(
+        self, session_id: str, task_id: str, review, run_count: int, *, rubric_active: bool = False
+    ) -> str:
+        # P4 (§16): rubric_active = a qa_rubric/standard was fed this review; a rubric-triggered
+        # follow-up is then (rubric_active and not done) — lets us compute the rubric follow-up rate.
         event = make_event(
             "pm_review",
             "pm-agent",
@@ -875,6 +937,8 @@ class DispatchService:
                 "reason": review.reason,
                 "follow_up": review.follow_up,
                 "todo_status": review.todo_status,
+                "rubric_active": rubric_active,
+                "rubric_followup": bool(rubric_active and not review.done and review.follow_up),
             },
         )
         await self._persist_then_publish(event)

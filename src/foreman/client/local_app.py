@@ -184,12 +184,33 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     from .core.injector import WorkspaceInjector
 
     injector = WorkspaceInjector(allowed_roots=[w.path for w in cfg.workspaces] or None)
+
+    # Semantic work-mode retrieval (P3 §3.5): only built when work_mode.semantic_search is on. The
+    # embedder tries the PM provider's /embeddings and falls back to a local offline embedder; the
+    # scorer itself falls back to lexical on any failure — never fatal. Default off → embedder None.
+    _embedder = None
+    if (cfg.work_mode.semantic_search or "off").strip().lower() != "off":
+        from foreman.client.core.work_mode_context import LocalHashEmbedder
+
+        _emb_llm = _llm()
+        _local_emb = LocalHashEmbedder(cfg.work_mode.embedding_dim)
+
+        async def _embedder(texts):  # type: ignore[misc]
+            try:
+                vecs = await _emb_llm.embed(texts, model=cfg.work_mode.embedding_model)
+                if vecs and all(vecs):
+                    return vecs
+            except Exception:  # noqa: BLE001 — provider has no /embeddings or failed → local fallback
+                pass
+            return await _local_emb(texts)
+
     dispatcher = DispatchService(
         cfg,
         store,
         bus=bus,
         runner=runner,
         injector=injector,
+        embedder=_embedder,
         pm_agent=PMAgent(
             _llm(),
             language=language,

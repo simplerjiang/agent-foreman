@@ -25,6 +25,7 @@ for the managed-block index. Keeping it pure makes the L0 contract independently
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -335,6 +336,7 @@ class WorkModeResolver:
         goal: str = "",
         agent: str = "",
         manual_ids: list[str] | None = None,
+        scorer: Any = None,
     ) -> None:
         self._store = store
         self._workspace = workspace
@@ -344,6 +346,10 @@ class WorkModeResolver:
         self._pulls = 0
         self._body_chars = 0
         self._defs_cache: list | None = None
+        # Optional semantic relevance scorer (P3). None → pure lexical (the default, zero change).
+        self._scorer = scorer
+        self.last_scorer = "lexical"   # telemetry: which ranker actually ran
+        self.embed_calls = 0
 
     @property
     def pulls(self) -> int:
@@ -416,10 +422,156 @@ class WorkModeResolver:
         self._pulls += 1
         self._body_chars += len(body or "")
 
+    # ── P3: optional semantic (embedding) re-ranking, default-off, fallback never fatal ───────────
+    async def aresolve(
+        self, *, query: str = "", kind: str | None = None, limit: int | None = None
+    ) -> dict:
+        """Async funnel: identical to :meth:`resolve` (lexical) when no scorer is configured; with an
+        EmbeddingScorer it re-ranks the scope-passing AUTO candidates by semantic similarity, keeping
+        scope filter + manual pass-through + top-K + dropped UNCHANGED. Never raises — any embedding
+        failure falls back to lexical."""
+        lim = WORKMODE_MAX_SELECTED if limit is None else limit
+        if self._scorer is None:
+            self.last_scorer = "lexical"
+            return self.resolve(query=query, kind=kind, limit=lim)
+        # All scope-passing candidates, lexically ordered (manual first), WITHOUT the top-K cut.
+        base = resolve_work_mode_context(
+            self._active(), goal=query or self._goal,
+            workspace=self._workspace or None, agent=self._agent or None,
+            selected_ids=self._manual_ids, kind=kind, limit=10_000,
+        )
+        all_selected = base["selected"]
+        manual_set = {s for s in self._manual_ids if s}
+        manual = [e for e in all_selected if e["id"] in manual_set]
+        auto = [e for e in all_selected if e["id"] not in manual_set]
+        rows_by_id = {_field(r, "id", ""): r for r in self._active()}
+        items = [
+            {"id": e["id"], "text": _embedding_text(rows_by_id.get(e["id"])),
+             "src_hash": _src_hash(_embedding_text(rows_by_id.get(e["id"])))}
+            for e in auto
+        ]
+        scores, calls = await self._scorer.scores(query or self._goal, items)
+        self.embed_calls += calls
+        if scores is None:  # embedding channel failed → lexical fallback
+            self.last_scorer = "embedding_fallback_lexical"
+            return self.resolve(query=query, kind=kind, limit=lim)
+        self.last_scorer = "embedding"
+        ranked = sorted(
+            enumerate(auto),
+            key=lambda pair: (scores.get(pair[1]["id"], 0.0), -pair[0]),
+            reverse=True,
+        )
+        auto_sorted = [e for _, e in ranked]
+        cap = max(0, int(lim))
+        selected = manual + auto_sorted[:cap]
+        dropped = auto_sorted[cap:]
+        return {"selected": selected, "dropped": dropped}
+
+    async def aindex(
+        self, *, query: str = "", kind: str | None = None, limit: int | None = None
+    ) -> list[dict]:
+        return (await self.aresolve(query=query, kind=kind, limit=limit))["selected"]
+
+
+# ── P3: semantic relevance scoring (embeddings) — pure-Python, no numpy/faiss ─────────────────────
+
+# Process-wide vector cache: definition id → (src_hash, vector). Survives across dispatches; a
+# changed source text (src_hash mismatch) triggers a recompute (hot-update invalidation, §3.3).
+_VECTOR_CACHE: dict[str, tuple[str, list[float]]] = {}
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity; 0.0 for empty / mismatched-length / zero-norm vectors (never raises)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def _embedding_text(row: Any) -> str:
+    """The text embedded for a definition: name + description + keywords (the L0 selection signal)."""
+    if row is None:
+        return ""
+    meta = _parse_obj(_field(row, "metadata_json", "{}"))
+    parts = [_field(row, "name", ""), _description_of(meta), *(_as_list(meta.get("keywords")))]
+    return " ".join(p for p in parts if p)
+
+
+def _src_hash(text: str) -> str:
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()
+
+
+class LocalHashEmbedder:
+    """Deterministic, offline, zero-network feature-hash embedder (L2-normalized). Recall is weaker
+    than a real embedding model, but it lets EmbeddingScorer run under ANY provider (incl. anthropic /
+    proxies with no /embeddings) and stays unit-testable. Callable: ``await embedder(texts) -> vecs``."""
+
+    def __init__(self, dim: int = 256) -> None:
+        self._dim = max(8, int(dim))
+
+    async def __call__(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed_one(t) for t in texts]
+
+    def _embed_one(self, text: str) -> list[float]:
+        vec = [0.0] * self._dim
+        for tok in _tokenize(text or ""):
+            bucket = int(hashlib.sha1(tok.encode("utf-8")).hexdigest(), 16) % self._dim
+            vec[bucket] += 1.0
+        norm = math.sqrt(sum(x * x for x in vec))
+        return [x / norm for x in vec] if norm else vec
+
+
+class EmbeddingScorer:
+    """Semantic ranker: cosine of the query vector against each candidate's cached vector. Batch-
+    embeds uncached/stale candidates once. Returns ``(None, calls)`` on any embedding failure so the
+    resolver falls back to lexical — the funnel never breaks (§3.4)."""
+
+    name = "embedding"
+
+    def __init__(self, embedder: Any) -> None:
+        self._embedder = embedder  # async callable: (list[str]) -> list[list[float]]
+
+    async def scores(self, query: str, items: list[dict]) -> tuple[dict | None, int]:
+        calls = 0
+        try:
+            qvecs = await self._embedder([query or ""])
+            calls += 1
+        except Exception:  # noqa: BLE001 — embedding failure → fall back, never raise
+            return None, calls
+        qv = qvecs[0] if qvecs else []
+        need = [it for it in items if _VECTOR_CACHE.get(it["id"], ("", None))[0] != it["src_hash"]]
+        if need:
+            try:
+                vecs = await self._embedder([it["text"] for it in need])
+                calls += 1
+            except Exception:  # noqa: BLE001
+                return None, calls
+            for it, v in zip(need, vecs):
+                _VECTOR_CACHE[it["id"]] = (it["src_hash"], v)
+        out: dict[str, float] = {}
+        for it in items:
+            cached = _VECTOR_CACHE.get(it["id"])
+            out[it["id"]] = _cosine(qv, cached[1]) if cached and cached[1] else 0.0
+        return out, calls
+
+
+def make_scorer(semantic_search: str, embedder: Any) -> Any:
+    """Build the relevance scorer for the resolver from the ``work_mode.semantic_search`` mode.
+    ``off`` → None (lexical). ``auto``/``on`` → EmbeddingScorer over the given embedder (which itself
+    falls back to lexical on failure). Unknown → None."""
+    if (semantic_search or "off").strip().lower() in {"auto", "on"} and embedder is not None:
+        return EmbeddingScorer(embedder)
+    return None
+
 
 __all__ = [
     "resolve_work_mode_context",
     "WorkModeResolver",
+    "EmbeddingScorer",
+    "LocalHashEmbedder",
+    "make_scorer",
     "render_l0_index",
     "fit_l0_index",
     "work_mode_prompt_block",
