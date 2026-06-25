@@ -310,6 +310,7 @@ a { color: var(--accent-text); }
 .pm-note .body { flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 11px 14px; box-shadow: var(--shadow-sm); font-size: 13.5px; line-height: 1.6; }
 .pm-status { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; color: var(--faint); font-size: 11.5px; font-family: var(--mono); background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; }
 .pm-status .spin { width: 10px; height: 10px; border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: fdspin 0.7s linear infinite; }
+.pm-status .pm-elapsed { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .plan-card { background: var(--surface); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow); overflow: hidden; }
 .plan-head { display: flex; align-items: center; gap: 9px; padding: 11px 15px; border-bottom: 1px solid var(--border); background: var(--surface2); }
@@ -410,7 +411,7 @@ a { color: var(--accent-text); }
 .todo-progress .track { flex: 1; height: 6px; border-radius: 6px; background: var(--bg2); overflow: hidden; }
 .todo-progress .track > span { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--accent), var(--green)); transition: width 0.3s; }
 .todo-progress .lbl { font-size: 11px; color: var(--muted); font-family: var(--mono); }
-.todo-row { display: flex; gap: 11px; align-items: flex-start; padding: 10px 11px; border-radius: 8px; cursor: pointer; transition: background 0.15s; }
+.todo-row { display: flex; gap: 11px; align-items: flex-start; padding: 10px 11px; border-radius: 8px; cursor: pointer; transition: background 0.15s; animation: fdup 0.28s ease both; }
 .todo-row:hover { background: var(--bg2); }
 .todo-row.active { background: var(--accent-soft); }
 .todo-row.blocked { background: var(--amber-soft); }
