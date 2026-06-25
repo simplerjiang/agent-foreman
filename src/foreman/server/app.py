@@ -56,6 +56,13 @@ class _AutonomyBody(BaseModel):
     level: int
 
 
+class _DebugBody(BaseModel):
+    """Debug switches (work-mode P1b-trace, §8C). llm_trace writes the FULL conversation plaintext to
+    .foreman/debug/ — local-only. Persisted to config_kv; takes effect at next launch."""
+
+    llm_trace: bool
+
+
 class _LLMSettingsBody(BaseModel):
     """PM 大脑 settings (DESIGN §15): switch the brain's provider/model/base_url at runtime. The api
     key is accepted for local save but never returned. Empty field = clear that override/key."""
@@ -1199,6 +1206,26 @@ def create_app(
         level = normalize_level(body.level)
         store.set_setting("autonomy.level", str(level))
         return {"level": level, "label": level_label(level, _effective_lang())}
+
+    @app.get("/api/settings/debug")
+    async def get_debug_settings() -> dict:
+        """Effective debug switches: config_kv override (if a store) else the config default (§8C)."""
+        current = None
+        if store is not None and hasattr(store, "get_setting"):
+            current = store.get_setting("debug.llm_trace")
+        if current is not None and current != "":
+            on = current.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            on = bool(cfg.debug.llm_trace)
+        return {"llm_trace": on}
+
+    @app.post("/api/settings/debug")
+    async def set_debug_settings(body: _DebugBody) -> dict:
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        store.set_setting("debug.llm_trace", "1" if body.llm_trace else "0")
+        # Note: the tracer is built at app launch, so this takes effect on the next restart.
+        return {"llm_trace": bool(body.llm_trace), "restart_required": True}
 
     @app.get("/api/settings/llm")
     async def get_llm_settings() -> dict:

@@ -127,8 +127,32 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
             "api_key": cfg.secrets.llm_api_key,
         }
 
+    # LLM debug tracer (work-mode P1b-trace, §8C): one shared instance (so seq is process-monotonic
+    # and files unify) injected into every PM client. None unless debug.llm_trace is on → zero
+    # overhead. log_dir resolves against the config dir (Foreman's own state root), NOT the cwd.
+    _tracer = None
+    _trace_on = cfg.debug.llm_trace
+    _persisted_trace = store.get_setting("debug.llm_trace") if hasattr(store, "get_setting") else None
+    if _persisted_trace:  # a UI toggle persists here; takes effect at next launch
+        _trace_on = _persisted_trace.strip().lower() in {"1", "true", "yes", "on"}
+    if _trace_on:
+        from pathlib import Path as _Path
+
+        from foreman.shared.llm.trace import LLMTracer
+
+        _ld = _Path(cfg.debug.log_dir)
+        if not _ld.is_absolute():
+            _base = _Path(cfg.config_path).parent if cfg.config_path else _Path(".")
+            _ld = _base / cfg.debug.log_dir
+        _tracer = LLMTracer(
+            log_dir=_ld,
+            max_bytes=cfg.debug.llm_trace_max_bytes,
+            keep=cfg.debug.llm_trace_keep,
+            keep_days=cfg.debug.llm_trace_keep_days,
+        )
+
     def _llm() -> LLMClient:
-        return LLMClient(cfg, settings_resolver=_llm_settings)
+        return LLMClient(cfg, settings_resolver=_llm_settings, tracer=_tracer)
 
     toolbelt = Toolbelt(gate=gate)
     auditor = Auditor(_llm(), language=language)

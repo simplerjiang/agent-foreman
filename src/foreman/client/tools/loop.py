@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from foreman.shared.llm import LLMClient, Message
+from foreman.shared.llm.trace import trace_context
 
 from .models import EXTERNAL_WEB, ToolCall, ToolResult
 from .runtime import PMToolRuntime
@@ -53,7 +54,9 @@ class PMToolLoop:
         rounds: list[dict[str, Any]] = []
         search_needs_verification = False
         for round_no in range(1, self.max_rounds + 1):
-            response = await self._complete(transcript, model=model)
+            # Relabel the trace phase per round (keeps the outer plan session/task — §8C.3).
+            with trace_context(phase=f"tool-round-{round_no}"):
+                response = await self._complete(transcript, model=model)
             calls = response["tool_calls"]
             raw = response["text"]
             obj = _extract_json_object(raw)

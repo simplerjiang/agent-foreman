@@ -81,6 +81,10 @@
       fileRead: "读取文件", fileWrite: "写入文件", shellTool: "运行命令", webFetch: "抓取 URL", webSearch: "网页搜索", browserTool: "浏览器",
       allowedCommands: "允许的命令", allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "循环 / 最大轮次",
       pmToolsSaved: "PM 工具设置已保存",
+      debug: "调试", debugSub: "排错用的高级开关。默认全关。",
+      llmTrace: "LLM 对话明文落盘",
+      llmTraceWarn: "开启后会把与大模型的完整对话（含源码与解密后的工作方式）明文写入本机 .foreman/debug/，仅本地保存、不上传、不进 git。改动在下次启动生效。",
+      debugSaved: "调试设置已保存（重启生效）",
       provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key", transport: "传输方式",
       reasoningEffort: "推理强度",
       pmKeyHint: "已配置 API Key。输入新 key 后保存可替换；留空不修改。", pmKeyMissing: "未检测到 API Key。可在这里输入并保存。",
@@ -173,6 +177,10 @@
       fileRead: "Read files", fileWrite: "Write files", shellTool: "Run commands", webFetch: "Fetch URL", webSearch: "Web search", browserTool: "Browser",
       allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "Loop / max rounds",
       pmToolsSaved: "PM tool settings saved",
+      debug: "Debug", debugSub: "Advanced switches for troubleshooting. All off by default.",
+      llmTrace: "Trace LLM conversations to disk",
+      llmTraceWarn: "Writes the FULL model conversation (incl. your source + decrypted work modes) in plaintext to .foreman/debug/ on this machine — local only, never uploaded, not committed. Takes effect on next launch.",
+      debugSaved: "Debug settings saved (restart to apply)",
       provider: "Provider", model: "Model", baseUrl: "Base URL", apiKey: "API Key", transport: "Transport",
       reasoningEffort: "Reasoning effort",
       pmKeyHint: "API key is set. Enter a new key and save to replace it; blank keeps it.", pmKeyMissing: "No API key detected. You can enter and save one here.",
@@ -1198,6 +1206,7 @@
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
       pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
+      debugSettings, debugStatus, saveDebug,
       cloud, setCloud, saveCloud, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2, setLang } = props;
     const updateAgent = (name, patch) => setAgentSettings((rows) => (rows || []).map((r) => (r.name === name ? { ...r, ...patch } : r)));
@@ -1317,6 +1326,15 @@
         </div>
         ${pmToolsStatus ? html`<div className=${`alert ${pmToolsStatus === d.pmToolsSaved ? "ok" : "error"}`} style=${{ marginBottom: 14 }}>${pmToolsStatus}</div>` : null}
         <button className="btn primary" onClick=${savePmTools}>${d.save}</button>
+      </div>
+
+      <!-- debug -->
+      <div className="card">
+        <div className="card-title">${d.debug}</div>
+        <div className="card-sub">${d.debugSub}</div>
+        <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, marginBottom: 8 }}>${d.llmTrace} <${Switch} on=${!!(debugSettings && debugSettings.llm_trace)} onChange=${(v) => saveDebug(v)} /></label>
+        <div className="alert warn" style=${{ marginBottom: 10 }}>⚠ ${d.llmTraceWarn}</div>
+        ${debugStatus ? html`<div className="alert ok" style=${{ marginBottom: 10 }}>${debugStatus}</div>` : null}
       </div>
 
       <!-- cloud connection -->
@@ -1508,6 +1526,8 @@
     const [agentStatus, setAgentStatus] = useState("");
     const [pmTools, setPmTools] = useState({ file_read: true, file_write: false, shell: false, web_fetch: false, web_search: false, browser: false, allowed_commands: ["python --version"], allowed_origins: [], web_search_provider: "duckduckgo", searxng_url: "", browser_headless: false, max_rounds: 6 });
     const [pmToolsStatus, setPmToolsStatus] = useState("");
+    const [debugSettings, setDebugSettings] = useState({ llm_trace: false });
+    const [debugStatus, setDebugStatus] = useState("");
     const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false });
     const [cloudStatus, setCloudStatus] = useState("");
     const [cloudAvailable, setCloudAvailable] = useState(true);
@@ -1548,6 +1568,8 @@
     }, []);
     const loadAgentSettings = useCallback(async () => { try { setAgentSettings(await api("/api/settings/agents") || []); } catch (e) { setAgentSettings([]); } finally { setAgentsLoaded(true); } }, []);
     const loadPmTools = useCallback(async () => { try { setPmTools(await api("/api/settings/pm-tools") || {}); } catch (e) { /* server mode */ } }, []);
+    const loadDebug = useCallback(async () => { try { setDebugSettings(await api("/api/settings/debug") || { llm_trace: false }); } catch (e) { /* server mode */ } }, []);
+    const saveDebug = useCallback(async (on) => { try { const r = await api("/api/settings/debug", { method: "POST", body: { llm_trace: !!on } }); setDebugSettings({ llm_trace: !!(r && r.llm_trace) }); setDebugStatus(d.debugSaved); } catch (e) { notifyError(e); } }, [d]);
     const loadModels = useCallback(async () => { try { const data = await api("/api/models"); setModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, max_tokens: m.max_tokens, source: m.source }))); } catch (e) { setModelOptions([]); } }, []);
     const loadPmModels = useCallback(async (draft) => {
       const cur = draft || {};
@@ -1591,8 +1613,9 @@
       loadAgentSettings();
       loadLlm();
       loadPmTools();
+      loadDebug();
       loadModels();
-    }, [loadWorkspaces, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadAgentSettings, loadLlm, loadPmTools, loadModels]);
+    }, [loadWorkspaces, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadAgentSettings, loadLlm, loadPmTools, loadDebug, loadModels]);
     useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
 
     // polling for cards/approvals/sessions
@@ -1862,6 +1885,7 @@
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
       pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
+      debugSettings, debugStatus, saveDebug,
       cloud, setCloud, saveCloud, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2: lang, setLang, onPush: enablePush,
     };

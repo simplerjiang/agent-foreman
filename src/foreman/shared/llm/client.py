@@ -18,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -95,6 +97,7 @@ class LLMClient:
         transport: httpx.AsyncBaseTransport | None = None,
         ws_connect=None,
         settings_resolver: Callable[[], dict] | None = None,
+        tracer: Any = None,
     ) -> None:
         # Construction-time defaults from config. `settings_resolver` (optional) lets a runtime
         # settings page override provider/model/base_url/key WITHOUT a restart: it's called per
@@ -108,6 +111,9 @@ class LLMClient:
         self.timeout = cfg.llm.request_timeout_s
         self.mode = (cfg.llm.transport or "http").strip().lower()
         self._settings_resolver = settings_resolver
+        # Optional debug tracer (work-mode P1b-trace, §8C). None = off, zero overhead. Records the
+        # request/response at the two choke points below — never raises into a real call.
+        self._tracer = tracer
         # `transport` lets tests inject httpx.MockTransport (no real network / tokens spent).
         self._client = httpx.AsyncClient(timeout=cfg.llm.request_timeout_s, transport=transport)
         # `ws_connect(url, headers, timeout) -> async-context-manager` lets tests inject a fake socket.
@@ -179,6 +185,39 @@ class LLMClient:
 
         On the ws transport json_mode is a no-op (the Responses path has no response_format; callers
         already instruct the model to emit JSON and parse tolerantly)."""
+        if self._tracer is None:
+            return await self._complete_impl(
+                messages, json_mode=json_mode, model=model, on_stream=on_stream, state_key=state_key
+            )
+        provider, _base, model_eff = self._resolve(model)
+        t0 = time.perf_counter()
+        err: str | None = None
+        text = ""
+        try:
+            text = await self._complete_impl(
+                messages, json_mode=json_mode, model=model, on_stream=on_stream, state_key=state_key
+            )
+            return text
+        except Exception as exc:  # record failures too, then re-raise
+            err = repr(exc)
+            raise
+        finally:
+            self._tracer.record(
+                kind="complete", provider=provider, model=model_eff,
+                transport=self._transport_mode(), json_mode=json_mode, messages=messages,
+                tools=None, response_text=text, tool_calls=None,
+                latency_ms=(time.perf_counter() - t0) * 1000, error=err,
+            )
+
+    async def _complete_impl(
+        self,
+        messages: list[Message],
+        *,
+        json_mode: bool = False,
+        model: str = "",
+        on_stream: StreamCallback | None = None,
+        state_key: str = "",
+    ) -> str:
         provider, base_url, model = self._resolve(model)
         if self._transport_mode() == "ws":
             return await self._responses_ws(
@@ -203,9 +242,45 @@ class LLMClient:
         fallback protocol. This keeps the existing WS stream contract small and avoids pretending
         tool results were acknowledged by the provider when Foreman owns the runtime execution.
         """
+        if self._tracer is None:
+            return await self._tool_complete_impl(
+                messages, tools=tools, json_mode=json_mode, model=model, on_stream=on_stream
+            )
+        provider, _base, model_eff = self._resolve(model)
+        t0 = time.perf_counter()
+        err: str | None = None
+        resp = LLMToolResponse(text="", tool_calls=[])
+        try:
+            resp = await self._tool_complete_impl(
+                messages, tools=tools, json_mode=json_mode, model=model, on_stream=on_stream
+            )
+            return resp
+        except Exception as exc:
+            err = repr(exc)
+            raise
+        finally:
+            self._tracer.record(
+                kind="tool_complete", provider=provider, model=model_eff,
+                transport=self._transport_mode(), json_mode=json_mode, messages=messages,
+                tools=tools, response_text=resp.text,
+                tool_calls=[{"id": c.id, "name": c.name, "arguments": c.arguments}
+                            for c in resp.tool_calls],
+                latency_ms=(time.perf_counter() - t0) * 1000, error=err,
+            )
+
+    async def _tool_complete_impl(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[dict],
+        json_mode: bool = False,
+        model: str = "",
+        on_stream: StreamCallback | None = None,
+    ) -> LLMToolResponse:
         provider, base_url, model = self._resolve(model)
         if self._transport_mode() == "ws":
-            text = await self.complete(
+            # Call the IMPL (not the public complete) so a traced ws tool_complete records only once.
+            text = await self._complete_impl(
                 messages, json_mode=json_mode, model=model, on_stream=on_stream
             )
             return LLMToolResponse(text=text, tool_calls=[])

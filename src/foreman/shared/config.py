@@ -6,6 +6,7 @@ FOREMAN_ prefix (see .env.example).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
@@ -223,6 +224,21 @@ class NotifyCfg(BaseModel):
     email: EmailCfg = EmailCfg()
 
 
+class DebugCfg(BaseModel):
+    """Debug/observability switches (work-mode P1b-trace, §8C). All default OFF / safe."""
+
+    # LLM request/response PLAINTEXT trace to disk. Default False. ON writes the FULL conversation
+    # (incl. user source + decrypted 秘方) to log_dir — local-only, never uploaded, git-excluded.
+    llm_trace: bool = False
+    # Trace root dir (process-local). Relative paths resolve against the config file's directory.
+    log_dir: str = ".foreman/debug"
+    # Rotation/retention [defaults 2026-06-24]: ≤50 MB per file, keep latest 20 OR 14 days (whichever
+    # prunes first). All config-overridable.
+    llm_trace_max_bytes: int = 50 * 1024 * 1024
+    llm_trace_keep: int = 20
+    llm_trace_keep_days: int = 14
+
+
 class Config(BaseModel):
     server: ServerCfg = ServerCfg()
     llm: LLMCfg = LLMCfg()
@@ -241,6 +257,7 @@ class Config(BaseModel):
     autonomy: AutonomyCfg = AutonomyCfg()
     pm_tools: PMToolsCfg = PMToolsCfg()
     notify: NotifyCfg = NotifyCfg()
+    debug: DebugCfg = DebugCfg()
 
     # Populated from .env, not from config.yaml.
     secrets: Secrets = Field(default_factory=Secrets)
@@ -262,4 +279,9 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     cfg.config_path = str(p)
     cfg.env_path = str(p.with_name(".env"))
     cfg.secrets = Secrets(_env_file=cfg.env_path)  # type: ignore[call-arg]  # pydantic-settings
+    # env→config glue: only Secrets is env-driven; the structured Config segments are not. Let
+    # FOREMAN_DEBUG_LLM_TRACE flip the debug switch (env wins over yaml — "turn it on right now").
+    _env_trace = os.environ.get("FOREMAN_DEBUG_LLM_TRACE")
+    if _env_trace is not None:
+        cfg.debug.llm_trace = _env_trace.strip().lower() in {"1", "true", "yes", "on"}
     return cfg

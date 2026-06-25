@@ -27,6 +27,7 @@ from typing import Any
 
 from foreman.shared.config import Config
 from foreman.shared.events import make_event, utc_now_iso
+from foreman.shared.llm.trace import trace_context
 from foreman.shared.i18n import normalize as normalize_lang
 
 from ..dispatch import build_session_task
@@ -255,7 +256,8 @@ class DispatchService:
             kwargs = {"existing_context": existing}
             if _accepts_keyword(self.pm_agent.compact, "on_stream"):
                 kwargs["on_stream"] = self._pm_stream_sink(session_id, None, "compact")
-            summary = await self.pm_agent.compact(session.goal, timeline, **kwargs)
+            with trace_context(session_id=session_id, phase="compact"):
+                summary = await self.pm_agent.compact(session.goal, timeline, **kwargs)
         else:
             summary = _fallback_compact(timeline, existing)
         summary = (summary or "").strip()[:MAX_CONTEXT_CHARS]
@@ -591,7 +593,8 @@ class DispatchService:
             plan_kwargs["work_mode_index"] = wm_index
         if _accepts_keyword(self.pm_agent.plan, "work_mode_resolver"):
             plan_kwargs["work_mode_resolver"] = work_mode_resolver
-        plan = await self.pm_agent.plan(goal, **plan_kwargs)
+        with trace_context(session_id=session_id, task_id=task_id, phase="plan"):
+            plan = await self.pm_agent.plan(goal, **plan_kwargs)
         # Telemetry: one work_mode event per dispatch (after plan, so pulls/body_tokens are counted).
         await self._emit_work_mode(
             session_id, task_id, wm_index, wm_resolved["dropped"], work_mode_resolver
@@ -633,7 +636,10 @@ class DispatchService:
                 )
             if _accepts_keyword(self.pm_agent.review, "state_key"):
                 review_kwargs["state_key"] = review_state_key
-            review = await self.pm_agent.review(goal, plan, timeline, **review_kwargs)
+            with trace_context(
+                session_id=session_id, task_id=task_id, phase=f"review-{run_count}"
+            ):
+                review = await self.pm_agent.review(goal, plan, timeline, **review_kwargs)
             todo_status = _merge_todo_status(todo_status, review.todo_status, done=review.done)
             review.todo_status = todo_status
             reviewed_event_id = (
