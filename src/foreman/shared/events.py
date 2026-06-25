@@ -28,6 +28,9 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "workflow",
         # definition editor (P6/T6.1, §11.2): a 秘方 block was created / updated / activated / deleted.
         "definition",
+        # work-mode telemetry (work-mode integration P1, §8/§16): which definitions a dispatch
+        # selected / dropped + L0 index & pulled-body token accounting.
+        "work_mode",
     }
 )
 

@@ -79,10 +79,11 @@ def test_dispatch_empty_goal_400(tmp_path):
     assert TestClient(app).post("/api/tasks", json={"goal": "  "}).status_code == 400
 
 
-def test_dispatch_accepts_work_mode_ids_without_consuming(tmp_path):
-    """D4 (P0, UI-first): the composer sends work_mode_ids; the backend must ACCEPT the field (no
-    422/400) but NOT consume it yet — resolver pass-through wiring lands in P1. An OLD request with no
-    such field still works (backward-compat)."""
+def test_dispatch_accepts_work_mode_ids(tmp_path):
+    """The composer sends work_mode_ids; the backend accepts them (no 422/400) and threads them to
+    the resolver as manual picks (P1). A request with no such field stays fully auto (backward-
+    compat). Here the dispatcher has no PM agent, so the ids are simply accepted and the dispatch
+    succeeds — the consumption path is asserted end-to-end in test_work_mode_p1."""
     app, _ = _app(tmp_path)
     c = TestClient(app)
     with_ids = c.post("/api/tasks", json={"goal": "do it", "work_mode_ids": ["id-a", "id-b"]})

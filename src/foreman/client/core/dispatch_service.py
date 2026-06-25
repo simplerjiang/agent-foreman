@@ -33,6 +33,13 @@ from ..dispatch import build_session_task
 from ..store.models import ContextSnapshot, MemoryItem, Task
 from .context_compression import extract_json_object, memory_items_from_pack
 from .pm_agent import PMPlan, events_to_text
+from .work_mode_context import (
+    WORKMODE_INDEX_MAX_TOKENS,
+    WorkModeResolver,
+    approx_tokens,
+    fit_l0_index,
+    render_l0_index,
+)
 
 # Bound the goal so a multi-megabyte string can't inflate every later briefing's token cost (and
 # keeps the argv passed to the agent CLI sane). Truncated, not rejected, to stay friendly.
@@ -113,6 +120,7 @@ class DispatchService:
         effort: str | None = None,
         session_id: str | None = None,
         source: str | None = None,
+        work_mode_ids: list[str] | None = None,
     ) -> dict:
         """Validate + persist a new Root Session/Task; emit ``dispatch``; optionally launch.
 
@@ -201,6 +209,7 @@ class DispatchService:
                     resolved_agent,
                     resolved_model,
                     resolved_effort,
+                    work_mode_ids=list(work_mode_ids or []),
                 )
             )
             self._track_launch_task(session.id, launch_task)
@@ -446,9 +455,14 @@ class DispatchService:
         agent: str,
         pm_model: str,
         effort: str,
+        *,
+        work_mode_ids: list[str] | None = None,
     ) -> None:
         try:
-            await self._pm_launch(session_id, task_id, goal, workspace, agent, pm_model, effort)
+            await self._pm_launch(
+                session_id, task_id, goal, workspace, agent, pm_model, effort,
+                work_mode_ids=work_mode_ids,
+            )
         except Exception as exc:  # noqa: BLE001 — PM failure must be visible, not crash the server
             self._mark_session_unless_terminal(session_id, "failed")
             event = make_event(
@@ -529,6 +543,8 @@ class DispatchService:
         agent: str,
         pm_model: str,
         effort: str,
+        *,
+        work_mode_ids: list[str] | None = None,
     ) -> None:
         language = self._sync_pm_language()
         enabled_agents = [
@@ -548,7 +564,17 @@ class DispatchService:
             "plan",
             _pm_status_text(language, "plan"),
         )
-        plan_kwargs = {
+        # Work-mode L0 selection (P1, §6/§8): resolve the applicable definitions ONCE. The fitted L0
+        # index (no bodies) goes into the plan prompt; the same resolver backs the work_mode_search /
+        # work_mode_get tools so the PM can pull bodies on demand. Manual picks (work_mode_ids) pass
+        # straight through the funnel. With no active definitions this is a cheap empty resolve.
+        work_mode_resolver = WorkModeResolver(
+            self.store, workspace=workspace, goal=goal, agent=agent,
+            manual_ids=list(work_mode_ids or []),
+        )
+        wm_resolved = work_mode_resolver.resolve()
+        wm_index = fit_l0_index(wm_resolved["selected"], max_tokens=WORKMODE_INDEX_MAX_TOKENS)
+        plan_kwargs: dict[str, Any] = {
             "workspace": workspace,
             "available_agents": enabled_agents,
             "requested_agent": "",
@@ -561,7 +587,15 @@ class DispatchService:
             plan_kwargs["on_stream"] = self._pm_stream_sink(session_id, task_id, "plan")
         if _accepts_keyword(self.pm_agent.plan, "on_tool_event"):
             plan_kwargs["on_tool_event"] = self._pm_tool_event_sink(session_id, task_id)
+        if _accepts_keyword(self.pm_agent.plan, "work_mode_index"):
+            plan_kwargs["work_mode_index"] = wm_index
+        if _accepts_keyword(self.pm_agent.plan, "work_mode_resolver"):
+            plan_kwargs["work_mode_resolver"] = work_mode_resolver
         plan = await self.pm_agent.plan(goal, **plan_kwargs)
+        # Telemetry: one work_mode event per dispatch (after plan, so pulls/body_tokens are counted).
+        await self._emit_work_mode(
+            session_id, task_id, wm_index, wm_resolved["dropped"], work_mode_resolver
+        )
         plan = self._sanitize_pm_plan(plan, pm_model)
         todo_status = _initial_todo_status(plan.todo)
         await self._emit_pm_plan(session_id, task_id, plan, todo_status=todo_status)
@@ -653,6 +687,40 @@ class DispatchService:
             deliberation=plan.deliberation,
             ready=plan.ready,
             planning_rounds=plan.planning_rounds,
+        )
+
+    async def _emit_work_mode(
+        self,
+        session_id: str,
+        task_id: str,
+        selected: list[dict[str, Any]],
+        dropped: list[dict[str, Any]],
+        resolver: WorkModeResolver,
+    ) -> None:
+        """Emit one ``work_mode`` telemetry event per dispatch (§8/§16): what was selected/dropped
+        plus the L0 index & pulled-body token accounting. Tokens are ~4 char/token approximations
+        (P1b swaps in a real tokenizer). Metadata only — no bodies on the bus."""
+        await self._persist_then_publish(
+            make_event(
+                "work_mode",
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload={
+                    "selected": [
+                        {"kind": e.get("kind", ""), "name": e.get("name", ""),
+                         "est_tokens": e.get("est_tokens", 0)}
+                        for e in selected
+                    ],
+                    "dropped": [
+                        {"kind": e.get("kind", ""), "name": e.get("name", "")} for e in dropped
+                    ],
+                    "index_tokens": approx_tokens(render_l0_index(selected)),
+                    "pulls": resolver.pulls,
+                    "body_tokens": (resolver.body_chars + 3) // 4,
+                    "kinds": sorted({e.get("kind", "") for e in selected}),
+                },
+            )
         )
 
     async def _emit_pm_plan(

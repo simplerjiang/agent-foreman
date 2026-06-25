@@ -16,6 +16,7 @@ from foreman.shared.i18n import language_directive, normalize as normalize_lang
 from foreman.shared.llm import LLMClient, Message
 
 from .context_compression import context_pack_to_text, parse_context_pack
+from .work_mode_context import work_mode_prompt_block
 from ..tools.loop import PMToolLoop, build_tool_prompt_context
 
 VALID_AGENTS = {"claude-code", "codex"}
@@ -450,11 +451,17 @@ class PMAgent:
         context: str = "",
         on_stream=None,
         on_tool_event=None,
+        work_mode_index: list[dict[str, Any]] | None = None,
+        work_mode_resolver: Any = None,
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
         enabled = [_as_str(a.get("name")) for a in available_agents]
         if self.tool_runtime_factory is not None:
             runtime = self.tool_runtime_factory(workspace)
+            # Attach the per-task work-mode resolver so work_mode_search / work_mode_get can pull
+            # bodies during the loop (the factory built the runtime; we inject the task context here).
+            if work_mode_resolver is not None and hasattr(runtime, "set_work_mode_resolver"):
+                runtime.set_work_mode_resolver(work_mode_resolver)
             try:
                 fallback_plan = {
                     "agent": requested_agent or (enabled[0] if enabled else "claude-code"),
@@ -483,6 +490,10 @@ class PMAgent:
                     + "For simple greetings, status questions, or tasks that need no repository "
                     + "evidence, return final_plan immediately without calling tools."
                 )
+                # L0 work-mode index → the ACTUAL messages sent to the LLM (not build_plan_prompt).
+                # Bodies are never inlined here; the PM pulls them on demand via work_mode_get (§6).
+                if work_mode_index:
+                    prompt = prompt + "\n\n" + work_mode_prompt_block(work_mode_index)
                 loop = PMToolLoop(
                     self.llm,
                     runtime,

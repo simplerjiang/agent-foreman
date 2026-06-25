@@ -187,8 +187,8 @@ class _DispatchBody(BaseModel):
     effort: str = ""  # reasoning level / 速度档位: low | medium | high ("" = the CLI default)
     session_id: str = ""  # when set, append a new task to an existing conversation
     source: str = ""  # desktop | phone | api
-    # D4 (P0, UI-first): manually-picked work-mode definition ids. Accepted here so the new composer
-    # field doesn't 422, but NOT consumed yet — the resolver pass-through (selected_ids) lands in P1.
+    # Manually-picked work-mode definition ids (composer). Threaded to the resolver as manual picks
+    # that pass straight through the funnel (P1). Optional — a request without it is fully auto.
     work_mode_ids: list[str] = []
 
 
@@ -1417,6 +1417,7 @@ def create_app(
             effort=body.effort or None,
             session_id=body.session_id or None,
             source=body.source or None,
+            work_mode_ids=body.work_mode_ids or None,
         )
         if res.get("ok"):
             return res
