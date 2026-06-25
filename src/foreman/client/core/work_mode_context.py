@@ -535,18 +535,24 @@ class EmbeddingScorer:
 
     async def scores(self, query: str, items: list[dict]) -> tuple[dict | None, int]:
         calls = 0
+        if not items:  # nothing to rank (e.g. all candidates were manual picks) → don't even embed
+            return {}, calls
         try:
             qvecs = await self._embedder([query or ""])
             calls += 1
         except Exception:  # noqa: BLE001 — embedding failure → fall back, never raise
             return None, calls
-        qv = qvecs[0] if qvecs else []
+        if not qvecs or not qvecs[0]:  # empty/short query vector → fall back to lexical
+            return None, calls
+        qv = qvecs[0]
         need = [it for it in items if _VECTOR_CACHE.get(it["id"], ("", None))[0] != it["src_hash"]]
         if need:
             try:
                 vecs = await self._embedder([it["text"] for it in need])
                 calls += 1
             except Exception:  # noqa: BLE001
+                return None, calls
+            if len(vecs) != len(need):  # a short/misaligned batch must NOT leave stale vectors used
                 return None, calls
             for it, v in zip(need, vecs):
                 _VECTOR_CACHE[it["id"]] = (it["src_hash"], v)

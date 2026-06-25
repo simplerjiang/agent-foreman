@@ -26,6 +26,7 @@ Pure filesystem + string assembly — no subprocess/shell/eval, fully unit-testa
 
 from __future__ import annotations
 
+import contextlib
 import re
 import shutil
 from pathlib import Path
@@ -104,15 +105,26 @@ def _marker_end(task_id: str = "") -> str:
     return f"<!-- FOREMAN:END task={task_id} -->" if task_id else MARKER_END
 
 
+def _native_name(slug: str) -> str:
+    """The native skill dir name AND its frontmatter `name` (kept identical, ≤64 — Claude Code
+    requires lowercase-hyphen <64). Used everywhere a name is referenced so dir/ref never diverge."""
+    return f"{NATIVE_PREFIX}{slug}"[:64]
+
+
 def _valid_skills(skills: list[dict]) -> tuple[list[tuple[str, dict]], list[str]]:
-    """Split skills into (slug, skill) pairs and a skipped-names list (names that slug to nothing)."""
+    """Split skills into (slug, skill) pairs and a skipped-names list. Drops names that slug to
+    nothing, AND de-dupes by slug so two names colliding to one slug (e.g. differing only in case)
+    can't clobber each other's file — the later duplicate is reported as skipped, never silently lost."""
     valid: list[tuple[str, dict]] = []
     skipped: list[str] = []
+    seen: set[str] = set()
     for s in skills:
-        slug = _slug(str(s.get("name") or ""))
-        if not slug:
-            skipped.append(str(s.get("name") or ""))
+        name = str(s.get("name") or "")
+        slug = _slug(name)
+        if not slug or slug in seen:
+            skipped.append(name)
             continue
+        seen.add(slug)
         valid.append((slug, s))
     return valid, skipped
 
@@ -154,7 +166,7 @@ class WorkspaceInjector:
 
         if "CLAUDE.md" in files:
             native_dirs = self._write_native_skills(ws, valid, task_id)
-            refs = [(f"{NATIVE_PREFIX}{slug}", f"{NATIVE_SKILLS_DIR}/{NATIVE_PREFIX}{slug}/SKILL.md")
+            refs = [(_native_name(slug), f"{NATIVE_SKILLS_DIR}/{_native_name(slug)}/SKILL.md")
                     for slug, _ in valid]
             block = _build_block(instruction, standards, refs, task_id=task_id, native=True)
             target = ws / "CLAUDE.md"
@@ -192,7 +204,7 @@ class WorkspaceInjector:
         root.mkdir(parents=True, exist_ok=True)
         dirs: list[str] = []
         for slug, s in valid:
-            name = f"{NATIVE_PREFIX}{slug}"[:64]
+            name = _native_name(slug)
             skill_dir = root / name
             skill_dir.mkdir(parents=True, exist_ok=True)
             desc = str(s.get("description") or s.get("name") or "")[:1024].replace("\n", " ")
@@ -242,21 +254,37 @@ class WorkspaceInjector:
             if _strip_block(target, task_id):
                 removed.append(str(target.resolve(strict=False)))
 
-        # native skills: delete only the dirs this task wrote (per-task manifest).
-        for name in _read_manifest(ws, task_id):
+        # native skills: native dirs (.claude/skills/foreman-<slug>) are shared by slug across tasks,
+        # so delete a dir ONLY when no OTHER task's manifest still references it (a concurrent task in
+        # the same workspace may have selected the same skill — reference-count via manifests).
+        my_native = _read_manifest(ws, task_id)  # capture our claim BEFORE dropping it
+        _delete_manifest(ws, task_id)
+        still_referenced = _all_manifest_names(ws)  # union of every OTHER task's manifest
+        for name in my_native:
+            if name in still_referenced:
+                continue
             d = ws / NATIVE_SKILLS_DIR / name
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
                 removed.append(str(d.resolve(strict=False)))
-        _delete_manifest(ws, task_id)
         _rmdir_if_empty(ws / NATIVE_SKILLS_DIR)
         _rmdir_if_empty(ws / ".claude")
 
-        # codex skills: delete only this task's subdir.
-        codex_dir = (ws / SKILLS_DIR / task_id) if task_id else (ws / SKILLS_DIR)
-        if codex_dir.exists():
-            shutil.rmtree(codex_dir, ignore_errors=True)
-            removed.append(str(codex_dir.resolve(strict=False)))
+        # codex skills: with a task_id, delete only this task's subdir. WITHOUT one (legacy
+        # WorkflowEngine path), delete only the flat *.md files we wrote — NEVER rmtree the whole
+        # .foreman/skills tree, which would wipe a concurrent dispatch task's <task_id>/ subdir.
+        if task_id:
+            codex_dir = ws / SKILLS_DIR / task_id
+            if codex_dir.exists():
+                shutil.rmtree(codex_dir, ignore_errors=True)
+                removed.append(str(codex_dir.resolve(strict=False)))
+        else:
+            sdir = ws / SKILLS_DIR
+            if sdir.exists():
+                for f in sdir.glob("*.md"):  # flat legacy files only; leave per-task subdirs alone
+                    with contextlib.suppress(OSError):
+                        f.unlink()
+                        removed.append(str(f.resolve(strict=False)))
         _rmdir_if_empty(ws / SKILLS_DIR)
         _rmdir_if_empty(ws / ".foreman")
 
@@ -354,6 +382,21 @@ def _read_manifest(ws: Path, task_id: str) -> list[str]:
         return [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
     except OSError:
         return []
+
+
+def _all_manifest_names(ws: Path) -> set[str]:
+    """The set of native skill dir names referenced by ALL remaining task manifests (for ref-counting
+    a shared dir before clear deletes it)."""
+    names: set[str] = set()
+    root = ws / NATIVE_SKILLS_DIR
+    if not root.exists():
+        return names
+    for mf in root.glob(".foreman-manifest-*"):
+        try:
+            names.update(ln.strip() for ln in mf.read_text(encoding="utf-8").splitlines() if ln.strip())
+        except OSError:
+            continue
+    return names
 
 
 def _delete_manifest(ws: Path, task_id: str) -> None:

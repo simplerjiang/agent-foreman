@@ -49,10 +49,18 @@ async def test_resolve_window_uses_context_length_else_default():
         async def list_model_infos(self):
             raise RuntimeError("no /models")
 
+    class OtherModel:
+        async def list_model_infos(self):
+            return [{"id": "some-other-model", "context_length": 100_000}]
+
     assert await resolve_window_tokens(WithCtx(), "m") == 100_000 - OUTPUT_RESERVE_TOKENS
     assert await resolve_window_tokens(NoCtx(), "m") == DEFAULT_CTX_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS
     assert await resolve_window_tokens(Broken(), "m") == DEFAULT_CTX_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS
     assert await resolve_window_tokens(object(), "m") == DEFAULT_CTX_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS
+    # a SPECIFIC model that matches NO listed entry must fall back to DEFAULT — never borrow an
+    # unrelated model's window (regression: _context_length_for previously returned the first model).
+    assert (await resolve_window_tokens(OtherModel(), "gpt-5.5")
+            == DEFAULT_CTX_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS)
 
 
 def test_should_auto_compact_threshold_and_every_n():

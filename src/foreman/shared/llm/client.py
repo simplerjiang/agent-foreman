@@ -328,7 +328,16 @@ class LLMClient:
         )
         r.raise_for_status()
         data = r.json().get("data", [])
-        return [list(item.get("embedding") or []) for item in data]
+        # Order by the per-item `index` (the OpenAI /embeddings contract — some proxies reorder); fall
+        # back to response order when absent. Then index-align to the inputs so a vector can never be
+        # paired with the wrong text.
+        ordered = sorted(
+            enumerate(data),
+            key=lambda pair: pair[1].get("index", pair[0]) if isinstance(pair[1], dict) else pair[0],
+        )
+        vecs = [list(item.get("embedding") or []) if isinstance(item, dict) else []
+                for _, item in ordered]
+        return vecs[: len(texts)] if len(vecs) >= len(texts) else vecs + [[]] * (len(texts) - len(vecs))
 
     async def _openai(
         self,

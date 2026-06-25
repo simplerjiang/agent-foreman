@@ -51,6 +51,24 @@ async def test_embed_batch_in_out():
     assert await client.embed([]) == []
 
 
+async def test_embed_orders_by_index():
+    """Vectors must be index-aligned to inputs even when the provider returns `data` out of order
+    (regression: embed() previously trusted response array order)."""
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://api.test"
+    cfg.secrets.llm_api_key = "sk-test"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        n = len(json.loads(request.content.decode("utf-8"))["input"])
+        # return REVERSED order, each tagged with its true index
+        data = [{"index": i, "embedding": [float(i)]} for i in reversed(range(n))]
+        return httpx.Response(200, json={"data": data})
+
+    client = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    assert await client.embed(["a", "b", "c"]) == [[0.0], [1.0], [2.0]]
+
+
 async def test_embed_anthropic_raises():
     from foreman.shared.llm.client import LLMConfigError
     client = _embed_client(provider="anthropic")

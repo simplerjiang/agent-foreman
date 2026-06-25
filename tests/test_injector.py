@@ -189,6 +189,32 @@ def test_concurrent_codex_skills_not_clobbered_by_other_clear(tmp_path):
     assert not a_dir.exists() and b_dir.exists()  # B's skills survive A's clear (the blocker fix)
 
 
+def test_concurrent_native_skill_ref_counted_on_clear(tmp_path):
+    """Two tasks selecting the SAME skill share .claude/skills/foreman-<slug>/ (not task-scoped); the
+    first task's clear must NOT delete it while the second still references it (manifest ref-count)."""
+    inj = WorkspaceInjector()
+    inj.inject(str(tmp_path), MATERIAL, agents="claude", task_id="A")
+    inj.inject(str(tmp_path), MATERIAL, agents="claude", task_id="B")
+    skill_dir = tmp_path / NATIVE_SKILLS_DIR / "foreman-how-to-test"
+    assert skill_dir.exists()
+    inj.clear(str(tmp_path), agents="claude", task_id="A")
+    assert skill_dir.exists()  # B's manifest still references it → not deleted
+    inj.clear(str(tmp_path), agents="claude", task_id="B")
+    assert not skill_dir.exists()  # last referrer cleared → gone
+
+
+def test_legacy_clear_preserves_concurrent_task_codex_subdir(tmp_path):
+    """A legacy (no-task_id) clear must remove only the flat .foreman/skills/*.md it wrote, never
+    rmtree the whole tree — that would wipe a concurrent dispatch task's .foreman/skills/<task_id>/."""
+    inj = WorkspaceInjector()
+    inj.inject(str(tmp_path), MATERIAL, agents="codex", task_id="X")  # .foreman/skills/X/
+    inj.inject(str(tmp_path), MATERIAL, agents="codex")               # legacy flat files
+    x_dir = tmp_path / SKILLS_DIR / "X"
+    assert x_dir.exists()
+    inj.clear(str(tmp_path), agents="codex")  # legacy clear (no task_id)
+    assert x_dir.exists()  # task X's subdir survives the legacy clear
+
+
 def test_native_skill_frontmatter_is_valid(tmp_path):
     material = {"skills": [{"name": "write-tests", "description": "do X; use when Y", "body": "BODY"}]}
     WorkspaceInjector().inject(str(tmp_path), material, agents="claude-code", task_id="t1")

@@ -83,7 +83,9 @@ def _context_length_for(infos: object, model: str) -> int:
             return cl
         if not first:
             first = cl
-    return first if not target else first
+    # No target → use the first model that reports a window. A SPECIFIC target that matched nothing
+    # falls back to 0 (caller → DEFAULT window) rather than borrowing an unrelated model's window.
+    return 0 if target else first
 
 
 def should_auto_compact(

@@ -673,7 +673,10 @@ class DispatchService:
         wm_resolved = await work_mode_resolver.aresolve()
         wm_index = fit_l0_index(wm_resolved["selected"], max_tokens=WORKMODE_INDEX_MAX_TOKENS)
         # P4 (§9, D2): soft-constraint review guidance (selected rubric bodies + standard check refs).
+        # rubric_fed reflects whether it will ACTUALLY reach review (guidance present AND the review
+        # signature accepts it) — telemetry must not claim a rubric drove a decision it never saw.
         review_guidance = self._build_review_guidance(wm_index)
+        rubric_fed = bool(review_guidance) and _accepts_keyword(self.pm_agent.review, "qa_rubric")
         plan_kwargs: dict[str, Any] = {
             "workspace": workspace,
             "available_agents": enabled_agents,
@@ -713,7 +716,7 @@ class DispatchService:
         # ZERO injection / ZERO residue (P2 §4 back-compat; the plan instruction already goes to the
         # CLI directly). Best-effort: an injection failure must never abort the dispatch.
         if self.injector is not None:
-            material = self._build_work_mode_material(plan.instruction, wm_index, work_mode_resolver)
+            material = self._build_work_mode_material(plan.instruction, wm_index)
             if material["skills"] or material["standards"]:
                 try:
                     self.injector.inject(workspace, material, agents=plan.agent, task_id=task_id)
@@ -731,22 +734,6 @@ class DispatchService:
         while True:
             rows = self.store.get_events(session_id)
             timeline = events_to_text(_events_after(rows, reviewed_event_id))
-            # In-loop auto-compact (§8B.8): keep long sessions from blowing the window. Compact when
-            # (session memory + pulled bodies + timeline) crosses the threshold OR every N runs, then
-            # fold history into Session.plan and ADVANCE the review cursor so the compacted events
-            # aren't fed again as "increment" (the rolling-plan ↔ incremental-review reconciliation).
-            if should_auto_compact(
-                _ctx_approx_tokens(context),
-                (work_mode_resolver.body_chars + 3) // 4,
-                _ctx_approx_tokens(timeline),
-                window_tokens=window_tokens,
-                run_count=run_count,
-            ):
-                await self._safe_compact(session_id, window_tokens)
-                context = self._session_context(session_id)
-                rows = self.store.get_events(session_id)
-                reviewed_event_id = _last_event_id(rows)
-                timeline = events_to_text(_events_after(rows, reviewed_event_id))
             review_cutoff_id = _last_event_id(rows)
             review_kwargs = {
                 "run_count": run_count,
@@ -763,7 +750,7 @@ class DispatchService:
                 )
             if _accepts_keyword(self.pm_agent.review, "state_key"):
                 review_kwargs["state_key"] = review_state_key
-            if review_guidance and _accepts_keyword(self.pm_agent.review, "qa_rubric"):
+            if rubric_fed:
                 review_kwargs["qa_rubric"] = review_guidance
             with trace_context(
                 session_id=session_id, task_id=task_id, phase=f"review-{run_count}"
@@ -773,7 +760,7 @@ class DispatchService:
             review.todo_status = todo_status
             reviewed_event_id = (
                 await self._emit_pm_review(
-                    session_id, task_id, review, run_count, rubric_active=bool(review_guidance)
+                    session_id, task_id, review, run_count, rubric_active=rubric_fed
                 )
             ) or review_cutoff_id
             review_notes.append(
@@ -802,6 +789,21 @@ class DispatchService:
                     _empty_followup_text(language),
                 )
                 return
+            # Auto-compact (§8B.8) BETWEEN rounds — AFTER this review consumed its raw increment, and
+            # BEFORE the next follow-up runs. Compact when (session memory + pulled bodies + the
+            # just-reviewed timeline) crosses the window threshold OR every N runs, then fold history
+            # into Session.plan and advance the cursor (no double-count; no review ever loses its
+            # increment — the rolling-plan ↔ incremental-review reconciliation).
+            if should_auto_compact(
+                _ctx_approx_tokens(context),
+                (work_mode_resolver.body_chars + 3) // 4,
+                _ctx_approx_tokens(timeline),
+                window_tokens=window_tokens,
+                run_count=run_count,
+            ):
+                await self._safe_compact(session_id, window_tokens)
+                context = self._session_context(session_id)
+                reviewed_event_id = _last_event_id(self.store.get_events(session_id))
             await self.runner.send(handle, review.follow_up)
             self._mark_session_unless_terminal(session_id, "running")
             run_count += 1
@@ -827,7 +829,7 @@ class DispatchService:
         )
 
     def _build_work_mode_material(
-        self, instruction: str, wm_index: list[dict[str, Any]], resolver: WorkModeResolver
+        self, instruction: str, wm_index: list[dict[str, Any]]
     ) -> dict:
         """Turn the selected L0 index into injection material (§7): skills + code_standards with their
         bodies (pulled from the same resolver as work_mode_get). Skills go to the coding-agent file
@@ -835,12 +837,17 @@ class DispatchService:
         injected here (rubric is a review-side concern; workflow is P5)."""
         skills: list[dict] = []
         standards: list[dict] = []
+        get = getattr(self.store, "get_active_definition", None) if self.store is not None else None
         for entry in wm_index:
             kind = entry.get("kind")
             name = entry.get("name")
-            if kind not in ("skill", "code_standard") or not name:
+            if kind not in ("skill", "code_standard") or not name or get is None:
                 continue
-            body, _ = resolver.body(name=name, kind=kind)
+            # FULL body for the file-injection channel (D1: standards go full-text into the managed
+            # block). NOT resolver.body() — that applies the 6000-char PM-pull cap, which is for the
+            # PM context window, not the workspace files the coding agent reads.
+            row = get(kind, name)
+            body = (getattr(row, "body", "") or "") if row is not None else ""
             if not body:
                 continue
             item = {"name": name, "body": body, "description": entry.get("description", "")}
