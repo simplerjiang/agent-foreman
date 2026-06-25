@@ -82,6 +82,9 @@ class ServerCfg(BaseModel):
     # Include the DB path in /health. Off by default so the public readiness probe doesn't leak the
     # deployment's filesystem layout (issue #1 P2).
     health_show_db: bool = False
+    # Remote commands are the highest-risk surface: a browser asks a local process to run work.
+    # Default OFF. Snapshot/presence/notification traffic still works while this breaker is off.
+    remote_execution_enabled: bool = False
 
 
 class LLMCfg(BaseModel):

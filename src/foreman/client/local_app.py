@@ -183,7 +183,15 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # team 总机 so the phone can watch + approve from afar. Opt-in (a button) — never auto-dials.
     from .core.cloud import CloudManager
 
-    cloud = CloudManager(store=store, cfg=cfg, name=socket.gethostname())
+    cloud = CloudManager(
+        store=store,
+        cfg=cfg,
+        name=socket.gethostname(),
+        bus=bus,
+        dispatcher=dispatcher,
+        cards=cards,
+        gate=gate,
+    )
     app = create_app(
         cfg, store, bus, hooks=hooks, gate=gate, cards=cards,
         dispatcher=dispatcher, briefings=briefings, definitions=definitions, cloud=cloud,

@@ -19,11 +19,27 @@ the live wss dial-out uses the default `websockets` client (an optional dep, laz
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
+import queue
 import threading
 import uuid
 from typing import Any, Callable
 
 from foreman.client.relay import RelayAuthError, RelayConnector
+from foreman.shared.events import AgentEvent
+from foreman.shared.protocol import (
+    KIND_ACK,
+    KIND_COMMAND,
+    KIND_EVENT,
+    KIND_NOTIFY,
+    KIND_SNAPSHOT_REQ,
+    KIND_SUBSCRIBE,
+    KIND_UNSUBSCRIBE,
+    Envelope,
+    new_id,
+    verify_mac,
+)
 
 
 def normalize_relay_url(url: str) -> str:
@@ -57,20 +73,34 @@ class CloudManager:
         store: Any,
         cfg: Any,
         name: str = "",
+        bus: Any = None,
+        dispatcher: Any = None,
+        cards: Any = None,
+        gate: Any = None,
         connector_factory: Callable[..., RelayConnector] | None = None,
     ) -> None:
         self._store = store
         self._cfg = cfg
         self._name = name or "foreman"
+        self._bus = bus
+        self._dispatcher = dispatcher
+        self._cards = cards
+        self._gate = gate
         self._connector_factory = connector_factory
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._app_loop: asyncio.AbstractEventLoop | None = None
+        self._event_task: asyncio.Task | None = None
         self._task: asyncio.Task | None = None
         self._connected = False
         self._error = ""
         self._want = False
         self._connected_event = threading.Event()
+        self._subscribed = False
+        self._last_seq = 0
+        self._ack_cache: dict[str, dict] = {}
+        self._outgoing: queue.Queue[Envelope] = queue.Queue(maxsize=1000)
 
     # ── config ────────────────────────────────────────────────────────────────
     def _url(self) -> str:
@@ -118,31 +148,202 @@ class CloudManager:
         # indefinite "connecting" when the relay is offline/unreachable (codex review finding).
         self._error = str(exc)[:160] or "unreachable"
 
-    def _build_sync(self):
-        """Build the display-cache snapshot to push to the relay (session/card summaries only —
-        never diffs/秘方, §8.3). None if the store can't supply rows. Errors are swallowed so a
-        bad snapshot never drops the connection."""
+    def bind_app_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Bind the uvicorn loop after startup. Constructor time is too early for this."""
+        self._app_loop = loop
+        if self._bus is not None and self._event_task is None:
+            self._event_task = loop.create_task(self._event_pump())
+
+    def _build_snapshot(self, corr_id: str = "") -> Envelope:
+        """Build an on-demand display-safe snapshot. Errors become an empty snapshot."""
         store = self._store
         if store is None or not hasattr(store, "get_sessions") or not hasattr(store, "get_decision_cards"):
-            return None
+            return Envelope(kind=KIND_ACK, id=corr_id, payload={"ok": False, "error": "no_store"})
         try:
-            from foreman.client.cache_sync import build_cache_sync
+            from foreman.client.cache_sync import build_snapshot
 
-            return build_cache_sync(store.get_sessions(), store.get_decision_cards(None))
+            return build_snapshot(store.get_sessions(), store.get_decision_cards(None), corr_id=corr_id)
         except Exception:  # noqa: BLE001 — a snapshot failure must not kill the relay link
-            return None
+            return Envelope(kind=KIND_ACK, id=corr_id, payload={"ok": False, "error": "snapshot_failed"})
 
     def _build_connector(self, url: str, key: str) -> RelayConnector:
+        process_id = self._process_id()
+        kwargs = {
+            "url": url,
+            "access_key": key,
+            "process_id": process_id,
+            "name": self._name,
+            "on_status": self._on_status,
+            "on_error": self._on_error,
+            "on_frame": self._on_frame,
+            "outgoing": self._outgoing,
+            "sync_provider": None,
+        }
         if self._connector_factory is not None:
+            params = inspect.signature(self._connector_factory).parameters
+            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
             return self._connector_factory(
-                url=url, access_key=key, process_id=self._process_id(),
-                name=self._name, on_status=self._on_status, on_error=self._on_error,
-                sync_provider=self._build_sync,
+                **(kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in params})
             )
         return RelayConnector(
-            url, key, process_id=self._process_id(), name=self._name,
-            on_status=self._on_status, on_error=self._on_error, sync_provider=self._build_sync,
+            url,
+            key,
+            process_id=process_id,
+            name=self._name,
+            on_status=self._on_status,
+            on_error=self._on_error,
+            on_frame=self._on_frame,
+            outgoing=self._outgoing,
         )
+
+    async def _on_frame(self, env: Envelope) -> Envelope | list[Envelope] | None:
+        if env.kind == KIND_SUBSCRIBE:
+            self._subscribed = True
+            return None
+        if env.kind == KIND_UNSUBSCRIBE:
+            self._subscribed = False
+            return None
+        if env.kind == KIND_SNAPSHOT_REQ:
+            return self._build_snapshot(env.id)
+        if env.kind != KIND_COMMAND:
+            return None
+        if not verify_mac(env, self._key_hash()):
+            return self._plain_ack(env, ok=False, error="bad_mac")
+        if env.seq <= self._last_seq:
+            return self._plain_ack(env, ok=False, error="replay")
+        self._last_seq = env.seq
+        cached = self._ack_cache.get(env.id)
+        if cached is not None:
+            return Envelope(kind=KIND_ACK, id=env.id, payload=cached)
+        if not bool(getattr(getattr(self._cfg, "server", None), "remote_execution_enabled", False)):
+            return self._ack(env, ok=False, error="disabled")
+        try:
+            result = await self._run_remote_command(env.payload)
+            return self._ack(env, **result)
+        except Exception as exc:  # noqa: BLE001
+            return self._ack(env, ok=False, error=str(exc)[:160] or "remote_command_failed")
+
+    def _ack(self, env: Envelope, **payload) -> Envelope:
+        data = {"ok": bool(payload.pop("ok", True)), **payload}
+        self._ack_cache[env.id] = data
+        if len(self._ack_cache) > 512:
+            for key in list(self._ack_cache)[:128]:
+                self._ack_cache.pop(key, None)
+        return Envelope(kind=KIND_ACK, id=env.id, payload=data)
+
+    def _plain_ack(self, env: Envelope, **payload) -> Envelope:
+        data = {"ok": bool(payload.pop("ok", True)), **payload}
+        return Envelope(kind=KIND_ACK, id=env.id, payload=data)
+
+    def _key_hash(self) -> str:
+        return hashlib.sha256(self._key().encode("utf-8")).hexdigest()
+
+    async def _run_remote_command(self, payload: dict) -> dict:
+        action = str(payload.get("action") or "")
+        if self._app_loop is None:
+            return {"ok": False, "error": "not_ready"}
+        if action == "dispatch":
+            if self._dispatcher is None or not hasattr(self._dispatcher, "create"):
+                return {"ok": False, "error": "no_dispatcher"}
+            coro = self._dispatcher.create(
+                str(payload.get("goal") or ""),
+                workspace=str(payload.get("workspace") or "") or None,
+                agent=str(payload.get("agent") or "") or None,
+                model=str(payload.get("model") or "") or None,
+                effort=str(payload.get("effort") or "") or None,
+                session_id=str(payload.get("session_id") or "") or None,
+                source="phone",
+            )
+            return await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(coro, self._app_loop)
+            )
+        if action == "card_choice":
+            if self._cards is None or not hasattr(self._cards, "record_choice"):
+                return {"ok": False, "error": "no_card_service"}
+            coro = self._cards.record_choice(
+                str(payload.get("card_id") or ""),
+                str(payload.get("option") or ""),
+            )
+            return await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(coro, self._app_loop)
+            )
+        if action == "approval":
+            if self._gate is None or not hasattr(self._gate, "resolve"):
+                return {"ok": False, "error": "no_gate"}
+            coro = self._gate.resolve(
+                str(payload.get("approval_id") or ""),
+                str(payload.get("decision") or ""),
+                nonce=str(payload.get("nonce") or ""),
+                reason=str(payload.get("reason") or ""),
+            )
+            return await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(coro, self._app_loop)
+            )
+        return {"ok": False, "error": "bad_action"}
+
+    async def _event_pump(self) -> None:
+        q = self._bus.subscribe_queue()
+        try:
+            while True:
+                ev = await q.get()
+                if self._subscribed:
+                    self._enqueue_frame(self._event_frame(ev))
+                else:
+                    notify = self._notify_frame(ev)
+                    if notify is not None:
+                        self._enqueue_frame(notify)
+        finally:
+            self._bus.unsubscribe(q)
+
+    def _event_frame(self, ev: AgentEvent) -> Envelope:
+        return Envelope(
+            kind=KIND_EVENT,
+            id=ev.id or new_id(),
+            payload={
+                "id": ev.id or None,
+                "session_id": ev.session_id,
+                "task_id": ev.task_id,
+                "type": ev.type,
+                "source": ev.source,
+                "payload": ev.payload,
+                "ts": ev.ts,
+            },
+        )
+
+    def _notify_frame(self, ev: AgentEvent) -> Envelope | None:
+        if ev.type in {"approval_req", "action_proposed"}:
+            ref = str(ev.payload.get("approval_id") or ev.payload.get("card_id") or ev.id or "")
+            if not ref:
+                return None
+            return Envelope(
+                kind=KIND_NOTIFY,
+                id=new_id(),
+                payload={
+                    "kind": "decision_needed",
+                    "ref": ref,
+                    "title": str(ev.payload.get("summary") or "决策待处理")[:200],
+                    "dedup_key": f"decision:{ref}",
+                },
+            )
+        if ev.type in {"stop", "error"} and ev.session_id:
+            title = "任务失败" if ev.type == "error" else "任务完成"
+            return Envelope(
+                kind=KIND_NOTIFY,
+                id=new_id(),
+                payload={
+                    "kind": "result_ready",
+                    "ref": ev.session_id,
+                    "title": title,
+                    "dedup_key": f"result:{ev.session_id}",
+                },
+            )
+        return None
+
+    def _enqueue_frame(self, env: Envelope) -> None:
+        try:
+            self._outgoing.put_nowait(env)
+        except queue.Full:
+            pass
 
     def connect(self, *, wait: float = 3.0) -> dict:
         """Start (or restart) the reconnect loop in a background thread. Blocks up to `wait`

@@ -10,6 +10,7 @@ from foreman.server.store import SERVER_SCHEMA_VERSION, ServerStore
 from foreman.server.store.models import (
     AccessKey,
     Account,
+    Notification,
     ProcessRegistry,
     ServerSchemaVersion,
 )
@@ -38,7 +39,7 @@ def test_init_is_idempotent(tmp_path):
     st.init()  # second call must not duplicate any schema_version ledger row or raise
     with st.session() as s:
         after = {r.version for r in s.exec(select(ServerSchemaVersion)).all()}
-    assert before == after == {1, 2}  # one ledger row per applied migration, no duplicates
+    assert before == after == {1, 2, 3}  # one ledger row per applied migration, no duplicates
     assert st.schema_version() == SERVER_SCHEMA_VERSION
 
 
@@ -182,3 +183,62 @@ def test_process_registry_isolated_per_account(tmp_path):
 
     assert [p.id for p in st.get_processes("a1")] == ["p1"]
     assert [p.id for p in st.get_processes("a2")] == ["p2"]
+
+
+# ── remote-control notifications ───────────────────────────────────────────────────────────
+def test_notification_queue_upsert_ack_ttl_and_limit(tmp_path):
+    st = _store(tmp_path)
+    st.upsert_notification(
+        Notification(
+            id="n1",
+            account_id="a1",
+            process_id="p1",
+            kind="decision_needed",
+            ref="c1",
+            title="old",
+            dedup_key="p1:c1",
+            created_at="2026-06-20T00:00:00+00:00",
+            expires_at="2026-06-27T00:00:00+00:00",
+        ),
+        per_account_limit=2,
+    )
+    st.upsert_notification(
+        Notification(
+            id="n2",
+            account_id="a1",
+            process_id="p1",
+            kind="decision_needed",
+            ref="c1",
+            title="new",
+            dedup_key="p1:c1",
+            created_at="2026-06-21T00:00:00+00:00",
+            expires_at="2026-06-28T00:00:00+00:00",
+        ),
+        per_account_limit=2,
+    )
+    rows = st.list_notifications("a1", now="2026-06-22T00:00:00+00:00")
+    assert len(rows) == 1 and rows[0].title == "new"
+
+    st.upsert_notification(Notification(id="n3", account_id="a1", process_id="p1", kind="result_ready", ref="s1", dedup_key="p1:s1", created_at="2026-06-22T00:00:00+00:00", expires_at="2026-06-29T00:00:00+00:00"), per_account_limit=2)
+    st.upsert_notification(Notification(id="n4", account_id="a1", process_id="p1", kind="result_ready", ref="s2", dedup_key="p1:s2", created_at="2026-06-23T00:00:00+00:00", expires_at="2026-06-30T00:00:00+00:00"), per_account_limit=2)
+    assert [n.id for n in st.list_notifications("a1", now="2026-06-24T00:00:00+00:00")] == ["n4", "n3"]
+
+    assert st.ack_notifications("a1", ["n3"], now="2026-06-24T00:00:00+00:00") == 1
+    assert [n.id for n in st.list_notifications("a1", now="2026-06-24T00:00:00+00:00")] == ["n4"]
+
+    st.upsert_notification(Notification(id="old", account_id="a1", process_id="p1", kind="result_ready", ref="s-old", dedup_key="old", created_at="2026-01-01T00:00:00+00:00", expires_at="2026-01-02T00:00:00+00:00"))
+    assert st.sweep_notifications(now="2026-06-24T00:00:00+00:00") == 1
+
+
+def test_push_subscriptions_are_account_scoped_and_replace_by_endpoint(tmp_path):
+    st = _store(tmp_path)
+    st.add_push_subscription(account_id="a1", endpoint="https://push/1", p256dh="p", auth="a")
+    st.add_push_subscription(account_id="a1", endpoint="https://push/1", p256dh="p2", auth="a2")
+    st.add_push_subscription(account_id="a2", endpoint="https://push/1", p256dh="pb", auth="ab")
+
+    a1 = st.get_push_subscriptions("a1")
+    assert len(a1) == 1 and a1[0].p256dh == "p2"
+    assert len(st.get_push_subscriptions("a2")) == 1
+    assert st.delete_push_subscription("https://push/1", account_id="a1") == 1
+    assert st.get_push_subscriptions("a1") == []
+    assert len(st.get_push_subscriptions("a2")) == 1

@@ -14,11 +14,15 @@ History:
   existing v1 server DB whose `accounts` table predates the column, this ADD COLUMN brings the
   old rows up smoothly. The `auth_sessions` table that T3.5 also added is a *new whole table*,
   so create_all handles it — no migration needed.
+- v3 — remove display-cache tables and add notification / push-subscription tables. create_all
+  creates the new tables; this migration drops legacy cache tables on upgraded relay DBs.
 """
 
 from __future__ import annotations
 
-from foreman.shared.migrations import Migration, add_column
+from sqlalchemy import text
+
+from foreman.shared.migrations import Migration, add_column, table_exists
 
 
 def _v1_baseline(conn) -> None:
@@ -30,7 +34,19 @@ def _v2_account_password_hash(conn) -> None:
     add_column(conn, "accounts", "password_hash", "TEXT NOT NULL DEFAULT ''")
 
 
+def _v3_remote_control_notifications(conn) -> None:
+    if table_exists(conn, "cache_sessions"):
+        conn.execute(text("DROP TABLE cache_sessions"))
+    if table_exists(conn, "cache_cards"):
+        conn.execute(text("DROP TABLE cache_cards"))
+
+
 SERVER_MIGRATIONS: list[Migration] = [
     Migration(1, "baseline §7.2 (accounts / access_keys / process_registry)", _v1_baseline),
     Migration(2, "accounts.password_hash (T3.5 user login)", _v2_account_password_hash),
+    Migration(
+        3,
+        "remote-control notifications; remove relay display cache",
+        _v3_remote_control_notifications,
+    ),
 ]

@@ -28,20 +28,36 @@ from foreman.server.store import ServerStore
 from foreman.server.store.models import AccessKey, Account
 from foreman.shared.events import EventBus
 from foreman.shared.protocol import (
+    KIND_ACK,
+    KIND_COMMAND,
     KIND_HEARTBEAT,
     KIND_HELLO,
     KIND_HELLO_ACK,
+    KIND_SUBSCRIBE,
+    KIND_UNSUBSCRIBE,
     PROTOCOL_VERSION,
     Envelope,
+    attach_mac,
+    command_envelope,
+    verify_mac,
 )
 
 
 # ── shared: Envelope contract ──────────────────────────────────────────────────────────────────
 def test_envelope_roundtrip_json():
-    env = Envelope(kind="event", id="c1", account_id="a1", payload={"x": 1})
+    env = Envelope(
+        kind="event",
+        id="c1",
+        account_id="a1",
+        payload={"x": 1},
+        nonce="n",
+        seq=7,
+        ts=1.5,
+        mac="m",
+    )
     back = Envelope.from_json(env.to_json())
     assert back == env
-    assert back.version == PROTOCOL_VERSION
+    assert back.version == PROTOCOL_VERSION == 2
 
 
 def test_envelope_from_dict_is_tolerant():
@@ -53,6 +69,14 @@ def test_envelope_from_dict_is_tolerant():
     assert e.payload == {} and e.version == PROTOCOL_VERSION
     # malformed json -> empty envelope
     assert Envelope.from_json("{not json").kind == ""
+
+
+def test_command_envelope_mac_roundtrip():
+    env = command_envelope("dispatch", {"goal": "g"}, seq=1, corr_id="cmd")
+    attach_mac(env, "key-hash")
+    assert env.kind == KIND_COMMAND and env.id == "cmd"
+    assert verify_mac(env, "key-hash") is True
+    assert verify_mac(env, "wrong") is False
 
 
 # ── server: access-key hashing (DESIGN §8.4) ─────────────────────────────────────────────────────
@@ -154,6 +178,48 @@ async def test_route_only_to_matching_account_and_process(tmp_path):
     assert await relay.route("a1", env, process_id="p2") == 1  # narrowed to one machine
     assert await relay.route("a1", env, process_id="ghost") == 0  # nobody -> caller uses cache
     assert await relay.route("a2", env) == 1
+
+
+async def test_route_with_ack_resolves_same_id(tmp_path):
+    st, _ = _seed(tmp_path)
+    relay = Relay(st, ack_timeout=1.0)
+    ws = _SendOnlyWS()
+    client = RelayClient(
+        account_id="a1",
+        process_id="p1",
+        key_id="k1",
+        key_hash=hash_access_key("sim-card"),
+        name="",
+        ws=ws,
+    )
+    relay.conns.setdefault("a1", []).append(client)
+    env = command_envelope("dispatch", {"goal": "g"}, corr_id="cmd1")
+
+    task = asyncio.create_task(relay.route_with_ack("a1", env, process_id="p1"))
+    await asyncio.sleep(0)
+    sent = Envelope.from_dict(ws.sent[-1])
+    assert sent.id == "cmd1" and sent.kind == KIND_COMMAND
+    await relay._on_frame(
+        client, Envelope(kind=KIND_ACK, id="cmd1", payload={"ok": True, "session_id": "s"}).to_dict()
+    )
+    assert await task == {"ok": True, "session_id": "s", "kind": KIND_ACK, "id": "cmd1", "process_id": "p1"}
+
+
+async def test_presence_subscribe_unsubscribe_edges(tmp_path):
+    st, _ = _seed(tmp_path)
+    relay = Relay(st)
+    ws = _SendOnlyWS()
+    client = RelayClient(account_id="a1", process_id="p1", key_id="k1", name="", ws=ws)
+    relay.conns.setdefault("a1", []).append(client)
+
+    assert await relay.subscribe("a1") == 1
+    assert Envelope.from_dict(ws.sent[-1]).kind == KIND_SUBSCRIBE
+    assert await relay.subscribe("a1") == 2
+    assert [Envelope.from_dict(row).kind for row in ws.sent].count(KIND_SUBSCRIBE) == 1
+    assert await relay.unsubscribe("a1") == 1
+    assert [Envelope.from_dict(row).kind for row in ws.sent].count(KIND_UNSUBSCRIBE) == 0
+    assert await relay.unsubscribe("a1") == 0
+    assert Envelope.from_dict(ws.sent[-1]).kind == KIND_UNSUBSCRIBE
 
 
 # ── server: full connection lifecycle via a fake WS ──────────────────────────────────────────────
@@ -525,15 +591,14 @@ def test_build_serve_app_team_mode_wires_relay_and_auth(tmp_path):
 
     assert app.state.relay is not None  # relay 总机 wired (DESIGN §8.5)
     assert app.state.auth is not None  # user login + key mgmt wired (§8.2)
-    assert app.state.cache is not None  # display cache wired (T7.5, §8.5 ③)
-    assert app.state.relay.cache is app.state.cache  # cache_sync frames feed the same cache
+    assert app.state.cache is None  # no relay-side display cache; browser/local process own state
     assert app.state.store is None  # no client-style local store on the relay box
     c = TestClient(app)
     assert c.get("/health").status_code == 200
     # In team mode every operational endpoint requires a valid account token at the guard, so an
     # unauthenticated request is blocked (401) before reaching the handler (issue #1 P0 / codex).
     assert c.get("/api/sessions").status_code == 401
-    assert c.get("/api/cache/sessions").status_code == 401  # account-scoped → 401 without a token
+    assert c.get("/api/notifications").status_code == 401  # account-scoped → 401 without token
     # auth IS configured, so bad creds are a 401 (not the 503 "auth not configured" of personal mode)
     assert c.post("/api/auth/login", json={"username": "x", "password": "y"}).status_code == 401
     # WITH a valid token, the personal session endpoint still 503s — the relay box has no local store
@@ -542,6 +607,7 @@ def test_build_serve_app_team_mode_wires_relay_and_auth(tmp_path):
         "token"
     ]
     assert c.get("/api/sessions", headers={"Authorization": f"Bearer {tok}"}).status_code == 503
+    assert c.get("/api/cache/sessions", headers={"Authorization": f"Bearer {tok}"}).status_code == 404
 
 
 def test_team_relay_multiple_processes_dial_in_routed_by_account(tmp_path):

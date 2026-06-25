@@ -10,10 +10,13 @@
 # while `foreman.exe serve` / `version` work headlessly (used by the build smoke test).
 
 from pathlib import Path
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-SRC = Path("src")
+ROOT = Path(globals().get("SPECPATH", ".")).resolve()
+SRC = ROOT / "src"
+sys.path.insert(0, str(SRC))
 
 # Data the code locates at runtime via __file__ / importlib.resources — must keep the same
 # package-relative layout inside the bundle:
@@ -31,14 +34,14 @@ datas += collect_data_files("webview")
 # pywebview/pystray select a platform backend at import time.
 hiddenimports = (
     collect_submodules("uvicorn")
-    + collect_submodules("foreman")
+    + [m for m in collect_submodules("foreman") if m != "foreman.server.display_cache"]
     + collect_submodules("webview")
     + ["pystray._win32"]
 )
 
 a = Analysis(
     ["packaging/foreman_app.py"],
-    pathex=["src"],
+    pathex=[str(SRC)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

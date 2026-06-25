@@ -46,5 +46,5 @@ def test_server_store_tables():
     names = {t.__table__.name for t in m.SERVER_TABLES}
     assert {
         "accounts", "access_keys", "auth_sessions", "process_registry",
-        "cache_sessions", "cache_cards", "invites", "schema_version",
+        "notifications", "push_subscriptions", "invites", "schema_version",
     } == names

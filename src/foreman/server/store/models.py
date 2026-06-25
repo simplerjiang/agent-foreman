@@ -62,22 +62,33 @@ class AuthSession(SQLModel, table=True):
     expires_at: str = ""                  # ISO8601 UTC; lexically comparable to utc_now_iso()
 
 
-class CacheSession(SQLModel, table=True):
-    __tablename__ = "cache_sessions"
-    id: str = Field(primary_key=True)        # surrogate; (account_id, session_id) also indexed
-    account_id: str = Field(index=True)
-    session_id: str = Field(index=True)
-    summary_json: str = "{}"
-    updated_at: str = ""
+class Notification(SQLModel, table=True):
+    """Tiny TTL notification row. It is a wake-up hint, not display state."""
 
-
-class CacheCard(SQLModel, table=True):
-    __tablename__ = "cache_cards"
+    __tablename__ = "notifications"
     id: str = Field(primary_key=True)
     account_id: str = Field(index=True)
-    card_id: str = Field(index=True)
-    payload_json: str = "{}"
-    status: str = ""
+    process_id: str = Field(index=True)
+    kind: str = Field(index=True)       # decision_needed | result_ready
+    ref: str = Field(index=True)        # card_id | session_id
+    title: str = ""
+    dedup_key: str = Field(index=True)
+    created_at: str = ""
+    expires_at: str = Field(index=True)
+    read_at: str = ""
+
+
+class PushSubscription(SQLModel, table=True):
+    """Browser push routing token for team mode. Holds no user content."""
+
+    __tablename__ = "push_subscriptions"
+    id: str = Field(primary_key=True)
+    account_id: str = Field(index=True)
+    endpoint: str = Field(index=True)
+    p256dh: str = ""
+    auth: str = ""
+    ua: str = ""
+    created_at: str = ""
     updated_at: str = ""
 
 
@@ -100,5 +111,5 @@ class ServerSchemaVersion(SQLModel, table=True):
 # leaks client tables into the server DB.
 SERVER_TABLES = (
     Account, AccessKey, AuthSession, ProcessRegistry,
-    CacheSession, CacheCard, Invite, ServerSchemaVersion,
+    Notification, PushSubscription, Invite, ServerSchemaVersion,
 )

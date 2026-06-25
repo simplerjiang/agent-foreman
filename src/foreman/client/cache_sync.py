@@ -1,24 +1,20 @@
-"""Build the display-cache snapshot a local process pushes to the relay (DESIGN §8.5 ③, T7.5).
+"""Build display-safe snapshots for the subscription-driven relay view.
 
-When connected, the local process periodically sends the server a *read-only copy* of its
-session summaries + decision cards, so the PWA can still view them while the PC is offline.
+In protocol v2 the server no longer stores a display cache. A subscribed PWA asks the local
+process for a one-shot snapshot, then follows live relay events while the browser is online.
 
-The whole point of the cache boundary (§8.3) is that only DISPLAY summaries leave the machine —
-never full diffs, raw agent output, or 秘方. These builders are pure (take ORM rows, return
+The whole point of the snapshot boundary (§8.3) is that only DISPLAY summaries leave the machine
+— never full diffs, raw agent output, or 秘方. These builders are pure (take ORM rows, return
 plain dicts) so what's shared is explicit and unit-testable: a session's goal/status/timestamps,
 and a card's folded summary + the `diff_stat` *line* ("3 files +124/−80") — never the diff itself.
-The full diff / raw return is fetched live from the machine when it's online (§8.5 ④).
-
-The periodic push loop that calls `build_cache_sync` and sends the frame over an open
-RelayConnector is the credential-gated team rollout (a deployed relay + a real access key) — see
-TASKS T7.1; this module supplies the snapshot it will carry.
+The full diff / raw return stays on the machine.
 """
 
 from __future__ import annotations
 
 import json
 
-from foreman.shared.protocol import KIND_CACHE_SYNC, Envelope
+from foreman.shared.protocol import KIND_CACHE_SYNC, KIND_SNAPSHOT, Envelope
 
 
 def session_summary(session) -> dict:
@@ -59,8 +55,7 @@ def card_summary(card) -> dict:
 
 
 def build_cache_sync(sessions, cards) -> Envelope:
-    """Assemble the `cache_sync` frame from local session + card rows (§8.5 ③). The relay scopes
-    it to the authenticated account — this payload carries NO account id (it would be ignored)."""
+    """Legacy v1 helper. Retained for compatibility; v2 uses ``build_snapshot`` on demand."""
     return Envelope(
         kind=KIND_CACHE_SYNC,
         payload={
@@ -68,3 +63,11 @@ def build_cache_sync(sessions, cards) -> Envelope:
             "cards": [card_summary(c) for c in cards],
         },
     )
+
+
+def build_snapshot(sessions, cards, *, corr_id: str = "") -> Envelope:
+    """Assemble an on-demand display-safe snapshot for a subscribed browser."""
+    env = build_cache_sync(sessions, cards)
+    env.kind = KIND_SNAPSHOT
+    env.id = corr_id
+    return env

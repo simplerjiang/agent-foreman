@@ -52,14 +52,14 @@ def test_client_migration_adds_diff_stat_to_legacy_decisioncard(tmp_path):
 
 
 # ── server ───────────────────────────────────────────────────────────────────────────────────
-def test_server_init_is_idempotent_and_at_v2(tmp_path):
+def test_server_init_is_idempotent_and_at_v3(tmp_path):
     st = ServerStore(str(tmp_path / "s.db"))
     st.init()
     st.init()
-    assert st.schema_version() == SERVER_SCHEMA_VERSION == 2
+    assert st.schema_version() == SERVER_SCHEMA_VERSION == 3
     with st.engine.connect() as conn:
         rows = conn.execute(text("SELECT version FROM schema_version")).fetchall()
-    assert sorted(r[0] for r in rows) == [1, 2]  # ledger = one row per applied migration
+    assert sorted(r[0] for r in rows) == [1, 2, 3]  # ledger = one row per applied migration
 
 
 def test_server_migration_adds_password_hash_to_legacy_accounts(tmp_path):
@@ -72,7 +72,29 @@ def test_server_migration_adds_password_hash_to_legacy_accounts(tmp_path):
         assert not column_exists(conn, "accounts", "password_hash")
 
     applied = run_migrations(engine, SERVER_MIGRATIONS)
-    assert applied == [2]  # v1 already ledgered → only v2 runs
+    assert applied == [2, 3]  # v1 already ledgered -> password migration, then cache cleanup
     with engine.connect() as conn:
         assert column_exists(conn, "accounts", "password_hash")
-        assert current_version(conn) == 2
+        assert current_version(conn) == 3
+
+
+def test_server_migration_v3_drops_legacy_display_cache_tables(tmp_path):
+    engine = _engine(tmp_path / "legacy-cache.db")
+    _exec(engine, "CREATE TABLE cache_sessions (id TEXT PRIMARY KEY)")
+    _exec(engine, "CREATE TABLE cache_cards (id TEXT PRIMARY KEY)")
+    _exec(engine, "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT)")
+    _exec(engine, "INSERT INTO schema_version (version, applied_at) VALUES (1, '2020-01-01')")
+    _exec(engine, "INSERT INTO schema_version (version, applied_at) VALUES (2, '2020-01-02')")
+
+    applied = run_migrations(engine, SERVER_MIGRATIONS)
+    assert applied == [3]
+    with engine.connect() as conn:
+        names = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        assert "cache_sessions" not in names
+        assert "cache_cards" not in names
+        assert current_version(conn) == 3
