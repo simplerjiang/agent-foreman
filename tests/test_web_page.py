@@ -271,6 +271,18 @@ def test_session_controls_and_custom_delete_confirm_wired():
     assert "confirmSessionDelete" in js and "confirmDefnDelete" in js
 
 
+def test_mobile_failed_session_retry_controls_wired():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert "m-session-controls" in js
+    assert "mainProps.onRetrySession(sessionRow)" in js
+    assert "mainProps.onCancelSession(sessionRow.id)" in js
+    assert "mainProps.onDeleteSession(sessionRow.id)" in js
+    assert "const failed = status.includes(\"fail\") || status.includes(\"error\")" in js
+    assert ".m-session-controls" in css
+
+
 def test_sidebar_session_status_uses_i18n_label():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

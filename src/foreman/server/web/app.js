@@ -1462,11 +1462,29 @@
   }
 
   function MobileWorkspace({ d, lang, dig, mTab, mainProps }) {
-    const threadNodes = threadExtras(dig, mainProps.cards, mainProps.approvals, mainProps.sessionRow);
-    if (mTab === "chat") return html`<div className="thread" style=${{ padding: 13 }}><div className="thread-inner">
-      ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
-        threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${mainProps.openCalls} toggleCall=${mainProps.toggleCall} onCard=${mainProps.onCard} onApproval=${mainProps.onApproval} openDetail=${mainProps.openDetail} />`)}
-    </div></div>`;
+    const sessionRow = mainProps.sessionRow;
+    const threadNodes = threadExtras(dig, mainProps.cards, mainProps.approvals, sessionRow);
+    const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
+    const statusKey = status.replace(/[\s-]+/g, "_");
+    const live = sessionRow && ["planning", "queued", "running", "active", "waiting_approval"].includes(statusKey);
+    const failed = status.includes("fail") || status.includes("error");
+    const cancelled = status.includes("cancel");
+    const done = status.includes("done") || status.includes("complete");
+    const statusText = live ? d.running : cancelled ? d.cancelled : failed ? d.failed : done ? d.done : ((sessionRow && sessionRow.status) || "");
+    if (mTab === "chat") return html`<div className="m-workspace">
+      ${sessionRow ? html`<div className="m-session-controls">
+        <span className=${`tag ${failed ? "red" : done ? "green" : "plain"}`}><span className=${`dot${live ? " live" : ""}`} style=${{ background: failed ? "var(--red)" : done ? "var(--green)" : "var(--faint)" }}></span>${statusText}</span>
+        <span className="meta">${shortPath(sessionRow.workspace, d)}</span>
+        <span className="spacer"></span>
+        ${live ? html`<button className="btn danger sm" onClick=${() => mainProps.onCancelSession(sessionRow.id)}>${d.cancelSession}</button>` : null}
+        ${failed ? html`<button className="btn primary sm" onClick=${() => mainProps.onRetrySession(sessionRow)}>${d.retry}</button>` : null}
+        ${!live ? html`<button className="btn sm" onClick=${() => mainProps.onDeleteSession(sessionRow.id)}>${d.deleteSession}</button>` : null}
+      </div>` : null}
+      <div className="thread" style=${{ padding: 13 }}><div className="thread-inner">
+        ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
+          threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${mainProps.openCalls} toggleCall=${mainProps.toggleCall} onCard=${mainProps.onCard} onApproval=${mainProps.onApproval} openDetail=${mainProps.openDetail} />`)}
+      </div></div>
+    </div>`;
     if (mTab === "todo") return html`<div style=${{ padding: 13 }}><${TodoPanel} d=${d} todos=${dig.todos} onAddStep=${mainProps.composer.onAddStep} /></div>`;
     if (mTab === "sub") return html`<div style=${{ padding: 13 }}><${SubPanel} d=${d} subagents=${dig.subagents} expandedSub=${mainProps.expandedSub} toggleSub=${mainProps.toggleSub} /></div>`;
     return html`<div style=${{ padding: 13 }}><${TermPanel} d=${d} terminal=${dig.terminal} agentType=${displayAgent(mainProps.sessionRow && mainProps.sessionRow.agent_type, d)} sessionRow=${mainProps.sessionRow} /></div>`;
