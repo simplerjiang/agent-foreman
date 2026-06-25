@@ -180,6 +180,14 @@ def test_session_controls_and_custom_delete_confirm_wired():
     assert "confirmSessionDelete" in js and "confirmDefnDelete" in js
 
 
+def test_sidebar_session_status_uses_i18n_label():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "function sessionStatusLabel" in js
+    assert "sessionStatusLabel(s.status, d)" in js
+    assert "s.status || \"-\", formatTime" not in js
+
+
 def test_pm_settings_exposes_transport_picker():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
