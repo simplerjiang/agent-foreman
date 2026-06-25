@@ -8,6 +8,7 @@
   const LANG_KEY = "foreman.lang";
   const THEME_KEY = "foreman.theme";
   const WORKSPACE_KEY = "foreman.workspace";
+  const PROCESS_KEY = "foreman.process";
   const DEFAULT_CONTEXT_TOKENS = 128000;
 
   // ---------------------------------------------------------------------------
@@ -91,6 +92,9 @@
       cloudNotConfigured: "请先填写云端地址和接入密钥。",
       cloudKeyHint: "已配置接入密钥。输入新密钥后保存可替换；留空不修改。", cloudKeyMissing: "未配置接入密钥。",
       cloudUnavailable: "当前服务不支持云端连接（仅本机 app 可用）。",
+      machine: "机器", machineOffline: "目标机器离线，请先让本机连接云端。", relayUnavailable: "云端总机不可用。",
+      remoteDisabled: "本机未开启远端执行。", remoteProcessRequired: "请选择目标机器。", remoteRateLimited: "远端请求过快，请稍后再试。",
+      notificationsWaiting: "有待处理事项",
       interface: "界面与自动化", autoExec: "自动执行权限", autoExecHelp: "决定 Foreman 在没有你确认时能自动执行多少动作。",
       auto0: "0 只报告", auto1: "1 凡事都问", auto2: "2 自动可逆", auto3: "3 只拦不可逆",
       theme: "主题", light: "浅色", dark: "深色", language: "语言",
@@ -183,6 +187,9 @@
       cloudNotConfigured: "Enter the cloud URL and access key first.",
       cloudKeyHint: "Access key set. Enter a new key and save to replace it; blank keeps it.", cloudKeyMissing: "No access key configured.",
       cloudUnavailable: "This service does not support cloud connection (local app only).",
+      machine: "Machine", machineOffline: "The target machine is offline. Connect the PC to the cloud relay first.", relayUnavailable: "The relay is unavailable.",
+      remoteDisabled: "Remote execution is disabled on the PC.", remoteProcessRequired: "Choose a target machine.", remoteRateLimited: "Remote requests are rate limited. Try again shortly.",
+      notificationsWaiting: "Pending items",
       interface: "Interface & automation", autoExec: "Auto-execution", autoExecHelp: "How much Foreman may do without your confirmation.",
       auto0: "0 report", auto1: "1 ask first", auto2: "2 auto safe", auto3: "3 auto reversible",
       theme: "Theme", light: "Light", dark: "Dark", language: "Language",
@@ -287,6 +294,9 @@
       not_configured: d.cloudNotConfigured, cloud_unavailable: d.cloudUnavailable,
       session_busy: d.sessionBusy, no_context: d.noContext, no_store: d.noStore,
       session_not_found: d.sessionNotFound, decline: d.requestDeclined,
+      machine_offline: d.machineOffline, relay_unavailable: d.relayUnavailable,
+      disabled: d.remoteDisabled, process_required: d.remoteProcessRequired,
+      rate_limited: d.remoteRateLimited,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
   }
@@ -1055,8 +1065,9 @@
   function Composer(props) {
     const { d, lang, workspaces, workspace, setWorkspace, task, setTask, model, setModel, modelOptions, llm, effort, setEffort,
       attachments, addAttach, removeAttach, dispatching, runDispatch, dispatchStatus, sessionRow, events,
-      compacting, runCompact, compactStatus } = props;
+      compacting, runCompact, compactStatus, processes, selectedProcessId, setSelectedProcessId, teamMode } = props;
     const wsOpts = workspaces.length ? workspaces : [];
+    const procOpts = processes || [];
     const est = estTokens(events || []);
     const contextLimit = contextLimitFor(modelOptions, model, llm && llm.model);
     const pct = Math.min(95, Math.round((est / contextLimit) * 100));
@@ -1079,6 +1090,10 @@
           <textarea className="composer-input" rows="2" value=${task} onChange=${(e) => setTask(e.target.value)} onKeyDown=${onKey} placeholder=${d.composerPlaceholder}></textarea>
           <div className="composer-tools">
             <button className="tool-chip" onClick=${addAttach}>📎 ${d.attach}</button>
+            ${teamMode ? html`<select className="ws-select machine-select" value=${selectedProcessId || ""} onChange=${(e) => setSelectedProcessId(e.target.value)}>
+              <option value="">${d.machine}</option>
+              ${procOpts.map((p) => html`<option key=${p.id} value=${p.id} disabled=${!p.online}>${p.online ? "●" : "○"} ${p.name || p.id}</option>`)}
+            </select>` : null}
             ${wsOpts.length ? html`<select className="ws-select" value=${workspace} onChange=${(e) => setWorkspace(e.target.value)} disabled=${!!sessionRow}>${wsOpts.map((w) => html`<option key=${w.path} value=${w.path}>📁 ${w.name || shortPath(w.path, d)}</option>`)}</select>` : null}
             <input className="ws-select model-pick" value=${model} onChange=${(e) => setModel(e.target.value)} list="composer-models" placeholder=${d.modelPlaceholder} aria-label=${d.model} />
             <datalist id="composer-models">${(modelOptions || []).map((o) => html`<option key=${o.value} value=${o.value}></option>`)}</datalist>
@@ -1449,6 +1464,10 @@
       </div>
       ${view === "workspace" && mTab === "chat" ? html`<div className="m-composer">
         <button className="burger" onClick=${mainProps.composer.addAttach}>📎</button>
+        ${mainProps.composer.teamMode ? html`<select className="m-machine" value=${mainProps.composer.selectedProcessId || ""} onChange=${(e) => mainProps.composer.setSelectedProcessId(e.target.value)}>
+          <option value="">${d.machine}</option>
+          ${(mainProps.composer.processes || []).map((p) => html`<option key=${p.id} value=${p.id} disabled=${!p.online}>${p.online ? "●" : "○"} ${p.name || p.id}</option>`)}
+        </select>` : null}
         <div className="box"><input value=${mainProps.composer.task} onChange=${(e) => mainProps.composer.setTask(e.target.value)} onKeyDown=${(e) => { if (e.key === "@") { e.preventDefault(); mainProps.composer.addAttach(); return; } if (e.key === "Enter") { e.preventDefault(); mainProps.composer.runDispatch(); } }} placeholder=${d.mComposerPlaceholder} /></div>
         <button className="btn primary icon" onClick=${mainProps.composer.runDispatch} disabled=${mainProps.composer.dispatching}>↑</button>
       </div>` : null}
@@ -1521,6 +1540,10 @@
     const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false });
     const [cloudStatus, setCloudStatus] = useState("");
     const [cloudAvailable, setCloudAvailable] = useState(true);
+    const [teamMode, setTeamMode] = useState(false);
+    const [processes, setProcesses] = useState([]);
+    const [selectedProcessId, setSelectedProcessIdState] = useState(localStorage.getItem(PROCESS_KEY) || "");
+    const [notifications, setNotifications] = useState([]);
     const [autonomy, setAutonomyState] = useState(1);
     const [detailOpen, setDetailOpen] = useState(false);
     const [detail, setDetail] = useState({ raw: [], diff: { files: [] } });
@@ -1531,6 +1554,7 @@
     const [openCalls, setOpenCalls] = useState({});
     const [expandedSub, setExpandedSub] = useState(null);
     const [toasts, setToasts] = useState([]);
+    const accountWsRef = useRef(null);
     const wsRef = useRef(null);
     const fileRef = useRef(null);
     const toastSeq = useRef(0);
@@ -1545,6 +1569,11 @@
     useEffect(() => { document.documentElement.setAttribute("data-theme", theme); }, [theme]);
     const setTheme = (t) => { setThemeState(t); localStorage.setItem(THEME_KEY, t); };
     const setLang = (l) => setLangState(l);
+    const setSelectedProcessId = (id) => {
+      setSelectedProcessIdState(id || "");
+      if (id) localStorage.setItem(PROCESS_KEY, id);
+      else localStorage.removeItem(PROCESS_KEY);
+    };
 
     // loaders
     const loadWorkspaces = useCallback(async () => {
@@ -1568,6 +1597,36 @@
     const loadSessions = useCallback(async () => { try { try { setSessions(await api("/api/overview") || []); } catch (e) { setSessions(await api("/api/sessions") || []); } } catch (e) { setSessions([]); } }, []);
     const loadCards = useCallback(async () => { try { setCards(await api("/api/cards") || []); } catch (e) { setCards([]); } }, []);
     const loadApprovals = useCallback(async () => { try { setApprovals(await api("/api/approvals") || []); } catch (e) { setApprovals([]); } }, []);
+    const loadProcesses = useCallback(async () => {
+      try {
+        const rows = await api("/api/processes") || [];
+        setTeamMode(true);
+        setProcesses(rows);
+        const ids = rows.map((p) => p.id);
+        const online = rows.filter((p) => p.online);
+        const current = selectedProcessId && ids.includes(selectedProcessId) ? selectedProcessId : "";
+        const next = current || ((online[0] && online[0].id) || (rows[0] && rows[0].id) || "");
+        if (next && next !== selectedProcessId) setSelectedProcessId(next);
+      } catch (e) {
+        setProcesses([]);
+        setTeamMode(false);
+      }
+    }, [selectedProcessId]);
+    const applySnapshot = useCallback((snap) => {
+      const sessionsNext = (snap && snap.sessions || []).map((s) => ({ id: s.session_id, ...(s.summary || {}), process_id: snap.process_id || "" }));
+      const cardsNext = (snap && snap.cards || []).map((c) => ({ id: c.card_id, card_id: c.card_id, status: c.status, ...(c.payload || {}), process_id: snap.process_id || "" }));
+      setSessions(sessionsNext);
+      setCards(cardsNext);
+    }, []);
+    const loadRemoteSnapshot = useCallback(async (processId) => {
+      if (!processId) return;
+      try { applySnapshot(await api("/api/snapshot", { method: "POST", body: { process_id: processId } })); }
+      catch (e) { notifyError(e); }
+    }, [applySnapshot, notifyError]);
+    const loadNotifications = useCallback(async () => {
+      try { setNotifications(await api("/api/notifications") || []); }
+      catch (e) { setNotifications([]); }
+    }, []);
     const loadReports = useCallback(async () => { try { setReports(await api("/api/reports") || []); } catch (e) { setReports([]); } }, []);
     const loadDefinitions = useCallback(async () => { try { const path = defnFilter ? `/api/definitions?kind=${encodeURIComponent(defnFilter)}` : "/api/definitions"; setDefinitions(await api(path) || []); } catch (e) { setDefinitions([]); } }, [defnFilter]);
     const loadLlm = useCallback(async () => { try { const next = { ...(await api("/api/settings/llm")), api_key: "" }; setLlm(next); await loadPmModels(next); } catch (e) { /* server mode */ } }, [loadPmModels]);
@@ -1604,7 +1663,7 @@
       // CLI --version per agent) and can take the backend request timeout if a key is set but the
       // endpoint is slow — keeping them out of this barrier stops the launch overlay from hanging
       // (codex review finding). They populate the Settings page shortly after, non-blocking.
-      Promise.allSettled([loadWorkspaces(), loadSessions(), loadCards(), loadApprovals(), loadReports(), loadAutonomy(), loadCloud()]).then(() => {
+      Promise.allSettled([loadWorkspaces(), loadProcesses(), loadSessions(), loadCards(), loadApprovals(), loadReports(), loadAutonomy(), loadCloud(), loadNotifications()]).then(() => {
         setBooted(true);
         setTimeout(() => setHidingLaunch(true), 350);
       });
@@ -1612,14 +1671,47 @@
       loadLlm();
       loadPmTools();
       loadModels();
-    }, [loadWorkspaces, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadAgentSettings, loadLlm, loadPmTools, loadModels]);
+    }, [loadWorkspaces, loadProcesses, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadNotifications, loadAgentSettings, loadLlm, loadPmTools, loadModels]);
     useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
 
     // polling for cards/approvals/sessions
     useEffect(() => {
-      const id = setInterval(() => { loadSessions(); loadCards(); loadApprovals(); if (cloudAvailable) loadCloud({ background: true }); }, 8000);
+      const id = setInterval(() => {
+        if (teamMode) {
+          loadProcesses();
+          loadNotifications();
+          if (selectedProcessId) loadRemoteSnapshot(selectedProcessId);
+        } else {
+          loadSessions();
+          loadCards();
+          loadApprovals();
+          if (cloudAvailable) loadCloud({ background: true });
+        }
+      }, 8000);
       return () => clearInterval(id);
-    }, [loadSessions, loadCards, loadApprovals, loadCloud, cloudAvailable]);
+    }, [teamMode, selectedProcessId, loadProcesses, loadNotifications, loadRemoteSnapshot, loadSessions, loadCards, loadApprovals, loadCloud, cloudAvailable]);
+
+    useEffect(() => {
+      if (teamMode && selectedProcessId) loadRemoteSnapshot(selectedProcessId);
+    }, [teamMode, selectedProcessId, loadRemoteSnapshot]);
+
+    useEffect(() => {
+      if (!teamMode) return undefined;
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const token = getToken();
+      const tq = token ? `?token=${encodeURIComponent(token)}` : "";
+      const ws = new WebSocket(`${proto}://${location.host}/ws${tq}`);
+      accountWsRef.current = ws;
+      ws.addEventListener("message", (ev) => {
+        try { handleWsItem(JSON.parse(ev.data)); }
+        catch (e) {}
+      });
+      ws.addEventListener("error", () => {});
+      return () => {
+        try { ws.close(); } catch (e) {}
+        if (accountWsRef.current === ws) accountWsRef.current = null;
+      };
+    }, [teamMode]);
 
     // deep-link approvals
     useEffect(() => {
@@ -1638,7 +1730,7 @@
       const tq = token ? `&token=${encodeURIComponent(token)}` : "";
       const next = new WebSocket(`${proto}://${location.host}/ws?session_id=${encodeURIComponent(sessionId)}${tq}`);
       next.addEventListener("message", (ev) => {
-        try { const item = JSON.parse(ev.data); setEvents((prev) => { if (item.id && prev.some((r) => r.id === item.id)) return prev; return [...prev, item]; }); }
+        try { handleWsItem(JSON.parse(ev.data)); }
         catch (e) {}
       });
       next.addEventListener("error", () => {});
@@ -1652,45 +1744,79 @@
     // /api/cards), so it must not keep showing live approve/reject buttons in the thread or count.
     const openCards = useMemo(() => (cards || []).filter((c) => !c.chosen), [cards]);
 
+    function pushEvent(item) {
+      if (!item) return;
+      if (selectedSession && item.session_id && item.session_id !== selectedSession) return;
+      setEvents((prev) => {
+        if (item.id && prev.some((r) => r.id === item.id)) return prev;
+        return [...prev, item];
+      });
+    }
+
+    function applyRelayFrame(frame) {
+      if (!frame || !frame.kind) return;
+      if (frame.kind === "snapshot") {
+        applySnapshot({ ...frame.payload, process_id: frame.process_id });
+      } else if (frame.kind === "event") {
+        pushEvent(frame.payload);
+      }
+    }
+
+    function handleWsItem(item) {
+      if (item && item.type === "relay_frame") {
+        applyRelayFrame(item.payload && item.payload.frame);
+      } else {
+        pushEvent(item);
+      }
+    }
+
     async function runDispatch() {
       const goalBase = task.trim();
       const attachRefs = attachments.map((a) => `@${a.name}`).join(" ");
       const goal = [goalBase, attachRefs].filter(Boolean).join(" ");
       if (!goal) { setDispatchStatus(d.emptyGoal); return; }
+      if (teamMode && !selectedProcessId) { setDispatchStatus(d.remoteProcessRequired); return; }
       const target = sessionRow ? (sessionRow.workspace || workspace) : workspace;
       if (!target) { setDispatchStatus(d.dispatchNoWorkspace); setView("settings"); return; }
       setDispatching(true);
       const body = { goal, workspace: target, source: clientSource(), effort };
+      if (teamMode) body.process_id = selectedProcessId;
       if (sessionRow) body.session_id = sessionRow.id;
       if (model.trim()) body.model = model.trim();
       try {
-        const res = await api("/api/tasks", { method: "POST", body });
+        const res = await api(teamMode ? "/api/dispatch" : "/api/tasks", { method: "POST", body });
         setTask(""); setAttachments([]);
         setDispatchStatus(sessionRow ? d.continued : d.dispatched);
-        await loadSessions();
+        if (teamMode) await loadRemoteSnapshot(selectedProcessId);
+        else await loadSessions();
         if (res.session_id) openTimeline(res.session_id);
       } catch (e) { setDispatchStatus(`${d.dispatchFailed}: ${friendlyError(e, d)}`); }
       finally { setDispatching(false); }
     }
     async function retrySession(row) {
       if (!row || !row.goal) { setDispatchStatus(d.emptyGoal); return; }
+      if (teamMode && !selectedProcessId) { setDispatchStatus(d.remoteProcessRequired); return; }
       const target = row.workspace || workspace;
       if (!target) { setDispatchStatus(d.dispatchNoWorkspace); setView("settings"); return; }
       setDispatching(true);
       const body = { goal: row.goal, workspace: target, source: clientSource(), effort };
+      if (teamMode) body.process_id = selectedProcessId;
       if (row.model) body.model = row.model;
       try {
-        const res = await api("/api/tasks", { method: "POST", body });
+        const res = await api(teamMode ? "/api/dispatch" : "/api/tasks", { method: "POST", body });
         setDispatchStatus(d.dispatched);
-        await loadSessions();
+        if (teamMode) await loadRemoteSnapshot(selectedProcessId);
+        else await loadSessions();
         if (res.session_id) openTimeline(res.session_id);
       } catch (e) { setDispatchStatus(`${d.dispatchFailed}: ${friendlyError(e, d)}`); }
       finally { setDispatching(false); }
     }
     function onAddStep(text) {
       if (!sessionRow) { toast(d.selectSessionHint, "error"); return; }
+      if (teamMode && !selectedProcessId) { toast(d.remoteProcessRequired, "error"); return; }
       const body = { goal: text, workspace: sessionRow.workspace || workspace, source: clientSource(), session_id: sessionRow.id, effort };
-      api("/api/tasks", { method: "POST", body }).then(() => { toast(d.continued, "success"); loadSessions(); }).catch(notifyError);
+      if (teamMode) body.process_id = selectedProcessId;
+      api(teamMode ? "/api/dispatch" : "/api/tasks", { method: "POST", body }).then(() => { toast(d.continued, "success"); teamMode ? loadRemoteSnapshot(selectedProcessId) : loadSessions(); }).catch(notifyError);
     }
     async function runCompact() {
       if (!selectedSession) { setCompactStatus(d.selectSessionHint); return; }
@@ -1726,11 +1852,23 @@
 
     async function onCard(cardId, option) {
       if (!cardId || !option) return;
-      try { await api(`/api/cards/${encodeURIComponent(cardId)}/choose`, { method: "POST", body: { option } }); await loadCards(); toast(d.saved, "success"); }
+      if (teamMode && !selectedProcessId) { toast(d.remoteProcessRequired, "error"); return; }
+      try {
+        if (teamMode) await api("/api/approve", { method: "POST", body: { process_id: selectedProcessId, card_id: cardId, option } });
+        else await api(`/api/cards/${encodeURIComponent(cardId)}/choose`, { method: "POST", body: { option } });
+        teamMode ? await loadRemoteSnapshot(selectedProcessId) : await loadCards();
+        toast(d.saved, "success");
+      }
       catch (e) { notifyError(e); }
     }
     async function decideApproval(id, decision, nonce) {
-      try { await api(`/api/approvals/${encodeURIComponent(id)}`, { method: "POST", body: { decision, nonce: nonce || "" } }); await loadApprovals(); toast(d.saved, "success"); }
+      if (teamMode && !selectedProcessId) { toast(d.remoteProcessRequired, "error"); return; }
+      try {
+        if (teamMode) await api("/api/approve", { method: "POST", body: { process_id: selectedProcessId, approval_id: id, decision, nonce: nonce || "" } });
+        else await api(`/api/approvals/${encodeURIComponent(id)}`, { method: "POST", body: { decision, nonce: nonce || "" } });
+        teamMode ? await loadRemoteSnapshot(selectedProcessId) : await loadApprovals();
+        toast(d.saved, "success");
+      }
       catch (e) { notifyError(e); }
     }
     async function openDetail(actionId) {
@@ -1867,12 +2005,13 @@
     const toggleSub = (id) => setExpandedSub((cur) => (cur === id ? null : id));
     const onCopy = (text) => { try { navigator.clipboard.writeText(text); toast(d.copied, "success"); } catch (e) {} };
 
-    const counts = { workspace: sessions.filter((s) => (s.status || "").toLowerCase().match(/run|active/)).length, decisions: openCards.length + approvals.length };
+    const counts = { workspace: sessions.filter((s) => (s.status || "").toLowerCase().match(/run|active/)).length, decisions: openCards.length + approvals.length + notifications.length };
 
     const composerProps = {
       workspaces, workspace, setWorkspace: (v) => { setWorkspace(v); if (v) localStorage.setItem(WORKSPACE_KEY, v); },
       task, setTask, model, setModel, modelOptions, llm, effort, setEffort, attachments, addAttach, removeAttach,
       dispatching, runDispatch, dispatchStatus, onAddStep,
+      processes, selectedProcessId, setSelectedProcessId, teamMode,
     };
     const settingsProps = {
       d, lang, workspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace, browseFolder, deleteWorkspace, loadWorkspaces,

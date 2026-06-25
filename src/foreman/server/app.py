@@ -27,6 +27,7 @@ from foreman.shared.autonomy import level_label, normalize_level
 from foreman.shared.config import AgentCfg, Config, PMToolsCfg, WorkspaceCfg, default_agents
 from foreman.shared.events import AgentEvent, EventBus, utc_now_iso
 from foreman.shared.i18n import normalize as normalize_lang
+from foreman.shared.protocol import KIND_SNAPSHOT_REQ, Envelope, command_envelope, new_id
 from foreman.shared.ratelimit import SlidingWindowLimiter
 
 from .. import __version__
@@ -187,6 +188,38 @@ class _DispatchBody(BaseModel):
     effort: str = ""  # reasoning level / 速度档位: low | medium | high ("" = the CLI default)
     session_id: str = ""  # when set, append a new task to an existing conversation
     source: str = ""  # desktop | phone | api
+
+
+class _RemoteDispatchBody(BaseModel):
+    """Team-mode browser dispatch routed through the relay to one local process."""
+
+    process_id: str
+    goal: str
+    workspace: str = ""
+    agent: str = ""
+    model: str = ""
+    effort: str = ""
+    session_id: str = ""
+
+
+class _RemoteApproveBody(BaseModel):
+    """Team-mode approval/card decision routed to one local process."""
+
+    process_id: str
+    approval_id: str = ""
+    card_id: str = ""
+    decision: str = ""
+    option: str = ""
+    nonce: str = ""
+    reason: str = ""
+
+
+class _SnapshotBody(BaseModel):
+    process_id: str
+
+
+class _NotificationAckBody(BaseModel):
+    ids: list[str] = Field(default_factory=list)
 
 
 class _CloudSettingsBody(BaseModel):
@@ -447,6 +480,8 @@ def create_app(
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
         get_log_buffer()  # re-attach once uvicorn's logging config is in place
+        if cloud is not None and hasattr(cloud, "bind_app_loop"):
+            cloud.bind_app_loop(asyncio.get_running_loop())
         yield
 
     app = FastAPI(title="Foreman", version=__version__, lifespan=_lifespan)
@@ -1009,6 +1044,29 @@ def create_app(
             raise HTTPException(status_code=403, detail="admin only")
         return account
 
+    def _server_store():
+        return getattr(relay, "store", None) or getattr(auth, "store", None)
+
+    async def _route_remote_command(account_id: str, process_id: str, env: Envelope) -> dict:
+        if relay is None or not hasattr(relay, "route_with_ack"):
+            raise HTTPException(status_code=503, detail="relay_unavailable")
+        process_id = (process_id or "").strip()
+        if not process_id:
+            raise HTTPException(status_code=400, detail="process_required")
+        res = await relay.route_with_ack(account_id, env, process_id=process_id)
+        if res.get("ok"):
+            return res
+        error = str(res.get("error") or "remote_failed")
+        status = {
+            "process_required": 400,
+            "machine_offline": 409,
+            "rate_limited": 429,
+            "disabled": 403,
+            "bad_mac": 502,
+            "replay": 409,
+        }.get(error, 400)
+        raise HTTPException(status_code=status, detail=error)
+
     @app.get("/health")
     async def health() -> dict:
         """Public readiness probe. Non-sensitive by default — the DB path is only included when
@@ -1313,6 +1371,19 @@ def create_app(
 
         Stored in the injected local store (personal mode); a server-cache store without these
         helpers returns 503 (team-mode push is part of the live rollout — DESIGN §8)."""
+        if auth is not None:
+            account = require_account(request)
+            st = _server_store()
+            if st is None or not hasattr(st, "add_push_subscription"):
+                raise HTTPException(status_code=503, detail="no push store")
+            st.add_push_subscription(
+                account_id=account.id,
+                endpoint=body.endpoint,
+                p256dh=body.keys.p256dh,
+                auth=body.keys.auth,
+                ua=request.headers.get("user-agent", ""),
+            )
+            return {"ok": True}
         if store is None or not hasattr(store, "add_push_subscription"):
             raise HTTPException(status_code=503, detail="no local store")
         store.add_push_subscription(
@@ -1324,7 +1395,14 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/push/unsubscribe")
-    async def push_unsubscribe(body: _PushUnsubBody) -> dict:
+    async def push_unsubscribe(body: _PushUnsubBody, request: Request) -> dict:
+        if auth is not None:
+            account = require_account(request)
+            st = _server_store()
+            if st is None or not hasattr(st, "delete_push_subscription"):
+                raise HTTPException(status_code=503, detail="no push store")
+            st.delete_push_subscription(body.endpoint, account_id=account.id)
+            return {"ok": True}
         if store is None or not hasattr(store, "delete_push_subscription"):
             raise HTTPException(status_code=503, detail="no local store")
         store.delete_push_subscription(body.endpoint)
@@ -1645,26 +1723,77 @@ def create_app(
         account = require_account(request)
         return auth.list_processes(account.id)
 
-    # ── Display cache: the PWA reads a read-only copy while the PC is offline (§8.5 ③, T7.5) ───
-    # Served from the relay box's display cache (cache_sessions / cache_cards), which the local
-    # process pushes up the link. Scoped to the logged-in account (§8.4) — another tenant's cache
-    # never shows. Personal mode injects no cache → 503. (When the PC is online the PWA is routed
-    # live to it; that live proxy is the deferred team rollout — see TASKS T7.1.)
-    @app.get("/api/cache/sessions")
-    async def cache_sessions(request: Request) -> list[dict]:
-        """The caller's cached session summaries (offline read-only copy). §8.5 ③."""
+    @app.post("/api/snapshot")
+    async def remote_snapshot(body: _SnapshotBody, request: Request) -> dict:
+        """Pull the display-safe first-screen snapshot from one online local process."""
         account = require_account(request)
-        if cache is None or not hasattr(cache, "list_sessions"):
-            raise HTTPException(status_code=503, detail="no display cache")
-        return cache.list_sessions(account.id)
+        env = Envelope(kind=KIND_SNAPSHOT_REQ, id=new_id())
+        return await _route_remote_command(account.id, body.process_id, env)
 
-    @app.get("/api/cache/cards")
-    async def cache_cards(request: Request, session_id: str | None = None) -> list[dict]:
-        """The caller's cached decision cards (offline read-only copy), optionally per session."""
+    @app.post("/api/dispatch")
+    async def remote_dispatch(body: _RemoteDispatchBody, request: Request) -> dict:
+        """Route a browser task dispatch to the selected local process."""
         account = require_account(request)
-        if cache is None or not hasattr(cache, "list_cards"):
-            raise HTTPException(status_code=503, detail="no display cache")
-        return cache.list_cards(account.id, session_id)
+        payload = {
+            "goal": body.goal,
+            "workspace": body.workspace,
+            "agent": body.agent,
+            "model": body.model,
+            "effort": body.effort,
+            "session_id": body.session_id,
+        }
+        return await _route_remote_command(
+            account.id, body.process_id, command_envelope("dispatch", payload)
+        )
+
+    @app.post("/api/approve")
+    async def remote_approve(body: _RemoteApproveBody, request: Request) -> dict:
+        """Route a browser approval/card decision to the selected local process."""
+        account = require_account(request)
+        if body.card_id:
+            env = command_envelope(
+                "card_choice",
+                {"card_id": body.card_id, "option": body.option or body.decision},
+            )
+        else:
+            env = command_envelope(
+                "approval",
+                {
+                    "approval_id": body.approval_id,
+                    "decision": body.decision,
+                    "nonce": body.nonce,
+                    "reason": body.reason,
+                },
+            )
+        return await _route_remote_command(account.id, body.process_id, env)
+
+    @app.get("/api/notifications")
+    async def list_notifications(request: Request) -> list[dict]:
+        """Cold-start wake-up queue: tiny TTL rows only, scoped to the caller account."""
+        account = require_account(request)
+        st = _server_store()
+        if st is None or not hasattr(st, "list_notifications"):
+            raise HTTPException(status_code=503, detail="no notification queue")
+        return [
+            {
+                "id": n.id,
+                "process_id": n.process_id,
+                "kind": n.kind,
+                "ref": n.ref,
+                "title": n.title,
+                "created_at": n.created_at,
+                "expires_at": n.expires_at,
+            }
+            for n in st.list_notifications(account.id)
+        ]
+
+    @app.post("/api/notifications/ack")
+    async def ack_notifications(body: _NotificationAckBody, request: Request) -> dict:
+        account = require_account(request)
+        st = _server_store()
+        if st is None or not hasattr(st, "ack_notifications"):
+            raise HTTPException(status_code=503, detail="no notification queue")
+        return {"ok": True, "deleted": st.ack_notifications(account.id, body.ids)}
 
     # ── Admin console: build users + invite (no self-signup — DESIGN §8.2, T7.2) ──────────────
     @app.get("/api/admin/accounts")
@@ -1729,9 +1858,6 @@ def create_app(
     # logged in, which machines are online, table sizes, recent server log lines). Secret columns
     # (any *_hash) are redacted by the store; the DB browse is read-only with a fixed table
     # allowlist. No tenant content (秘方/diffs/raw output) exists on the relay box to leak (§8.3).
-    def _server_store():
-        return getattr(auth, "store", None) if auth is not None else None
-
     @app.get("/api/admin/overview")
     async def admin_overview(request: Request) -> dict:
         """Dashboard summary cards: account counts by status, online/total processes, active login
@@ -1911,6 +2037,8 @@ def create_app(
             await websocket.close(code=1008)  # personal-mode shared-token guard (issue #1 P0)
             return
         await websocket.accept()
+        if caller_account_id is not None and relay is not None and hasattr(relay, "subscribe"):
+            await relay.subscribe(caller_account_id)
         # Backlog replay is personal-mode only: team-mode events aren't account-tagged at the row
         # level, so replaying a store here couldn't be account-scoped. In team mode `store` is None
         # anyway; gating on caller_account_id is None makes that a hard invariant, not a coincidence
@@ -1941,6 +2069,8 @@ def create_app(
             for t in pending:
                 t.cancel()
         finally:
+            if caller_account_id is not None and relay is not None and hasattr(relay, "unsubscribe"):
+                await relay.unsubscribe(caller_account_id)
             bus.unsubscribe(q)
 
     @app.websocket("/relay")
@@ -2001,12 +2131,12 @@ def build_serve_app(cfg: Config) -> FastAPI:
     the deployed server keeps behaving exactly as before unless team mode is opted into.
 
     Team mode (`server.mode == "team"`): build the server store (accounts / access_keys /
-    process_registry), an AuthManager (user login + key mgmt), a Relay, and a DisplayCache, and
+    process_registry), an AuthManager (user login + key mgmt), and a Relay, and
     inject them so local processes dial in at /relay and the PWA routes BY ACCOUNT to the right
-    machine — or, while that machine is offline, reads the relay's display cache (T7.5, §8.5 ③).
+    machine. Display state is no longer persisted on the relay.
     The team server holds NO 秘方 / diffs / per-user LLM keys (§8.3) — those stay on each local
     process; `store` stays None (the relay box has no client-style local store), so the personal
-    session/event endpoints 503 while the account-scoped /api/cache/* endpoints serve the cache.
+    session/event endpoints 503 while account-scoped remote-control endpoints route to the PC.
     """
     # Fail closed before binding: never expose unprotected operational APIs (P0). The team relay
     # builds a per-account AuthManager below, so it's exempt; personal mode must clear the
@@ -2018,17 +2148,16 @@ def build_serve_app(cfg: Config) -> FastAPI:
 
     # Lazy imports: keep create_app's import surface unchanged for personal mode / tests.
     from .auth_manager import AuthManager
-    from .display_cache import DisplayCacheService
+    from .push import Pusher
     from .relay import Relay
     from .store import ServerStore
 
     server_store = ServerStore(cfg.server.db_path)
     server_store.init()
     bus = EventBus()
-    cache = DisplayCacheService(server_store)
-    relay = Relay(server_store, bus, cache=cache)
+    relay = Relay(server_store, bus, pusher=Pusher(cfg))
     auth = AuthManager(server_store)
     # store stays None: the team relay box has no client-style local store (秘方/events live on
-    # each user's machine). relay + auth + cache carry the ServerStore. The PWA reads the display
-    # cache (§8.5 ③) while a machine is offline; the live proxy-when-online is the deferred rollout.
-    return create_app(cfg, bus=bus, relay=relay, auth=auth, cache=cache)
+    # each user's machine). relay + auth carry the ServerStore. Display state is routed live and
+    # cached only in the browser.
+    return create_app(cfg, bus=bus, relay=relay, auth=auth)

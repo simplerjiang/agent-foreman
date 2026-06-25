@@ -77,12 +77,19 @@ const d = {
   badScopeJson: "scope", cloudNotConfigured: "cloud", cloudUnavailable: "unavailable",
   sessionBusy: "busy", noContext: "no context", noStore: "no store",
   sessionNotFound: "session missing", requestDeclined: "declined", networkError: "network",
+  machineOffline: "offline", relayUnavailable: "relay", remoteDisabled: "remote disabled",
+  remoteProcessRequired: "process", remoteRateLimited: "limited",
 };
 for (const [code, expected] of Object.entries({
   no_context: "no context",
   no_store: "no store",
   session_not_found: "session missing",
   decline: "declined",
+  machine_offline: "offline",
+  relay_unavailable: "relay",
+  disabled: "remote disabled",
+  process_required: "process",
+  rate_limited: "limited",
 })) {
   const actual = friendlyError(new Error(code), d);
   if (actual !== expected || actual === code) {
@@ -138,7 +145,7 @@ def test_composer_dispatch_with_effort_and_context_meter():
     js = c.get("/app.js").text
     css = c.get("/app.css").text
     assert "function Composer" in js
-    assert "/api/tasks" in js and "body.session_id = sessionRow.id" in js
+    assert "/api/tasks" in js and "/api/dispatch" in js and "body.session_id = sessionRow.id" in js
     assert "source: clientSource()" in js
     # Fast/Std/Deep maps to effort low|medium|high in the dispatch body
     assert "effort" in js and 'setEffort("low")' in js and 'setEffort("high")' in js
@@ -149,6 +156,18 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert ".ctx-meter" in css and ".seg" in css
     assert 'e.key === "@"' in js and "addAttach(); return;" in js
     assert 'attachments.map((a) => `@${a.name}`).join(" ")' in js
+
+
+def test_remote_control_ui_wires_process_target_and_approve_endpoint():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert "/api/processes" in js and "loadProcesses" in js
+    assert "selectedProcessId" in js and "process_id" in js
+    assert "/api/snapshot" in js and "snapshot_req" not in js  # browser calls REST, server builds frame
+    assert "/api/approve" in js and "card_choice" not in js
+    assert "machine_offline" in js and "relay_unavailable" in js
+    assert "machine-select" in js and ".m-machine" in css
 
 
 def test_dispatch_model_picker_and_no_explicit_agent():
@@ -371,7 +390,13 @@ def test_boot_does_not_block_on_model_discovery():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     # the boot barrier ends with the essential loaders — no loadModels()/loadLlm() inside it
-    assert "loadReports(), loadAutonomy(), loadCloud()])" in js
+    assert (
+        "loadWorkspaces(), loadProcesses(), loadSessions(), loadCards(), loadApprovals(), "
+        "loadReports(), loadAutonomy(), loadCloud(), loadNotifications()"
+    ) in js
+    boot = js.split("Promise.allSettled([", 1)[1].split("]).then", 1)[0]
+    assert "loadModels()" not in boot
+    assert "loadLlm()" not in boot
 
 
 def test_mobile_drawer_has_session_picker():

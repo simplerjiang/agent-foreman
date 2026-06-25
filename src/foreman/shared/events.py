@@ -28,6 +28,8 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "workflow",
         # definition editor (P6/T6.1, §11.2): a 秘方 block was created / updated / activated / deleted.
         "definition",
+        # team relay passthrough frame for account-scoped browser subscribers.
+        "relay_frame",
     }
 )
 

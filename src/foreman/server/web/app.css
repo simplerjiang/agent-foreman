@@ -550,6 +550,7 @@ a { color: var(--accent-text); }
 .m-tab.on { font-weight: 700; color: var(--accent-text); }
 .m-tab .ic { font-size: 16px; }
 .m-composer { padding: 9px 12px; border-top: 1px solid var(--border); background: var(--surface); display: flex; align-items: center; gap: 6px; }
+.m-machine { width: 92px; min-width: 92px; border: 1px solid var(--border2); background: var(--surface); color: var(--text); border-radius: 8px; padding: 6px 7px; font-size: 12px; }
 .m-composer .box { flex: 1; display: flex; align-items: center; gap: 6px; border: 1.5px solid var(--border2); border-radius: 10px; padding: 5px 8px; }
 .m-composer input { flex: 1; border: none; outline: none; background: transparent; color: var(--text); font-size: 13px; }
 

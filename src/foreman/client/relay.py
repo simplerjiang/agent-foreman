@@ -23,6 +23,7 @@ and mock-tested here; the live PC dial-out is hooked up in the live rollout (see
 from __future__ import annotations
 
 import asyncio
+import queue
 import time
 from collections.abc import Awaitable, Callable
 
@@ -54,7 +55,8 @@ class RelayConnector:
         process_id: str,
         name: str = "",
         connect: Callable[[str], Awaitable[object]] | None = None,
-        on_frame: Callable[[Envelope], Awaitable[None]] | None = None,
+        on_frame: Callable[[Envelope], Awaitable[Envelope | list[Envelope] | None]] | None = None,
+        outgoing: queue.Queue[Envelope] | None = None,
         on_status: Callable[[bool], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
         backoff_base: float = 1.0,
@@ -73,6 +75,7 @@ class RelayConnector:
         self.name = name
         self._connect = connect or _default_connect
         self._on_frame = on_frame
+        self._outgoing = outgoing
         # Optional liveness callback (True after a successful handshake, False when the session
         # ends) so a supervising CloudManager can surface "connected" in the UI without reaching
         # into the connector's internals. Must never raise.
@@ -88,9 +91,8 @@ class RelayConnector:
         # the backoff `sleep` so injecting one in a reconnect test doesn't perturb the other.
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_sleep = heartbeat_sleep
-        # Optional periodic display-cache push (DESIGN §8.5 ③ / T7.5): while connected, send a
-        # KIND_CACHE_SYNC frame (session/card summaries — never diffs/秘方) so the relay can serve
-        # the phone view. `sync_provider` returns the frame to send (or None to skip a tick).
+        # Deprecated v1 display-cache sync knobs. Kept for call-shape compatibility, but v2 uses
+        # subscription-driven snapshot requests instead of unconditional periodic pushes.
         self._sync_provider = sync_provider
         self._sync_interval = sync_interval
         self._sync_sleep = sync_sleep
@@ -148,8 +150,8 @@ class RelayConnector:
         tasks = [asyncio.create_task(self._read_loop(conn))]
         if self._heartbeat_interval and self._heartbeat_interval > 0:
             tasks.append(asyncio.create_task(self._heartbeat_loop(conn)))
-        if self._sync_provider is not None:
-            tasks.append(asyncio.create_task(self._sync_loop(conn)))
+        if self._outgoing is not None:
+            tasks.append(asyncio.create_task(self._outgoing_loop(conn)))
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
@@ -173,7 +175,13 @@ class RelayConnector:
                     )
                 continue
             if self._on_frame is not None:
-                await self._on_frame(env)
+                replies = await self._on_frame(env)
+                if replies is None:
+                    continue
+                if isinstance(replies, Envelope):
+                    replies = [replies]
+                for reply in replies:
+                    await conn.send(reply.to_json())
 
     async def _heartbeat_loop(self, conn) -> None:
         """Send a ping every `heartbeat_interval` seconds (§8.5 ③). run_once cancels it on a normal
@@ -184,15 +192,15 @@ class RelayConnector:
             await self._heartbeat_sleep(self._heartbeat_interval)
             await conn.send(ping)
 
-    async def _sync_loop(self, conn) -> None:
-        """Push a display-cache snapshot on connect, then every `sync_interval` seconds (§8.5 ③).
-        The provider returns the frame (or None to skip); a send failure ends the session and
-        run()'s backoff reconnects, same as a heartbeat/read error."""
+    async def _outgoing_loop(self, conn) -> None:
+        """Send frames queued by the local app loop, such as live events and notifications."""
+        assert self._outgoing is not None
         while True:
-            frame = self._sync_provider() if self._sync_provider is not None else None
-            if frame is not None:
-                await conn.send(frame.to_json())
-            await self._sync_sleep(self._sync_interval)
+            try:
+                frame = await asyncio.to_thread(self._outgoing.get, True, 0.25)
+            except queue.Empty:
+                continue
+            await conn.send(frame.to_json())
 
     async def run(self, *, max_attempts: int | None = None) -> None:
         """Keep a connection up forever, reconnecting with exponential backoff (§8.5 ③).
