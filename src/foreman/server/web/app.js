@@ -432,10 +432,16 @@
     }
     return "";
   }
+  function isOpeningMetaLine(line) {
+    const v = String(line || "").trim();
+    return /^(i['’]?m ready to help|what would you like me to|the user wants me to|i need to|we need to|i should|let me|sure[,，]?|okay[,，]?\s+i(?:'ll| will))\b/i.test(v)
+      || /^(好的|当然|没问题)[,，。！？\s]?/.test(v)
+      || /^(我来|我会|我需要|让我|我们需要)/.test(v);
+  }
+
   function firstSubstantiveLine(text) {
     const lines = String(text || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-    const skip = /^(i['’]?m ready to help|what would you like me to|the user wants me to|i need to|we need to|i should)\b/i;
-    return (lines.find((line) => !skip.test(line)) || lines[0] || "").slice(0, 60);
+    return (lines.find((line) => !isOpeningMetaLine(line)) || lines[0] || "").slice(0, 60);
   }
 
   // ---- markdown (ported, minimal-safe) ----
