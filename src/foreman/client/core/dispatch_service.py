@@ -709,13 +709,16 @@ class DispatchService:
         )
         # P2 (§7): inject the selected work modes into the workspace BEFORE launch so the coding agent
         # reads them on startup (claude-code native .claude/skills / codex .foreman/skills + managed
-        # block). Best-effort — an injection failure must never abort the dispatch.
+        # block). Only when there's actual material — a task with NO selected skills/standards gets
+        # ZERO injection / ZERO residue (P2 §4 back-compat; the plan instruction already goes to the
+        # CLI directly). Best-effort: an injection failure must never abort the dispatch.
         if self.injector is not None:
             material = self._build_work_mode_material(plan.instruction, wm_index, work_mode_resolver)
-            try:
-                self.injector.inject(workspace, material, agents=plan.agent, task_id=task_id)
-            except Exception:  # noqa: BLE001 — injection is best-effort
-                pass
+            if material["skills"] or material["standards"]:
+                try:
+                    self.injector.inject(workspace, material, agents=plan.agent, task_id=task_id)
+                except Exception:  # noqa: BLE001 — injection is best-effort
+                    pass
         handle = await self.runner.launch(
             plan.agent, plan.instruction, Path(workspace), session_id,
             model=plan.model, effort=plan.effort,

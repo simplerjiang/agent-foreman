@@ -126,6 +126,24 @@ async def test_followup_keeps_injection_until_done(tmp_path):
     assert all(runner.injected_at_waits)  # injection present at every wait (clear only in finally)
 
 
+async def test_no_work_modes_no_injection(tmp_path):
+    """P2 §4 back-compat: an injector IS wired but NO work modes are selected → zero injection, zero
+    residue (the workspace is never touched; the plan instruction goes straight to the CLI)."""
+    store = _store(tmp_path)  # no definitions seeded
+    cfg = _cfg(tmp_path)
+    runner = _FakeRunner(tmp_path)
+    runner._store = store
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=_pm([]),
+                          injector=WorkspaceInjector(allowed_roots=[str(tmp_path)]))
+    res = await svc.create("do work", workspace=str(tmp_path))
+    await asyncio.gather(*list(svc._tasks))
+    assert res["ok"] is True
+    assert runner.injected_at_launch is False  # workspace untouched at launch
+    assert not (tmp_path / "CLAUDE.md").exists() and not (tmp_path / "AGENTS.md").exists()
+    assert not (tmp_path / NATIVE_SKILLS_DIR).exists()
+    assert not (tmp_path / ".foreman").exists()
+
+
 async def test_no_injector_no_residue(tmp_path):
     store = _store(tmp_path)
     _seed(store, "skill", "write-tests", "SKILL BODY", "write tests")
