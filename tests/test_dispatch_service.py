@@ -681,6 +681,31 @@ async def test_pm_agent_plan_prompt_requires_selected_language(tmp_path):
     assert "Human-facing JSON string values must follow the selected output language" in captured["system"]
 
 
+async def test_pm_agent_shortcuts_simple_reply_without_tool_loop(tmp_path):
+    class NoLLM:
+        async def complete(self, *_args, **_kwargs):
+            raise AssertionError("simple reply planning should not call the LLM")
+
+    def no_runtime(_workspace):
+        raise AssertionError("simple reply planning should not create the PM tool runtime")
+
+    pm = PMAgent(NoLLM(), language="zh", tool_runtime_factory=no_runtime)
+    plan = await pm.plan(
+        "请仅用一句中文确认收到本消息",
+        workspace=str(tmp_path),
+        available_agents=[{"name": "codex", "model": "", "effort": "", "full_access": True}],
+        requested_agent="codex",
+        pm_model="gpt-5.5",
+        requested_effort="high",
+        fallback_instruction="fallback",
+    )
+
+    assert plan.agent == "codex"
+    assert plan.todo == ["直接按要求回复用户"]
+    assert plan.summary == "简单回复请求，已跳过 PM 工具规划。"
+    assert "不要查看文件" in plan.instruction
+
+
 async def test_pm_agent_plans_for_at_least_two_rounds(tmp_path):
     captured: dict = {"calls": 0, "prompts": []}
 

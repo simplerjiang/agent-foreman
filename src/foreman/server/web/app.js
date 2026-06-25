@@ -31,7 +31,7 @@
       personalMode: "个人模式 · 离线优先",
       selectSessionHint: "从左侧选择一个会话，或在下方下发新任务。",
       running: "运行中", live: "运行中", done: "完成", queued: "排队", cancelled: "已取消",
-      autonomy: "自动权限", briefing: "生成简报",
+      autonomy: "自动权限", briefing: "生成简报", pmThinking: "PM 正在思考...",
       plan: "计划", approved: "已确认", active: "进行中",
       reply: "回复", commandsRun: "执行的命令", fileChanges: "文件改动",
       open: "展开", hide: "收起",
@@ -59,10 +59,15 @@
       noDefinitions: "暂无工作方式。", on: "启用中", off: "未启用",
       edit: "编辑", del: "删除", activate: "启用",
       defnKind: "类型", defnName: "名称", defnScope: "适用范围 (JSON)", defnBody: "内容", defnActivate: "保存即启用",
-      cancel: "取消", save: "保存", saved: "已保存", saveFailed: "保存失败", failed: "失败",
+      cancel: "取消", retry: "重试", save: "保存", saved: "已保存", saveFailed: "保存失败", failed: "失败",
       confirmDeleteTitle: "确认删除", confirmDelete: "确定删除这条工作方式？", confirmSessionDelete: "确定删除这个会话及其本地记录？",
       deleteSession: "删除会话", cancelSession: "取消会话", sessionCanceled: "已取消会话", notification: "通知",
       sessionBusy: "会话仍有后台任务未结束，请稍后再删除。",
+      noContext: "当前会话还没有可压缩的上下文。",
+      noStore: "本地数据存储不可用，请重启 Foreman 后重试。",
+      sessionNotFound: "没有找到这个会话，请刷新后重试。",
+      requestDeclined: "操作未被执行，请检查当前状态后重试。",
+      networkError: "网络异常，请检查连接后重试。",
       badScopeJson: "适用范围必须是 JSON 对象，例如 {\"lang\":\"py\"}。",
       imported: "已导入", importFailed: "导入失败", exportFailed: "导出失败",
       workspaces: "工作区", projectPath: "项目路径", displayName: "显示名称", pathHint: "例如 E:\\AutoWorkAgent",
@@ -118,7 +123,7 @@
       personalMode: "Personal · offline-first",
       selectSessionHint: "Pick a session on the left, or dispatch a new task below.",
       running: "RUNNING", live: "LIVE", done: "done", queued: "queued", cancelled: "cancelled",
-      autonomy: "Autonomy", briefing: "Briefing",
+      autonomy: "Autonomy", briefing: "Briefing", pmThinking: "PM is thinking...",
       plan: "Plan", approved: "approved", active: "active",
       reply: "Reply", commandsRun: "Commands run", fileChanges: "File changes",
       open: "Open", hide: "Hide",
@@ -146,10 +151,15 @@
       noDefinitions: "No playbook items yet.", on: "active", off: "off",
       edit: "Edit", del: "Delete", activate: "Activate",
       defnKind: "Kind", defnName: "Name", defnScope: "Scope (JSON)", defnBody: "Body", defnActivate: "Activate on save",
-      cancel: "Cancel", save: "Save", saved: "Saved", saveFailed: "Save failed", failed: "failed",
+      cancel: "Cancel", retry: "Retry", save: "Save", saved: "Saved", saveFailed: "Save failed", failed: "failed",
       confirmDeleteTitle: "Confirm delete", confirmDelete: "Delete this playbook item?", confirmSessionDelete: "Delete this session and its local records?",
       deleteSession: "Delete session", cancelSession: "Cancel session", sessionCanceled: "Session cancelled", notification: "Notification",
       sessionBusy: "A background task is still active; delete it after the task finishes.",
+      noContext: "This session has no context to compact yet.",
+      noStore: "Local storage is unavailable. Restart Foreman and try again.",
+      sessionNotFound: "This session was not found. Refresh and try again.",
+      requestDeclined: "The operation was not completed. Check the current state and try again.",
+      networkError: "Network error. Check the connection and try again.",
       badScopeJson: "Scope must be a JSON object, for example {\"lang\":\"py\"}.",
       imported: "Imported", importFailed: "Import failed", exportFailed: "Export failed",
       workspaces: "Workspaces", projectPath: "Project path", displayName: "Name", pathHint: "e.g. E:\\AutoWorkAgent",
@@ -269,12 +279,14 @@
   }
   function friendlyError(error, d) {
     const detail = String(error && error.message ? error.message : error || "");
+    if (/failed to fetch|networkerror|network error|load failed/i.test(detail)) return d.networkError;
     const map = {
       empty_goal: d.emptyGoal, no_workspace: d.dispatchNoWorkspace, workspace_not_allowed: d.workspaceMissing,
       unknown_agent: d.noEnabledAgent, no_enabled_agent: d.noEnabledAgent, no_dispatcher: d.noDispatcher,
       "no dispatcher": d.noDispatcher, no_llm: d.briefNoLlm, bad_scope_json: d.badScopeJson,
       not_configured: d.cloudNotConfigured, cloud_unavailable: d.cloudUnavailable,
-      session_busy: d.sessionBusy,
+      session_busy: d.sessionBusy, no_context: d.noContext, no_store: d.noStore,
+      session_not_found: d.sessionNotFound, decline: d.requestDeclined,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
   }
@@ -423,6 +435,17 @@
     }
     return raw;
   }
+  function looksEnglishPmStatus(text) {
+    const v = String(text || "").trim();
+    if (!v || /[\u3400-\u9fff]/.test(v) || v.length > 180) return false;
+    if (/```|[{}[\]<>]|https?:|[\\\/][\w.-]+/.test(v)) return false;
+    const letters = (v.match(/[A-Za-z]/g) || []).length;
+    const visible = v.replace(/\s/g, "").length || 1;
+    return letters >= 8 && letters / visible > 0.45;
+  }
+  function displayPmStreamText(text, lang, d) {
+    return lang === "zh" && looksEnglishPmStatus(text) ? d.pmThinking : text;
+  }
   function terminalText(payload) {
     const txt = extractAgentText(payload);
     if (txt) return txt;
@@ -432,10 +455,16 @@
     }
     return "";
   }
+  function isOpeningMetaLine(line) {
+    const v = String(line || "").trim();
+    return /^(i['’]?m ready to help|what would you like me to|the user wants me to|i need to|we need to|i should|let me|sure[,，]?|okay[,，]?\s+i(?:'ll| will))\b/i.test(v)
+      || /^(好的|当然|没问题)[,，。！？\s]?/.test(v)
+      || /^(我来|我会|我需要|让我|我们需要)/.test(v);
+  }
+
   function firstSubstantiveLine(text) {
     const lines = String(text || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-    const skip = /^(i['’]?m ready to help|what would you like me to|the user wants me to|i need to|we need to|i should)\b/i;
-    return (lines.find((line) => !skip.test(line)) || lines[0] || "").slice(0, 60);
+    return (lines.find((line) => !isOpeningMetaLine(line)) || lines[0] || "").slice(0, 60);
   }
 
   // ---- markdown (ported, minimal-safe) ----
@@ -599,19 +628,20 @@
         if (!rawTxt) continue;
         if (p.event_type === "status" || p.status === "working") {
           const key = p.phase || p.stream_id || "pm";
+          const statusText = displayPmStreamText(rawTxt, lang, d);
           if (statusNodes.has(key) && nodes[statusNodes.get(key)]) {
-            nodes[statusNodes.get(key)].text = rawTxt;
+            nodes[statusNodes.get(key)].text = statusText;
             nodes[statusNodes.get(key)].ts = e.ts;
           } else {
             statusNodes.set(key, nodes.length);
-            nodes.push({ kind: "pm-status", id: e.id || `ps-${nodes.length}`, ts: e.ts, text: rawTxt });
+            nodes.push({ kind: "pm-status", id: e.id || `ps-${nodes.length}`, ts: e.ts, text: statusText });
           }
           continue;
         }
         if (t === "pm_reasoning") continue;
         const sid = p.stream_id || "";
         const gk = `${t}-${e.source || ""}-${sid || "plain"}`;
-        const txt = cleanPmStreamText(sid ? `${pmStreamBuffers.get(gk) || ""}${rawTxt}` : rawTxt);
+        const txt = displayPmStreamText(cleanPmStreamText(sid ? `${pmStreamBuffers.get(gk) || ""}${rawTxt}` : rawTxt), lang, d);
         if (sid) pmStreamBuffers.set(gk, `${pmStreamBuffers.get(gk) || ""}${rawTxt}`);
         if (!txt) continue;
         if (p.phase) hidePmStatus(p.phase);
@@ -756,11 +786,21 @@
       </aside>`;
   }
 
+  function sessionStatusLabel(status, d) {
+    const st = String(status || "").toLowerCase();
+    if (st.includes("run") || st.includes("active")) return d.running;
+    if (st.includes("cancel")) return d.cancelled;
+    if (st.includes("fail") || st.includes("error")) return d.failed;
+    if (st.includes("done") || st.includes("complete")) return d.done;
+    if (st.includes("queue")) return d.queued;
+    return status || "-";
+  }
+
   function SessionItem({ s, d, lang, active, onClick }) {
     const st = (s.status || "").toLowerCase();
     const dotColor = st.includes("run") || st.includes("active") ? "var(--accent)" : (s.pending_approvals || s.open_cards) ? "var(--amber)" : st.includes("done") || st.includes("complete") ? "var(--green)" : "var(--faint)";
     const live = st.includes("run") || st.includes("active");
-    const metaBits = [s.agent_type || "-", s.status || "-", formatTime(s.updated_at || s.last_event_ts || s.created_at, lang)].filter(Boolean);
+    const metaBits = [s.agent_type || "-", sessionStatusLabel(s.status, d), formatTime(s.updated_at || s.last_event_ts || s.created_at, lang)].filter(Boolean);
     return html`
       <div className=${`sess${active ? " active" : ""}`} onClick=${onClick}>
         <div className="sess-head">
@@ -795,7 +835,7 @@
   function Workspace(props) {
     const { d, lang, dig, sessionRow, events, autonomy, openCalls, toggleCall, expandedSub, toggleSub,
       rightTab, setRightTab, onCard, onApproval, openDetail, composer, runCompact, compacting, compactStatus, onBriefing,
-      cards, approvals, onCancelSession, onDeleteSession, topControls } = props;
+      cards, approvals, onCancelSession, onRetrySession, onDeleteSession, topControls } = props;
     const threadNodes = threadExtras(dig, cards, approvals, sessionRow);
     const agentType = displayAgent(sessionRow && sessionRow.agent_type, d);
     const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
@@ -806,6 +846,7 @@
     const done = status.includes("done") || status.includes("complete");
     const statusText = live ? d.running : cancelled ? d.cancelled : failed ? d.failed : done ? d.done : ((sessionRow && sessionRow.status) || "");
     const onBars = Math.max(0, Math.min(4, autonomy + 1));
+    const autonomyName = d[`auto${autonomy}`] || `L${autonomy}`;
     return html`
       <div className="main">
         <div className="sess-header">
@@ -818,13 +859,15 @@
           </div>
           <div style=${{ flex: 1 }}></div>
           ${topControls}
-          <div className="autonomy-pill">
+          <div className="autonomy-pill" title=${`${d.autonomy}: ${autonomyName}`}>
             <span className="label">${d.autonomy}</span>
             <div className="autonomy-bars">${[0, 1, 2, 3].map((i) => html`<span key=${i} className=${i < onBars ? "on" : ""}></span>`)}</div>
             <span className="lvl">L${autonomy}</span>
+            <span className="name">${autonomyName}</span>
           </div>
           <button className="btn" onClick=${onBriefing}>${d.briefing}</button>
           ${sessionRow && live ? html`<button className="btn danger" onClick=${() => onCancelSession(sessionRow.id)}>${d.cancelSession}</button>` : null}
+          ${sessionRow && failed ? html`<button className="btn primary" onClick=${() => onRetrySession(sessionRow)}>${d.retry}</button>` : null}
           ${sessionRow && !live ? html`<button className="btn" onClick=${() => onDeleteSession(sessionRow.id)}>${d.deleteSession}</button>` : null}
         </div>
 
@@ -1017,7 +1060,10 @@
     const est = estTokens(events || []);
     const contextLimit = contextLimitFor(modelOptions, model, llm && llm.model);
     const pct = Math.min(95, Math.round((est / contextLimit) * 100));
-    const onKey = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runDispatch(); } };
+    const onKey = (e) => {
+      if (e.key === "@") { e.preventDefault(); addAttach(); return; }
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runDispatch(); }
+    };
     return html`<div className="composer">
       <div className="composer-inner">
         ${(events && events.length) ? html`<div className="ctx-meter">
@@ -1403,7 +1449,7 @@
       </div>
       ${view === "workspace" && mTab === "chat" ? html`<div className="m-composer">
         <button className="burger" onClick=${mainProps.composer.addAttach}>📎</button>
-        <div className="box"><input value=${mainProps.composer.task} onChange=${(e) => mainProps.composer.setTask(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter") { e.preventDefault(); mainProps.composer.runDispatch(); } }} placeholder=${d.mComposerPlaceholder} /></div>
+        <div className="box"><input value=${mainProps.composer.task} onChange=${(e) => mainProps.composer.setTask(e.target.value)} onKeyDown=${(e) => { if (e.key === "@") { e.preventDefault(); mainProps.composer.addAttach(); return; } if (e.key === "Enter") { e.preventDefault(); mainProps.composer.runDispatch(); } }} placeholder=${d.mComposerPlaceholder} /></div>
         <button className="btn primary icon" onClick=${mainProps.composer.runDispatch} disabled=${mainProps.composer.dispatching}>↑</button>
       </div>` : null}
       ${view === "workspace" ? html`<div className="m-bottom">
@@ -1611,6 +1657,21 @@
         const res = await api("/api/tasks", { method: "POST", body });
         setTask(""); setAttachments([]);
         setDispatchStatus(sessionRow ? d.continued : d.dispatched);
+        await loadSessions();
+        if (res.session_id) openTimeline(res.session_id);
+      } catch (e) { setDispatchStatus(`${d.dispatchFailed}: ${friendlyError(e, d)}`); }
+      finally { setDispatching(false); }
+    }
+    async function retrySession(row) {
+      if (!row || !row.goal) { setDispatchStatus(d.emptyGoal); return; }
+      const target = row.workspace || workspace;
+      if (!target) { setDispatchStatus(d.dispatchNoWorkspace); setView("settings"); return; }
+      setDispatching(true);
+      const body = { goal: row.goal, workspace: target, source: clientSource(), effort };
+      if (row.model) body.model = row.model;
+      try {
+        const res = await api("/api/tasks", { method: "POST", body });
+        setDispatchStatus(d.dispatched);
         await loadSessions();
         if (res.session_id) openTimeline(res.session_id);
       } catch (e) { setDispatchStatus(`${d.dispatchFailed}: ${friendlyError(e, d)}`); }
@@ -1824,6 +1885,7 @@
       openCalls, toggleCall, expandedSub, toggleSub, onCard, onApproval: decideApproval, openDetail, sessionRow,
       cards: openCards, approvals,
       onCancelSession: cancelSession,
+      onRetrySession: retrySession,
       onDeleteSession: deleteSession,
       topControls: html`<${TopCtrls} d=${d} lang=${lang} dark=${theme === "dark"} onToggleTheme=${() => setTheme(theme === "dark" ? "light" : "dark")} onToggleLang=${() => setLang(lang === "zh" ? "en" : "zh")} onPush=${enablePush} />`,
     };
@@ -1842,6 +1904,7 @@
             rightTab=${rightTab} setRightTab=${setRightTab} onCard=${onCard} onApproval=${decideApproval} openDetail=${openDetail}
             composer=${composerProps} runCompact=${runCompact} compacting=${compacting} compactStatus=${compactStatus} onBriefing=${runBriefing}
             cards=${openCards} approvals=${approvals} onCancelSession=${cancelSession} onDeleteSession=${deleteSession}
+            onRetrySession=${retrySession}
             topControls=${mainProps.topControls} />`
           : html`<div className="main">
               <div className="page-head">

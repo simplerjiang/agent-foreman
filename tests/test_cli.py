@@ -6,9 +6,11 @@ client/server extras installed.
 
 from __future__ import annotations
 
+import os
+
 from typer.testing import CliRunner
 
-from foreman.__main__ import _CLI_CONSOLE, app
+from foreman.__main__ import _CLI_CONSOLE, _apply_webview_capture_safe_flags, app
 
 runner = CliRunner()
 
@@ -29,6 +31,19 @@ def test_app_command_registered():
     # checked below too).
     names = {(c.name or c.callback.__name__) for c in app.registered_commands}
     assert "app" in names
+
+
+def test_webview_capture_safe_flags_are_opt_in(monkeypatch):
+    key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
+    monkeypatch.delenv("FOREMAN_WEBVIEW_CAPTURE_SAFE", raising=False)
+    monkeypatch.delenv(key, raising=False)
+    _apply_webview_capture_safe_flags()
+    assert key not in os.environ
+
+    monkeypatch.setenv("FOREMAN_WEBVIEW_CAPTURE_SAFE", "1")
+    monkeypatch.setenv(key, "--foo --disable-gpu")
+    _apply_webview_capture_safe_flags()
+    assert os.environ[key] == "--foo --disable-gpu --disable-gpu-compositing"
 
 
 def test_help_lists_core_commands():

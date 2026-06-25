@@ -64,6 +64,39 @@ def test_i18n_and_language_sync_wired():
     assert "navWorkspace" in js and "navSettings" in js
 
 
+def test_friendly_error_maps_backend_codes_and_network_errors():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function friendlyError")
+    end = js.index("function jsonObjectError", start)
+    helper = js[start:end]
+    script = helper + r'''
+const d = {
+  emptyGoal: "empty", dispatchNoWorkspace: "workspace", workspaceMissing: "missing",
+  noEnabledAgent: "agent", noDispatcher: "dispatcher", briefNoLlm: "llm",
+  badScopeJson: "scope", cloudNotConfigured: "cloud", cloudUnavailable: "unavailable",
+  sessionBusy: "busy", noContext: "no context", noStore: "no store",
+  sessionNotFound: "session missing", requestDeclined: "declined", networkError: "network",
+};
+for (const [code, expected] of Object.entries({
+  no_context: "no context",
+  no_store: "no store",
+  session_not_found: "session missing",
+  decline: "declined",
+})) {
+  const actual = friendlyError(new Error(code), d);
+  if (actual !== expected || actual === code) {
+    console.error({ code, actual, expected });
+    process.exit(1);
+  }
+}
+if (friendlyError(new TypeError("Failed to fetch"), d) !== "network") {
+  process.exit(2);
+}
+'''
+    subprocess.run(["node", "-e", script], check=True)
+
+
 def test_five_nav_views_present():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
@@ -80,7 +113,11 @@ def test_autonomy_dial_wired_in_page():
     assert "/api/settings/autonomy" in js and "loadAutonomy" in js and "saveAutonomy" in js
     assert "slider-wrap" in js and "autoExec" in js
     assert "自动执行权限" in js
+    assert 'const autonomyName = d[`auto${autonomy}`]' in js
+    assert 'title=${`${d.autonomy}: ${autonomyName}`}' in js
+    assert 'className="name">${autonomyName}' in js
     assert ".slider-wrap" in css and ".slider-knob" in css
+    assert ".autonomy-pill .name" in css
 
 
 def test_workspace_chat_thread_and_right_panel_wired():
@@ -110,6 +147,8 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert "contextLimitFor" in js and "context_length" in js and "max_tokens" in js
     assert "contextLength - outputReserve" in js
     assert ".ctx-meter" in css and ".seg" in css
+    assert 'e.key === "@"' in js and "addAttach(); return;" in js
+    assert 'attachments.map((a) => `@${a.name}`).join(" ")' in js
 
 
 def test_dispatch_model_picker_and_no_explicit_agent():
@@ -170,14 +209,74 @@ if (noVisibleFields !== "") {
     subprocess.run(["node", "-e", script], check=True)
 
 
+def test_first_substantive_line_skips_common_opening_meta_text():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function isOpeningMetaLine")
+    end = js.index("// ---- markdown", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const cases = [
+  ["Let me inspect that first.\nActual fix summary", "Actual fix summary"],
+  ["Sure, I can help.\nUse the retry button after failure", "Use the retry button after failure"],
+  ["好的，我来检查。\n真正的摘要内容", "真正的摘要内容"],
+  ["我们需要先看日志。\n保留第二行", "保留第二行"],
+];
+for (const [input, expected] of cases) {
+  const actual = firstSubstantiveLine(input);
+  if (actual !== expected) {
+    console.error({ input, expected, actual });
+    process.exit(1);
+  }
+}
+'''
+    subprocess.run(["node", "-e", script], check=True)
+
+
+def test_zh_pm_stream_has_local_english_status_fallback():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function cleanPmStreamText")
+    end = js.index("function terminalText", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const d = { pmThinking: "PM 正在思考..." };
+if (displayPmStreamText("Thinking through the plan now", "zh", d) !== d.pmThinking) {
+  process.exit(1);
+}
+if (displayPmStreamText("PM 正在规划", "zh", d) !== "PM 正在规划") {
+  process.exit(2);
+}
+if (displayPmStreamText("Thinking through the plan now", "en", d) !== "Thinking through the plan now") {
+  process.exit(3);
+}
+const codeish = "read src/foreman/server/web/app.js";
+if (displayPmStreamText(codeish, "zh", d) !== codeish) {
+  process.exit(4);
+}
+'''
+    subprocess.run(["node", "-e", script], check=True)
+
+
 def test_session_controls_and_custom_delete_confirm_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     assert "/api/sessions/${encodeURIComponent(id)}/cancel" in js
     assert 'api(`/api/sessions/${encodeURIComponent(id)}`' in js
     assert "session_busy" in js and "!live" in js and "waiting_approval" in js
+    assert "async function retrySession(row)" in js
+    assert "onRetrySession(sessionRow)" in js and "${d.retry}" in js
+    assert "const body = { goal: row.goal, workspace: target, source: clientSource(), effort }" in js
     assert "window.confirm" not in js
     assert "confirmSessionDelete" in js and "confirmDefnDelete" in js
+
+
+def test_sidebar_session_status_uses_i18n_label():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "function sessionStatusLabel" in js
+    assert "sessionStatusLabel(s.status, d)" in js
+    assert "s.status || \"-\", formatTime" not in js
 
 
 def test_pm_settings_exposes_transport_picker():
