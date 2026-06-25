@@ -214,6 +214,18 @@ def context_pack_to_text(pack: dict, *, max_chars: int = DEFAULT_CONTEXT_BUDGET_
                 }
             )
 
+    # Protect-core on the MAIN path (§8B.3): the top-3 constraints + verified_facts must survive
+    # eviction even if EVICT_MEMORY_FIELDS is later changed to include them. Today they survive only
+    # because they're absent from EVICT_MEMORY_FIELDS — this guard makes the guarantee explicit.
+    working = data.setdefault("working_memory", {})
+    for field, pinned in protected_memory.items():
+        current = working.get(field) or []
+        present = {_as_str(_as_dict(it).get("text")) for it in current}
+        for item in pinned:
+            if _as_str(_as_dict(item).get("text")) not in present:
+                current.insert(0, item)
+        working[field] = current
+
     text = _dump(data)
     if len(text) <= max_chars:
         return text
@@ -320,7 +332,9 @@ def _as_int(value: object, default: int) -> int:
 
 
 def _dump(data: dict) -> str:
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    # sort_keys=True → deterministic bytes (same pack → same string), so a ContextPack can sit in the
+    # KV-cache stable prefix without a key-order change silently busting the cache (§8B.4).
+    return json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def _tail_excerpt(text: str, chars: int) -> str:

@@ -32,6 +32,11 @@ from foreman.shared.i18n import normalize as normalize_lang
 
 from ..dispatch import build_session_task
 from ..store.models import ContextSnapshot, MemoryItem, Task
+from .context_budget import (
+    approx_tokens as _ctx_approx_tokens,
+    resolve_window_tokens,
+    should_auto_compact,
+)
 from .context_compression import extract_json_object, memory_items_from_pack
 from .pm_agent import PMPlan, events_to_text
 from .work_mode_context import (
@@ -239,7 +244,23 @@ class DispatchService:
             "continued": continued,
         }
 
-    async def compact(self, session_id: str) -> dict:
+    async def _resolve_window_tokens(self, pm_model: str = "") -> int:
+        """The PM model's effective context window (tokens), resolved once per dispatch. Falls back to
+        the budgeter's default when the brain/llm can't report it (§8B / context_budget)."""
+        llm = getattr(self.pm_agent, "llm", None) if self.pm_agent is not None else None
+        if llm is None:
+            from .context_budget import DEFAULT_CTX_WINDOW_TOKENS, OUTPUT_RESERVE_TOKENS
+            return DEFAULT_CTX_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS
+        return await resolve_window_tokens(llm, pm_model)
+
+    async def _safe_compact(self, session_id: str, window_tokens: int) -> None:
+        """Auto-compact wrapper: a compact failure must never break the live dispatch loop."""
+        try:
+            await self.compact(session_id, window_tokens=window_tokens)
+        except Exception:  # noqa: BLE001 — auto-compaction is best-effort
+            return
+
+    async def compact(self, session_id: str, *, window_tokens: int | None = None) -> dict:
         """Compact a session's event timeline into ``Session.plan`` for later follow-up prompts."""
         if self.store is None or not hasattr(self.store, "get_session"):
             return {"ok": False, "error": "no_store"}
@@ -251,11 +272,15 @@ class DispatchService:
         timeline = events_to_text(rows)
         if not timeline:
             return {"ok": False, "error": "no_context"}
+        if window_tokens is None:
+            window_tokens = await self._resolve_window_tokens("")
         existing = (session.plan or "").strip()
         if self.pm_agent is not None and hasattr(self.pm_agent, "compact"):
             kwargs = {"existing_context": existing}
             if _accepts_keyword(self.pm_agent.compact, "on_stream"):
                 kwargs["on_stream"] = self._pm_stream_sink(session_id, None, "compact")
+            if _accepts_keyword(self.pm_agent.compact, "window_tokens"):
+                kwargs["window_tokens"] = window_tokens
             with trace_context(session_id=session_id, phase="compact"):
                 summary = await self.pm_agent.compact(session.goal, timeline, **kwargs)
         else:
@@ -275,6 +300,8 @@ class DispatchService:
                     "summary": summary,
                     "original_chars": len(timeline),
                     "summary_chars": len(summary),
+                    "before_tokens": _ctx_approx_tokens(timeline),
+                    "after_tokens": _ctx_approx_tokens(summary),
                     "snapshot_id": snapshot_id,
                     "format": "context_pack_v1" if extract_json_object(summary) else "text",
                 },
@@ -560,6 +587,15 @@ class DispatchService:
             if cfg.enabled
         ] or [{"name": agent, "model": "", "effort": effort, "full_access": True}]
         context = self._session_context(session_id)
+        # Resolve the PM model window ONCE per dispatch (§8B.8; never per-loop — it can hit /models).
+        window_tokens = await self._resolve_window_tokens(pm_model)
+        # Pre-plan auto-compact: if the carried session memory alone is already near the window,
+        # compact before planning so the plan call doesn't start over budget.
+        if should_auto_compact(
+            _ctx_approx_tokens(context), 0, 0, window_tokens=window_tokens, run_count=0
+        ):
+            await self._safe_compact(session_id, window_tokens)
+            context = self._session_context(session_id)
         await self._emit_pm_status(
             session_id,
             task_id,
@@ -597,7 +633,8 @@ class DispatchService:
             plan = await self.pm_agent.plan(goal, **plan_kwargs)
         # Telemetry: one work_mode event per dispatch (after plan, so pulls/body_tokens are counted).
         await self._emit_work_mode(
-            session_id, task_id, wm_index, wm_resolved["dropped"], work_mode_resolver
+            session_id, task_id, wm_index, wm_resolved["dropped"], work_mode_resolver,
+            session_memory_tokens=_ctx_approx_tokens(context),
         )
         plan = self._sanitize_pm_plan(plan, pm_model)
         todo_status = _initial_todo_status(plan.todo)
@@ -620,6 +657,22 @@ class DispatchService:
         while True:
             rows = self.store.get_events(session_id)
             timeline = events_to_text(_events_after(rows, reviewed_event_id))
+            # In-loop auto-compact (§8B.8): keep long sessions from blowing the window. Compact when
+            # (session memory + pulled bodies + timeline) crosses the threshold OR every N runs, then
+            # fold history into Session.plan and ADVANCE the review cursor so the compacted events
+            # aren't fed again as "increment" (the rolling-plan ↔ incremental-review reconciliation).
+            if should_auto_compact(
+                _ctx_approx_tokens(context),
+                (work_mode_resolver.body_chars + 3) // 4,
+                _ctx_approx_tokens(timeline),
+                window_tokens=window_tokens,
+                run_count=run_count,
+            ):
+                await self._safe_compact(session_id, window_tokens)
+                context = self._session_context(session_id)
+                rows = self.store.get_events(session_id)
+                reviewed_event_id = _last_event_id(rows)
+                timeline = events_to_text(_events_after(rows, reviewed_event_id))
             review_cutoff_id = _last_event_id(rows)
             review_kwargs = {
                 "run_count": run_count,
@@ -702,10 +755,14 @@ class DispatchService:
         selected: list[dict[str, Any]],
         dropped: list[dict[str, Any]],
         resolver: WorkModeResolver,
+        *,
+        session_memory_tokens: int = 0,
     ) -> None:
         """Emit one ``work_mode`` telemetry event per dispatch (§8/§16): what was selected/dropped
-        plus the L0 index & pulled-body token accounting. Tokens are ~4 char/token approximations
-        (P1b swaps in a real tokenizer). Metadata only — no bodies on the bus."""
+        plus the L0 index & pulled-body token accounting and per-lane tokens (§8B.8). Tokens are ~4
+        char/token approximations (P1b swaps in a real tokenizer). Metadata only — no bodies."""
+        index_tokens = approx_tokens(render_l0_index(selected))
+        body_tokens = (resolver.body_chars + 3) // 4
         await self._persist_then_publish(
             make_event(
                 "work_mode",
@@ -721,10 +778,15 @@ class DispatchService:
                     "dropped": [
                         {"kind": e.get("kind", ""), "name": e.get("name", "")} for e in dropped
                     ],
-                    "index_tokens": approx_tokens(render_l0_index(selected)),
+                    "index_tokens": index_tokens,
                     "pulls": resolver.pulls,
-                    "body_tokens": (resolver.body_chars + 3) // 4,
+                    "body_tokens": body_tokens,
                     "kinds": sorted({e.get("kind", "") for e in selected}),
+                    "per_lane_tokens": {
+                        "l0_index": index_tokens,
+                        "l1_bodies": body_tokens,
+                        "session_memory": session_memory_tokens,
+                    },
                 },
             )
         )

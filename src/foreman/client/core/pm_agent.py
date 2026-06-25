@@ -15,6 +15,7 @@ from typing import Any
 from foreman.shared.i18n import language_directive, normalize as normalize_lang
 from foreman.shared.llm import LLMClient, Message
 
+from .context_budget import LANE_BUDGET_RATIO, char_budget
 from .context_compression import context_pack_to_text, parse_context_pack
 from .work_mode_context import work_mode_prompt_block
 from ..tools.loop import PMToolLoop, build_tool_prompt_context
@@ -65,6 +66,13 @@ COMPACT_SYSTEM = (
     "the given timeline only. Do not invent completion. Separate verified facts from agent claims. "
     "Keep source_refs like event:<id> whenever available. Preserve user constraints, decisions, "
     "files, commands, tests, failures, approvals/rejections, open questions, risks, and next steps. "
+    "Work modes (skills / code standards / QA rubrics): do NOT copy their verbatim bodies into the "
+    "pack. Record a pulled work-mode body as one retrieved_evidence item with source_ref "
+    "'workmode:<kind>:<name>@v<ver>' plus a one-line why-pulled/how-applied note — the body can be "
+    "re-pulled, never store it in full. DO keep the decisions and constraints that resulted from "
+    "applying a standard/skill (e.g. 'because of standard Y we chose X') in decisions/constraints — "
+    "those must survive compaction; the standard's verbatim text need not. Record qa_rubric verdicts "
+    "as verified_facts/tests with a source_ref. "
     "If evidence is omitted because of budget, list it in omitted. Respond with ONLY JSON matching "
     "this shape: "
     '{"version": 1, "session_state": {"goal_quote": str, "summary": str, "status": str, '
@@ -622,6 +630,7 @@ class PMAgent:
         existing_context: str = "",
         pm_model: str = "",
         on_stream=None,
+        window_tokens: int = 0,
     ) -> str:
         system = COMPACT_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_compact_prompt(goal, timeline, existing_context=existing_context)
@@ -634,7 +643,14 @@ class PMAgent:
         pack = parse_context_pack(
             raw, goal=goal, timeline=timeline, existing_context=existing_context
         )
-        return context_pack_to_text(pack, max_chars=MAX_COMPACT_CHARS)
+        # Lane-5 (session memory) char budget from the model window, capped by the legacy constant
+        # (the "window ratio + cap" rule, §8B / task 2). window_tokens=0 → use the cap directly.
+        max_chars = MAX_COMPACT_CHARS
+        if window_tokens > 0:
+            max_chars = min(
+                char_budget(window_tokens, LANE_BUDGET_RATIO["session_memory"]), MAX_COMPACT_CHARS
+            )
+        return context_pack_to_text(pack, max_chars=max_chars)
 
 
 __all__ = [
