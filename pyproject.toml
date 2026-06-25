@@ -37,7 +37,7 @@ client = [
     "cryptography>=42.0",  # optional at-rest encryption of definition bodies (DESIGN §765, T6.2)
     "playwright>=1.40",
 ]
-# Team server: relay + REST/WS + display-cache store + Web Push.
+# Team server: relay + REST/WS + TTL notification queue + Web Push.
 server = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",

@@ -8,6 +8,7 @@ key never returned, unavailable when no manager is injected).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 
 from fastapi.testclient import TestClient
@@ -16,7 +17,15 @@ from foreman.client.core.cloud import CloudManager, normalize_relay_url
 from foreman.client.relay import RelayConnector
 from foreman.server.app import create_app
 from foreman.shared.config import load_config
-from foreman.shared.protocol import KIND_CACHE_SYNC, KIND_HELLO_ACK, Envelope
+from foreman.shared.protocol import (
+    KIND_ACK,
+    KIND_COMMAND,
+    KIND_HELLO_ACK,
+    KIND_SNAPSHOT,
+    KIND_SNAPSHOT_REQ,
+    Envelope,
+    attach_mac,
+)
 
 
 class FakeStore:
@@ -121,9 +130,7 @@ def test_cloud_manager_connect_and_disconnect():
     assert off["error"] == ""
 
 
-def test_cloud_manager_pushes_cache_sync():
-    """A live cloud link must push display-cache snapshots so the relay can serve the phone view —
-    not just hello/heartbeat (codex review finding)."""
+def test_cloud_manager_does_not_push_periodic_cache_sync():
     store = FakeStore()
     store.set_setting("cloud.url", "wss://relay.example/relay")
     cfg = load_config()
@@ -131,15 +138,48 @@ def test_cloud_manager_pushes_cache_sync():
     conns: list = []
     mgr = CloudManager(store=store, cfg=cfg, connector_factory=_factory(ack_ok=True, conns=conns))
     assert mgr.connect(wait=3.0)["connected"] is True
-    deadline = time.monotonic() + 2.0
-    sent: list[str] = []
-    while time.monotonic() < deadline:
-        if conns and any(KIND_CACHE_SYNC in s for s in conns[0].sent):
-            sent = list(conns[0].sent)
-            break
-        time.sleep(0.05)
+    time.sleep(0.2)
     mgr.disconnect()
-    assert any(KIND_CACHE_SYNC in s and "sessions" in s for s in sent)
+    assert conns and all("cache_sync" not in s for s in conns[0].sent)
+
+
+async def test_cloud_manager_snapshot_request_is_on_demand():
+    cfg = load_config()
+    mgr = CloudManager(store=FakeStore(), cfg=cfg)
+    reply = await mgr._on_frame(Envelope(kind=KIND_SNAPSHOT_REQ, id="corr"))
+    assert reply.kind == KIND_SNAPSHOT
+    assert reply.id == "corr"
+    assert reply.payload == {"sessions": [], "cards": []}
+
+
+async def test_cloud_manager_command_disabled_by_default():
+    cfg = load_config()
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    mgr = CloudManager(store=FakeStore(), cfg=cfg)
+    env = Envelope(kind=KIND_COMMAND, id="cmd1", seq=1, nonce="n", ts=1.0)
+    attach_mac(env, hashlib.sha256(b"fk_live_test").hexdigest())
+    reply = await mgr._on_frame(env)
+    assert reply.kind == KIND_ACK
+    assert reply.payload == {"ok": False, "error": "disabled"}
+
+
+async def test_cloud_manager_replay_check_happens_before_idempotency_cache():
+    cfg = load_config()
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    key_hash = hashlib.sha256(b"fk_live_test").hexdigest()
+    mgr = CloudManager(store=FakeStore(), cfg=cfg)
+
+    first = Envelope(kind=KIND_COMMAND, id="cmd1", seq=2, nonce="n2", ts=2.0)
+    attach_mac(first, key_hash)
+    assert (await mgr._on_frame(first)).payload == {"ok": False, "error": "disabled"}
+
+    replay = Envelope(kind=KIND_COMMAND, id="cmd1", seq=1, nonce="n1", ts=1.0)
+    attach_mac(replay, key_hash)
+    assert (await mgr._on_frame(replay)).payload == {"ok": False, "error": "replay"}
+
+    retry = Envelope(kind=KIND_COMMAND, id="cmd1", seq=3, nonce="n3", ts=3.0)
+    attach_mac(retry, key_hash)
+    assert (await mgr._on_frame(retry)).payload == {"ok": False, "error": "disabled"}
 
 
 def test_cloud_manager_clearing_config_stops_connection():
