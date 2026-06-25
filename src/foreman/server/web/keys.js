@@ -19,6 +19,9 @@ const I18N = {
     badLogin: '用户名或密码错误。', minted: '已生成密钥', error: '出错',
     yourDevices: '你的设备', devicesHint: '用 access key 连上来的本地进程；只显示你自己的。',
     noDevices: '还没有设备。', online: '在线', offline: '离线',
+    relayAddr: 'Relay 接入地址', copy: '复制', copied: '已复制', copyFail: '复制失败，请手动选中',
+    relayHint: '把这串填进本地 App 的「云端连接 → 云端地址」，再配上下面生成的接入密钥即可连上。',
+    labelRequired: '请先填写标签（机器名）再生成。',
   },
   en: {
     accessKeys: 'Access keys', logout: 'Log out', username: 'Username', password: 'Password',
@@ -35,6 +38,9 @@ const I18N = {
     yourDevices: 'Your machines', devicesHint:
       'Local processes connected with an access key; you only see your own.',
     noDevices: 'No machines yet.', online: 'online', offline: 'offline',
+    relayAddr: 'Relay address', copy: 'Copy', copied: 'Copied', copyFail: 'Copy failed — select it manually',
+    relayHint: 'Paste this into your local app under Cloud connection → Cloud URL, with an access key below.',
+    labelRequired: 'Enter a label (machine name) first.',
   },
 };
 
@@ -54,6 +60,15 @@ function applyLang() {
 
 function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// The relay endpoint a local process dials (DESIGN §8.5): always wss://<this-host>/relay. Derived
+// from the page's own origin so it's correct for the prod relay AND any self-hosted box — and
+// downgrades to ws:// only on a plain-http relay (dev). This is exactly what the user pastes into
+// the local app's「云端连接 → 云端地址」.
+function relayUrl() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${location.host}/relay`;
 }
 
 function showStatus(el, msg, bad) {
@@ -207,9 +222,17 @@ function showKey(plain) {
 
 async function mintKey(ev) {
   ev.preventDefault();
+  const label = $('key-label').value.trim();
+  const status = $('mint-status');
+  if (!label) {
+    // A label is required so every key is traceable to a machine — no anonymous "(no label)" keys.
+    showStatus(status, t('labelRequired'), true);
+    $('key-label').focus();
+    return;
+  }
   const days = parseInt($('key-expiry').value, 10);
   const body = {
-    label: $('key-label').value.trim(),
+    label,
     expires_in_days: Number.isFinite(days) && days > 0 ? days : 0,
   };
   const r = await fetch('/api/keys', {
@@ -217,7 +240,6 @@ async function mintKey(ev) {
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   });
-  const status = $('mint-status');
   if (!r.ok) {
     const detail = (await r.json().catch(() => ({}))).detail || t('error');
     showStatus(status, `${r.status}: ${detail}`, true);
@@ -238,6 +260,21 @@ async function doRevoke(id) {
 
 async function init() {
   applyLang();
+
+  // Show the relay dial-in address and let the user copy it with one click.
+  const relay = relayUrl();
+  $('relay-url').textContent = relay;
+  $('relay-copy').addEventListener('click', async () => {
+    const btn = $('relay-copy');
+    try {
+      await navigator.clipboard.writeText(relay);
+      btn.textContent = t('copied');
+    } catch (e) {
+      btn.textContent = t('copyFail');
+    }
+    setTimeout(() => { btn.textContent = t('copy'); }, 1600);
+  });
+
   $('lang-toggle').addEventListener('click', () => {
     lang = lang === 'zh' ? 'en' : 'zh';
     localStorage.setItem('foreman.lang', lang);

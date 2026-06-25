@@ -1572,10 +1572,15 @@
     const loadDefinitions = useCallback(async () => { try { const path = defnFilter ? `/api/definitions?kind=${encodeURIComponent(defnFilter)}` : "/api/definitions"; setDefinitions(await api(path) || []); } catch (e) { setDefinitions([]); } }, [defnFilter]);
     const loadLlm = useCallback(async () => { try { const next = { ...(await api("/api/settings/llm")), api_key: "" }; setLlm(next); await loadPmModels(next); } catch (e) { /* server mode */ } }, [loadPmModels]);
     const loadAutonomy = useCallback(async () => { try { setAutonomyState((await api("/api/settings/autonomy")).level); } catch (e) { /* keep */ } }, []);
-    const loadCloud = useCallback(async () => {
+    const loadCloud = useCallback(async (opts = {}) => {
       try {
         const c = await api("/api/settings/cloud");
-        setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected });
+        // The 8s background poll must NOT clobber the user's in-progress typing: it only refreshes
+        // live status (connected / access_key_set), keeping the url + access_key fields as edited.
+        // A full reset happens only on explicit loads (boot / after save / connect / clear).
+        setCloud((prev) => opts.background
+          ? { ...prev, access_key_set: !!c.access_key_set, connected: !!c.connected }
+          : { url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected });
         setCloudAvailable(c.available !== false);
       } catch (e) { setCloudAvailable(false); }
     }, []);
@@ -1607,7 +1612,7 @@
 
     // polling for cards/approvals/sessions
     useEffect(() => {
-      const id = setInterval(() => { loadSessions(); loadCards(); loadApprovals(); if (cloudAvailable) loadCloud(); }, 8000);
+      const id = setInterval(() => { loadSessions(); loadCards(); loadApprovals(); if (cloudAvailable) loadCloud({ background: true }); }, 8000);
       return () => clearInterval(id);
     }, [loadSessions, loadCards, loadApprovals, loadCloud, cloudAvailable]);
 
