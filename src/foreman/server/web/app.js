@@ -969,7 +969,7 @@
               <button className=${`rp-tab${rightTab === "term" ? " on" : ""}`} onClick=${() => setRightTab("term")}>${d.tabTerminal}</button>
             </div>
             <div className="rp-body">
-              ${rightTab === "todo" ? html`<${TodoPanel} d=${d} todos=${dig.todos} onAddStep=${composer.onAddStep} />` : null}
+              ${rightTab === "todo" ? html`<${TodoPanel} key=${sessionRow ? sessionRow.id : "none"} d=${d} todos=${dig.todos} onAddStep=${composer.onAddStep} />` : null}
               ${rightTab === "sub" ? html`<${SubPanel} d=${d} subagents=${dig.subagents} expandedSub=${expandedSub} toggleSub=${toggleSub} />` : null}
               ${rightTab === "term" ? html`<${TermPanel} d=${d} terminal=${dig.terminal} agentType=${agentType} sessionRow=${sessionRow} />` : null}
             </div>

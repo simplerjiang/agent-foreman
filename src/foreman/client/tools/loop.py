@@ -122,14 +122,23 @@ class PMToolLoop:
             )
             calls = response["tool_calls"]
             raw = response["text"]
+            native = bool(response.get("native"))
             obj = _extract_json_object(raw)
             if not calls:
                 calls = _calls_from_json(obj)
-            # Terminal plan: a native submit_plan tool call (preferred — args ARE the plan, no regex)
-            # OR the legacy final_plan JSON in text (back-compat until the regex path is removed in
-            # T3.1). Both validate through the same schema, so PMPlan semantics are unchanged.
+            # Terminal plan: a native submit_plan tool call — args ARE the plan, no regex (A1).
+            # The legacy final_plan JSON in text terminates ONLY on a non-native transport (one with
+            # no native tool calls). On the production ws/A1 path the plan must arrive as a
+            # submit_plan call, never as repeatable free text, so #39's repetition can't sneak back
+            # in through the text terminator (design §0.5-1; §11.1-B). Both shapes validate through
+            # the same schema, so PMPlan semantics are unchanged.
             plan_args = _submit_plan_args(calls)
-            if plan_args is None and obj and str(obj.get("type") or "").strip() == "final_plan":
+            if (
+                plan_args is None
+                and not native
+                and obj
+                and str(obj.get("type") or "").strip() == "final_plan"
+            ):
                 plan_args = obj
             if plan_args is not None:
                 try:
@@ -249,6 +258,7 @@ class PMToolLoop:
                     ToolCall(id=call.id, name=call.name, arguments=call.arguments)
                     for call in native.tool_calls
                 ],
+                "native": True,
             }
         if self.on_stream is not None and _accepts_keyword(self.llm.complete, "on_stream"):
             text = await self.llm.complete(
@@ -256,7 +266,7 @@ class PMToolLoop:
             )
         else:
             text = await self.llm.complete(messages, json_mode=True, model=model)
-        return {"text": text, "tool_calls": []}
+        return {"text": text, "tool_calls": [], "native": False}
 
     async def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.on_tool_event is None:
@@ -329,14 +339,17 @@ def validate_final_plan(
     effort = str(obj.get("effort") or fallback_plan.get("effort") or "").strip().lower()
     if effort not in {"", "low", "medium", "high"}:
         raise ValueError("final_plan_bad_effort")
+    # Re-enforce the §5 schema bounds locally: the ws backend isn't guaranteed to enforce the
+    # tool input_schema, so clamp the structural limits (maxLength/maxItems) here rather than trust
+    # the upstream — these bounds are what replace a raw token ceiling (design §5).
     return {
-        "summary": str(obj.get("summary") or "").strip(),
+        "summary": str(obj.get("summary") or "").strip()[:600],
         "agent": agent,
-        "model": str(obj.get("model") or "").strip(),
+        "model": str(obj.get("model") or "").strip()[:80],
         "effort": effort,
-        "instruction": instruction,
-        "todo": _str_list(obj.get("todo")),
-        "deliberation": _str_list(obj.get("deliberation")),
+        "instruction": instruction[:6000],
+        "todo": _str_list(obj.get("todo"), max_items=12, max_len=200),
+        "deliberation": _str_list(obj.get("deliberation"), max_items=8, max_len=300),
         "ready": bool(obj.get("ready", True)),
     }
 
@@ -409,11 +422,11 @@ def _verifies_search_leads(result: ToolResult) -> bool:
     }
 
 
-def _str_list(value: object) -> list[str]:
+def _str_list(value: object, *, max_items: int = 12, max_len: int = 200) -> list[str]:
     if isinstance(value, str):
         items = [value]
     elif isinstance(value, list):
         items = value
     else:
         items = []
-    return [str(item).strip() for item in items if str(item or "").strip()][:12]
+    return [str(item).strip()[:max_len] for item in items if str(item or "").strip()][:max_items]
