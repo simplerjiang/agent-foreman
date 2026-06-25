@@ -1567,7 +1567,7 @@
       ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
         threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${mainProps.openCalls} toggleCall=${mainProps.toggleCall} onCard=${mainProps.onCard} onApproval=${mainProps.onApproval} openDetail=${mainProps.openDetail} />`)}
     </div></div>`;
-    if (mTab === "todo") return html`<div style=${{ padding: 13 }}><${TodoPanel} d=${d} todos=${dig.todos} onAddStep=${mainProps.composer.onAddStep} /></div>`;
+    if (mTab === "todo") return html`<div style=${{ padding: 13 }}><${TodoPanel} key=${mainProps.sessionRow ? mainProps.sessionRow.id : "none"} d=${d} todos=${dig.todos} onAddStep=${mainProps.composer.onAddStep} /></div>`;
     if (mTab === "sub") return html`<div style=${{ padding: 13 }}><${SubPanel} d=${d} subagents=${dig.subagents} expandedSub=${mainProps.expandedSub} toggleSub=${mainProps.toggleSub} /></div>`;
     return html`<div style=${{ padding: 13 }}><${TermPanel} d=${d} terminal=${dig.terminal} agentType=${displayAgent(mainProps.sessionRow && mainProps.sessionRow.agent_type, d)} sessionRow=${mainProps.sessionRow} /></div>`;
   }
