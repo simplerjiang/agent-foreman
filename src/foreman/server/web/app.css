@@ -442,7 +442,6 @@ a { color: var(--accent-text); }
 .term-full { background: var(--term-bg); border: 1px solid var(--border2); border-radius: 10px; overflow: hidden; font-family: var(--mono); font-size: 12px; min-height: 100%; }
 .term-full .bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
 .term-full .bar .lbl { margin-left: 6px; color: #8a8578; font-size: 11px; }
-.term-dotr { width: 9px; height: 9px; border-radius: 50%; }
 .term-full .lines { padding: 12px 13px; color: var(--term-text); line-height: 1.85; white-space: pre-wrap; word-break: break-word; }
 .term-full .cmd-src { color: #c7a3e8; }
 .term-full .cmd-err { color: #ff8a80; }
