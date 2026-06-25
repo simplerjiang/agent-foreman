@@ -63,6 +63,27 @@ class _DebugBody(BaseModel):
     llm_trace: bool
 
 
+# ── Workflow control flow (P5 §10): independent of /api/tasks ──────────────────────────────────────
+class _WorkflowStartBody(BaseModel):
+    session_id: str
+    workflow: str  # active workflow definition name
+    version: int | None = None
+
+
+class _WorkflowStepBody(BaseModel):
+    run_id: str
+
+
+class _WorkflowSubmitBody(BaseModel):
+    run_id: str
+    qa_passed: bool | None = None  # filled by the QA channel; plain advance leaves it None
+
+
+class _WorkflowResumeBody(BaseModel):
+    run_id: str
+    approved: bool
+
+
 class _LLMSettingsBody(BaseModel):
     """PM 大脑 settings (DESIGN §15): switch the brain's provider/model/base_url at runtime. The api
     key is accepted for local save but never returned. Empty field = clear that override/key."""
@@ -447,6 +468,8 @@ def create_app(
     definitions: Any = None,
     cache: Any = None,
     cloud: Any = None,
+    workflow_engine: Any = None,
+    workflow_qa: Any = None,
 ) -> FastAPI:
     # In-memory log tail for the admin console's 日志管理 view (process-wide singleton). Re-attached
     # on startup because uvicorn applies its own logging dictConfig AFTER the app is built, which
@@ -479,6 +502,8 @@ def create_app(
     app.state.definitions = definitions
     app.state.cache = cache
     app.state.cloud = cloud
+    app.state.workflow_engine = workflow_engine
+    app.state.workflow_qa = workflow_qa
     app.state.started_at = time.time()  # for the admin overview's uptime stat
     app.state.log_buffer = get_log_buffer()
     # One limiter per app instance, shared across requests (team-mode brute-force speed bump, §8.2).
@@ -1457,6 +1482,69 @@ def create_app(
             "no_store": 503,
         }.get(res.get("error", ""), 400)
         raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    # ── Workflow control flow (P5 §10): explicit start → step → submit → resume, independent of
+    # /api/tasks. Delegates to the injected client-side WorkflowEngine / WorkflowQAReviewer; app.py
+    # stays shared-only and 秘方 never leave the local process (§8.3/§14). No engine → 503.
+    _WF_ERR_STATUS = {
+        "no_workflow": 404, "bad_workflow": 400, "no_run": 404, "run_finished": 409,
+        "blocked_on_gate": 409, "not_blocked": 409, "not_in_qa": 409, "no_qa_rubric": 422,
+        "no_workspace": 400, "no_workflow_engine": 503, "no_runner": 503, "no_store": 503,
+    }
+
+    def _wf_engine() -> Any:
+        eng = getattr(app.state, "workflow_engine", None)
+        if eng is None:
+            raise HTTPException(status_code=503, detail="no workflow engine")
+        return eng
+
+    def _wf_result(res: dict) -> dict:
+        if res.get("ok"):
+            return res
+        raise HTTPException(
+            status_code=_WF_ERR_STATUS.get(res.get("error", ""), 400),
+            detail=res.get("error", "decline"),
+        )
+
+    @app.post("/api/workflows/start")
+    async def workflow_start(body: _WorkflowStartBody) -> dict:
+        return _wf_result(await _wf_engine().start(
+            body.session_id, body.workflow, version=body.version
+        ))
+
+    @app.post("/api/workflows/begin")
+    async def workflow_begin(body: _WorkflowStepBody) -> dict:
+        """Run the current step. With a dispatcher (runner) wired, lightweight-dispatches the step
+        (inject material → one coding instruction → launch); otherwise injects only (begin_step)."""
+        eng = _wf_engine()
+        disp = getattr(app.state, "dispatcher", None)
+        if disp is not None and getattr(disp, "runner", None) is not None and hasattr(
+            disp, "launch_workflow_step"
+        ):
+            return _wf_result(await disp.launch_workflow_step(body.run_id))
+        return _wf_result(eng.begin_step(body.run_id))  # begin_step is SYNC (inject-only fallback)
+
+    @app.post("/api/workflows/submit")
+    async def workflow_submit(body: _WorkflowSubmitBody) -> dict:
+        return _wf_result(await _wf_engine().submit_step(body.run_id, qa_passed=body.qa_passed))
+
+    @app.post("/api/workflows/resume")
+    async def workflow_resume(body: _WorkflowResumeBody) -> dict:
+        return _wf_result(await _wf_engine().resume_after_gate(body.run_id, body.approved))
+
+    @app.post("/api/workflows/qa")
+    async def workflow_qa_route(body: _WorkflowStepBody) -> dict:
+        qa = getattr(app.state, "workflow_qa", None)
+        if qa is None:
+            raise HTTPException(status_code=503, detail="no workflow qa")
+        return _wf_result(await qa.review_step(body.run_id))
+
+    @app.get("/api/workflows/{run_id}")
+    async def workflow_view(run_id: str) -> dict:
+        view = _wf_engine().step_view(run_id)  # step_view is SYNC
+        if view is None:
+            raise HTTPException(status_code=404, detail="no run")
+        return view
 
     @app.get("/api/overview")
     async def overview() -> list[dict]:

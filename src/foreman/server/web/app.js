@@ -54,6 +54,7 @@
       history: "历史", copy: "复制", push: "推送到手机", coversSession: "覆盖会话",
       briefGenerating: "生成中...", briefFailed: "简报生成失败", briefNoLlm: "PM 大脑未配置。请检查 .env 和设置页。", copied: "已复制",
       playbook: "工作方式", kindAll: "全部", kindWorkflows: "工作流", kindSkills: "技能", kindStandards: "代码规范", kindQa: "验收标准",
+      startWorkflow: "启动", workflowRun: "工作流运行", wfStep: "步骤", wfStatus: "状态", wfBegin: "执行本步", wfSubmit: "推进", wfApprove: "批准", wfReject: "拒绝", wfRefresh: "刷新", wfNeedSession: "请先在工作台选中一个会话，再启动工作流。", wfStarted: "工作流已启动",
       kindWorkflow: "工作流", kindSkill: "技能", kindStandard: "代码规范", kindQaOne: "验收标准",
       importBtn: "导入", exportBtn: "导出", newBtn: "新建",
       noDefinitions: "暂无工作方式。", on: "启用中", off: "未启用",
@@ -150,6 +151,7 @@
       history: "History", copy: "Copy", push: "Push", coversSession: "covers session",
       briefGenerating: "Generating...", briefFailed: "Briefing failed", briefNoLlm: "PM brain is not configured. Check .env and Settings.", copied: "Copied",
       playbook: "Playbook", kindAll: "All", kindWorkflows: "Workflows", kindSkills: "Skills", kindStandards: "Standards", kindQa: "QA",
+      startWorkflow: "Start", workflowRun: "Workflow run", wfStep: "Step", wfStatus: "Status", wfBegin: "Run step", wfSubmit: "Advance", wfApprove: "Approve", wfReject: "Reject", wfRefresh: "Refresh", wfNeedSession: "Pick a session in the workbench first, then start the workflow.", wfStarted: "Workflow started",
       kindWorkflow: "Workflow", kindSkill: "Skill", kindStandard: "Standard", kindQaOne: "QA rubric",
       importBtn: "Import", exportBtn: "Export", newBtn: "New",
       noDefinitions: "No playbook items yet.", on: "active", off: "off",
@@ -1167,7 +1169,7 @@
   // ===========================================================================
   // Playbook
   // ===========================================================================
-  function Playbook({ d, lang, definitions, filter, setFilter, onNew, onEdit, onActivate, onDelete, onExport, onImportClick, fileRef, onImport }) {
+  function Playbook({ d, lang, definitions, filter, setFilter, onNew, onEdit, onActivate, onDelete, onExport, onImportClick, fileRef, onImport, onStartWorkflow }) {
     const pills = [["", "kindAll"], ["workflow", "kindWorkflows"], ["skill", "kindSkills"], ["code_standard", "kindStandards"], ["qa_rubric", "kindQa"]];
     return html`<div className="page-mid">
       <div className="pb-toolbar">
@@ -1189,6 +1191,7 @@
           <div className="foot">
             <span className="scope">${(() => { try { const o = JSON.parse(row.scope_json || "{}"); return Object.keys(o).length ? JSON.stringify(o) : (lang === "zh" ? "全局" : "global"); } catch (e) { return lang === "zh" ? "全局" : "global"; } })()}</span>
             <span className="acts">
+              ${row.kind === "workflow" && row.is_active ? html`<span className="act" onClick=${() => onStartWorkflow(row)}>▶ ${d.startWorkflow}</span>` : null}
               ${!row.is_active ? html`<span className="act" onClick=${() => onActivate(row.id)}>${d.activate}</span>` : null}
               <span onClick=${() => onEdit(row)}>${d.edit}</span>
               <span className="del" onClick=${() => onDelete(row.id)}>${d.del}</span>
@@ -1537,6 +1540,7 @@
     const [defnOpen, setDefnOpen] = useState(false);
     const [defnDraft, setDefnDraft] = useState(null);
     const [confirmDefnDelete, setConfirmDefnDelete] = useState(null);
+    const [wfRun, setWfRun] = useState(null);  // P5: current workflow run view (null = closed)
     const [confirmSessionDelete, setConfirmSessionDelete] = useState(null);
     const [openCalls, setOpenCalls] = useState({});
     const [expandedSub, setExpandedSub] = useState(null);
@@ -1764,6 +1768,24 @@
       } catch (e) { notifyError(e); }
     }
     async function activateDefinition(id) { try { await api(`/api/definitions/${encodeURIComponent(id)}/activate`, { method: "POST" }); await loadDefinitions(); } catch (e) { notifyError(e); } }
+    // ── P5: workflow run control ───────────────────────────────────────────────────────────────
+    async function startWorkflowRun(row) {
+      if (!selectedSession) { toast(d.wfNeedSession, "error"); return; }
+      try {
+        const res = await api("/api/workflows/start", { method: "POST", body: { session_id: selectedSession, workflow: row.name } });
+        setWfRun({ ...res, view: res.step || null }); toast(d.wfStarted, "success");
+      } catch (e) { notifyError(e); }
+    }
+    async function refreshWfRun() {
+      if (!wfRun || !wfRun.run_id) return;
+      try { setWfRun({ ...wfRun, view: await api(`/api/workflows/${encodeURIComponent(wfRun.run_id)}`) }); }
+      catch (e) { /* run finished/cleared → leave last view */ }
+    }
+    async function wfAction(path, body) {
+      if (!wfRun || !wfRun.run_id) return;
+      try { await api(path, { method: "POST", body: { run_id: wfRun.run_id, ...(body || {}) } }); await refreshWfRun(); }
+      catch (e) { notifyError(e); }
+    }
     async function confirmDeleteDefinition() {
       const id = confirmDefnDelete && confirmDefnDelete.id;
       if (!id) return;
@@ -1891,7 +1913,7 @@
     };
     const decisionsProps = { d, lang, cards: openCards, approvals, onCard, onApproval: decideApproval, openDetail, onGoSession: openTimeline };
     const briefingsProps = { d, lang, reports, onCopy, toast };
-    const playbookProps = { d, lang, definitions, filter: defnFilter, setFilter: setDefnFilter, onNew: () => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }, onEdit: (row) => { let desc = ""; try { desc = (JSON.parse(row.metadata_json || "{}") || {}).description || ""; } catch (e) {} setDefnDraft({ ...row, description: desc, activate: !!row.is_active }); setDefnOpen(true); }, onActivate: activateDefinition, onDelete: deleteDefinition, onExport: exportDefinitions, onImportClick: () => fileRef.current && fileRef.current.click(), fileRef, onImport: importDefinitions };
+    const playbookProps = { d, lang, definitions, filter: defnFilter, setFilter: setDefnFilter, onNew: () => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }, onEdit: (row) => { let desc = ""; try { desc = (JSON.parse(row.metadata_json || "{}") || {}).description || ""; } catch (e) {} setDefnDraft({ ...row, description: desc, activate: !!row.is_active }); setDefnOpen(true); }, onActivate: activateDefinition, onDelete: deleteDefinition, onExport: exportDefinitions, onImportClick: () => fileRef.current && fileRef.current.click(), fileRef, onImport: importDefinitions, onStartWorkflow: startWorkflowRun };
 
     const launchSteps = { engine: status.online, agents: agentsLoaded, data: booted, pct: booted ? 100 : (status.online ? 60 : 25), version: status.version };
 
@@ -1948,6 +1970,19 @@
       </${Modal}>` : null}
       ${confirmDefnDelete ? html`<${Modal} title=${d.confirmDeleteTitle} onClose=${() => setConfirmDefnDelete(null)} footer=${[html`<button key="c" className="btn" onClick=${() => setConfirmDefnDelete(null)}>${d.cancel}</button>`, html`<button key="d" className="btn danger" onClick=${confirmDeleteDefinition}>${d.del}</button>`]}>
         <div>${d.confirmDelete}</div>
+      </${Modal}>` : null}
+      ${wfRun ? html`<${Modal} title=${`${d.workflowRun}: ${wfRun.workflow || ""}`} onClose=${() => setWfRun(null)} footer=${[html`<button key="r" className="btn" onClick=${refreshWfRun}>⟲ ${d.wfRefresh}</button>`, html`<button key="x" className="btn" onClick=${() => setWfRun(null)}>${d.cancel}</button>`]}>
+        ${(() => { const v = wfRun.view || {}; const run = v.run || {}; const status = run.step_status || "pending"; const blocked = status === "blocked"; return html`<div style=${{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+          <div><b>${d.wfStep}</b> ${(typeof run.step_index === "number" ? run.step_index + 1 : 1)} / ${wfRun.total_steps || "?"} — ${v.name || ""}</div>
+          <div><b>${d.wfStatus}</b> <span className=${`tag ${blocked ? "amber" : (status === "passed" ? "green" : "plain")}`}>${status}</span></div>
+          ${v.instruction ? html`<div className="desc"><${MD} text=${v.instruction} className="markdown-compact" /></div>` : null}
+          ${(v.missing && v.missing.length) ? html`<div className="alert warn">⚠ missing: ${v.missing.join(", ")}</div>` : null}
+          <div style=${{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            ${blocked
+              ? html`<button className="btn primary" onClick=${() => wfAction("/api/workflows/resume", { approved: true })}>${d.wfApprove}</button><button className="btn danger" onClick=${() => wfAction("/api/workflows/resume", { approved: false })}>${d.wfReject}</button>`
+              : html`<button className="btn" onClick=${() => wfAction("/api/workflows/begin")}>${d.wfBegin}</button><button className="btn primary" onClick=${() => wfAction("/api/workflows/submit")}>${d.wfSubmit}</button>`}
+          </div>
+        </div>`; })()}
       </${Modal}>` : null}
       ${confirmSessionDelete ? html`<${Modal} title=${d.confirmDeleteTitle} onClose=${() => setConfirmSessionDelete(null)} footer=${[html`<button key="c" className="btn" onClick=${() => setConfirmSessionDelete(null)}>${d.cancel}</button>`, html`<button key="d" className="btn danger" onClick=${confirmDeleteSession}>${d.deleteSession}</button>`]}>
         <div>${d.confirmSessionDelete}</div>

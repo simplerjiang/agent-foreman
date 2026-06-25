@@ -230,6 +230,19 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # qa_rubric, §11.2). Injected like the Gate/CardService so app.py stays shared-only; definitions
     # live ONLY in the local store and never reach the shared server (§8.3 / §14).
     definitions = DefinitionService(store, bus=bus, cipher=cipher)
+    # Workflow control flow (P5 §10): wire the (previously zero-instantiated) WorkflowEngine + QA
+    # reviewer into the runtime so a user can explicitly start a workflow recipe and step through it
+    # with the SAME P2 injector (task/step isolation) and the QA gate. The lightweight per-step
+    # dispatch lives on the dispatcher (it owns runner/store), so hand it the engine.
+    from .core.qa_review import WorkflowQAReviewer
+    from .core.reviewer import Reviewer
+    from .core.workflow_engine import WorkflowEngine
+
+    workflow_engine = WorkflowEngine(store, cards=cards, bus=bus, injector=injector)
+    workflow_qa = WorkflowQAReviewer(
+        workflow_engine, Reviewer(_llm(), language=language), store=store, bus=bus
+    )
+    dispatcher.workflow_engine = workflow_engine
     # Cloud relay connection (DESIGN §8.5): the Settings → 云端连接 card links this machine to the
     # team 总机 so the phone can watch + approve from afar. Opt-in (a button) — never auto-dials.
     from .core.cloud import CloudManager
@@ -238,6 +251,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     app = create_app(
         cfg, store, bus, hooks=hooks, gate=gate, cards=cards,
         dispatcher=dispatcher, briefings=briefings, definitions=definitions, cloud=cloud,
+        workflow_engine=workflow_engine, workflow_qa=workflow_qa,
     )
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))

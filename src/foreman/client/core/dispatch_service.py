@@ -106,6 +106,7 @@ class DispatchService:
         clock=None,
         injector=None,
         embedder=None,
+        workflow_engine=None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -120,6 +121,9 @@ class DispatchService:
         # Optional async embedder (P3): enables semantic work-mode retrieval when work_mode.
         # semantic_search is on. None or off → pure lexical (default).
         self._embedder = embedder
+        # Optional WorkflowEngine (P5 §10) for lightweight per-step dispatch (set after construction
+        # in local_app since the two are built together). None → no workflow step dispatch.
+        self.workflow_engine = workflow_engine
         self.language_getter = language_getter
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
@@ -581,6 +585,41 @@ class DispatchService:
             handles.append(handle)
         await asyncio.gather(*(self.runner.wait(handle) for handle in handles))
         self._mark_session_unless_terminal(session_id, "done")
+
+    async def launch_workflow_step(
+        self, run_id: str, *, agent: str = "", model: str = "", effort: str = ""
+    ) -> dict:
+        """Lightweight workflow step dispatch (P5 §10): begin_step (which injects the step's material
+        via the P2 injector) → turn the step goal + L0 index into ONE coding instruction → launch →
+        wait. Deliberately NOT the full PM plan→review loop (avoids ×steps cost). The caller advances
+        with submit_step afterwards; this method does NOT clear (the engine clears at run end)."""
+        eng = self.workflow_engine
+        if eng is None:
+            return {"ok": False, "error": "no_workflow_engine"}
+        if self.runner is None:
+            return {"ok": False, "error": "no_runner"}
+        begun = eng.begin_step(run_id)  # SYNC; injects step material into the workspace
+        if not begun.get("ok"):
+            return begun
+        step = begun["step"]
+        run = step.get("run") or {}
+        session_id = run.get("session_id") or ""
+        session = self.store.get_session(session_id) if (
+            self.store is not None and session_id and hasattr(self.store, "get_session")
+        ) else None
+        workspace = (getattr(session, "workspace", "") or "") if session else ""
+        if not workspace:
+            return {"ok": False, "error": "no_workspace"}
+        resolved_agent = (
+            agent or (getattr(session, "agent_type", "") if session else "") or "claude-code"
+        )
+        language = self._sync_pm_language()
+        instruction = _workflow_step_instruction(step, language=language)
+        handle = await self.runner.launch(
+            resolved_agent, instruction, Path(workspace), session_id, model=model, effort=effort
+        )
+        await self.runner.wait(handle)
+        return {"ok": True, "run_id": run_id, "step_index": run.get("step_index", 0)}
 
     async def _pm_launch(
         self,
@@ -1204,6 +1243,39 @@ def _empty_followup_text(language: str) -> str:
     if normalize_lang(language) == "en":
         return "PM review asked to continue but did not provide a follow-up prompt."
     return "PM 复查要求继续，但没有给出后续指令。"
+
+
+def _workflow_step_instruction(step: dict, *, language: str = "") -> str:
+    """One coding instruction for a workflow step (P5 §10): step name + instruction + the L0 INDEX of
+    its skills/standards (names only — bodies are injected as workspace files for progressive
+    disclosure, NEVER inlined here). Keeps the per-step prompt small (no ×bodies blowup)."""
+    en = normalize_lang(language) == "en"
+    name = str(step.get("name") or "")
+    instr = str(step.get("instruction") or "")
+    parts: list[str] = []
+    head = f"# Workflow step: {name}" if name else "# Workflow step"
+    parts.append(f"{head}\n{instr}" if instr else head)
+    skills = [str(s.get("name")) for s in (step.get("skills") or []) if s.get("name")]
+    standards = [str(s.get("name")) for s in (step.get("standards") or []) if s.get("name")]
+    if skills or standards:
+        refs = []
+        if skills:
+            refs.append(("skills: " if en else "技能：") + ", ".join(skills))
+        if standards:
+            refs.append(("code standards: " if en else "代码规范：") + ", ".join(standards))
+        note = (
+            "Applicable work modes for this step (full text is injected into the workspace files — "
+            "read them as needed; do NOT expect the bodies inline here):\n"
+            if en else
+            "本步可用工作方式（正文已注入工作区文件，需要时查阅；此处不内联正文）：\n"
+        )
+        parts.append(note + "\n".join(refs))
+    guard = (
+        "Do not push, merge, or deploy unless the user explicitly requested it."
+        if en else "除非用户明确要求，不要推送、合并或部署。"
+    )
+    parts.append(guard)
+    return "\n\n".join(p for p in parts if p)
 
 
 def _fallback_instruction(goal: str, context: str = "", language: str = "") -> str:
