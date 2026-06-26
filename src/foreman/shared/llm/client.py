@@ -165,7 +165,7 @@ class LLMClient:
         return mode
 
     def _request_timeout(self) -> float:
-        timeout = self.timeout
+        timeout: float = float(self.timeout or 0)
         if self._settings_resolver is not None:
             try:
                 ov = self._settings_resolver() or {}
@@ -174,9 +174,9 @@ class LLMClient:
             raw = ov.get("request_timeout_s")
             if raw not in (None, ""):
                 try:
-                    timeout = float(raw)
+                    timeout = float(str(raw).strip())
                 except (TypeError, ValueError):
-                    timeout = self.timeout
+                    timeout = float(self.timeout or 0)
         return max(float(timeout or 0), 1.0)
 
     def _reasoning_effort(self) -> str:

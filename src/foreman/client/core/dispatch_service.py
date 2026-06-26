@@ -22,6 +22,7 @@ import inspect
 import json
 import re
 import uuid
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any
 
@@ -104,7 +105,7 @@ class DispatchService:
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
         self._session_tasks: dict[str, set[asyncio.Task]] = {}
-        self._session_queue_tails: dict[str, asyncio.Future] = {}
+        self._session_queue_tails: dict[str, asyncio.Future[None]] = {}
         self._session_queue_locks: dict[str, asyncio.Lock] = {}
         self._stop_after_reply_counts: dict[str, int] = {}
 
@@ -421,7 +422,7 @@ class DispatchService:
 
     async def _reserve_queue_wait(
         self, session_id: str
-    ) -> tuple[list[asyncio.Future] | None, asyncio.Future | None]:
+    ) -> tuple[list[Awaitable[Any]] | None, asyncio.Future[None] | None]:
         """Reserve this follow-up's place in a per-session queue chain.
 
         A queued PM follow-up should start as soon as the previous reply boundary completes, not
@@ -439,15 +440,17 @@ class DispatchService:
             previous_tail = self._session_queue_tails.get(session_id)
             if previous_tail is not None and previous_tail.done():
                 previous_tail = None
-            wait_for_tasks = [previous_tail] if previous_tail is not None else live_tasks
-            tail = asyncio.get_running_loop().create_future()
+            wait_for_tasks: list[Awaitable[Any]] = (
+                [previous_tail] if previous_tail is not None else list(live_tasks)
+            )
+            tail: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             self._session_queue_tails[session_id] = tail
             return wait_for_tasks, tail
 
     def _attach_queue_tail(
-        self, session_id: str, tail: asyncio.Future, launch_task: asyncio.Task
+        self, session_id: str, tail: asyncio.Future[None], launch_task: asyncio.Task[Any]
     ) -> None:
-        def release_tail(_done: asyncio.Task) -> None:
+        def release_tail(_done: asyncio.Task[Any]) -> None:
             if not tail.done():
                 tail.set_result(None)
             if self._session_queue_tails.get(session_id) is tail:
@@ -552,7 +555,7 @@ class DispatchService:
         pm_model: str,
         effort: str,
         *,
-        wait_for_tasks: list[asyncio.Task] | None = None,
+        wait_for_tasks: list[Awaitable[Any]] | None = None,
     ) -> None:
         try:
             if wait_for_tasks:
