@@ -165,7 +165,10 @@ def test_pm_brain_timeout_setting_wired():
     js = c.get("/app.js").text
     assert "request_timeout_s" in js
     assert "Planning timeout (s)" in js and "规划超时（秒）" in js
-    assert "default 300 seconds" in js or "默认 300 秒" in js
+    assert "30–3600 seconds" in js and "30–3600 秒" in js
+    start = js.index("async function saveLlm")
+    end = js.index("async function clearLlmKey", start)
+    assert "request_timeout_s: Number(llm.request_timeout_s) || 300" in js[start:end]
 
 
 def test_remote_control_ui_wires_process_target_and_approve_endpoint():
