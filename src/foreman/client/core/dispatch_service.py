@@ -48,6 +48,7 @@ MAX_CONTEXT_CHARS = 12000
 PM_AUTO_AGENT = "pm-agent"
 LIVE_SESSION_STATUSES = {"planning", "running", "active", "waiting_approval", "queued"}
 TERMINAL_SESSION_STATUSES = {"failed", "cancelled", "stalled"}
+CONTINUE_MODES = {"queue", "interrupt"}
 AGENT_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code": ("claude-code", "claude code", "claude"),
     "codex": ("codex",),
@@ -103,6 +104,7 @@ class DispatchService:
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
         self._session_tasks: dict[str, set[asyncio.Task]] = {}
+        self._stop_after_reply: set[str] = set()
 
     # ── create a session (下发任务, §5.1) ─────────────────────────────────────────────────────
     async def create(
@@ -115,6 +117,7 @@ class DispatchService:
         effort: str | None = None,
         session_id: str | None = None,
         source: str | None = None,
+        continue_mode: str | None = None,
     ) -> dict:
         """Validate + persist a new Root Session/Task; emit ``dispatch``; optionally launch.
 
@@ -132,6 +135,18 @@ class DispatchService:
         existing_session = self._get_existing_session(session_id)
         if session_id and existing_session is None:
             return {"ok": False, "error": "session_not_found"}
+        mode = self._continue_mode(continue_mode)
+        live_tasks = (
+            [task for task in self._session_tasks.get(existing_session.id, ()) if not task.done()]
+            if existing_session is not None
+            else []
+        )
+        if existing_session is not None and live_tasks and mode == "interrupt":
+            self._stop_after_reply.discard(existing_session.id)
+            await self._interrupt_active_work(existing_session.id)
+            live_tasks = []
+        elif existing_session is not None and live_tasks and mode == "queue":
+            self._stop_after_reply.add(existing_session.id)
         pm_enabled = self.pm_agent is not None and self.runner is not None
         self._sync_pm_language()
         explicit_agent = bool((agent or "").strip())
@@ -182,6 +197,7 @@ class DispatchService:
             self._resolve_source(source),
             continued,
             direct_agents,
+            mode,
         )
         if direct_agents:
             launch_task = asyncio.create_task(
@@ -206,6 +222,7 @@ class DispatchService:
                     resolved_agent,
                     resolved_model,
                     resolved_effort,
+                    wait_for_tasks=live_tasks if mode == "queue" else None,
                 )
             )
             self._track_launch_task(session.id, launch_task)
@@ -232,6 +249,7 @@ class DispatchService:
             "pm_agent": pm_enabled,
             "direct_agents": direct_agents,
             "continued": continued,
+            "continue_mode": mode,
         }
 
     async def compact(self, session_id: str) -> dict:
@@ -368,6 +386,16 @@ class DispatchService:
         value = (source or "").strip().lower()
         return value if value in VALID_SOURCES else "api"
 
+    def _continue_mode(self, value: str | None) -> str:
+        mode = (value or "queue").strip().lower()
+        return mode if mode in CONTINUE_MODES else "queue"
+
+    def _consume_stop_after_reply(self, session_id: str) -> bool:
+        if session_id not in self._stop_after_reply:
+            return False
+        self._stop_after_reply.discard(session_id)
+        return True
+
     def _current_language(self) -> str:
         if self.language_getter is None:
             return normalize_lang(getattr(self.pm_agent, "language", ""))
@@ -432,6 +460,7 @@ class DispatchService:
         source: str = "api",
         continued: bool = False,
         direct_agents: list[str] | None = None,
+        continue_mode: str = "queue",
     ) -> None:
         event = make_event(
             "dispatch",
@@ -448,6 +477,7 @@ class DispatchService:
                 "execution_deferred": deferred,
                 "pm_agent": pm_enabled,
                 "continued": continued,
+                "continue_mode": continue_mode,
                 "direct_agents": direct_agents or [],
             },
         )
@@ -462,8 +492,13 @@ class DispatchService:
         agent: str,
         pm_model: str,
         effort: str,
+        *,
+        wait_for_tasks: list[asyncio.Task] | None = None,
     ) -> None:
         try:
+            if wait_for_tasks:
+                await asyncio.gather(*wait_for_tasks, return_exceptions=True)
+                self._mark_session_unless_terminal(session_id, "running")
             await self._pm_launch(session_id, task_id, goal, workspace, agent, pm_model, effort)
         except Exception as exc:  # noqa: BLE001 — PM failure must be visible, not crash the server
             status = "stalled" if isinstance(exc, LLMStalledError) else "failed"
@@ -602,6 +637,9 @@ class DispatchService:
         review_notes: list[dict[str, Any]] = []
         review_state_key = f"{session_id}:{task_id}:pm-review"
         await self.runner.wait(handle)
+        if self._consume_stop_after_reply(session_id):
+            self._mark_session_unless_terminal(session_id, "running")
+            return
         while True:
             rows = self.store.get_events(session_id)
             timeline = events_to_text(_events_after(rows, reviewed_event_id))
@@ -636,6 +674,9 @@ class DispatchService:
                     "follow_up": review.follow_up,
                 }
             )
+            if self._consume_stop_after_reply(session_id):
+                self._mark_session_unless_terminal(session_id, "running")
+                return
             if review.done:
                 self._mark_session_unless_terminal(session_id, "done")
                 return
@@ -657,6 +698,9 @@ class DispatchService:
             self._mark_session_unless_terminal(session_id, "running")
             run_count += 1
             await self.runner.wait(handle)
+            if self._consume_stop_after_reply(session_id):
+                self._mark_session_unless_terminal(session_id, "running")
+                return
 
     def _sanitize_pm_plan(self, plan: PMPlan, pm_model: str) -> PMPlan:
         if not pm_model or plan.model != pm_model:
@@ -846,6 +890,36 @@ class DispatchService:
 
     def _session_has_live_task(self, session_id: str) -> bool:
         return any(not task.done() for task in self._session_tasks.get(session_id, ()))
+
+    async def _interrupt_active_work(self, session_id: str) -> int:
+        """Best-effort guided follow-up: stop the in-flight PM task and current CLI turn.
+
+        The new prompt remains in the same Foreman session, so `_session_context()` gives the next
+        PM plan the compacted prior context plus the just-appended user message, while the old
+        thinking/run is no longer allowed to continue writing concurrent state.
+        """
+        aborted = self._cancel_session_tasks(session_id)
+        runner = self.runner
+        if runner is not None and hasattr(runner, "handle_for_session"):
+            handle = runner.handle_for_session(session_id)
+            if handle is not None and hasattr(runner, "interrupt"):
+                try:
+                    await runner.interrupt(handle)
+                except Exception:  # noqa: BLE001 - interrupt is best-effort; new turn still proceeds
+                    pass
+        await self._persist_then_publish(
+            make_event(
+                "notification",
+                "dispatch",
+                session_id,
+                payload={
+                    "kind": "interrupted",
+                    "msg": "用户选择引导：已中止当前思考/执行，开始处理新的提示词。",
+                    "aborted_tasks": aborted,
+                },
+            )
+        )
+        return aborted
 
     def _cancel_session_tasks(self, session_id: str) -> int:
         """Cancel the session's in-flight launch tasks (e.g. a running PM ws plan call).

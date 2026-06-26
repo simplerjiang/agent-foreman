@@ -156,6 +156,16 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert ".ctx-meter" in css and ".seg" in css
     assert 'e.key === "@"' in js and "addAttach(); return;" in js
     assert 'attachments.map((a) => `@${a.name}`).join(" ")' in js
+    assert "continue_mode" in js and 'runDispatch("interrupt")' in js and 'runDispatch("queue")' in js
+    assert "guideHelp" in js and "queueHelp" in js and "busy-chip" in css
+
+
+def test_pm_brain_timeout_setting_wired():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "request_timeout_s" in js
+    assert "Planning timeout (s)" in js and "规划超时（秒）" in js
+    assert "default 300 seconds" in js or "默认 300 秒" in js
 
 
 def test_remote_control_ui_wires_process_target_and_approve_endpoint():
