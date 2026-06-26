@@ -91,7 +91,7 @@ class LLMCfg(BaseModel):
     provider: str = "openai"  # "openai" | "anthropic"
     base_url: str = "https://api.openai.com/v1"
     model: str = "gpt-4o"
-    request_timeout_s: int = 60
+    request_timeout_s: int = 300
     max_tokens: int = 2048
     # Optional PM-brain reasoning effort for providers that require an explicit knob.
     # Empty means "do not send a provider-specific parameter".

@@ -164,6 +164,21 @@ class LLMClient:
                 mode = override
         return mode
 
+    def _request_timeout(self) -> float:
+        timeout = self.timeout
+        if self._settings_resolver is not None:
+            try:
+                ov = self._settings_resolver() or {}
+            except Exception:  # noqa: BLE001 - a broken resolver must never break defaults
+                ov = {}
+            raw = ov.get("request_timeout_s")
+            if raw not in (None, ""):
+                try:
+                    timeout = float(raw)
+                except (TypeError, ValueError):
+                    timeout = self.timeout
+        return max(float(timeout or 0), 1.0)
+
     def _reasoning_effort(self) -> str:
         effort = self.reasoning_effort
         if self._settings_resolver is not None:
@@ -279,6 +294,7 @@ class LLMClient:
             f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key()}"},
             json=payload,
+            timeout=self._request_timeout(),
         )
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
@@ -310,6 +326,7 @@ class LLMClient:
             f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key()}"},
             json=payload,
+            timeout=self._request_timeout(),
         )
         r.raise_for_status()
         msg = r.json()["choices"][0]["message"]
@@ -340,6 +357,7 @@ class LLMClient:
             f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key()}"},
             json=payload,
+            timeout=self._request_timeout(),
         ) as r:
             r.raise_for_status()
             async for line in r.aiter_lines():
@@ -372,6 +390,7 @@ class LLMClient:
             f"{base_url}/messages",
             headers={"x-api-key": self._api_key(), "anthropic-version": "2023-06-01"},
             json=payload,
+            timeout=self._request_timeout(),
         )
         r.raise_for_status()
         blocks = r.json().get("content", [])
@@ -396,6 +415,7 @@ class LLMClient:
             f"{base_url}/messages",
             headers={"x-api-key": self._api_key(), "anthropic-version": "2023-06-01"},
             json=payload,
+            timeout=self._request_timeout(),
         )
         r.raise_for_status()
         text_parts: list[str] = []
@@ -519,13 +539,13 @@ class LLMClient:
         last_tool_key = ""
         reasoning_streamed = False
         response_id = ""
-        wall_timeout = max(float(self.timeout or 0), 0.001)
+        wall_timeout = max(self._request_timeout(), 0.001)
         stall_timeout = min(30.0, max(15.0, wall_timeout / 2))
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         last_progress_at = started_at
         repeat_watch = _StructuredRepeatWatch() if json_mode else None
-        async with self._ws_connect(_ws_url(base_url), headers, self.timeout) as ws:
+        async with self._ws_connect(_ws_url(base_url), headers, wall_timeout) as ws:
             await ws.send(json.dumps(request))
             try:
                 while True:

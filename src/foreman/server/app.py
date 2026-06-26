@@ -73,6 +73,7 @@ class _LLMSettingsBody(BaseModel):
     model: str | None = None
     base_url: str | None = None
     transport: str | None = None  # "http" | "ws"
+    request_timeout_s: int | None = None
     reasoning_effort: str | None = None
     api_key: str | None = None
 
@@ -196,6 +197,7 @@ class _DispatchBody(BaseModel):
     effort: str = ""  # reasoning level / 速度档位: low | medium | high ("" = the CLI default)
     session_id: str = ""  # when set, append a new task to an existing conversation
     source: str = ""  # desktop | phone | api
+    continue_mode: str = "queue"  # queue | interrupt
 
 
 class _RemoteDispatchBody(BaseModel):
@@ -208,6 +210,7 @@ class _RemoteDispatchBody(BaseModel):
     model: str = ""
     effort: str = ""
     session_id: str = ""
+    continue_mode: str = "queue"
 
 
 class _RemoteApproveBody(BaseModel):
@@ -866,18 +869,26 @@ def create_app(
         model = cfg.llm.model
         base_url = cfg.llm.base_url
         transport = cfg.llm.transport
+        request_timeout_s = int(cfg.llm.request_timeout_s)
         reasoning_effort = getattr(cfg.llm, "reasoning_effort", "")
         if store is not None and hasattr(store, "get_setting"):
             provider = store.get_setting("llm.provider") or provider
             model = store.get_setting("llm.model") or model
             base_url = store.get_setting("llm.base_url") or base_url
             transport = store.get_setting("llm.transport") or transport
+            raw_timeout = store.get_setting("llm.request_timeout_s")
+            if raw_timeout not in (None, ""):
+                try:
+                    request_timeout_s = int(raw_timeout)
+                except (TypeError, ValueError):
+                    request_timeout_s = int(cfg.llm.request_timeout_s)
             reasoning_effort = store.get_setting("llm.reasoning_effort") or reasoning_effort
         return {
             "provider": provider,
             "model": model,
             "base_url": base_url,
             "transport": transport,
+            "request_timeout_s": max(30, min(3600, request_timeout_s)),
             "reasoning_effort": reasoning_effort,
             "api_key": cfg.secrets.llm_api_key,
         }
@@ -892,6 +903,8 @@ def create_app(
             settings["base_url"] = body.base_url.strip()
         if body.transport is not None and body.transport.strip():
             settings["transport"] = body.transport.strip().lower()
+        if body.request_timeout_s is not None:
+            settings["request_timeout_s"] = max(30, min(3600, int(body.request_timeout_s)))
         if body.reasoning_effort is not None:
             settings["reasoning_effort"] = body.reasoning_effort.strip().lower()
         if body.api_key is not None and body.api_key.strip():
@@ -1276,6 +1289,7 @@ def create_app(
             "model": settings["model"],
             "base_url": settings["base_url"],
             "transport": settings["transport"],
+            "request_timeout_s": settings["request_timeout_s"],
             "reasoning_effort": settings["reasoning_effort"],
             "api_key_set": bool((cfg.secrets.llm_api_key or "").strip()),
         }
@@ -1302,6 +1316,10 @@ def create_app(
             store.set_setting("llm.transport", transport)
             if transport:
                 cfg.llm.transport = transport
+        if body.request_timeout_s is not None:
+            timeout = max(30, min(3600, int(body.request_timeout_s)))
+            store.set_setting("llm.request_timeout_s", str(timeout))
+            cfg.llm.request_timeout_s = timeout
         if body.reasoning_effort is not None:
             reasoning_effort = body.reasoning_effort.strip().lower()
             if reasoning_effort not in _VALID_LLM_REASONING_EFFORTS:
@@ -1512,6 +1530,7 @@ def create_app(
             effort=body.effort or None,
             session_id=body.session_id or None,
             source=body.source or None,
+            continue_mode=body.continue_mode,
         )
         if res.get("ok"):
             return res
@@ -1761,6 +1780,7 @@ def create_app(
             "model": body.model,
             "effort": body.effort,
             "session_id": body.session_id,
+            "continue_mode": body.continue_mode,
         }
         return await _route_remote_command(
             account.id, body.process_id, command_envelope("dispatch", payload)

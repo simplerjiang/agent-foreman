@@ -299,6 +299,105 @@ async def test_continue_pm_agent_session_stays_with_pm(tmp_path):
     assert dispatches[-1]["pm_agent"] is True
 
 
+async def test_continue_pm_agent_queue_waits_for_current_launch(tmp_path):
+    store = _store(tmp_path)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    launches: list[str] = []
+
+    class FakePM:
+        language = "zh"
+        max_runs = 1
+
+        async def plan(self, goal, **_kw):
+            return PMPlan(agent="codex", model="", effort="", instruction=f"do {goal}")
+
+        async def review(self, goal, *_args, **_kw):
+            assert goal != "first", "queued follow-up should stop the old PM loop after reply"
+            return PMReview(done=True, summary="done")
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            launches.append(instruction)
+            if len(launches) == 1:
+                first_started.set()
+            return object()
+
+        async def wait(self, handle):
+            if len(launches) == 1:
+                await release_first.wait()
+            return None
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    first = await svc.create("first")
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = await svc.create("second", session_id=first["session_id"], continue_mode="queue")
+    await asyncio.sleep(0.02)
+
+    assert second["continue_mode"] == "queue"
+    assert launches == ["do first"]
+    release_first.set()
+    await asyncio.gather(*list(svc._tasks), return_exceptions=True)
+    assert launches == ["do first", "do second"]
+
+
+async def test_continue_pm_agent_interrupt_cancels_current_launch(tmp_path):
+    store = _store(tmp_path)
+    first_started = asyncio.Event()
+    interrupted = asyncio.Event()
+    launches: list[str] = []
+
+    class FakePM:
+        language = "zh"
+        max_runs = 1
+
+        async def plan(self, goal, **_kw):
+            return PMPlan(agent="codex", model="", effort="", instruction=f"do {goal}")
+
+        async def review(self, *_args, **_kw):
+            return PMReview(done=True, summary="done")
+
+    class FakeRunner:
+        def handle_for_session(self, session_id):
+            return object()
+
+        async def interrupt(self, handle):
+            interrupted.set()
+
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            launches.append(instruction)
+            first_started.set()
+            return object()
+
+        async def wait(self, handle):
+            if len(launches) == 1:
+                await asyncio.Event().wait()
+            return None
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    first = await svc.create("first")
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    old_tasks = list(svc._session_tasks.get(first["session_id"], ()))
+    second = await svc.create("second", session_id=first["session_id"], continue_mode="interrupt")
+    await asyncio.gather(*old_tasks, return_exceptions=True)
+    await asyncio.gather(*list(svc._tasks), return_exceptions=True)
+
+    assert second["continue_mode"] == "interrupt"
+    assert interrupted.is_set()
+    assert all(t.cancelled() for t in old_tasks)
+    assert "do second" in launches
+
+
 async def test_continue_missing_session_errors(tmp_path):
     svc = DispatchService(_cfg(workspaces=[WorkspaceCfg(path="D:/proj")]), _store(tmp_path))
     res = await svc.create("follow up", session_id="missing")

@@ -17,7 +17,7 @@ llm:
   # to ws(s) for the upgrade automatically.
   transport: http
   # api_key comes from .env (FOREMAN_LLM_API_KEY)
-  request_timeout_s: 60
+  request_timeout_s: 300              # PM planning wall-clock timeout; configurable in Settings
   max_tokens: 2048
 
 store:

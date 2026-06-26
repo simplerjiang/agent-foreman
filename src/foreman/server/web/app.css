@@ -393,6 +393,9 @@ a { color: var(--accent-text); }
 .seg .opt { padding: 3px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; color: var(--muted); cursor: pointer; border: none; background: transparent; }
 .seg .opt.on { font-weight: 700; background: var(--surface); color: var(--accent-text); box-shadow: var(--shadow-sm); }
 .composer-send-hint { font-size: 11px; color: var(--faint); font-family: var(--mono); }
+.busy-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
+.busy-chip .spin, .btn .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: fdspin 0.7s linear infinite; }
+.btn .spin { margin-right: 6px; }
 .composer .ws-select { border: 1px solid var(--border); background: var(--surface2); border-radius: 7px; padding: 5px 10px; font-size: 12px; font-weight: 600; max-width: 260px; color: var(--text); outline: none; }
 .composer .model-pick { max-width: 150px; font-family: var(--mono); font-weight: 500; }
 

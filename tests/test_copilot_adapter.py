@@ -40,6 +40,15 @@ def test_build_session_cmd_includes_model_effort_session_and_workspace(tmp_path)
     assert "--allow-all-paths" not in cmd
 
 
+def test_build_session_cmd_canonicalizes_foreman_hex_session_id(tmp_path):
+    adapter = CopilotCliAdapter(_cfg())
+    cmd = adapter._build_session_cmd(
+        "do Z", "063c35b000344cbe9820a9f525efc32c", tmp_path, "", ""
+    )
+
+    assert cmd[cmd.index("--session-id") + 1] == "063c35b0-0034-4cbe-9820-a9f525efc32c"
+
+
 def test_full_access_false_omits_permission_args(tmp_path):
     adapter = CopilotCliAdapter(_cfg(full_access=False))
     cmd = adapter._build_session_cmd("do Z", "sess-1", tmp_path, "", "")

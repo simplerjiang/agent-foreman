@@ -9,6 +9,7 @@ flags are intentionally workspace-scoped: full_access never implies --allow-all-
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -57,10 +58,11 @@ class CopilotCliAdapter(SubprocessCliAdapter):
         model: str = "",
         effort: str = "",
     ) -> list[str]:
+        copilot_session_id = _uuid_session_id(session_id)
         return [
             self.cfg.command,
             "-p", instruction,
-            "--session-id", session_id,
+            "--session-id", copilot_session_id,
             "--no-auto-update",
             "--output-format", "json",
             *self._model_args(model),
@@ -172,3 +174,20 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                 handle.session_id,
                 payload={"result": "", "returncode": 0},
             )
+
+
+def _uuid_session_id(value: str) -> str:
+    """Copilot CLI accepts --session-id only as a UUID.
+
+    Foreman session ids are 32 hex chars. They are valid UUID bits, but Copilot rejects the raw
+    compact form with "The value is not a valid UUID". Canonicalize when possible so a new Copilot
+    session can be created deterministically from the Foreman session id; leave already-native
+    non-UUID values untouched so future Copilot resume identifiers still pass through.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return text
+    try:
+        return str(uuid.UUID(text))
+    except ValueError:
+        return text
