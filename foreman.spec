@@ -18,6 +18,33 @@ ROOT = Path(globals().get("SPECPATH", ".")).resolve()
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
+
+def _conda_runtime_dlls():
+    """Bundle native DLLs required by conda-backed Python builds.
+
+    The Windows build may run from a venv whose ``sys.base_prefix`` points at a Conda
+    installation. PyInstaller can analyze the ``.pyd`` extensions but, unless Conda's
+    ``Library/bin`` is on PATH at build time, it may miss runtime DLLs such as
+    ``ffi.dll``. The resulting single-file exe then crashes during import of modules
+    like ``ctypes`` before Foreman can start. Add the known Conda runtime DLLs
+    explicitly so builds are reproducible even from a plain PowerShell session.
+    """
+    library_bin = Path(sys.base_prefix) / "Library" / "bin"
+    if not library_bin.exists():
+        return []
+
+    dll_names = (
+        "ffi.dll",
+        "sqlite3.dll",
+        "libssl-3-x64.dll",
+        "libcrypto-3-x64.dll",
+        "liblzma.dll",
+        "LIBBZ2.dll",
+        "libmpdec-4.dll",
+        "libexpat.dll",
+    )
+    return [(str(library_bin / name), ".") for name in dll_names if (library_bin / name).exists()]
+
 # Data the code locates at runtime via __file__ / importlib.resources — must keep the same
 # package-relative layout inside the bundle:
 #   server/app.py:  WEB_DIR = Path(__file__).parent / "web"
@@ -42,7 +69,7 @@ hiddenimports = (
 a = Analysis(
     ["packaging/foreman_app.py"],
     pathex=[str(SRC)],
-    binaries=[],
+    binaries=_conda_runtime_dlls(),
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
