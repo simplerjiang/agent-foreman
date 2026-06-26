@@ -486,10 +486,11 @@ def test_submit_plan_tool_spec_constrains_agent_enum():
     schema = spec["input_schema"]
     assert schema["additionalProperties"] is False
     assert schema["properties"]["agent"]["enum"] == ["codex"]
-    # Empty/None enabled set falls back to both supported agents.
+    # Empty/None enabled set falls back to all supported planning agents.
     assert submit_plan_tool_spec([])["input_schema"]["properties"]["agent"]["enum"] == [
         "claude-code",
         "codex",
+        "copilot-cli",
     ]
 
 
