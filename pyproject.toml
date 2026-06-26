@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-foreman"
-version = "0.1.0"
+version = "1.0.0"
 description = "A self-hosted PM agent that supervises local coding agents (Claude Code / Codex) and reports to your phone."
 readme = "README.md"
 requires-python = ">=3.11"

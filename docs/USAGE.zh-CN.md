@@ -146,7 +146,7 @@ server:
 | 公网地址 | 你的 HTTPS 域名（Cloudflare 隧道 → 服务器 `:8787`；实际值放进 gitignore 的 `ServerInfo.txt`，不入库） |
 | 模式 | **team（团队模式）** —— `/api/auth/login` 在、`/api/sessions` 返回 503（总机无本地库，正常） |
 | 服务 | systemd `foreman.service`，用户 `foreman`，目录 `/opt/foreman/app` |
-| 健康检查 | `/health` → `{"ok":true,"version":"0.1.0",...}` |
+| 健康检查 | `/health` → `{"ok":true,"version":"1.0.0",...}` |
 
 两个要注意的点：
 

@@ -13,4 +13,4 @@ still sit at the top level pending the move under `client/` (T0.2), and the serv
 is consolidated under `server/` (T0.3).
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
