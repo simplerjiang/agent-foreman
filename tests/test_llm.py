@@ -592,6 +592,115 @@ async def test_ws_tool_complete_sends_tools_choice_and_parses_function_call():
     assert out.tool_calls[0].arguments == {"city": "Paris"}
 
 
+async def test_ws_tool_complete_waits_for_arguments_after_output_item_done():
+    sent: list = []
+    frames = [
+        json.dumps(
+            {
+                "type": "response.output_item.done",
+                "item_id": "1",
+                "output_index": 1,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "",
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "response.function_call_arguments.done",
+                "output_index": 1,
+                "arguments": '{"city":"Paris"}',
+            }
+        ),
+    ]
+    c, _ = _ws_client(frames, sent)
+    out = await c.tool_complete(
+        [Message("user", "weather")],
+        tools=[{"name": "get_weather", "description": "Get weather"}],
+    )
+    await c.aclose()
+
+    assert len(out.tool_calls) == 1
+    assert out.tool_calls[0].arguments == {"city": "Paris"}
+
+
+async def test_ws_tool_complete_accepts_arguments_before_output_item_done():
+    sent: list = []
+    frames = [
+        json.dumps(
+            {
+                "type": "response.function_call_arguments.done",
+                "output_index": 1,
+                "arguments": '{"city":"Paris"}',
+            }
+        ),
+        json.dumps(
+            {
+                "type": "response.output_item.done",
+                "item_id": "1",
+                "output_index": 1,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                },
+            }
+        ),
+    ]
+    c, _ = _ws_client(frames, sent)
+    out = await c.tool_complete(
+        [Message("user", "weather")],
+        tools=[{"name": "get_weather", "description": "Get weather"}],
+    )
+    await c.aclose()
+
+    assert len(out.tool_calls) == 1
+    assert out.tool_calls[0].arguments == {"city": "Paris"}
+
+
+async def test_ws_tool_complete_ignores_empty_or_invalid_arguments_for_early_break():
+    sent: list = []
+    frames = [
+        json.dumps(
+            {
+                "type": "response.output_item.done",
+                "output_index": 1,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "",
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "response.function_call_arguments.done",
+                "output_index": 1,
+                "arguments": "{bad json",
+            }
+        ),
+        json.dumps({"type": "response.output_text.delta", "delta": "still waiting"}),
+        json.dumps({"type": "response.completed"}),
+    ]
+    c, _ = _ws_client(frames, sent)
+    out = await c.tool_complete(
+        [Message("user", "weather")],
+        tools=[{"name": "get_weather", "description": "Get weather"}],
+    )
+    await c.aclose()
+
+    assert out.text == "still waiting"
+    assert len(out.tool_calls) == 1
+    assert out.tool_calls[0].arguments == {}
+
+
 async def test_ws_json_mode_repetition_watchdog_closes_stream():
     ws = _FakeWS(
         [

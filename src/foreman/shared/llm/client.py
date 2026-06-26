@@ -594,14 +594,14 @@ class LLMClient:
                                 item["arguments"] = str(obj.get("arguments") or "")
                             item["done"] = True
                             last_tool_key = key
-                        if tools and _ws_tool_calls(tool_items):
+                        if tools and _ws_tool_calls_ready(tool_items):
                             break
                     elif etype == "response.output_item.done":
                         key = _merge_ws_tool_item(tool_items, obj, fallback=last_tool_key)
                         if key:
                             tool_items.setdefault(key, _new_ws_tool_state(key))["done"] = True
                             last_tool_key = key
-                        if tools and key:
+                        if tools and _ws_tool_calls_ready(tool_items):
                             break
                     elif etype == "response.completed":
                         if on_stream is not None and not reasoning_streamed:
@@ -904,6 +904,25 @@ def _ws_tool_calls(tool_items: dict[str, dict[str, Any]]) -> list[LLMToolCall]:
             )
         )
     return calls
+
+
+def _ws_tool_calls_ready(tool_items: dict[str, dict[str, Any]]) -> bool:
+    for state in tool_items.values():
+        name = str(state.get("name") or "").strip()
+        if not name:
+            continue
+        raw_args = str(state.get("arguments") or "")
+        if not raw_args:
+            raw_args = "".join(str(part) for part in state.get("arguments_parts") or [])
+        if not raw_args.strip():
+            continue
+        try:
+            obj = json.loads(raw_args)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(obj, dict) and obj:
+            return True
+    return False
 
 
 def _openai_stream_chunks(obj: dict) -> list[dict]:
