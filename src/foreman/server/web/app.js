@@ -787,7 +787,7 @@
             <div className=${`launch-step ${steps.agents ? "done" : "wait"}`}><span>${steps.agents ? "✓" : "○"}</span><span>${d.launchAgents}</span></div>
             <div className=${`launch-step ${steps.data ? "done" : "now"}`}>${steps.data ? html`<span>✓</span>` : html`<span className="spin"></span>`}<span>${d.launchLoad}</span></div>
           </div>
-          <div className="launch-foot">v${steps.version || "0.1.0"} · ${location.host}</div>
+          <div className="launch-foot">v${steps.version || "1.0.0"} · ${location.host}</div>
         </div>
       </div>`;
   }
@@ -810,7 +810,7 @@
       <aside className="sidebar desktop">
         <div className="sb-brand">
           <div className="name">Foreman</div>
-          <div className="sub">${d.productSubtitle} · v0.1.0</div>
+          <div className="sub">${d.productSubtitle} · v1.0.0</div>
         </div>
         <${NavList} d=${d} view=${view} onView=${onView} counts=${counts} />
         <div className="sb-section"><span>${d.sessions}</span><span className="add" onClick=${onNew} title=${d.newSession}>+</span></div>
@@ -1592,7 +1592,7 @@
     const [booted, setBooted] = useState(false);
     const [hidingLaunch, setHidingLaunch] = useState(false);
 
-    const [status, setStatus] = useState({ online: false, version: "0.1.0" });
+    const [status, setStatus] = useState({ online: false, version: "1.0.0" });
     const [workspaces, setWorkspaces] = useState([]);
     const [agentsLoaded, setAgentsLoaded] = useState(false);
     const [agentSettings, setAgentSettings] = useState([]);
