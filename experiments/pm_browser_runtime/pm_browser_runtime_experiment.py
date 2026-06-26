@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,12 @@ class BrowserRuntimeConfig:
     artifacts_dir: Path
     allowed_origins: tuple[str, ...]
     headless: bool = True
+    browser_channel: str = field(
+        default_factory=lambda: os.getenv("FOREMAN_PLAYWRIGHT_CHANNEL", "").strip()
+    )
+    browser_executable_path: str = field(
+        default_factory=lambda: os.getenv("FOREMAN_PLAYWRIGHT_EXECUTABLE_PATH", "").strip()
+    )
     width: int = 1280
     height: int = 800
     max_text_chars: int = 3000
@@ -170,7 +177,12 @@ class MiniPMBrowserRuntime:
         if self._page:
             return self._page
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=self.cfg.headless)
+        launch_kwargs: dict[str, Any] = {"headless": self.cfg.headless}
+        if self.cfg.browser_executable_path:
+            launch_kwargs["executable_path"] = self.cfg.browser_executable_path
+        elif self.cfg.browser_channel:
+            launch_kwargs["channel"] = self.cfg.browser_channel
+        self._browser = self._playwright.chromium.launch(**launch_kwargs)
         self._context = self._browser.new_context(
             viewport={"width": self.cfg.width, "height": self.cfg.height}
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -127,7 +128,14 @@ class BrowserRuntime:
         from playwright.async_api import async_playwright
 
         self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.launch(headless=self.headless)
+        launch_kwargs: dict[str, Any] = {"headless": self.headless}
+        executable_path = os.getenv("FOREMAN_PLAYWRIGHT_EXECUTABLE_PATH", "").strip()
+        channel = os.getenv("FOREMAN_PLAYWRIGHT_CHANNEL", "").strip()
+        if executable_path:
+            launch_kwargs["executable_path"] = executable_path
+        elif channel:
+            launch_kwargs["channel"] = channel
+        self._browser = await self._pw.chromium.launch(**launch_kwargs)
         self._context = await self._browser.new_context()
         self._page = await self._context.new_page()
         return self._page

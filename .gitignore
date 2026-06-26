@@ -27,6 +27,7 @@ dist/
 .venv/
 venv/
 env/
+.playwright-browsers/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
