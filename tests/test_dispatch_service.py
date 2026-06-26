@@ -621,7 +621,7 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
     runner = FakeRunner()
     svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=pm)
 
-    res = await svc.create("raw user task", agent="claude-code")
+    res = await svc.create("raw user task")
     assert res["pm_agent"] is True
     assert res["agent"] == "pm-agent"
     await asyncio.gather(*list(svc._tasks))
@@ -637,6 +637,71 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
     assert [x["status"] for x in reviews[0]["todo_status"]] == ["done", "in_progress"]
     assert [x["status"] for x in reviews[1]["todo_status"]] == ["done", "done"]
     assert store.get_session(res["session_id"]).status == "done"
+
+
+async def test_pm_enabled_explicit_copilot_cli_dispatches_directly(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        language = "zh"
+        max_runs = 1
+
+        async def plan(self, *_args, **_kw):
+            raise AssertionError("explicit API agent must not be replaced by PM auto-pick")
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("direct explicit dispatch should not enter PM review")
+
+    class FakeHandle:
+        session_id = ""
+
+    class FakeRunner:
+        def __init__(self):
+            self.launched = []
+
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            self.launched.append((agent, instruction, str(workspace), model, effort))
+            handle = FakeHandle()
+            handle.session_id = session_id
+            store.add_event(make_event("agent_start", agent, session_id, payload={"pid": 123}))
+            store.add_event(make_event("agent_output", agent, session_id, payload={"text": "hi"}))
+            store.add_event(make_event("stop", agent, session_id, payload={"result": "done"}))
+            return handle
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={
+            "codex": AgentCfg(command="codex", enabled=True),
+            "copilot-cli": AgentCfg(
+                command="copilot", enabled=True, model="gpt-copilot", effort="high"
+            ),
+        },
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    runner = FakeRunner()
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=FakePM())
+
+    res = await svc.create("run with copilot", agent="copilot-cli")
+    await asyncio.gather(*list(svc._tasks))
+
+    assert res["ok"] is True
+    assert res["pm_agent"] is True
+    assert res["agent"] == "copilot-cli"
+    assert res["direct_agents"] == ["copilot-cli"]
+    assert store.get_session(res["session_id"]).agent_type == "copilot-cli"
+    assert [call[0] for call in runner.launched] == ["copilot-cli"]
+    assert runner.launched[0][3:] == ("gpt-copilot", "high")
+    rows = store.get_events(res["session_id"])
+    dispatch = json.loads(next(e.payload_json for e in rows if e.type == "dispatch"))
+    assert dispatch["agent"] == "copilot-cli"
+    assert dispatch["direct_agents"] == ["copilot-cli"]
+    assert [e.source for e in rows if e.type in {"agent_start", "agent_output", "stop"}] == [
+        "copilot-cli",
+        "copilot-cli",
+        "copilot-cli",
+    ]
 
 
 async def test_real_pm_agent_stream_chunks_are_persisted_and_published(tmp_path):
