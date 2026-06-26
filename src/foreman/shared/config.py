@@ -130,6 +130,14 @@ def default_agents() -> dict[str, AgentCfg]:
     return {
         "claude-code": AgentCfg(command="claude", enabled=True, mode="headless"),
         "codex": AgentCfg(command="codex", enabled=True, mode="headless"),
+        "copilot-cli": AgentCfg(
+            command="copilot",
+            enabled=False,
+            mode="headless",
+            model="",
+            effort="high",
+            full_access=True,
+        ),
     }
 
 

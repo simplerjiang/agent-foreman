@@ -19,7 +19,7 @@ from foreman.shared.llm import LLMClient, Message
 from .context_compression import context_pack_to_text, parse_context_pack
 from ..tools.loop import PMToolLoop, build_tool_prompt_context
 
-VALID_AGENTS = {"claude-code", "codex"}
+VALID_AGENTS = {"claude-code", "codex", "copilot-cli"}
 VALID_EFFORTS = {"low", "medium", "high"}
 MAX_EVENT_CHARS = 20000
 MAX_COMPACT_CHARS = 12000
@@ -37,12 +37,12 @@ PLAN_SYSTEM = (
     "configured, leave model empty so the CLI uses its own default/profile. Keep the instruction "
     "actionable, include acceptance checks, and tell the agent not to push, merge, or deploy unless "
     "the user explicitly requested it. Never tell one coding agent to launch or shell out to another "
-    "coding agent; Foreman owns all Claude Code and Codex process launches. Assume the selected "
+    "coding agent; Foreman owns all coding-agent process launches. Assume the selected "
     "coding agent may use its available file read/write/edit, shell command, and web/search tools "
     "when its full_access setting is true. Human-facing JSON string "
     "values must follow the selected output language; keep only identifiers, paths, commands, code, "
     "and quoted user text as-is. Respond with ONLY JSON: "
-    '{"summary": str, "agent": "claude-code|codex", "model": str, "effort": "low|medium|high|", '
+    '{"summary": str, "agent": "claude-code|codex|copilot-cli", "model": str, "effort": "low|medium|high|", '
     '"instruction": str, "todo": [str], "deliberation": [str], "ready": bool}.'
 )
 

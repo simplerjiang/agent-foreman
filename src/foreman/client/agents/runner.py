@@ -16,6 +16,7 @@ from foreman.shared.events import EventBus
 
 from .base import AgentAdapter, AgentHandle
 from .claude_code import ClaudeCodeAdapter
+from .copilot_cli import CopilotCliAdapter
 from .codex import CodexAdapter
 
 
@@ -41,6 +42,8 @@ class Runner:
             self.adapters["claude-code"] = ClaudeCodeAdapter(c)
         if (c := self.cfg.agents.get("codex")) and c.enabled:
             self.adapters["codex"] = CodexAdapter(c)
+        if (c := self.cfg.agents.get("copilot-cli")) and c.enabled:
+            self.adapters["copilot-cli"] = CopilotCliAdapter(c)
 
     async def launch(
         self,

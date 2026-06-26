@@ -23,7 +23,7 @@ StreamSink = Callable[[dict[str, Any]], Awaitable[None] | None]
 # complete tool_use block, not on parsing free text that a stalled model may repeat (#39).
 SUBMIT_PLAN_TOOL = "submit_plan"
 _SUBMIT_PLAN_CHOICE = {"type": "function", "name": SUBMIT_PLAN_TOOL}
-_DEFAULT_PLAN_AGENTS = ("claude-code", "codex")
+_DEFAULT_PLAN_AGENTS = ("claude-code", "codex", "copilot-cli")
 
 
 def submit_plan_tool_spec(enabled_agents: list[str] | None = None) -> dict[str, Any]:
@@ -292,7 +292,7 @@ def build_tool_prompt_context(runtime: PMToolRuntime) -> str:
                 "final_plan": {
                     "type": "final_plan",
                     "summary": "evidence-backed summary",
-                    "agent": "codex",
+                    "agent": "<enabled-agent-name>",
                     "model": "",
                     "effort": "high",
                     "instruction": "agent instruction",

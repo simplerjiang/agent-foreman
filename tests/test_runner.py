@@ -8,6 +8,7 @@ import pytest
 from _fakes import FakeProc, fake_adapter
 
 from foreman.client.agents.claude_code import ClaudeCodeAdapter
+from foreman.client.agents.copilot_cli import CopilotCliAdapter
 from foreman.client.agents.runner import Runner
 from foreman.client.store import Store
 from foreman.shared.config import AgentCfg, Config
@@ -74,6 +75,19 @@ def test_sync_config_refreshes_enabled_adapters(tmp_path):
     runner.sync_config()
 
     assert sorted(runner.adapters) == ["codex"]
+
+
+def test_sync_config_registers_enabled_copilot_cli(tmp_path):
+    cfg = Config()
+    cfg.agents = {
+        "claude-code": AgentCfg(command="claude", enabled=False),
+        "codex": AgentCfg(command="codex", enabled=False),
+        "copilot-cli": AgentCfg(command="copilot", enabled=True),
+    }
+    runner = Runner(cfg, EventBus(), _store(tmp_path))
+
+    assert sorted(runner.adapters) == ["copilot-cli"]
+    assert isinstance(runner.adapters["copilot-cli"], CopilotCliAdapter)
 
 
 # ── two-way control: send (resume) + interrupt (P4 / DESIGN §4.2) ───────────────────────────────────

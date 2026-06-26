@@ -25,11 +25,15 @@ def test_config_loads_defaults(tmp_path):
     cfg = load_config(tmp_path / "does-not-exist.yaml")
     assert cfg.server.port == 8787
     assert cfg.llm.provider in {"openai", "anthropic"}
-    assert sorted(cfg.agents) == ["claude-code", "codex"]
+    assert sorted(cfg.agents) == ["claude-code", "codex", "copilot-cli"]
     assert cfg.agents["claude-code"].command == "claude"
     assert cfg.agents["codex"].command == "codex"
+    assert cfg.agents["copilot-cli"].command == "copilot"
+    assert cfg.agents["copilot-cli"].enabled is False
+    assert cfg.agents["copilot-cli"].effort == "high"
     assert cfg.agents["claude-code"].full_access is True
     assert cfg.agents["codex"].full_access is True
+    assert cfg.agents["copilot-cli"].full_access is True
 
 
 def test_config_loads_env_next_to_config(tmp_path, monkeypatch):

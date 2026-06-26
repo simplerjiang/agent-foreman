@@ -51,6 +51,7 @@ TERMINAL_SESSION_STATUSES = {"failed", "cancelled", "stalled"}
 AGENT_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code": ("claude-code", "claude code", "claude"),
     "codex": ("codex",),
+    "copilot-cli": ("copilot-cli", "copilot cli", "copilot"),
 }
 CJK_AGENT_DISPATCH_TRIGGERS: tuple[str, ...] = (
     "\u7528", "\u53eb", "\u8ba9", "\u555f\u52d5", "\u542f\u52a8",

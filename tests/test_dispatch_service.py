@@ -493,6 +493,28 @@ def test_parse_plan_accepts_tool_arguments_dict():
     assert plan.deliberation == ["because evidence"]
 
 
+def test_parse_plan_accepts_enabled_copilot_cli():
+    plan = parse_plan(
+        {
+            "summary": "use copilot",
+            "agent": "copilot-cli",
+            "model": "",
+            "effort": "high",
+            "instruction": "do it",
+            "todo": ["verify"],
+            "ready": True,
+        },
+        enabled_agents=["copilot-cli"],
+        fallback_agent="copilot-cli",
+        fallback_model="",
+        fallback_effort="high",
+        fallback_instruction="fallback",
+    )
+
+    assert plan.agent == "copilot-cli"
+    assert plan.instruction == "do it"
+
+
 async def test_create_runs_launcher_in_background(tmp_path):
     calls: list[tuple] = []
 
@@ -819,6 +841,25 @@ async def test_pm_agent_shortcuts_simple_reply_without_tool_loop(tmp_path):
     assert "不要查看文件" in plan.instruction
 
 
+async def test_pm_agent_simple_reply_only_copilot_does_not_fallback_to_claude(tmp_path):
+    class NoLLM:
+        async def complete(self, *_args, **_kwargs):
+            raise AssertionError("simple reply planning should not call the LLM")
+
+    pm = PMAgent(NoLLM(), language="zh")
+    plan = await pm.plan(
+        "请仅用一句中文确认收到本消息",
+        workspace=str(tmp_path),
+        available_agents=[{"name": "copilot-cli", "model": "", "effort": "high"}],
+        requested_agent="",
+        pm_model="",
+        requested_effort="high",
+        fallback_instruction="fallback",
+    )
+
+    assert plan.agent == "copilot-cli"
+
+
 async def test_pm_agent_plans_for_at_least_two_rounds(tmp_path):
     captured: dict = {"calls": 0, "prompts": []}
 
@@ -1042,6 +1083,9 @@ def test_explicit_agent_target_detection_is_conservative():
     ]
     assert _explicit_agent_targets("use codex to report status", enabled) == ["codex"]
     assert _explicit_agent_targets("fix Codex adapter bug", enabled) == []
+    assert _explicit_agent_targets("use copilot to report status", ["copilot-cli"]) == [
+        "copilot-cli"
+    ]
 
 
 async def test_create_ignores_bad_effort(tmp_path):
