@@ -134,6 +134,7 @@ class DispatchService:
             return {"ok": False, "error": "session_not_found"}
         pm_enabled = self.pm_agent is not None and self.runner is not None
         self._sync_pm_language()
+        explicit_agent = bool((agent or "").strip())
         existing_agent = "" if pm_enabled else (existing_session.agent_type if existing_session else "")
         resolved_agent, err = self._resolve_agent(
             agent or existing_agent
@@ -145,13 +146,15 @@ class DispatchService:
         )
         if err:
             return {"ok": False, "error": err}
-        direct_agents: list[str] = []
-        resolved_model = (
-            ""
-            if direct_agents
-            else (model or "").strip() if pm_enabled else self._resolve_model(resolved_agent, model)
-        )
-        resolved_effort = "" if pm_enabled else self._resolve_effort(resolved_agent, effort)
+        direct_agents: list[str] = [resolved_agent] if pm_enabled and explicit_agent else []
+        if direct_agents:
+            resolved_model = self._resolve_model(resolved_agent, model)
+            resolved_effort = self._resolve_effort(resolved_agent, effort)
+        else:
+            resolved_model = (model or "").strip() if pm_enabled else self._resolve_model(
+                resolved_agent, model
+            )
+            resolved_effort = "" if pm_enabled else self._resolve_effort(resolved_agent, effort)
 
         session_agent = "+".join(direct_agents) if direct_agents else (
             PM_AUTO_AGENT if pm_enabled else resolved_agent
@@ -188,8 +191,8 @@ class DispatchService:
                     goal,
                     ws,
                     direct_agents,
-                    None,
-                    effort,
+                    resolved_model,
+                    resolved_effort,
                 )
             )
             self._track_launch_task(session.id, launch_task)

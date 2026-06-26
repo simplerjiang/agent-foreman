@@ -10,6 +10,15 @@ def _cfg(**kwargs) -> AgentCfg:
     return AgentCfg(command=kwargs.pop("command", "copilot"), **kwargs)
 
 
+def _assert_no_resume_selector(cmd: list[str], *session_ids: str) -> None:
+    assert "--session-id" not in cmd
+    assert "--connect" not in cmd
+    assert "--continue" not in cmd
+    assert "--resume" not in cmd
+    for session_id in session_ids:
+        assert session_id not in cmd
+
+
 def test_build_cmd_base_shape_without_workspace_context():
     adapter = CopilotCliAdapter(_cfg())
 
@@ -17,19 +26,28 @@ def test_build_cmd_base_shape_without_workspace_context():
         "copilot",
         "-p", "do Z",
         "--no-auto-update",
+        "--no-color",
+        "--stream", "off",
+        "--no-remote",
+        "--no-custom-instructions",
         "--output-format", "json",
+        "--allow-all-tools",
+        "--allow-all-urls",
     ]
 
 
-def test_build_session_cmd_includes_model_effort_session_and_workspace(tmp_path):
+def test_build_session_cmd_ignores_foreman_session_and_includes_workspace(tmp_path):
     adapter = CopilotCliAdapter(_cfg(model="cfg-model", effort="high"))
     cmd = adapter._build_session_cmd("do Z", "sess-1", tmp_path, "gpt-5.5", "medium")
 
     assert cmd == [
         "copilot",
         "-p", "do Z",
-        "--session-id", "sess-1",
         "--no-auto-update",
+        "--no-color",
+        "--stream", "off",
+        "--no-remote",
+        "--no-custom-instructions",
         "--output-format", "json",
         "--model", "gpt-5.5",
         "--effort", "medium",
@@ -37,17 +55,19 @@ def test_build_session_cmd_includes_model_effort_session_and_workspace(tmp_path)
         "--allow-all-urls",
         "--add-dir", str(tmp_path),
     ]
+    _assert_no_resume_selector(cmd, "sess-1")
     assert "--allow-all-paths" not in cmd
 
 
-def test_full_access_false_omits_permission_args(tmp_path):
+def test_full_access_false_keeps_headless_tools_but_omits_broad_path_args(tmp_path):
     adapter = CopilotCliAdapter(_cfg(full_access=False))
     cmd = adapter._build_session_cmd("do Z", "sess-1", tmp_path, "", "")
 
-    assert "--allow-all-tools" not in cmd
+    assert "--allow-all-tools" in cmd
     assert "--allow-all-urls" not in cmd
     assert "--add-dir" not in cmd
     assert "--allow-all-paths" not in cmd
+    _assert_no_resume_selector(cmd, "sess-1")
 
 
 async def test_start_uses_config_model_effort_and_session_id(tmp_path):
@@ -69,8 +89,11 @@ async def test_start_uses_config_model_effort_and_session_id(tmp_path):
     assert adapter.spawned_cmd == [
         "copilot",
         "-p", "do Z",
-        "--session-id", "foreman-session",
         "--no-auto-update",
+        "--no-color",
+        "--stream", "off",
+        "--no-remote",
+        "--no-custom-instructions",
         "--output-format", "json",
         "--model", "cfg-model",
         "--effort", "high",
@@ -78,6 +101,7 @@ async def test_start_uses_config_model_effort_and_session_id(tmp_path):
         "--allow-all-urls",
         "--add-dir", str(tmp_path),
     ]
+    _assert_no_resume_selector(adapter.spawned_cmd, "foreman-session")
 
 
 async def test_start_model_and_effort_override_config(tmp_path):
@@ -112,7 +136,7 @@ class _MultiSpawnCopilot(CopilotCliAdapter):
         return self._queue.pop(0)
 
 
-async def test_send_uses_session_id_not_continue(tmp_path):
+async def test_send_uses_fresh_prompt_without_foreman_session_resume(tmp_path):
     first = FakeProc(pid=1, stdout_lines=[b'{"type":"result","result":"done"}\n'])
     second = FakeProc(pid=2, stdout_lines=[b'{"type":"result","result":"done again"}\n'])
     adapter = _MultiSpawnCopilot(_cfg(), [first, second])
@@ -121,14 +145,11 @@ async def test_send_uses_session_id_not_continue(tmp_path):
     await adapter.send(handle, "follow up")
 
     resume_cmd = adapter.spawned_cmds[1]
-    assert "--session-id" in resume_cmd
-    assert "foreman-session" in resume_cmd
-    assert "--continue" not in resume_cmd
-    assert "--resume" not in resume_cmd
+    _assert_no_resume_selector(resume_cmd, "foreman-session")
     assert "follow up" in resume_cmd
 
 
-async def test_send_prefers_captured_native_session_id(tmp_path):
+async def test_send_does_not_use_captured_native_session_id_as_resume_selector(tmp_path):
     first = FakeProc(
         pid=1,
         stdout_lines=[
@@ -144,9 +165,9 @@ async def test_send_prefers_captured_native_session_id(tmp_path):
     await adapter.send(handle, "follow up")
 
     resume_cmd = adapter.spawned_cmds[1]
-    assert "--session-id" in resume_cmd
-    assert "native-copilot-session" in resume_cmd
-    assert "foreman-session" not in resume_cmd
+    assert handle.native_session_id == "native-copilot-session"
+    _assert_no_resume_selector(resume_cmd, "foreman-session", "native-copilot-session")
+    assert "follow up" in resume_cmd
 
 
 async def test_stream_text_and_json_result(tmp_path):

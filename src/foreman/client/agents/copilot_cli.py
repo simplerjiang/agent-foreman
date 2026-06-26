@@ -3,7 +3,8 @@
 The Copilot CLI argument surface is still being validated, so this adapter keeps parsing lenient:
 JSON result lines map to stop, JSON/text lines map to agent_output/reasoning where possible, and a
 successful process exit emits a synthetic stop if the CLI did not produce one itself. Permission
-flags are intentionally workspace-scoped: full_access never implies --allow-all-paths.
+flags are intentionally workspace-scoped: full_access never implies --allow-all-paths, and Foreman's
+internal session id is not passed as a Copilot resume/session selector for fresh prompts.
 """
 
 from __future__ import annotations
@@ -25,9 +26,13 @@ class CopilotCliAdapter(SubprocessCliAdapter):
         return ["--effort", effort] if effort else []
 
     def _access_args(self, workspace: Path | None = None) -> list[str]:
+        # Headless/non-interactive runs need tool permission pre-approved to avoid hanging on a
+        # prompt. Path/URL broadening stays guarded by full_access and never includes
+        # --allow-all-paths in this MVP.
+        args = ["--allow-all-tools"]
         if not self._full_access():
-            return []
-        args = ["--allow-all-tools", "--allow-all-urls"]
+            return args
+        args.append("--allow-all-urls")
         if workspace is not None:
             args.extend(["--add-dir", str(workspace)])
         return args
@@ -36,17 +41,43 @@ class CopilotCliAdapter(SubprocessCliAdapter):
         """Base command shape without session/workspace context.
 
         SubprocessCliAdapter calls this method in its generic start/send path, but Copilot needs the
-        Foreman session id and workspace for safe --add-dir authorization. start()/send() below use
-        _build_session_cmd() instead; keeping this method makes the command skeleton testable without
-        changing the shared base signature used by Claude/Codex.
+        workspace for safe --add-dir authorization. start()/send() below use _build_workspace_cmd()
+        instead; keeping this method makes the command skeleton testable without changing the shared
+        base signature used by Claude/Codex.
         """
         return [
             self.cfg.command,
             "-p", instruction,
             "--no-auto-update",
+            "--no-color",
+            "--stream", "off",
+            "--no-remote",
+            "--no-custom-instructions",
+            "--output-format", "json",
+            *self._access_args(),
+            *self._model_args(model),
+            *self._effort_args(effort),
+        ]
+
+    def _build_workspace_cmd(
+        self,
+        instruction: str,
+        workspace: Path,
+        model: str = "",
+        effort: str = "",
+    ) -> list[str]:
+        return [
+            self.cfg.command,
+            "-p", instruction,
+            "--no-auto-update",
+            "--no-color",
+            "--stream", "off",
+            "--no-remote",
+            "--no-custom-instructions",
             "--output-format", "json",
             *self._model_args(model),
             *self._effort_args(effort),
+            *self._access_args(workspace),
         ]
 
     def _build_session_cmd(
@@ -57,16 +88,13 @@ class CopilotCliAdapter(SubprocessCliAdapter):
         model: str = "",
         effort: str = "",
     ) -> list[str]:
-        return [
-            self.cfg.command,
-            "-p", instruction,
-            "--session-id", session_id,
-            "--no-auto-update",
-            "--output-format", "json",
-            *self._model_args(model),
-            *self._effort_args(effort),
-            *self._access_args(workspace),
-        ]
+        """Compatibility shim: Foreman's session id is intentionally ignored for Copilot CLI.
+
+        Copilot CLI 1.0.63 treats session/connect flags as selectors for existing Copilot sessions
+        or tasks. Foreman session ids are internal correlation ids, not Copilot UUIDs, so fresh
+        prompts must run with `-p/--prompt` and no restore selector.
+        """
+        return self._build_workspace_cmd(instruction, workspace, model, effort)
 
     async def start(
         self,
@@ -79,9 +107,7 @@ class CopilotCliAdapter(SubprocessCliAdapter):
         effective_model = self._effective_model(model)
         effective_effort = self._effective_effort(effort)
         workspace = Path(workspace)
-        cmd = self._build_session_cmd(
-            instruction, session_id, workspace, effective_model, effective_effort
-        )
+        cmd = self._build_workspace_cmd(instruction, workspace, effective_model, effective_effort)
         proc = await self._spawn(
             cmd,
             workspace,
@@ -102,8 +128,9 @@ class CopilotCliAdapter(SubprocessCliAdapter):
 
     async def send(self, handle: AgentHandle, text: str) -> None:
         workspace = self._workspaces.get(handle.id, Path(handle.cwd or "."))
-        session_id = handle.native_session_id or handle.session_id
-        cmd = self._build_session_cmd(text, session_id, workspace, handle.model, handle.effort)
+        # Do not pass Foreman's internal session id (or an unverified Copilot id) through Copilot
+        # resume/session selector flags. Spawn a new non-interactive prompt for the follow-up text.
+        cmd = self._build_workspace_cmd(text, workspace, handle.model, handle.effort)
         proc = await self._spawn(
             cmd,
             workspace,
@@ -113,7 +140,6 @@ class CopilotCliAdapter(SubprocessCliAdapter):
         handle.pid = proc.pid
         handle.command = cmd
         handle.cwd = str(workspace)
-        handle.native_session_id = session_id
 
     async def stream(self, handle: AgentHandle) -> AsyncIterator[AgentEvent]:
         proc = self._procs.get(handle.id)
