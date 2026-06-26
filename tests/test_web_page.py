@@ -370,6 +370,8 @@ def test_agent_settings_frontend_wired(tmp_path):
     assert "/api/settings/agents" in js
     assert "agentSettings" in js and "saveAgentSettings" in js
     assert "agentNotFound" in js and "full_access" in js
+    assert "Copilot CLI" in js and "BYOK" in js and "--add-dir <workspace>" in js
+    assert "更改这些环境变量后，请重启 Foreman 生效" in js
     assert "function Switch" in js  # custom toggle (no antd)
 
 

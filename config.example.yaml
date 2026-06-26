@@ -44,6 +44,13 @@ agents:
     effort: ""                 # optional reasoning level: low|medium|high; empty = CLI default
     full_access: true          # bypass Codex approval/sandbox prompts for Foreman-launched runs
     mode: headless
+  copilot-cli:
+    enabled: false             # opt-in; does not change existing Claude/Codex dispatch defaults
+    command: copilot           # resolved on PATH; do not put API keys in this file
+    model: ""                  # optional; empty = Copilot CLI default/provider profile
+    effort: high
+    full_access: true          # maps to tools+URLs plus --add-dir <workspace>, not all paths
+    mode: headless
 
 # Monitoring sources.
 monitor:

@@ -78,6 +78,7 @@
       browse: "浏览", addWorkspace: "添加 / 更新工作区", remove: "移除", connected: "已连接",
       refresh: "刷新", folderPickerUnavailable: "当前浏览器不支持选择文件夹，请手动输入路径。",
       localAgents: "本地 Agent", agentEnabled: "启用", agentCommand: "启动命令", agentModel: "模型", agentEffort: "档位", agentFullAccess: "工具全开",
+      copilotCliHelp: "Copilot CLI 是本地执行 agent。BYOK/provider 环境变量由 Copilot CLI 自己读取，Foreman 不保存这些 Key。更改这些环境变量后，请重启 Foreman 生效。工具全开仅映射为 --allow-all-tools / --allow-all-urls / --add-dir <workspace>，不会默认允许所有路径。",
       agentDisabled: "已禁用", agentNotFound: "未找到命令", agentsSaved: "Agent 设置已保存", noEnabledAgent: "至少要启用一个 Agent。",
       effortDefault: "默认", modelDefaultHint: "留空 = 使用配置默认模型",
       pmBrain: "PM 大脑", pmBrainSub: "给 PM 审阅 / 简报调用的模型。Key 永远留在本地。",
@@ -177,6 +178,7 @@
       browse: "Browse", addWorkspace: "Add / update", remove: "Remove", connected: "connected",
       refresh: "Refresh", folderPickerUnavailable: "This browser cannot open a folder picker. Enter the path manually.",
       localAgents: "Local agents", agentEnabled: "Enabled", agentCommand: "Command", agentModel: "Model", agentEffort: "Level", agentFullAccess: "Full access",
+      copilotCliHelp: "Copilot CLI is a local execution agent. BYOK/provider environment variables are read by Copilot CLI itself. Foreman does not store those keys. Restart Foreman after changing those environment variables. Full access maps only to --allow-all-tools / --allow-all-urls / --add-dir <workspace>, not all paths.",
       agentDisabled: "Disabled", agentNotFound: "Command not found", agentsSaved: "Agent settings saved", noEnabledAgent: "Enable at least one agent.",
       effortDefault: "Default", modelDefaultHint: "blank = configured default model",
       pmBrain: "PM brain", pmBrainSub: "The model the PM uses to review & brief. Your key never leaves this machine.",
@@ -1341,6 +1343,7 @@
       <!-- local agents -->
       <div className="card">
         <div className="card-title">${d.localAgents}<span className="spacer"></span><button className="btn sm" onClick=${loadAgentSettings}>⟳ ${d.refresh}</button></div>
+        <div className="alert info" style=${{ marginBottom: 14 }}>ⓘ ${d.copilotCliHelp}</div>
         ${(agentSettings || []).map((row) => {
           const statusText = !row.enabled ? d.agentDisabled : (row.ok ? (row.version || "OK") : (row.error === "not_found" ? d.agentNotFound : (row.error || "")));
           return html`<div key=${row.name} style=${{ borderTop: "1px solid var(--border)", padding: "14px 0" }}>

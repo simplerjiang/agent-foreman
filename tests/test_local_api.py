@@ -5,6 +5,8 @@ create_app is injected with a CLIENT store (personal-mode wiring) — proving it
 
 from __future__ import annotations
 
+import sys
+
 from fastapi.testclient import TestClient
 
 from foreman.client.core.dispatch_service import DispatchService
@@ -139,11 +141,12 @@ def test_agent_settings_persist_and_refresh_runner(tmp_path):
         },
     ).json()
 
-    assert {row["name"] for row in saved} == {"claude-code", "codex"}
+    assert {row["name"] for row in saved} == {"claude-code", "codex", "copilot-cli"}
     assert cfg.agents["claude-code"].command == "claude.cmd"
     assert cfg.agents["claude-code"].model == "sonnet"
     assert cfg.agents["claude-code"].full_access is False
     assert cfg.agents["codex"].enabled is False
+    assert cfg.agents["copilot-cli"].enabled is False
     assert "claude.cmd" in (store.get_setting("agents.json") or "")
     assert runner.syncs >= 2
     assert c.get("/api/agents").json() == [
@@ -166,6 +169,39 @@ def test_agent_settings_rejects_disabling_all(tmp_path):
     )
     assert res.status_code == 400
     assert res.json()["detail"] == "no_enabled_agent"
+
+
+def test_agent_settings_can_enable_copilot_cli(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    c = TestClient(create_app(Config(), store, EventBus()))
+
+    saved = c.post(
+        "/api/settings/agents",
+        json={
+            "agents": [
+                {"name": "claude-code", "enabled": False, "command": "claude"},
+                {"name": "codex", "enabled": False, "command": "codex"},
+                {
+                    "name": "copilot-cli",
+                    "enabled": True,
+                    "command": sys.executable,
+                    "model": "gpt-test",
+                    "effort": "high",
+                    "full_access": True,
+                },
+            ]
+        },
+    ).json()
+
+    row = next(item for item in saved if item["name"] == "copilot-cli")
+    assert row["enabled"] is True
+    assert row["command"] == sys.executable
+    assert row["model"] == "gpt-test"
+    assert row["effort"] == "high"
+    assert c.get("/api/agents").json() == [
+        {"name": "copilot-cli", "model": "gpt-test", "effort": "high", "full_access": True}
+    ]
 
 
 def test_api_models_returns_pm_defaults_without_key():
