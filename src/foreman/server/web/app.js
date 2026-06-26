@@ -44,8 +44,8 @@
       context: "上下文", compact: "压缩上下文", compacting: "压缩中...", compactDone: "上下文已压缩", compactFailed: "压缩失败",
       attach: "附件", agentAuto: "执行 agent 由 PM 自动选择", modelPlaceholder: "模型·默认",
       fast: "快速", std: "标准", deep: "深度", send: "发送", sendHint: "发送",
-      guiding: "引导中…", queueing: "排序中…", guide: "引导", queueSend: "排序",
-      guideHelp: "中止当前思考，带上原上下文直接处理新提示。", queueHelp: "等前一段回复结束后自动发送，不等整轮 loop 完成。",
+      guiding: "引导中…", queueing: "排序发送中…", guide: "引导", queueSend: "排序发送",
+      guideHelp: "引导：中止当前思考，带上原上下文直接处理新提示。", queueHelp: "排序：等当前回复结束后发送，不等整轮 loop 完成。",
       composerPlaceholder: "继续和 PM 对话… 可添加附件，选择档位，或直接下指令",
       mComposerPlaceholder: "继续下指令…",
       tabTodos: "任务清单", tabSubagents: "子代理", tabTerminal: "原始输出",
@@ -89,7 +89,7 @@
       allowedCommands: "允许的命令", allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "循环 / 最大轮次",
       pmToolsSaved: "PM 工具设置已保存",
       provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key", transport: "传输方式",
-      requestTimeout: "规划超时（秒）", requestTimeoutHelp: "控制 PM 大脑单次规划/复查的墙钟上限；默认 300 秒。",
+      requestTimeout: "规划超时（秒）", requestTimeoutHelp: "控制 PM 大脑单次规划/复查的墙钟上限；范围 30–3600 秒，默认 300 秒。",
       reasoningEffort: "推理强度",
       pmKeyHint: "已配置 API Key。输入新 key 后保存可替换；留空不修改。", pmKeyMissing: "未检测到 API Key。可在这里输入并保存。",
       pmKeyPlaceholder: "留空不修改；输入新 key 后保存", clearKey: "清空 Key",
@@ -147,8 +147,8 @@
       context: "Context", compact: "Compact", compacting: "Compacting...", compactDone: "Context compacted", compactFailed: "Compact failed",
       attach: "Attach", agentAuto: "agent auto-picked by PM", modelPlaceholder: "model · default",
       fast: "Fast", std: "Std", deep: "Deep", send: "Send", sendHint: "send",
-      guiding: "Guiding…", queueing: "Queueing…", guide: "Guide", queueSend: "Queue",
-      guideHelp: "Interrupt the current thought and handle the new prompt with prior context.", queueHelp: "Send after the current reply finishes, without waiting for the full loop.",
+      guiding: "Guiding…", queueing: "Queue sending…", guide: "Guide", queueSend: "Queue send",
+      guideHelp: "Guide: interrupt the current thought and handle the new prompt with prior context.", queueHelp: "Queue: send after the current reply finishes, without waiting for the full loop.",
       composerPlaceholder: "Continue with the PM… add attachments, pick a level, or just give an order",
       mComposerPlaceholder: "Continue…",
       tabTodos: "To-dos", tabSubagents: "Subagents", tabTerminal: "Raw output",
@@ -192,7 +192,7 @@
       allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "Loop / max rounds",
       pmToolsSaved: "PM tool settings saved",
       provider: "Provider", model: "Model", baseUrl: "Base URL", apiKey: "API Key", transport: "Transport",
-      requestTimeout: "Planning timeout (s)", requestTimeoutHelp: "Wall-clock limit for one PM planning/review call; default 300 seconds.",
+      requestTimeout: "Planning timeout (s)", requestTimeoutHelp: "Wall-clock limit for one PM planning/review call; range 30–3600 seconds, default 300 seconds.",
       reasoningEffort: "Reasoning effort",
       pmKeyHint: "API key is set. Enter a new key and save to replace it; blank keeps it.", pmKeyMissing: "No API key detected. You can enter and save one here.",
       pmKeyPlaceholder: "blank = unchanged; enter a new key to save", clearKey: "Clear key",
@@ -1194,6 +1194,7 @@
             <span className="composer-send-hint">⏎ ${d.sendHint}</span>
             ${busy ? html`
               <span className="busy-chip"><span className="spin"></span>${d.pmThinking}</span>
+              <span className="faint" style=${{ fontSize: 11 }}>${d.queueHelp}</span>
               <button className="btn danger" title=${d.guideHelp} onClick=${() => runDispatch("interrupt")} disabled=${sendBusy || !task.trim()}>${sendBusy ? d.guiding : d.guide}</button>
               <button className="btn primary" title=${d.queueHelp} onClick=${() => runDispatch("queue")} disabled=${sendBusy || !task.trim()}>${sendBusy ? d.queueing : d.queueSend}</button>
             ` : html`<button className="btn primary" onClick=${() => runDispatch()} disabled=${sendBusy}>${sendBusy ? html`<span className="spin"></span>` : null}${d.send} ↑</button>`}
@@ -1572,7 +1573,7 @@
           ${(mainProps.composer.processes || []).map((p) => html`<option key=${p.id} value=${p.id} disabled=${!p.online}>${p.online ? "●" : "○"} ${p.name || p.id}</option>`)}
         </select>` : null}
         <div className="box"><input value=${mainProps.composer.task} onChange=${(e) => mainProps.composer.setTask(e.target.value)} onKeyDown=${(e) => { if (e.key === "@") { e.preventDefault(); mainProps.composer.addAttach(); return; } if (e.key === "Enter") { e.preventDefault(); if (!busy && !mainProps.composer.dispatching) mainProps.composer.runDispatch(); } }} placeholder=${busy ? d.queueHelp : d.mComposerPlaceholder} /></div>
-        ${busy ? html`<button className="btn danger sm" onClick=${() => mainProps.composer.runDispatch("interrupt")} disabled=${mainProps.composer.dispatching || !mainProps.composer.task.trim()}>${d.guide}</button><button className="btn primary sm" onClick=${() => mainProps.composer.runDispatch("queue")} disabled=${mainProps.composer.dispatching || !mainProps.composer.task.trim()}>${d.queueSend}</button>` : html`<button className="btn primary icon" onClick=${() => mainProps.composer.runDispatch()} disabled=${mainProps.composer.dispatching}>${mainProps.composer.dispatching ? html`<span className="spin"></span>` : "↑"}</button>`}
+        ${busy ? html`<span className="faint" style=${{ fontSize: 11 }}>${d.queueHelp}</span><button className="btn danger sm" onClick=${() => mainProps.composer.runDispatch("interrupt")} disabled=${mainProps.composer.dispatching || !mainProps.composer.task.trim()}>${d.guide}</button><button className="btn primary sm" onClick=${() => mainProps.composer.runDispatch("queue")} disabled=${mainProps.composer.dispatching || !mainProps.composer.task.trim()}>${d.queueSend}</button>` : html`<button className="btn primary icon" onClick=${() => mainProps.composer.runDispatch()} disabled=${mainProps.composer.dispatching}>${mainProps.composer.dispatching ? html`<span className="spin"></span>` : "↑"}</button>`}
       </div>` : null}
       ${view === "workspace" ? html`<div className="m-bottom">
         <button className=${`m-tab${mTab === "chat" ? " on" : ""}`} onClick=${() => setMTab("chat")}><span className="ic">💬</span>${d.mTabChat}</button>
@@ -2042,7 +2043,7 @@
     }
     async function saveLlm() {
       try {
-        const body = { provider: llm.provider || "openai", model: (llm.model || "").trim(), base_url: (llm.base_url || "").trim(), transport: llm.transport || "http", reasoning_effort: llm.reasoning_effort || "" };
+        const body = { provider: llm.provider || "openai", model: (llm.model || "").trim(), base_url: (llm.base_url || "").trim(), transport: llm.transport || "http", request_timeout_s: Number(llm.request_timeout_s) || 300, reasoning_effort: llm.reasoning_effort || "" };
         if ((llm.api_key || "").trim()) body.api_key = llm.api_key.trim();
         const data = await api("/api/settings/llm", { method: "POST", body }); const next = { ...data, api_key: "" }; setLlm(next); setLlmStatus(d.saved); await loadPmModels(next); await loadModels();
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }

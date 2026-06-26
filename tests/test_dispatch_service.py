@@ -346,6 +346,93 @@ async def test_continue_pm_agent_queue_waits_for_current_launch(tmp_path):
     assert launches == ["do first", "do second"]
 
 
+async def test_continue_pm_agent_queue_serializes_multiple_followups(tmp_path):
+    store = _store(tmp_path)
+    first_started = asyncio.Event()
+    release_wait: dict[str, asyncio.Event] = {}
+    wait_started: dict[str, asyncio.Event] = {}
+    second_started = asyncio.Event()
+    third_started = asyncio.Event()
+    launches: list[str] = []
+    concurrent_waits = 0
+    max_concurrent_waits = 0
+
+    class FakePM:
+        language = "zh"
+        max_runs = 1
+
+        async def plan(self, goal, **_kw):
+            return PMPlan(agent="codex", model="", effort="", instruction=f"do {goal}")
+
+        async def review(self, goal, *_args, **_kw):
+            assert goal != "first", "queued follow-up should stop the old PM loop after reply"
+            return PMReview(done=True, summary="done")
+
+    class FakeHandle:
+        def __init__(self, instruction: str):
+            self.instruction = instruction
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            launches.append(instruction)
+            release_wait[instruction] = asyncio.Event()
+            wait_started[instruction] = asyncio.Event()
+            if instruction == "do first":
+                first_started.set()
+            elif instruction == "do second":
+                second_started.set()
+            elif instruction == "do third":
+                third_started.set()
+            return FakeHandle(instruction)
+
+        async def wait(self, handle):
+            nonlocal concurrent_waits, max_concurrent_waits
+            wait_started[handle.instruction].set()
+            concurrent_waits += 1
+            max_concurrent_waits = max(max_concurrent_waits, concurrent_waits)
+            try:
+                await release_wait[handle.instruction].wait()
+            finally:
+                concurrent_waits -= 1
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    first = await svc.create("first")
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second_task = asyncio.create_task(
+        svc.create("second", session_id=first["session_id"], continue_mode="queue")
+    )
+    third_task = asyncio.create_task(
+        svc.create("third", session_id=first["session_id"], continue_mode="queue")
+    )
+    second, third = await asyncio.gather(second_task, third_task)
+    await asyncio.sleep(0.02)
+
+    assert second["continue_mode"] == "queue"
+    assert third["continue_mode"] == "queue"
+    assert launches == ["do first"]
+    release_wait["do first"].set()
+    await asyncio.wait_for(second_started.wait(), timeout=1)
+    await asyncio.wait_for(wait_started["do second"].wait(), timeout=1)
+    await asyncio.sleep(0.02)
+    assert launches == ["do first", "do second"]
+    assert "do third" not in launches
+
+    release_wait["do second"].set()
+    await asyncio.wait_for(third_started.wait(), timeout=1)
+    await asyncio.wait_for(wait_started["do third"].wait(), timeout=1)
+    await asyncio.sleep(0.02)
+    assert launches == ["do first", "do second", "do third"]
+    assert max_concurrent_waits == 1
+
+    release_wait["do third"].set()
+    await asyncio.gather(*list(svc._tasks), return_exceptions=True)
+
+
 async def test_continue_pm_agent_interrupt_cancels_current_launch(tmp_path):
     store = _store(tmp_path)
     first_started = asyncio.Event()

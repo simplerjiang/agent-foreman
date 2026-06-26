@@ -104,7 +104,9 @@ class DispatchService:
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
         self._session_tasks: dict[str, set[asyncio.Task]] = {}
-        self._stop_after_reply: set[str] = set()
+        self._session_queue_tails: dict[str, asyncio.Future] = {}
+        self._session_queue_locks: dict[str, asyncio.Lock] = {}
+        self._stop_after_reply_counts: dict[str, int] = {}
 
     # ── create a session (下发任务, §5.1) ─────────────────────────────────────────────────────
     async def create(
@@ -142,11 +144,9 @@ class DispatchService:
             else []
         )
         if existing_session is not None and live_tasks and mode == "interrupt":
-            self._stop_after_reply.discard(existing_session.id)
+            self._clear_stop_after_reply(existing_session.id)
             await self._interrupt_active_work(existing_session.id)
             live_tasks = []
-        elif existing_session is not None and live_tasks and mode == "queue":
-            self._stop_after_reply.add(existing_session.id)
         pm_enabled = self.pm_agent is not None and self.runner is not None
         self._sync_pm_language()
         existing_agent = "" if pm_enabled else (existing_session.agent_type if existing_session else "")
@@ -210,6 +210,10 @@ class DispatchService:
             )
             self._track_launch_task(session.id, launch_task)
         elif pm_enabled:
+            wait_for_tasks = None
+            queue_tail = None
+            if existing_session is not None and mode == "queue":
+                wait_for_tasks, queue_tail = await self._reserve_queue_wait(existing_session.id)
             launch_task = asyncio.create_task(
                 self._safe_pm_launch(
                     session.id,
@@ -219,10 +223,12 @@ class DispatchService:
                     resolved_agent,
                     resolved_model,
                     resolved_effort,
-                    wait_for_tasks=live_tasks if mode == "queue" else None,
+                    wait_for_tasks=wait_for_tasks,
                 )
             )
             self._track_launch_task(session.id, launch_task)
+            if queue_tail is not None:
+                self._attach_queue_tail(session.id, queue_tail, launch_task)
         elif self.launcher is not None:
             # Fire-and-forget: a phone dispatch returns immediately; the agent runs in the
             # background (Runner pumps its events to store+bus, T1.7). Failures emit an `error`.
@@ -387,11 +393,64 @@ class DispatchService:
         mode = (value or "queue").strip().lower()
         return mode if mode in CONTINUE_MODES else "queue"
 
+    def _request_stop_after_reply(self, session_id: str) -> None:
+        self._stop_after_reply_counts[session_id] = self._stop_after_reply_counts.get(session_id, 0) + 1
+
+    def _clear_stop_after_reply(self, session_id: str) -> None:
+        self._stop_after_reply_counts.pop(session_id, None)
+
     def _consume_stop_after_reply(self, session_id: str) -> bool:
-        if session_id not in self._stop_after_reply:
+        remaining = self._stop_after_reply_counts.get(session_id, 0)
+        if remaining <= 0:
             return False
-        self._stop_after_reply.discard(session_id)
+        if remaining == 1:
+            self._stop_after_reply_counts.pop(session_id, None)
+        else:
+            self._stop_after_reply_counts[session_id] = remaining - 1
         return True
+
+    def _queue_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._session_queue_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_queue_locks[session_id] = lock
+        return lock
+
+    async def _reserve_queue_wait(
+        self, session_id: str
+    ) -> tuple[list[asyncio.Future] | None, asyncio.Future | None]:
+        """Reserve this follow-up's place in a per-session queue chain.
+
+        A queued PM follow-up should start as soon as the previous reply boundary completes, not
+        after the whole PM loop. Multiple queue requests can arrive while the same live task is
+        still busy; without a tail, each one would wait only for that original live task and then
+        race to start together. The placeholder tail is installed before the new launch task exists,
+        so concurrent queue requests chain behind it deterministically.
+        """
+        async with self._queue_lock(session_id):
+            live_tasks = [task for task in self._session_tasks.get(session_id, ()) if not task.done()]
+            if not live_tasks:
+                self._session_queue_tails.pop(session_id, None)
+                return None, None
+            self._request_stop_after_reply(session_id)
+            previous_tail = self._session_queue_tails.get(session_id)
+            if previous_tail is not None and previous_tail.done():
+                previous_tail = None
+            wait_for_tasks = [previous_tail] if previous_tail is not None else live_tasks
+            tail = asyncio.get_running_loop().create_future()
+            self._session_queue_tails[session_id] = tail
+            return wait_for_tasks, tail
+
+    def _attach_queue_tail(
+        self, session_id: str, tail: asyncio.Future, launch_task: asyncio.Task
+    ) -> None:
+        def release_tail(_done: asyncio.Task) -> None:
+            if not tail.done():
+                tail.set_result(None)
+            if self._session_queue_tails.get(session_id) is tail:
+                self._session_queue_tails.pop(session_id, None)
+
+        launch_task.add_done_callback(release_tail)
 
     def _current_language(self) -> str:
         if self.language_getter is None:
