@@ -68,6 +68,23 @@ class _FakeConn:
         self._closed.set()
 
 
+class _SlowHandshakeConn:
+    """A relay connection whose first hello_ack arrives after the connect wait window."""
+
+    def __init__(self) -> None:
+        self._closed = asyncio.Event()
+
+    async def send(self, data: str) -> None:  # noqa: D401
+        pass
+
+    async def recv(self) -> str:
+        await self._closed.wait()
+        raise ConnectionError("closed")
+
+    async def close(self) -> None:
+        self._closed.set()
+
+
 def _factory(ack_ok: bool = True, conns: list | None = None):
     def make(*, url, access_key, process_id, name, on_status, on_error=None, sync_provider=None):
         async def connect(_u):
@@ -79,6 +96,18 @@ def _factory(ack_ok: bool = True, conns: list | None = None):
             url, access_key, process_id=process_id, name=name, on_status=on_status,
             on_error=on_error, sync_provider=sync_provider, sync_interval=0.05,
             connect=connect, heartbeat_interval=0, backoff_base=0.05,
+        )
+    return make
+
+
+def _factory_slow_handshake():
+    def make(*, url, access_key, process_id, name, on_status, on_error=None, sync_provider=None):
+        async def connect(_u):
+            return _SlowHandshakeConn()
+        return RelayConnector(
+            url, access_key, process_id=process_id, name=name, on_status=on_status,
+            on_error=on_error, sync_provider=sync_provider, connect=connect,
+            heartbeat_interval=0, backoff_base=0.05, backoff_cap=0.1,
         )
     return make
 
@@ -233,6 +262,18 @@ def test_cloud_manager_auth_denied_surfaces_error():
     mgr.disconnect()
 
 
+def test_cloud_manager_wait_window_does_not_report_false_timeout():
+    store = FakeStore()
+    store.set_setting("cloud.url", "wss://relay.example/relay")
+    cfg = load_config()
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    mgr = CloudManager(store=store, cfg=cfg, connector_factory=_factory_slow_handshake())
+    state = mgr.connect(wait=0.05)
+    assert state["connected"] is False
+    assert state["error"] == ""
+    mgr.disconnect()
+
+
 def test_cloud_manager_unreachable_surfaces_error():
     store = FakeStore()
     store.set_setting("cloud.url", "wss://relay.example/relay")
@@ -240,9 +281,9 @@ def test_cloud_manager_unreachable_surfaces_error():
     cfg.secrets.cloud_access_key = "fk_live_test"
     mgr = CloudManager(store=store, cfg=cfg, connector_factory=_factory_unreachable())
     state = mgr.connect(wait=1.0)
-    # a relay that never answers must not show an indefinite "connecting": an error is surfaced
+    # a relay that actively fails must surface a controlled code, not a raw exception string
     assert state["connected"] is False
-    assert state["error"]  # non-empty (the dial error, or the connect-wait "timeout")
+    assert state["error"] == "unreachable"
     mgr.disconnect()
 
 

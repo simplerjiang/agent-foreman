@@ -145,9 +145,13 @@ class CloudManager:
             self._connected_event.set()
 
     def _on_error(self, exc: Exception) -> None:
-        # Surface the last dial/read error so the UI shows "connection failed: ..." instead of an
-        # indefinite "connecting" when the relay is offline/unreachable (codex review finding).
-        self._error = str(exc)[:160] or "unreachable"
+        self._error = self._error_code(exc)
+
+    def _error_code(self, exc: Exception) -> str:
+        detail = str(exc or "").lower()
+        if isinstance(exc, TimeoutError) or "timeout" in detail or "timed out" in detail:
+            return "timeout"
+        return "unreachable"
 
     def bind_app_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind the uvicorn loop after startup. Constructor time is too early for this."""
@@ -404,10 +408,8 @@ class CloudManager:
             thread.start()
 
         self._connected_event.wait(timeout=max(0.0, wait))
-        if not self._connected and not self._error:
-            # No handshake yet and no error reported — the relay is slow/unreachable. Report a
-            # status the UI can show instead of an indefinite "connecting" (the loop keeps retrying).
-            self._error = "timeout"
+        # If the handshake is still in progress and no real error arrived, leave error empty so the
+        # UI can keep showing "connecting" instead of racing a false timeout before auth completes.
         return self.status()
 
     def disconnect(self) -> dict:
