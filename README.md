@@ -80,6 +80,22 @@ foreman serve                   # boots backend, opens DB, exposes /health
 - [ROADMAP.md](docs/ROADMAP.md) — phased plan.
 - [SECURITY.md](docs/SECURITY.md) — remote access & threat model.
 
+## Code signing policy
+
+Free code signing for Foreman (agent-foreman) is provided by [SignPath.io](https://signpath.io),
+with a certificate issued by the [SignPath Foundation](https://signpath.org).
+
+Roles:
+- **Author / Committer:** `simplerjiang` — maintains the source code.
+- **Reviewer:** `simplerjiang` — reviews changes from non-committers.
+- **Approver:** `simplerjiang` — approves each code-signing request.
+
+**Privacy:** This program will not transfer any information to other networked systems unless
+specifically requested by the user or the person installing or operating it. Foreman is self-hosted;
+phone reporting and the optional cloud relay are user-enabled features. The in-app self-update
+downloads a new signed release from this project's GitHub Releases only when the user explicitly
+chooses to update.
+
 ## License
 
 MIT
