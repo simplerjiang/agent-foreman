@@ -24,6 +24,7 @@ from foreman.shared.events import make_event, utc_now_iso
 from foreman.shared.i18n import language_directive, normalize as normalize_lang
 from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
+from foreman.shared.llm.trace import trace_context
 
 from ..store.models import Report
 
@@ -214,9 +215,10 @@ class BriefingService:
         system = BRIEF_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_brief_prompt(goal, activity, kind=kind)
         try:
-            raw = await self.llm.complete(
-                [Message("system", system), Message("user", prompt)], json_mode=True
-            )
+            with trace_context(phase="briefing"):
+                raw = await self.llm.complete(
+                    [Message("system", system), Message("user", prompt)], json_mode=True
+                )
         except Exception as exc:  # noqa: BLE001 — a phone "generate" tap shouldn't error out
             # The common cause is a misconfigured PM brain (missing key / wrong base_url / model), so
             # point the human at the fix rather than surfacing a bare exception name (issue #2).

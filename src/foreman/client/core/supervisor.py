@@ -448,6 +448,7 @@ class LLMJudge:
 
     async def __call__(self, rec: AgentRecord, tail: str | None) -> str | None:
         from foreman.shared.llm.client import Message  # local import: keep client a soft dep
+        from foreman.shared.llm.trace import trace_context
 
         system = _JUDGE_SYSTEM + "\n" + language_directive(self.language)
         safe_tail = redact_secrets(tail)[-self.tail_chars:]  # scrub THEN bound
@@ -456,9 +457,10 @@ class LLMJudge:
             f"cheap_check_state: {rec.state}\n"
             f"output_tail:\n{safe_tail}"
         )
-        out = await self.llm.complete(
-            [Message("system", system), Message("user", user)], json_mode=True
-        )
+        with trace_context(phase="supervisor"):
+            out = await self.llm.complete(
+                [Message("system", system), Message("user", user)], json_mode=True
+            )
         return parse_judge_state(out)
 
 

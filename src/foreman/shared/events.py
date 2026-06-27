@@ -30,6 +30,9 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "definition",
         # team relay passthrough frame for account-scoped browser subscribers.
         "relay_frame",
+        # work-mode telemetry (work-mode integration P1, §8/§16): which definitions a dispatch
+        # selected / dropped + L0 index & pulled-body token accounting.
+        "work_mode",
     }
 )
 

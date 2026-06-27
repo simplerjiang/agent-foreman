@@ -79,6 +79,20 @@ def test_dispatch_empty_goal_400(tmp_path):
     assert TestClient(app).post("/api/tasks", json={"goal": "  "}).status_code == 400
 
 
+def test_dispatch_accepts_work_mode_ids(tmp_path):
+    """The composer sends work_mode_ids; the backend accepts them (no 422/400) and threads them to
+    the resolver as manual picks (P1). A request with no such field stays fully auto (backward-
+    compat). Here the dispatcher has no PM agent, so the ids are simply accepted and the dispatch
+    succeeds — the consumption path is asserted end-to-end in test_work_mode_p1."""
+    app, _ = _app(tmp_path)
+    c = TestClient(app)
+    with_ids = c.post("/api/tasks", json={"goal": "do it", "work_mode_ids": ["id-a", "id-b"]})
+    assert with_ids.status_code == 200 and with_ids.json()["ok"] is True
+    # the legacy shape (no work_mode_ids) is unaffected
+    legacy = c.post("/api/tasks", json={"goal": "do it"})
+    assert legacy.status_code == 200 and legacy.json()["ok"] is True
+
+
 def test_dispatch_503_without_dispatcher():
     c = TestClient(create_app(Config()))
     assert c.post("/api/tasks", json={"goal": "x"}).status_code == 503

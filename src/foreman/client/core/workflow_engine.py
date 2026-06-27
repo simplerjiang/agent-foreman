@@ -34,7 +34,8 @@ from typing import Any
 
 from foreman.shared.events import make_event, utc_now_iso
 
-from ..store.models import Action, WorkflowRun
+from ..store.models import Action, MemoryItem, WorkflowRun
+from .context_budget import MEMORY_SCOPE_WORKFLOW
 
 # step_status values on a WorkflowRun row (DESIGN §7.1 / T5.1 vocabulary).
 PENDING = "pending"
@@ -465,6 +466,9 @@ class WorkflowEngine:
 
     async def _advance(self, run: WorkflowRun, spec: WorkflowSpec) -> dict:
         """Move to the next step, or finish the run if this was the last (§11.2 sequencing)."""
+        # Step-boundary compression (§8B.6): record the just-completed step as a scope=workflow
+        # MemoryItem so a multi-step run carries forward conclusions, not raw per-step timelines.
+        self._record_step_memory(run, spec)
         nxt = run.step_index + 1
         if nxt >= len(spec.steps):
             run = self.store.update_workflow_run(
@@ -476,6 +480,27 @@ class WorkflowEngine:
         run = self.store.update_workflow_run(run.id, step_index=nxt, step_status=PENDING)
         await self._emit(run.session_id, run, "advanced", {"to_step": nxt})
         return {"ok": True, "status": "advanced", "step": self._step_view(run, spec)}
+
+    def _record_step_memory(self, run: WorkflowRun, spec: WorkflowSpec) -> None:
+        """Compress a finished step into a scope=workflow MemoryItem (§8B.6). Best-effort; uses the
+        centralized scope constant (no hand-typed "workflow" — get_memory_items is exact-match)."""
+        add = getattr(self.store, "add_memory_item", None)
+        if add is None or run.step_index >= len(spec.steps):
+            return
+        step = spec.steps[run.step_index]
+        try:
+            add(MemoryItem(
+                id=uuid.uuid4().hex,
+                session_id=run.session_id,
+                scope=MEMORY_SCOPE_WORKFLOW,
+                kind="decision",
+                text=f"workflow '{spec.name}' step {run.step_index} ('{step.name}') completed",
+                status="verified",
+                importance=60,
+                created_at=self._clock(),
+            ))
+        except Exception:  # noqa: BLE001 — memory write is best-effort, never crash the run
+            pass
 
     def _clear(self, run: WorkflowRun) -> None:
         """Best-effort revert of the injected workspace scaffolding when a run ends (T5.3)."""

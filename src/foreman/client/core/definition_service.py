@@ -33,6 +33,7 @@ KNOWN_STATUS: frozenset[str] = frozenset({"draft", "active", "archived"})
 
 MAX_NAME = 200          # a name is an identifier, not prose
 MAX_BODY = 200_000      # generous body cap so a huge paste can't bloat the local DB / a payload
+MAX_DESCRIPTION = 1024  # metadata.description cap — the L0 selection signal (DESIGN §4.2 / P0)
 
 # Backup-bundle envelope (export/import, T6.2). Tagging the format + a schema version lets `import`
 # reject foreign / future files fail-closed instead of silently mangling them.
@@ -81,6 +82,28 @@ def _json_object_or_default(text: object) -> str:
     """Return `text` if it's a valid JSON object string, else "{}" — sanitizes imported scope/metadata
     so a malformed bundle can't persist a non-object that later json.loads readers choke on."""
     return text if isinstance(text, str) and _valid_json_object(text) else "{}"
+
+
+def _description_error(meta: str) -> str | None:
+    """Require a non-empty ``metadata.description`` ≤ :data:`MAX_DESCRIPTION` — the L0 selection
+    signal (DESIGN §4.2/§4.3). Returns "missing_description" / "description_too_long", or None if ok.
+
+    This is the **write-time gate** for create/update only. It is deliberately NOT applied on the
+    import path (``import_bundle`` keeps the lenient ``_json_object_or_default`` route) nor on
+    ``seed_examples`` (which inserts via ``store.add_definition``), so existing/imported rows stay
+    readable and re-imports stay idempotent (§4.3 铁律 / §12 backward-compat). "无 description 不进
+    自动选择" for existing rows is handled separately by the resolver's exclusion (work_mode_context).
+    """
+    try:
+        obj = json.loads(meta or "{}")
+    except (ValueError, TypeError):
+        return "bad_metadata_json"
+    desc = obj.get("description") if isinstance(obj, dict) else None
+    if not (isinstance(desc, str) and desc.strip()):
+        return "missing_description"
+    if len(desc) > MAX_DESCRIPTION:
+        return "description_too_long"
+    return None
 
 
 class DefinitionService:
@@ -138,7 +161,8 @@ class DefinitionService:
         store's per-(kind,name,version) uniqueness rule. ``activate`` (default True) makes the new
         version THE live one for its (kind, name) — every sibling is deactivated (§11.2 rollback knob).
         Returns {"ok": True, "definition": {...}} or {"ok": False, "error": ...} with error ∈
-        {bad_kind, bad_name, body_too_large, bad_scope_json, bad_metadata_json, version_exists, no_store}.
+        {bad_kind, bad_name, body_too_large, bad_scope_json, bad_metadata_json, missing_description,
+        description_too_long, version_exists, no_store}.
         """
         err = self._validate(kind=kind, name=name, body=body, scope=scope_json, meta=metadata_json)
         if err:
@@ -188,7 +212,8 @@ class DefinitionService:
         """Edit a definition in place (the 改 path, §11.2). Only the passed fields change; identity
         (kind/name/version) is never editable here — make a new version instead. Returns
         {"ok": True, "definition": {...}} or {"ok": False, "error": ...} with error ∈
-        {body_too_large, bad_scope_json, bad_metadata_json, bad_status, not_found, no_store}.
+        {body_too_large, bad_scope_json, bad_metadata_json, missing_description, description_too_long,
+        bad_status, not_found, no_store}.
         """
         if body is not None and len(body) > MAX_BODY:
             return {"ok": False, "error": "body_too_large"}
@@ -196,6 +221,12 @@ class DefinitionService:
             return {"ok": False, "error": "bad_scope_json"}
         if metadata_json is not None and not _valid_json_object(metadata_json):
             return {"ok": False, "error": "bad_metadata_json"}
+        # Apply the description gate only when this PATCH actually carries metadata_json — a body-only
+        # edit must not be forced to re-supply a description (§4.3 / P0 task 5).
+        if metadata_json is not None:
+            desc_err = _description_error(metadata_json)
+            if desc_err:
+                return {"ok": False, "error": desc_err}
         if status is not None and status not in KNOWN_STATUS:
             return {"ok": False, "error": "bad_status"}
         if self.store is None or not hasattr(self.store, "update_definition"):
@@ -415,7 +446,8 @@ class DefinitionService:
             return "bad_scope_json"
         if not _valid_json_object(meta or "{}"):
             return "bad_metadata_json"
-        return None
+        # description gate LAST so the negative checks above keep returning their own codes (§4.3).
+        return _description_error(meta or "{}")
 
     async def _emit(self, action: str, row: Definition) -> None:
         """Persist-then-publish a `definition` audit event (mirrors Gate/CardService).

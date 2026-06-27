@@ -21,7 +21,7 @@
       workspaceSubtitle: "选择工作区，给本机 agent 下发任务。",
       decisionsSubtitle: "处理需要你确认的卡片和审批。",
       briefingsSubtitle: "把当前进展整理成可读状态。",
-      rulesSubtitle: "维护工作流、技能、代码规范和验收标准 —— agent 干活时会自动注入。",
+      rulesSubtitle: "维护工作流、技能、代码规范和验收标准 —— PM 规划时按相关性选用，干活时按需取用。",
       settingsSubtitle: "配置工作区、PM 大脑和界面偏好。",
       sessions: "会话", newSession: "新会话",
       launchTag: "正在唤醒你的工程包工头 —— 把活儿交给本地 agent，PM 大脑替你盯着。",
@@ -60,11 +60,15 @@
       history: "历史", copy: "复制", push: "推送到手机", coversSession: "覆盖会话",
       briefGenerating: "生成中...", briefFailed: "简报生成失败", briefNoLlm: "PM 大脑未配置。请检查 .env 和设置页。", copied: "已复制",
       playbook: "工作方式", kindAll: "全部", kindWorkflows: "工作流", kindSkills: "技能", kindStandards: "代码规范", kindQa: "验收标准",
+      startWorkflow: "启动", workflowRun: "工作流运行", wfStep: "步骤", wfStatus: "状态", wfBegin: "执行本步", wfSubmit: "推进", wfApprove: "批准", wfReject: "拒绝", wfRefresh: "刷新", wfNeedSession: "请先在工作台选中一个会话，再启动工作流。", wfStarted: "工作流已启动",
       kindWorkflow: "工作流", kindSkill: "技能", kindStandard: "代码规范", kindQaOne: "验收标准",
       importBtn: "导入", exportBtn: "导出", newBtn: "新建",
       noDefinitions: "暂无工作方式。", on: "启用中", off: "未启用",
       edit: "编辑", del: "删除", activate: "启用",
       defnKind: "类型", defnName: "名称", defnScope: "适用范围 (JSON)", defnBody: "内容", defnActivate: "保存即启用",
+      defnDescription: "描述（必填 · ≤1024 字，说明做什么 + 何时用）",
+      defnDescriptionHint: "L0 选择信号：PM 据此判断这条工作方式该不该用。空描述不进自动选择。",
+      workMode: "工作方式", workModePick: "手选工作方式", workModeNone: "暂无可选工作方式", workModeAuto: "自动（PM 按相关性选）",
       cancel: "取消", retry: "重试", save: "保存", saved: "已保存", saveFailed: "保存失败", failed: "失败",
       confirmDeleteTitle: "确认删除", confirmDelete: "确定删除这条工作方式？", confirmSessionDelete: "确定删除这个会话及其本地记录？",
       deleteSession: "删除会话", cancelSession: "取消会话", sessionCanceled: "已取消会话", notification: "通知",
@@ -75,6 +79,8 @@
       requestDeclined: "操作未被执行，请检查当前状态后重试。",
       networkError: "网络异常，请检查连接后重试。",
       badScopeJson: "适用范围必须是 JSON 对象，例如 {\"lang\":\"py\"}。",
+      missingDescription: "请填写描述（说明做什么 + 何时用），否则不会进入自动选择。",
+      descriptionTooLong: "描述太长了，请控制在 1024 字以内。",
       imported: "已导入", importFailed: "导入失败", exportFailed: "导出失败",
       workspaces: "工作区", projectPath: "项目路径", displayName: "显示名称", pathHint: "例如 E:\\AutoWorkAgent",
       browse: "浏览", addWorkspace: "添加 / 更新工作区", remove: "移除", connected: "已连接",
@@ -88,6 +94,10 @@
       fileRead: "读取文件", fileWrite: "写入文件", shellTool: "运行命令", webFetch: "抓取 URL", webSearch: "网页搜索", browserTool: "浏览器",
       allowedCommands: "允许的命令", allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "循环 / 最大轮次",
       pmToolsSaved: "PM 工具设置已保存",
+      debug: "调试", debugSub: "排错用的高级开关。默认全关。",
+      llmTrace: "LLM 对话明文落盘",
+      llmTraceWarn: "开启后会把与大模型的完整对话（含源码与解密后的工作方式）明文写入本机 .foreman/debug/，仅本地保存、不上传、不进 git。改动在下次启动生效。",
+      debugSaved: "调试设置已保存（重启生效）",
       provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key", transport: "传输方式",
       requestTimeout: "规划超时（秒）", requestTimeoutHelp: "控制 PM 大脑单次规划/复查的墙钟上限；范围 30–3600 秒，默认 300 秒。",
       reasoningEffort: "推理强度",
@@ -127,7 +137,7 @@
       workspaceSubtitle: "Pick a workspace and dispatch work to the local agent.",
       decisionsSubtitle: "Handle the cards and approvals that need you.",
       briefingsSubtitle: "Turn current progress into readable status.",
-      rulesSubtitle: "Maintain workflows, skills, code standards & QA rubrics — auto-injected when agents work.",
+      rulesSubtitle: "Maintain workflows, skills, code standards & QA rubrics — selected by relevance and pulled in on demand.",
       settingsSubtitle: "Configure workspaces, the PM brain, and UI preferences.",
       sessions: "Sessions", newSession: "New session",
       launchTag: "Waking your engineering foreman — hand work to local agents, the PM brain watches over it.",
@@ -166,11 +176,15 @@
       history: "History", copy: "Copy", push: "Push", coversSession: "covers session",
       briefGenerating: "Generating...", briefFailed: "Briefing failed", briefNoLlm: "PM brain is not configured. Check .env and Settings.", copied: "Copied",
       playbook: "Playbook", kindAll: "All", kindWorkflows: "Workflows", kindSkills: "Skills", kindStandards: "Standards", kindQa: "QA",
+      startWorkflow: "Start", workflowRun: "Workflow run", wfStep: "Step", wfStatus: "Status", wfBegin: "Run step", wfSubmit: "Advance", wfApprove: "Approve", wfReject: "Reject", wfRefresh: "Refresh", wfNeedSession: "Pick a session in the workbench first, then start the workflow.", wfStarted: "Workflow started",
       kindWorkflow: "Workflow", kindSkill: "Skill", kindStandard: "Standard", kindQaOne: "QA rubric",
       importBtn: "Import", exportBtn: "Export", newBtn: "New",
       noDefinitions: "No playbook items yet.", on: "active", off: "off",
       edit: "Edit", del: "Delete", activate: "Activate",
       defnKind: "Kind", defnName: "Name", defnScope: "Scope (JSON)", defnBody: "Body", defnActivate: "Activate on save",
+      defnDescription: "Description (required · ≤1024 chars: what it does + when to use)",
+      defnDescriptionHint: "L0 selection signal: the PM decides relevance from this. Blank → excluded from auto-select.",
+      workMode: "Work modes", workModePick: "Pick work modes", workModeNone: "No work modes available", workModeAuto: "Auto (PM picks by relevance)",
       cancel: "Cancel", retry: "Retry", save: "Save", saved: "Saved", saveFailed: "Save failed", failed: "failed",
       confirmDeleteTitle: "Confirm delete", confirmDelete: "Delete this playbook item?", confirmSessionDelete: "Delete this session and its local records?",
       deleteSession: "Delete session", cancelSession: "Cancel session", sessionCanceled: "Session cancelled", notification: "Notification",
@@ -181,6 +195,8 @@
       requestDeclined: "The operation was not completed. Check the current state and try again.",
       networkError: "Network error. Check the connection and try again.",
       badScopeJson: "Scope must be a JSON object, for example {\"lang\":\"py\"}.",
+      missingDescription: "Please add a description (what it does + when to use), or it won't be auto-selected.",
+      descriptionTooLong: "Description is too long — keep it under 1024 characters.",
       imported: "Imported", importFailed: "Import failed", exportFailed: "Export failed",
       workspaces: "Workspaces", projectPath: "Project path", displayName: "Name", pathHint: "e.g. E:\\AutoWorkAgent",
       browse: "Browse", addWorkspace: "Add / update", remove: "Remove", connected: "connected",
@@ -194,6 +210,10 @@
       fileRead: "Read files", fileWrite: "Write files", shellTool: "Run commands", webFetch: "Fetch URL", webSearch: "Web search", browserTool: "Browser",
       allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "Loop / max rounds",
       pmToolsSaved: "PM tool settings saved",
+      debug: "Debug", debugSub: "Advanced switches for troubleshooting. All off by default.",
+      llmTrace: "Trace LLM conversations to disk",
+      llmTraceWarn: "Writes the FULL model conversation (incl. your source + decrypted work modes) in plaintext to .foreman/debug/ on this machine — local only, never uploaded, not committed. Takes effect on next launch.",
+      debugSaved: "Debug settings saved (restart to apply)",
       provider: "Provider", model: "Model", baseUrl: "Base URL", apiKey: "API Key", transport: "Transport",
       requestTimeout: "Planning timeout (s)", requestTimeoutHelp: "Wall-clock limit for one PM planning/review call; range 30–3600 seconds, default 300 seconds.",
       reasoningEffort: "Reasoning effort",
@@ -324,6 +344,7 @@
       disabled: d.remoteDisabled, process_required: d.remoteProcessRequired,
       rate_limited: d.remoteRateLimited, auth: d.cloudAuthFailed,
       timeout: d.cloudTimeout, unreachable: d.cloudUnreachable,
+      missing_description: d.missingDescription, description_too_long: d.descriptionTooLong,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
   }
@@ -1156,9 +1177,19 @@
   function Composer(props) {
     const { d, lang, workspaces, workspace, setWorkspace, task, setTask, model, setModel, modelOptions, llm, effort, setEffort,
       attachments, addAttach, removeAttach, dispatching, runDispatch, dispatchStatus, sessionRow, events,
-      compacting, runCompact, compactStatus, processes, selectedProcessId, setSelectedProcessId, teamMode } = props;
+      compacting, runCompact, compactStatus, processes, selectedProcessId, setSelectedProcessId, teamMode,
+      definitions, selectedWorkModeIds, setSelectedWorkModeIds } = props;
     const wsOpts = workspaces.length ? workspaces : [];
     const procOpts = processes || [];
+    const [wmOpen, setWmOpen] = useState(false);
+    // Only active definitions are pickable work modes; ignore archived/draft siblings.
+    const wmOptions = (definitions || []).filter((x) => x && x.is_active);
+    const wmSelected = selectedWorkModeIds || [];
+    const toggleWm = (id) => {
+      if (!setSelectedWorkModeIds) return;
+      setSelectedWorkModeIds(wmSelected.includes(id) ? wmSelected.filter((x) => x !== id) : [...wmSelected, id]);
+    };
+    const wmDesc = (row) => { try { const m = JSON.parse(row.metadata_json || "{}"); if (m && m.description) return m.description; } catch (e) {} return (row.body || "").slice(0, 80); };
     const est = estTokens(events || []);
     const contextLimit = contextLimitFor(modelOptions, model, llm && llm.model);
     const pct = Math.min(95, Math.round((est / contextLimit) * 100));
@@ -1192,6 +1223,16 @@
             <input className="ws-select model-pick" value=${model} onChange=${(e) => setModel(e.target.value)} list="composer-models" placeholder=${d.modelPlaceholder} aria-label=${d.model} />
             <datalist id="composer-models">${(modelOptions || []).map((o) => html`<option key=${o.value} value=${o.value}></option>`)}</datalist>
             <span className="tool-chip dashed">🤖 ${d.agentAuto}</span>
+            ${wmOptions.length ? html`<div style=${{ position: "relative" }}>
+              <button className=${`tool-chip${wmSelected.length ? " on" : ""}`} onClick=${() => setWmOpen(!wmOpen)} title=${d.workModePick}>🧩 ${d.workMode}${wmSelected.length ? ` (${wmSelected.length})` : ""}</button>
+              ${wmOpen ? html`<div className="wm-pop" style=${{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, zIndex: 30, minWidth: 240, maxWidth: 340, maxHeight: 260, overflow: "auto", background: "var(--surface, #fff)", border: "1px solid var(--border, #ddd)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.16)", padding: 8 }}>
+                <div style=${{ fontSize: 11, opacity: 0.7, padding: "2px 6px 6px" }}>${wmSelected.length ? d.workModePick : d.workModeAuto}</div>
+                ${wmOptions.map((row) => html`<label key=${row.id} style=${{ display: "flex", gap: 8, alignItems: "flex-start", padding: "5px 6px", cursor: "pointer", borderRadius: 6 }}>
+                  <input type="checkbox" checked=${wmSelected.includes(row.id)} onChange=${() => toggleWm(row.id)} />
+                  <span style=${{ minWidth: 0 }}><span style=${{ display: "block", fontSize: 12, fontWeight: 600 }}>${d[KIND_LABEL[row.kind]] || row.kind} · ${row.name}</span><span style=${{ display: "block", fontSize: 11, opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${wmDesc(row)}</span></span>
+                </label>`)}
+              </div>` : null}
+            </div>` : null}
             <div className="seg">
               <button className=${`opt${effort === "low" ? " on" : ""}`} onClick=${() => setEffort("low")}>${d.fast}</button>
               <button className=${`opt${effort === "medium" ? " on" : ""}`} onClick=${() => setEffort("medium")}>${d.std}</button>
@@ -1289,7 +1330,7 @@
   // ===========================================================================
   // Playbook
   // ===========================================================================
-  function Playbook({ d, lang, definitions, filter, setFilter, onNew, onEdit, onActivate, onDelete, onExport, onImportClick, fileRef, onImport }) {
+  function Playbook({ d, lang, definitions, filter, setFilter, onNew, onEdit, onActivate, onDelete, onExport, onImportClick, fileRef, onImport, onStartWorkflow }) {
     const pills = [["", "kindAll"], ["workflow", "kindWorkflows"], ["skill", "kindSkills"], ["code_standard", "kindStandards"], ["qa_rubric", "kindQa"]];
     return html`<div className="page-mid">
       <div className="pb-toolbar">
@@ -1307,10 +1348,11 @@
             <span style=${{ marginLeft: "auto" }} className=${row.is_active ? "state-on" : "state-off"}>${row.is_active ? "●" : "○"} ${row.is_active ? d.on : d.off}</span>
           </div>
           <div className="nm">${row.name}</div>
-          <div className="desc"><${MD} text=${(row.body || "").slice(0, 160)} className="markdown-compact" /></div>
+          <div className="desc"><${MD} text=${(() => { try { const m = JSON.parse(row.metadata_json || "{}"); if (m && m.description) return m.description; } catch (e) {} return (row.body || "").slice(0, 160); })()} className="markdown-compact" /></div>
           <div className="foot">
             <span className="scope">${(() => { try { const o = JSON.parse(row.scope_json || "{}"); return Object.keys(o).length ? JSON.stringify(o) : (lang === "zh" ? "全局" : "global"); } catch (e) { return lang === "zh" ? "全局" : "global"; } })()}</span>
             <span className="acts">
+              ${row.kind === "workflow" && row.is_active ? html`<span className="act" onClick=${() => onStartWorkflow(row)}>▶ ${d.startWorkflow}</span>` : null}
               ${!row.is_active ? html`<span className="act" onClick=${() => onActivate(row.id)}>${d.activate}</span>` : null}
               <span onClick=${() => onEdit(row)}>${d.edit}</span>
               <span className="del" onClick=${() => onDelete(row.id)}>${d.del}</span>
@@ -1328,6 +1370,7 @@
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
       pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
+      debugSettings, debugStatus, saveDebug,
       cloud, setCloud, saveCloud, saveRemoteExec, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2, setLang } = props;
     const updateAgent = (name, patch) => setAgentSettings((rows) => (rows || []).map((r) => (r.name === name ? { ...r, ...patch } : r)));
@@ -1454,6 +1497,15 @@
         <button className="btn primary" onClick=${savePmTools}>${d.save}</button>
       </div>
 
+      <!-- debug -->
+      <div className="card">
+        <div className="card-title">${d.debug}</div>
+        <div className="card-sub">${d.debugSub}</div>
+        <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, marginBottom: 8 }}>${d.llmTrace} <${Switch} on=${!!(debugSettings && debugSettings.llm_trace)} onChange=${(v) => saveDebug(v)} /></label>
+        <div className="alert warn" style=${{ marginBottom: 10 }}>⚠ ${d.llmTraceWarn}</div>
+        ${debugStatus ? html`<div className="alert ok" style=${{ marginBottom: 10 }}>${debugStatus}</div>` : null}
+      </div>
+
       <!-- cloud connection -->
       <div className="card">
         <div className="card-title">${d.cloudConn}
@@ -1521,6 +1573,9 @@
           </select>
         </div>
         <div className="field"><span className="field-label">${d.defnName}</span><input className="input mono" value=${row.name || ""} disabled=${!!row.id} onChange=${(e) => update({ name: e.target.value })} placeholder="add-feature" /></div>
+      </div>
+      <div className="field"><span className="field-label">${d.defnDescription}</span>
+        <textarea className="textarea" rows="3" maxLength=${1024} value=${row.description || ""} onChange=${(e) => update({ description: e.target.value })} placeholder=${d.defnDescriptionHint}></textarea>
       </div>
       <div className="field"><span className="field-label">${d.defnScope}</span><input className="input mono" value=${row.scope_json || "{}"} onChange=${(e) => update({ scope_json: e.target.value, scopeError: "" })} placeholder='{"lang":"py"}' /></div>
       ${row.scopeError ? html`<div className="alert error">${row.scopeError}</div>` : null}
@@ -1656,6 +1711,9 @@
     const [task, setTask] = useState("");
     const [model, setModel] = useState("");
     const [effort, setEffort] = useState("medium");
+    // Manually-picked work-mode definition ids (D4, UI-first). P0 sends them; the backend accepts but
+    // does NOT yet consume them — resolver pass-through wiring lands in P1.
+    const [selectedWorkModeIds, setSelectedWorkModeIds] = useState([]);
     const [attachments, setAttachments] = useState([]);
     const [dispatching, setDispatching] = useState(false);
     const [dispatchStatus, setDispatchStatus] = useState("");
@@ -1666,6 +1724,8 @@
     const [agentStatus, setAgentStatus] = useState("");
     const [pmTools, setPmTools] = useState({ file_read: true, file_write: false, shell: false, web_fetch: false, web_search: false, browser: false, allowed_commands: ["python --version"], allowed_origins: [], web_search_provider: "duckduckgo", searxng_url: "", browser_headless: false, max_rounds: 6 });
     const [pmToolsStatus, setPmToolsStatus] = useState("");
+    const [debugSettings, setDebugSettings] = useState({ llm_trace: false });
+    const [debugStatus, setDebugStatus] = useState("");
     const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false, remote_execution_enabled: false });
     const [cloudStatus, setCloudStatus] = useState("");
     const [cloudAvailable, setCloudAvailable] = useState(true);
@@ -1679,6 +1739,7 @@
     const [defnOpen, setDefnOpen] = useState(false);
     const [defnDraft, setDefnDraft] = useState(null);
     const [confirmDefnDelete, setConfirmDefnDelete] = useState(null);
+    const [wfRun, setWfRun] = useState(null);  // P5: current workflow run view (null = closed)
     const [confirmSessionDelete, setConfirmSessionDelete] = useState(null);
     const [openCalls, setOpenCalls] = useState({});
     const [expandedSub, setExpandedSub] = useState(null);
@@ -1716,6 +1777,8 @@
     }, []);
     const loadAgentSettings = useCallback(async () => { try { setAgentSettings(await api("/api/settings/agents") || []); } catch (e) { setAgentSettings([]); } finally { setAgentsLoaded(true); } }, []);
     const loadPmTools = useCallback(async () => { try { setPmTools(await api("/api/settings/pm-tools") || {}); } catch (e) { /* server mode */ } }, []);
+    const loadDebug = useCallback(async () => { try { setDebugSettings(await api("/api/settings/debug") || { llm_trace: false }); } catch (e) { /* server mode */ } }, []);
+    const saveDebug = useCallback(async (on) => { try { const r = await api("/api/settings/debug", { method: "POST", body: { llm_trace: !!on } }); setDebugSettings({ llm_trace: !!(r && r.llm_trace) }); setDebugStatus(d.debugSaved); } catch (e) { notifyError(e); } }, [d]);
     const loadModels = useCallback(async () => { try { const data = await api("/api/models"); setModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, max_tokens: m.max_tokens, source: m.source }))); } catch (e) { setModelOptions([]); } }, []);
     const loadPmModels = useCallback(async (draft) => {
       const cur = draft || {};
@@ -1799,8 +1862,9 @@
       loadAgentSettings();
       loadLlm();
       loadPmTools();
+      loadDebug();
       loadModels();
-    }, [loadWorkspaces, loadProcesses, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadNotifications, loadAgentSettings, loadLlm, loadPmTools, loadModels]);
+    }, [loadWorkspaces, loadProcesses, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadNotifications, loadAgentSettings, loadLlm, loadPmTools, loadDebug, loadModels]);
     useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
 
     // polling for cards/approvals/sessions
@@ -1915,6 +1979,8 @@
         body.continue_mode = continueMode === "interrupt" ? "interrupt" : "queue";
       }
       if (model.trim()) body.model = model.trim();
+      // D4: manually-picked work modes ride along (backend accepts but doesn't consume yet — P1).
+      if (selectedWorkModeIds && selectedWorkModeIds.length) body.work_mode_ids = selectedWorkModeIds;
       try {
         const res = await api(teamMode ? "/api/dispatch" : "/api/tasks", { method: "POST", body });
         setTask(""); setAttachments([]);
@@ -2010,6 +2076,18 @@
     }
 
     // definitions
+    // Assemble metadata_json: preserve existing keys (e.g. example), stamp the L0 schema, write the
+    // structured description. The server enforces description-required fail-closed (P0 task 5); this
+    // just sends the field the editor now collects.
+    function buildDefnMeta(draft) {
+      let meta = {};
+      try { meta = JSON.parse(draft.metadata_json || "{}") || {}; } catch (e) { meta = {}; }
+      if (typeof meta !== "object" || Array.isArray(meta)) meta = {};
+      meta.schema = "foreman.workmode.meta/1";
+      const desc = (draft.description || "").trim();
+      if (desc) meta.description = desc; else delete meta.description;
+      return JSON.stringify(meta);
+    }
     async function saveDefinition() {
       const draft = defnDraft || {};
       const scopeError = jsonObjectError(draft.scope_json || "{}");
@@ -2018,17 +2096,38 @@
         toast(d.badScopeJson, "error");
         return;
       }
+      // Client-side mirror of the server gate, for a friendly message instead of a raw 400.
+      if (!(draft.description || "").trim()) { toast(d.missingDescription, "error"); return; }
+      const metadata_json = buildDefnMeta(draft);
       try {
         if (draft.id) {
-          await api(`/api/definitions/${encodeURIComponent(draft.id)}`, { method: "PATCH", body: { body: draft.body || "", scope_json: draft.scope_json || "{}" } });
+          await api(`/api/definitions/${encodeURIComponent(draft.id)}`, { method: "PATCH", body: { body: draft.body || "", scope_json: draft.scope_json || "{}", metadata_json } });
           if (draft.activate) await api(`/api/definitions/${encodeURIComponent(draft.id)}/activate`, { method: "POST" });
         } else {
-          await api("/api/definitions", { method: "POST", body: { kind: draft.kind || "workflow", name: (draft.name || "").trim(), body: draft.body || "", scope_json: draft.scope_json || "{}", activate: draft.activate !== false } });
+          await api("/api/definitions", { method: "POST", body: { kind: draft.kind || "workflow", name: (draft.name || "").trim(), body: draft.body || "", scope_json: draft.scope_json || "{}", metadata_json, activate: draft.activate !== false } });
         }
         setDefnOpen(false); setDefnDraft(null); await loadDefinitions(); toast(d.saved, "success");
       } catch (e) { notifyError(e); }
     }
     async function activateDefinition(id) { try { await api(`/api/definitions/${encodeURIComponent(id)}/activate`, { method: "POST" }); await loadDefinitions(); } catch (e) { notifyError(e); } }
+    // ── P5: workflow run control ───────────────────────────────────────────────────────────────
+    async function startWorkflowRun(row) {
+      if (!selectedSession) { toast(d.wfNeedSession, "error"); return; }
+      try {
+        const res = await api("/api/workflows/start", { method: "POST", body: { session_id: selectedSession, workflow: row.name } });
+        setWfRun({ ...res, view: res.step || null }); toast(d.wfStarted, "success");
+      } catch (e) { notifyError(e); }
+    }
+    async function refreshWfRun() {
+      if (!wfRun || !wfRun.run_id) return;
+      try { setWfRun({ ...wfRun, view: await api(`/api/workflows/${encodeURIComponent(wfRun.run_id)}`) }); }
+      catch (e) { /* run finished/cleared → leave last view */ }
+    }
+    async function wfAction(path, body) {
+      if (!wfRun || !wfRun.run_id) return;
+      try { await api(path, { method: "POST", body: { run_id: wfRun.run_id, ...(body || {}) } }); await refreshWfRun(); }
+      catch (e) { notifyError(e); }
+    }
     async function confirmDeleteDefinition() {
       const id = confirmDefnDelete && confirmDefnDelete.id;
       if (!id) return;
@@ -2154,18 +2253,20 @@
       task, setTask, model, setModel, modelOptions, llm, effort, setEffort, attachments, addAttach, removeAttach,
       dispatching, runDispatch, dispatchStatus, onAddStep,
       processes, selectedProcessId, setSelectedProcessId, teamMode,
+      definitions, selectedWorkModeIds, setSelectedWorkModeIds,
     };
     const settingsProps = {
       d, lang, workspaces, workspaceDraft, setWorkspaceDraft, saveWorkspace, browseFolder, deleteWorkspace, loadWorkspaces,
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
       pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
+      debugSettings, debugStatus, saveDebug,
       cloud, setCloud, saveCloud, saveRemoteExec, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2: lang, setLang, onPush: enablePush,
     };
     const decisionsProps = { d, lang, cards: openCards, approvals, onCard, onApproval: decideApproval, openDetail, onGoSession: openTimeline };
     const briefingsProps = { d, lang, reports, onCopy, toast };
-    const playbookProps = { d, lang, definitions, filter: defnFilter, setFilter: setDefnFilter, onNew: () => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }, onEdit: (row) => { setDefnDraft({ ...row, activate: !!row.is_active }); setDefnOpen(true); }, onActivate: activateDefinition, onDelete: deleteDefinition, onExport: exportDefinitions, onImportClick: () => fileRef.current && fileRef.current.click(), fileRef, onImport: importDefinitions };
+    const playbookProps = { d, lang, definitions, filter: defnFilter, setFilter: setDefnFilter, onNew: () => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }, onEdit: (row) => { let desc = ""; try { desc = (JSON.parse(row.metadata_json || "{}") || {}).description || ""; } catch (e) {} setDefnDraft({ ...row, description: desc, activate: !!row.is_active }); setDefnOpen(true); }, onActivate: activateDefinition, onDelete: deleteDefinition, onExport: exportDefinitions, onImportClick: () => fileRef.current && fileRef.current.click(), fileRef, onImport: importDefinitions, onStartWorkflow: startWorkflowRun };
 
     const launchSteps = { engine: status.online, agents: agentsLoaded, data: booted, pct: booted ? 100 : (status.online ? 60 : 25), version: status.version };
 
@@ -2224,6 +2325,19 @@
       </${Modal}>` : null}
       ${confirmDefnDelete ? html`<${Modal} title=${d.confirmDeleteTitle} onClose=${() => setConfirmDefnDelete(null)} footer=${[html`<button key="c" className="btn" onClick=${() => setConfirmDefnDelete(null)}>${d.cancel}</button>`, html`<button key="d" className="btn danger" onClick=${confirmDeleteDefinition}>${d.del}</button>`]}>
         <div>${d.confirmDelete}</div>
+      </${Modal}>` : null}
+      ${wfRun ? html`<${Modal} title=${`${d.workflowRun}: ${wfRun.workflow || ""}`} onClose=${() => setWfRun(null)} footer=${[html`<button key="r" className="btn" onClick=${refreshWfRun}>⟲ ${d.wfRefresh}</button>`, html`<button key="x" className="btn" onClick=${() => setWfRun(null)}>${d.cancel}</button>`]}>
+        ${(() => { const v = wfRun.view || {}; const run = v.run || {}; const status = run.step_status || "pending"; const blocked = status === "blocked"; return html`<div style=${{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+          <div><b>${d.wfStep}</b> ${(typeof run.step_index === "number" ? run.step_index + 1 : 1)} / ${wfRun.total_steps || "?"} — ${v.name || ""}</div>
+          <div><b>${d.wfStatus}</b> <span className=${`tag ${blocked ? "amber" : (status === "passed" ? "green" : "plain")}`}>${status}</span></div>
+          ${v.instruction ? html`<div className="desc"><${MD} text=${v.instruction} className="markdown-compact" /></div>` : null}
+          ${(v.missing && v.missing.length) ? html`<div className="alert warn">⚠ missing: ${v.missing.join(", ")}</div>` : null}
+          <div style=${{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            ${blocked
+              ? html`<button className="btn primary" onClick=${() => wfAction("/api/workflows/resume", { approved: true })}>${d.wfApprove}</button><button className="btn danger" onClick=${() => wfAction("/api/workflows/resume", { approved: false })}>${d.wfReject}</button>`
+              : html`<button className="btn" onClick=${() => wfAction("/api/workflows/begin")}>${d.wfBegin}</button><button className="btn primary" onClick=${() => wfAction("/api/workflows/submit")}>${d.wfSubmit}</button>`}
+          </div>
+        </div>`; })()}
       </${Modal}>` : null}
       ${confirmSessionDelete ? html`<${Modal} title=${d.confirmDeleteTitle} onClose=${() => setConfirmSessionDelete(null)} footer=${[html`<button key="c" className="btn" onClick=${() => setConfirmSessionDelete(null)}>${d.cancel}</button>`, html`<button key="d" className="btn danger" onClick=${confirmDeleteSession}>${d.deleteSession}</button>`]}>
         <div>${d.confirmSessionDelete}</div>

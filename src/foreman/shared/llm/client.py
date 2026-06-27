@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -105,6 +106,7 @@ class LLMClient:
         transport: httpx.AsyncBaseTransport | None = None,
         ws_connect=None,
         settings_resolver: Callable[[], dict] | None = None,
+        tracer: Any = None,
     ) -> None:
         # Construction-time defaults from config. `settings_resolver` (optional) lets a runtime
         # settings page override provider/model/base_url/key WITHOUT a restart: it's called per
@@ -118,6 +120,9 @@ class LLMClient:
         self.timeout = cfg.llm.request_timeout_s
         self.mode = (cfg.llm.transport or "http").strip().lower()
         self._settings_resolver = settings_resolver
+        # Optional debug tracer (work-mode P1b-trace, §8C). None = off, zero overhead. Records the
+        # request/response at the two choke points below — never raises into a real call.
+        self._tracer = tracer
         # `transport` lets tests inject httpx.MockTransport (no real network / tokens spent).
         self._client = httpx.AsyncClient(timeout=cfg.llm.request_timeout_s, transport=transport)
         # `ws_connect(url, headers, timeout) -> async-context-manager` lets tests inject a fake socket.
@@ -204,6 +209,39 @@ class LLMClient:
 
         On the ws transport json_mode still does not request provider-side response_format, but it
         enables Foreman's structured repetition watchdog for JSON-shaped PM streams."""
+        if self._tracer is None:
+            return await self._complete_impl(
+                messages, json_mode=json_mode, model=model, on_stream=on_stream, state_key=state_key
+            )
+        provider, _base, model_eff = self._resolve(model)
+        t0 = time.perf_counter()
+        err: str | None = None
+        text = ""
+        try:
+            text = await self._complete_impl(
+                messages, json_mode=json_mode, model=model, on_stream=on_stream, state_key=state_key
+            )
+            return text
+        except Exception as exc:  # record failures too, then re-raise
+            err = repr(exc)
+            raise
+        finally:
+            self._tracer.record(
+                kind="complete", provider=provider, model=model_eff,
+                transport=self._transport_mode(), json_mode=json_mode, messages=messages,
+                tools=None, response_text=text, tool_calls=None,
+                latency_ms=(time.perf_counter() - t0) * 1000, error=err,
+            )
+
+    async def _complete_impl(
+        self,
+        messages: list[Message],
+        *,
+        json_mode: bool = False,
+        model: str = "",
+        on_stream: StreamCallback | None = None,
+        state_key: str = "",
+    ) -> str:
         provider, base_url, model = self._resolve(model)
         if self._transport_mode() == "ws":
             return await self._responses_ws(
@@ -229,6 +267,44 @@ class LLMClient:
         tool_choice: object | None = "auto",
     ) -> LLMToolResponse:
         """Return assistant text plus provider-native tool calls when the transport supports them."""
+        if self._tracer is None:
+            return await self._tool_complete_impl(
+                messages, tools=tools, json_mode=json_mode, model=model, on_stream=on_stream,
+                tool_choice=tool_choice,
+            )
+        provider, _base, model_eff = self._resolve(model)
+        t0 = time.perf_counter()
+        err: str | None = None
+        resp = LLMToolResponse(text="", tool_calls=[])
+        try:
+            resp = await self._tool_complete_impl(
+                messages, tools=tools, json_mode=json_mode, model=model, on_stream=on_stream,
+                tool_choice=tool_choice,
+            )
+            return resp
+        except Exception as exc:
+            err = repr(exc)
+            raise
+        finally:
+            self._tracer.record(
+                kind="tool_complete", provider=provider, model=model_eff,
+                transport=self._transport_mode(), json_mode=json_mode, messages=messages,
+                tools=tools, response_text=resp.text,
+                tool_calls=[{"id": c.id, "name": c.name, "arguments": c.arguments}
+                            for c in resp.tool_calls],
+                latency_ms=(time.perf_counter() - t0) * 1000, error=err,
+            )
+
+    async def _tool_complete_impl(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[dict],
+        json_mode: bool = False,
+        model: str = "",
+        on_stream: StreamCallback | None = None,
+        tool_choice: object | None = "auto",
+    ) -> LLMToolResponse:
         provider, base_url, model = self._resolve(model)
         if self._transport_mode() == "ws":
             return await self._responses_ws_tool(
@@ -267,6 +343,35 @@ class LLMClient:
         r = await self._client.get(f"{base_url}/models", headers=headers)
         r.raise_for_status()
         return _model_infos(r.json())
+
+    async def embed(self, texts: list[str], *, model: str = "") -> list[list[float]]:
+        """One embedding vector per input text via the configured provider's /embeddings (work-mode
+        P3 §3.2). Reuses _resolve()/_api_key()/self._client like complete(). Only the OpenAI-compatible
+        shape is native; anthropic (no embeddings endpoint) raises so the caller can fall back to a
+        local embedder. Empty input → []. Always plain HTTP POST (embeddings are transport-agnostic)."""
+        if not texts:
+            return []
+        provider, base_url, _model = self._resolve(model)
+        if provider == "anthropic":
+            raise LLMConfigError("anthropic provider has no /embeddings; use a local fallback")
+        emb_model = (model or "").strip() or self.model
+        r = await self._client.post(
+            f"{base_url}/embeddings",
+            headers={"Authorization": f"Bearer {self._api_key()}"},
+            json={"model": emb_model, "input": texts},
+        )
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        # Order by the per-item `index` (the OpenAI /embeddings contract — some proxies reorder); fall
+        # back to response order when absent. Then index-align to the inputs so a vector can never be
+        # paired with the wrong text.
+        ordered = sorted(
+            enumerate(data),
+            key=lambda pair: pair[1].get("index", pair[0]) if isinstance(pair[1], dict) else pair[0],
+        )
+        vecs = [list(item.get("embedding") or []) if isinstance(item, dict) else []
+                for _, item in ordered]
+        return vecs[: len(texts)] if len(vecs) >= len(texts) else vecs + [[]] * (len(texts) - len(vecs))
 
     async def _openai(
         self,

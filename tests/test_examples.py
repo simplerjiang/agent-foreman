@@ -44,6 +44,16 @@ def test_every_example_is_well_formed():
         assert isinstance(meta, dict) and meta.get("example") is True
 
 
+def test_every_example_has_a_description(tmp_path):
+    """P0 task 4a: every shipped seed carries a non-empty, ≤1024-char metadata.description, so the
+    description-required gate never strands a seeded definition out of auto-selection (§4.3)."""
+    for e in load_example_definitions():
+        meta = json.loads(e.metadata_json)
+        desc = meta.get("description")
+        assert isinstance(desc, str) and desc.strip(), f"{e.kind}/{e.name} has no description"
+        assert len(desc) <= 1024, f"{e.kind}/{e.name} description exceeds 1024 chars"
+
+
 def test_example_names_are_unique_per_kind():
     seen = set()
     for e in load_example_definitions():
