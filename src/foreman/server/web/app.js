@@ -17,6 +17,7 @@
   const I18N = {
     zh: {
       productSubtitle: "本地工作台",
+      newVersionReady: "新版本已发布", refreshNow: "刷新", later: "稍后",
       navWorkspace: "工作台", navDecisions: "决策", navBriefings: "简报", navRules: "工作方式", navSettings: "设置",
       workspaceSubtitle: "选择工作区，给本机 agent 下发任务。",
       decisionsSubtitle: "处理需要你确认的卡片和审批。",
@@ -133,6 +134,7 @@
     },
     en: {
       productSubtitle: "Local workbench",
+      newVersionReady: "A new version is available", refreshNow: "Refresh", later: "Later",
       navWorkspace: "Workspace", navDecisions: "Decisions", navBriefings: "Briefings", navRules: "Playbook", navSettings: "Settings",
       workspaceSubtitle: "Pick a workspace and dispatch work to the local agent.",
       decisionsSubtitle: "Handle the cards and approvals that need you.",
@@ -821,7 +823,7 @@
             <div className=${`launch-step ${steps.agents ? "done" : "wait"}`}><span>${steps.agents ? "✓" : "○"}</span><span>${d.launchAgents}</span></div>
             <div className=${`launch-step ${steps.data ? "done" : "now"}`}>${steps.data ? html`<span>✓</span>` : html`<span className="spin"></span>`}<span>${d.launchLoad}</span></div>
           </div>
-          <div className="launch-foot">v${steps.version || "1.0.0"} · ${location.host}</div>
+          <div className="launch-foot">${steps.version ? `v${steps.version} · ` : ""}${location.host}</div>
         </div>
       </div>`;
   }
@@ -839,12 +841,12 @@
     </nav>`;
   }
 
-  function Sidebar({ d, lang, view, onView, counts, sessions, selected, onSelect, onNew }) {
+  function Sidebar({ d, lang, view, onView, counts, sessions, selected, onSelect, onNew, version }) {
     return html`
       <aside className="sidebar desktop">
         <div className="sb-brand">
           <div className="name">Foreman</div>
-          <div className="sub">${d.productSubtitle} · v1.0.0</div>
+          <div className="sub">${d.productSubtitle}${version ? ` · v${version}` : ""}</div>
         </div>
         <${NavList} d=${d} view=${view} onView=${onView} counts=${counts} />
         <div className="sb-section"><span>${d.sessions}</span><span className="add" onClick=${onNew} title=${d.newSession}>+</span></div>
@@ -1692,7 +1694,12 @@
     const [booted, setBooted] = useState(false);
     const [hidingLaunch, setHidingLaunch] = useState(false);
 
-    const [status, setStatus] = useState({ online: false, version: "1.0.0" });
+    const [status, setStatus] = useState({ online: false, version: "" });
+    // Version-update detection: remember the version this page loaded with; when /health later
+    // reports a different one (a new PR shipped — AGENTS.md §四 bumps __version__ every deploy),
+    // surface a refresh prompt instead of silently running stale front-end code.
+    const loadedVersionRef = useRef(null);
+    const [updateVersion, setUpdateVersion] = useState("");
     const [workspaces, setWorkspaces] = useState([]);
     const [agentsLoaded, setAgentsLoaded] = useState(false);
     const [agentSettings, setAgentSettings] = useState([]);
@@ -1850,7 +1857,7 @@
 
     useEffect(() => {
       if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-      api("/health").then((h) => setStatus({ online: true, version: h.version })).catch(() => setStatus({ online: false, version: "offline" }));
+      api("/health").then((h) => { setStatus({ online: true, version: h.version }); if (loadedVersionRef.current == null && h.version) loadedVersionRef.current = h.version; }).catch(() => setStatus({ online: false, version: "offline" }));
       // Boot on the essentials only. Model + agent discovery hit the provider's /models (or run a
       // CLI --version per agent) and can take the backend request timeout if a key is set but the
       // endpoint is slow — keeping them out of this barrier stops the launch overlay from hanging
@@ -1883,6 +1890,22 @@
       }, 8000);
       return () => clearInterval(id);
     }, [teamMode, selectedProcessId, loadProcesses, loadNotifications, loadRemoteSnapshot, loadSessions, loadCards, loadApprovals, loadCloud, cloudAvailable]);
+
+    // New-version watcher: poll /health; when the reported version differs from the one this page
+    // loaded with, a new build was deployed (every PR bumps __version__ — AGENTS.md §四). Offer a
+    // refresh rather than auto-reloading, so the user never loses in-flight input.
+    useEffect(() => {
+      const id = setInterval(() => {
+        api("/health").then((h) => {
+          const v = h && h.version;
+          if (!v || v === "offline") return;
+          setStatus((s) => (s.version === v ? s : { ...s, online: true, version: v }));
+          if (loadedVersionRef.current == null) { loadedVersionRef.current = v; return; }
+          if (v !== loadedVersionRef.current) setUpdateVersion(v);
+        }).catch(() => {});
+      }, 30000);
+      return () => clearInterval(id);
+    }, []);
 
     useEffect(() => {
       if (teamMode && selectedProcessId) loadRemoteSnapshot(selectedProcessId);
@@ -2287,9 +2310,15 @@
 
       <div className="toasts">${toasts.map((t) => html`<div key=${t.id} className=${`toast ${t.type || ""}`}>${t.text}</div>`)}</div>
 
+      ${updateVersion ? html`<div className="update-banner">
+        <span className="ub-msg">${d.newVersionReady} · v${updateVersion}</span>
+        <button className="btn primary sm" onClick=${() => location.reload()}>${d.refreshNow}</button>
+        <button className="btn sm ghost" onClick=${() => setUpdateVersion("")}>${d.later}</button>
+      </div>` : null}
+
       <!-- desktop -->
       <div className="app desktop">
-        <${Sidebar} d=${d} lang=${lang} view=${view} onView=${setView} counts=${counts} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} />
+        <${Sidebar} d=${d} lang=${lang} view=${view} onView=${setView} counts=${counts} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} version=${status.version} />
         ${view === "workspace" ? html`<${Workspace}
             d=${d} lang=${lang} dig=${dig} sessionRow=${sessionRow} events=${events} autonomy=${autonomy}
             openCalls=${openCalls} toggleCall=${toggleCall} expandedSub=${expandedSub} toggleSub=${toggleSub}

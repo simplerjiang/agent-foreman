@@ -13,4 +13,6 @@ still sit at the top level pending the move under `client/` (T0.2), and the serv
 is consolidated under `server/` (T0.3).
 """
 
-__version__ = "1.0.0"
+# THE single source of truth for the Foreman version. Bump THIS line on every PR (AGENTS.md §四:
+# +0.0.1, carry at 10). pyproject.toml reads it dynamically; /health + the PWA derive from it.
+__version__ = "1.0.1"

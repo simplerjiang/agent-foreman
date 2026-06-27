@@ -82,10 +82,29 @@ gh issue list --label needs-e2e --state all --limit 50
 
 ---
 
+## 四、开发 agent：每个 PR 自增版本号（已进入 Prod，从 v1.0.0 起）
+
+项目已是**生产版本**。**每个 PR 都必须把版本号自增一格**——两个 PR 不允许共用同一版本号。
+
+- **自增规则**：`+0.0.1`（patch 加一），**每位满 10 进一位**（每位取值 0–9，到 10 即归 0 并向高位进一）：
+  `1.0.0 → 1.0.1 → … → 1.0.9 → 1.1.0 → … → 1.9.9 → 2.0.0`。
+- **只改这一处「单一来源」**——`src/foreman/__init__.py` 的 `__version__ = "x.y.z"`。其余全部**自动派生**，不要再手改：
+  - `pyproject.toml` 用 `dynamic = ["version"]` + `[tool.setuptools.dynamic] version = {attr = "foreman.__version__"}` 动态读取；
+  - `/health`、`/api/*`、PWA 侧栏/启动页全部从 `__version__`（经 `/health`）取值，**前端不得硬编码版本号**。
+- **提交前自查**：相对 `origin/main` 的当前版本**正好 +0.0.1**（含进位）：
+  ```bash
+  git show origin/main:src/foreman/__init__.py | grep __version__   # 看 main 当前版本
+  grep -n '__version__' src/foreman/__init__.py                     # 你的新版本（应 = main + 0.0.1）
+  ```
+- **PR 合并即发布**：合并到 `main` 后，CI（`.github/workflows/deploy.yml`）在测试门禁通过后**并行**做两件事——① `release` job 构建 Windows exe、发 `v<__version__>` 的 GitHub Release（已存在则跳过）；② `deploy` job 把该 commit 部署到 `foreman.kongsites.com`。已连着的 PWA 会轮询 `/health` 检测到新版本并提示刷新。所以**版本号不递增 = 不会发新 Release**（release job 按 tag 幂等跳过）。
+
+---
+
 ## 通用纪律
 - **二次修复不许裸关**：被 E2E 打回过（reopen / 复验不通过）的 issue，再修时**必须当场跑 `foreman-e2e` 复验通过**（附 🖱️实测证据）才能 `close`；没当场验过只能留 open + `needs-e2e`，**禁止再次「裸关闭甩给异步复验」**。详见 §二。
 - **不凭印象操作 issue**：领取要看清没被领、关闭/复验通过都要**附证据**（commit SHA / 实测现象 / 截图名）。
 - **一个问题一条 issue**，便于独立认领与关闭。
+- **每个 PR 必须自增版本号**（`+0.0.1`，满 10 进位；**只改 `src/foreman/__init__.py` 的 `__version__` 这一处**，其余自动派生）——合并即触发 Release exe + 部署线上站，详见 §四。
 - 标题里**禁用半角双引号 `"`**（会破坏 `gh ... --title "…"` 的 shell 解析）——用 `「」`。
 - 开发涉及破坏性操作（删数据、改用户配置、push/merge/deploy）需谨慎并按项目门禁；E2E 测试只用**只读、无害**指令驱动 agent。
 

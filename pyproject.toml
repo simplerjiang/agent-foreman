@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-foreman"
-version = "1.0.0"
+# Single source of truth for the version = src/foreman/__init__.py::__version__ (AGENTS.md §四).
+# setuptools reads it dynamically (see [tool.setuptools.dynamic]) — never hardcode the version twice.
+dynamic = ["version"]
 description = "A self-hosted PM agent that supervises local coding agents (Claude Code / Codex) and reports to your phone."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -66,6 +68,10 @@ Design = "https://github.com/simplerjiang/agent-foreman/blob/main/docs/DESIGN.zh
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Version is read from the package's __version__ — the ONE place a PR bumps (AGENTS.md §四).
+[tool.setuptools.dynamic]
+version = { attr = "foreman.__version__" }
 
 # Ship the built-in starter definitions (T6.4) as package data so they're available at runtime
 # (importlib.resources) in both source and wheel installs. Generic, redacted — no secrets.
