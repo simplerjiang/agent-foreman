@@ -517,6 +517,7 @@ def create_app(
     cloud: Any = None,
     workflow_engine: Any = None,
     workflow_qa: Any = None,
+    updater: Any = None,
 ) -> FastAPI:
     # In-memory log tail for the admin console's 日志管理 view (process-wide singleton). Re-attached
     # on startup because uvicorn applies its own logging dictConfig AFTER the app is built, which
@@ -1138,6 +1139,30 @@ def create_app(
         if cfg.server.health_show_db:
             out["db"] = cfg.store.db_path
         return out
+
+    @app.get("/api/update/check")
+    async def update_check() -> dict:
+        """Self-update status for the local PC exe (便携版一键自更新). The updater is injected by
+        the local app only (team server passes none) and is duck-typed, so app.py never imports the
+        client (DESIGN §14). Reports {current, frozen, available, latest?, size?, notes?}. The
+        GitHub call runs in a threadpool so it never blocks the event loop."""
+        if updater is None:
+            return {"current": __version__, "frozen": False, "available": False}
+        from starlette.concurrency import run_in_threadpool
+
+        return await run_in_threadpool(updater.check)
+
+    @app.post("/api/update/apply")
+    async def update_apply() -> dict:
+        """Begin a one-click in-place update: download the new exe, swap it (rename), relaunch. Only
+        replaces foreman.exe — the sibling foreman.db / config.yaml / .env are never touched, so
+        local data is preserved. The app goes down and comes back on the new version."""
+        if updater is None or not getattr(updater, "is_frozen", lambda: False)():
+            raise HTTPException(status_code=400, detail="self-update only available in the packaged exe")
+        res = updater.begin_apply()
+        if not res.get("ok"):
+            raise HTTPException(status_code=409, detail=res.get("reason") or "cannot apply update")
+        return res
 
     @app.get("/api/agents")
     async def list_agents() -> list[dict]:

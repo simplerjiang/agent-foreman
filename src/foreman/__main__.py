@@ -41,6 +41,12 @@ def app_cmd(
     )
     from foreman.client.splash import close_splash, show_splash
 
+    # Finish any pending self-update: delete the leftover foreman.old.exe once it's unlocked
+    # (便携版一键自更新). No-op from source / when nothing pending.
+    from foreman.client.update import cleanup_stale
+
+    cleanup_stale()
+
     url = f"http://{host}:{port}/"
     # Single instance: the engine owns the local SQLite store + gates, so only one may run per
     # machine. If Foreman already answers on the port (e.g. the exe was double-clicked again), open
@@ -95,6 +101,11 @@ def app_cmd(
     )
     if window is not None:
         window.events.shown += close_splash
+        # Self-update restart: a one-click update closes this window (clean stop → process exits) so
+        # the swap helper can replace the exe, then it relaunches us (便携版一键自更新).
+        from foreman.client.update import register_shutdown_hook
+
+        register_shutdown_hook(window.destroy)
     else:
         close_splash()
     try:

@@ -18,6 +18,8 @@
     zh: {
       productSubtitle: "本地工作台",
       newVersionReady: "新版本已发布", refreshNow: "刷新", later: "稍后",
+      appUpdateReady: "发现新版本", updateNow: "立即更新", updating: "正在下载更新，应用将自动重启…",
+      updateFailed: "更新失败，请稍后重试或手动下载",
       navWorkspace: "工作台", navDecisions: "决策", navBriefings: "简报", navRules: "工作方式", navSettings: "设置",
       workspaceSubtitle: "选择工作区，给本机 agent 下发任务。",
       decisionsSubtitle: "处理需要你确认的卡片和审批。",
@@ -135,6 +137,8 @@
     en: {
       productSubtitle: "Local workbench",
       newVersionReady: "A new version is available", refreshNow: "Refresh", later: "Later",
+      appUpdateReady: "Update available", updateNow: "Update now", updating: "Downloading update — the app will restart automatically…",
+      updateFailed: "Update failed — try again later or download manually",
       navWorkspace: "Workspace", navDecisions: "Decisions", navBriefings: "Briefings", navRules: "Playbook", navSettings: "Settings",
       workspaceSubtitle: "Pick a workspace and dispatch work to the local agent.",
       decisionsSubtitle: "Handle the cards and approvals that need you.",
@@ -1700,6 +1704,11 @@
     // surface a refresh prompt instead of silently running stale front-end code.
     const loadedVersionRef = useRef(null);
     const [updateVersion, setUpdateVersion] = useState("");
+    // Packaged-exe self-update (便携版一键自更新): /api/update/check reports a newer GitHub Release;
+    // "立即更新" POSTs /api/update/apply → the exe downloads, swaps in place and relaunches.
+    const [appUpdate, setAppUpdate] = useState(null); // {version, notes} when an in-place update is offered
+    const [updating, setUpdating] = useState(false);
+    const [updateError, setUpdateError] = useState(false);
     const [workspaces, setWorkspaces] = useState([]);
     const [agentsLoaded, setAgentsLoaded] = useState(false);
     const [agentSettings, setAgentSettings] = useState([]);
@@ -1905,6 +1914,30 @@
         }).catch(() => {});
       }, 30000);
       return () => clearInterval(id);
+    }, []);
+
+    // Packaged-exe self-update watcher (便携版一键自更新): ask the local server whether a newer
+    // GitHub Release exists for THIS exe. Only the frozen exe reports available=true (from source
+    // there's nothing to swap). Check shortly after boot, then every 6h. Never auto-applies.
+    const checkAppUpdate = useCallback(() => {
+      api("/api/update/check").then((u) => {
+        if (u && u.available) setAppUpdate({ version: u.latest, notes: u.notes || "" });
+      }).catch(() => {});
+    }, []);
+    useEffect(() => {
+      const t = setTimeout(checkAppUpdate, 5000);
+      const id = setInterval(checkAppUpdate, 6 * 60 * 60 * 1000);
+      return () => { clearTimeout(t); clearInterval(id); };
+    }, [checkAppUpdate]);
+
+    const applyAppUpdate = useCallback(() => {
+      setUpdateError(false);
+      setUpdating(true);
+      api("/api/update/apply", { method: "POST" }).then((r) => {
+        if (!r || !r.ok) { setUpdating(false); setUpdateError(true); }
+        // On success the app goes down and relaunches on the new version — keep the "updating…"
+        // banner up; the page dies with the server, then the new exe serves a fresh page.
+      }).catch(() => { setUpdating(false); setUpdateError(true); });
     }, []);
 
     useEffect(() => {
@@ -2314,6 +2347,12 @@
         <span className="ub-msg">${d.newVersionReady} · v${updateVersion}</span>
         <button className="btn primary sm" onClick=${() => location.reload()}>${d.refreshNow}</button>
         <button className="btn sm ghost" onClick=${() => setUpdateVersion("")}>${d.later}</button>
+      </div>` : null}
+
+      ${appUpdate ? html`<div className="update-banner">
+        <span className="ub-msg">${updating ? d.updating : (updateError ? d.updateFailed : `${d.appUpdateReady} · v${appUpdate.version}`)}</span>
+        ${updating ? null : html`<button className="btn primary sm" onClick=${applyAppUpdate}>${d.updateNow}</button>`}
+        ${updating ? null : html`<button className="btn sm ghost" onClick=${() => setAppUpdate(null)}>${d.later}</button>`}
       </div>` : null}
 
       <!-- desktop -->
