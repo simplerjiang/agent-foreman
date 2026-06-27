@@ -364,6 +364,16 @@ def test_mobile_shell_drawer_and_bottom_tabs_wired():
     assert ".m-drawer" in css and ".m-bottom" in css and ".appbar" in css
 
 
+def test_readonly_output_panel_is_not_terminal_chrome():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert 'tabTerminal: "原始输出"' in js
+    assert 'readOnlyLog: "只读日志"' in js
+    assert 'tabTerminal: "终端"' not in js
+    assert ".term-dotr" not in css
+
+
 def test_workspace_settings_frontend_wired(tmp_path):
     cfg = load_config(tmp_path / "none.yaml")
     cfg.workspaces = [WorkspaceCfg(path="D:/proj", name="Project")]
