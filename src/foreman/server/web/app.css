@@ -511,6 +511,10 @@ a { color: var(--accent-text); }
 .toast { padding: 9px 16px; border-radius: 9px; font-size: 13px; font-weight: 600; box-shadow: var(--shadow); animation: fdup 0.2s; background: var(--surface); border: 1px solid var(--border); color: var(--text); }
 .toast.error { border-color: var(--red); color: var(--red); }
 .toast.success { border-color: var(--green); color: var(--green); }
+/* New-version available banner: a thin, dismissable pill below the toasts (top-center). */
+.update-banner { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 320; display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 16px; border-radius: 999px; background: var(--surface); border: 1px solid var(--accent); box-shadow: var(--shadow); animation: fdup 0.2s; }
+.update-banner .ub-msg { font-size: 13px; font-weight: 600; color: var(--accent-text, var(--text)); white-space: nowrap; }
+.update-banner .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 
 /* ---------- markdown ---------- */
 .markdown-body { color: inherit; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.6; }

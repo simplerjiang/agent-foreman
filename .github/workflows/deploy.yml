@@ -1,6 +1,10 @@
-name: Deploy to server
+name: CI · test, release exe, deploy
 
-# On push to main: run the full test/static gate FIRST, and only deploy if it passes (issue #1 P1).
+# On push to main: run the full test/static gate FIRST, and only if it passes do BOTH, in parallel:
+#   ① release — build the Windows desktop exe and publish a GitHub Release tagged v<__version__>
+#   ② deploy  — ship the gated commit to foreman.kongsites.com (the online site)
+# Per AGENTS.md §四 every PR bumps the version, so every main push is a new version → a fresh
+# Release exe AND an updated online site, kept in lockstep. (issue #1 P1: deploy only after the gate.)
 # Deploy connects as the unprivileged `foreman` user and runs the on-server deploy script.
 # Secrets (set in repo settings, never committed): DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY.
 
@@ -54,6 +58,66 @@ jobs:
             sleep 1
           done
           echo "::error::server did not become healthy in time"; exit 1
+
+  # ── release: build the Windows desktop exe + publish a GitHub Release on every version bump ────
+  release:
+    needs: test
+    # Same gate as deploy: main only, never on PRs. Idempotent — skips if the version's Release
+    # already exists, so re-runs / workflow_dispatch don't fail or double-publish.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: write   # create the GitHub Release + upload the exe asset
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read version from src/foreman/__init__.py
+        id: ver
+        shell: bash
+        run: |
+          V=$(sed -n 's/^__version__ *= *"\([^"]*\)".*/\1/p' src/foreman/__init__.py)
+          if [ -z "$V" ]; then echo "::error::could not read __version__ from src/foreman/__init__.py"; exit 1; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$V"    >> "$GITHUB_OUTPUT"
+          echo "Release target: v$V"
+      - name: Skip if this version was already released
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.ver.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release ${{ steps.ver.outputs.tag }} already exists — skipping build (bump __version__ to cut a new one)."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install build deps
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[client,server,pty]"
+          pip install pyinstaller
+      - name: Build Windows exe (PyInstaller)
+        if: steps.check.outputs.exists == 'false'
+        run: python -m PyInstaller foreman.spec --noconfirm --clean
+      - name: Name the asset with the version
+        if: steps.check.outputs.exists == 'false'
+        shell: bash
+        run: cp dist/foreman.exe "foreman-${{ steps.ver.outputs.version }}-windows.exe"
+      - name: Publish GitHub Release with the exe
+        if: steps.check.outputs.exists == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            "foreman-${{ steps.ver.outputs.version }}-windows.exe" \
+            --target "${{ github.sha }}" \
+            --title "Foreman ${{ steps.ver.outputs.tag }}" \
+            --notes "Automated Windows desktop build for ${{ steps.ver.outputs.tag }} (commit ${{ github.sha }}). The same gated commit is shipped to foreman.kongsites.com by the deploy job."
 
   # ── deploy: only after the gate is green ──────────────────────────────────────────────────────
   deploy:
