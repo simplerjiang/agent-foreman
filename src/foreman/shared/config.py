@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -244,6 +244,16 @@ class WorkModeCfg(BaseModel):
     semantic_search: str = "off"
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 256  # local fallback embedder dimension
+
+    @field_validator("semantic_search", mode="before")
+    @classmethod
+    def _coerce_semantic_search(cls, v: object) -> object:
+        # YAML parses bare on/off/yes/no as bools, so `semantic_search: on` in config.yaml arrives as
+        # True. Map bool → the string form this field expects (on→"on", off→"off"); strings (incl.
+        # "auto") pass through untouched.
+        if isinstance(v, bool):
+            return "on" if v else "off"
+        return v
 
 
 class DebugCfg(BaseModel):

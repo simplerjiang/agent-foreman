@@ -24,7 +24,7 @@ from foreman.client.core.work_mode_context import (
 )
 from foreman.client.store import Store
 from foreman.client.store.models import Definition
-from foreman.shared.config import AgentCfg, Config, WorkspaceCfg
+from foreman.shared.config import AgentCfg, Config, WorkModeCfg, WorkspaceCfg, load_config
 from foreman.shared.events import EventBus, make_event
 from foreman.shared.llm import LLMClient
 
@@ -248,3 +248,18 @@ async def test_dispatch_falls_back_to_lexical_when_embedder_fails(tmp_path):
 
     wm = await _dispatch_with_embedder(tmp_path, boom)
     assert wm["scorer"] == "embedding_fallback_lexical"
+
+
+def test_semantic_search_coerces_yaml_bool_to_string(tmp_path):
+    """config.yaml `semantic_search: on/off` is parsed by YAML as a bool — load_config must coerce it
+    to the string this field expects, so a real config never crashes boot (regression: PR80 merge)."""
+    p = tmp_path / "config.yaml"
+    p.write_text("work_mode:\n  semantic_search: on\n", encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.work_mode.semantic_search == "on"
+
+    p.write_text("work_mode:\n  semantic_search: off\n", encoding="utf-8")
+    assert load_config(p).work_mode.semantic_search == "off"
+
+    # An explicit string (e.g. the third mode) still passes straight through.
+    assert WorkModeCfg(semantic_search="auto").semantic_search == "auto"
