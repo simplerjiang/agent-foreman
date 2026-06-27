@@ -258,10 +258,14 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
         cards=cards,
         gate=gate,
     )
+    # Self-update surface for the packaged exe (便携版一键自更新). Duck-typed inject so app.py stays
+    # client-free (§14); a no-op from source (is_frozen() False → check reports unavailable).
+    from .update import Updater
+
     app = create_app(
         cfg, store, bus, hooks=hooks, gate=gate, cards=cards,
         dispatcher=dispatcher, briefings=briefings, definitions=definitions, cloud=cloud,
-        workflow_engine=workflow_engine, workflow_qa=workflow_qa,
+        workflow_engine=workflow_engine, workflow_qa=workflow_qa, updater=Updater(),
     )
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))

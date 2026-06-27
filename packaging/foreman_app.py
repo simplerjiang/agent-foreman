@@ -40,6 +40,14 @@ def _redirect_streams_when_windowed() -> None:
 
 def main() -> None:
     _redirect_streams_when_windowed()
+    # Self-update swap helper (便携版一键自更新): the freshly downloaded foreman.new.exe is relaunched
+    # as `--apply-update-swap` to replace the old exe and restart the app. Handle it before Typer so
+    # it never touches the engine/window — it only renames the two exe files, never the sibling data.
+    if len(sys.argv) > 1 and sys.argv[1] == "--apply-update-swap":
+        from foreman.client.update import run_swap
+
+        run_swap(sys.argv[2:])
+        return
     # Double-clicking the exe launches it with no arguments. A multi-command Typer app then exits
     # with "Missing command" (code 2), so the window just flashes open and closes. The whole point
     # of the exe is the PC app, so default to the `app` command when no subcommand is given.
