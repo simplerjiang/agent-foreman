@@ -7,8 +7,6 @@ the (stand-in) data files are left untouched.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from foreman.client import update
