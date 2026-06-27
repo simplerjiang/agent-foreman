@@ -12,33 +12,57 @@ definitions:
     name: write-tests
     file: skill/write-tests.md
     scope: { languages: [python] }
+    metadata:
+      description: "为改动写/补单元测试：先覆盖主路径（happy path）的成功流程，再补空输入、非法值、超长输入等关键边界。何时用：实现或修复带逻辑的代码之前（先用测试钉死「做对了长什么样」），或被要求补测试覆盖时。"
+      keywords: [test, tests, unit-test, pytest, coverage, 测试, 单测, 边界]
 
   - kind: skill
     name: implementation-notes
     file: skill/implementation-notes.md
+    metadata:
+      description: "写实现的做法手册：小步前进、复用优先、顺着现有代码风格写，用最小最清楚的改动让测试变绿且不埋坑。何时用：动手写或修改实现代码（让测试通过）这一步。"
+      keywords: [implement, implementation, refactor, code, 实现, 编码, 改动]
 
   - kind: code_standard
     name: python-style
     file: code_standard/python-style.md
     scope: { languages: [python], paths: ["**/*.py"] }
+    metadata:
+      description: "Python 代码规范：命名（snake_case / CapWords / UPPER_SNAKE）、函数短小单一职责、公开函数写 docstring、对外输入 fail-closed。何时用：编写或审阅 Python 代码时作为风格基线。"
+      keywords: [python, style, lint, naming, pep8, 规范, 风格]
 
   - kind: code_standard
     name: test-naming
     file: code_standard/test-naming.md
     scope: { languages: [python], paths: ["**/test_*.py"] }
+    metadata:
+      description: "测试的放置与命名规范：测试放 tests/、文件名 test_<模块>.py、函数 test_ 开头且名字说清「场景 + 期望」、一个测试只验一件事。何时用：新增或整理 pytest 测试文件时。"
+      keywords: [test, naming, pytest, tests, 测试, 命名]
 
   - kind: qa_rubric
     name: covers-happy-path
     file: qa_rubric/covers-happy-path.yaml
+    metadata:
+      description: "验收标准：检查产出的测试是否覆盖了主路径（至少一个能跑、有意义的断言）与关键边界。何时用：「写测试」这一步干完后，作为 Reviewer 过关的尺子。"
+      keywords: [qa, review, test, coverage, happy-path, 验收, 测试]
 
   - kind: qa_rubric
     name: meets-standard-no-shortcuts
     file: qa_rubric/meets-standard-no-shortcuts.yaml
+    metadata:
+      description: "验收标准：实现是否让测试真通过（非靠改/删测试换绿）且遵守代码规范、没有偷工减料。何时用：「写实现」这一步干完后的验收审阅。"
+      keywords: [qa, review, standard, implementation, 验收, 规范, 偷工]
 
   - kind: qa_rubric
     name: lint-passes
     file: qa_rubric/lint-passes.yaml
+    metadata:
+      description: "验收标准：改动经过自审、lint / 格式化全过、无新增告警、无调试残留（print / 注释掉的代码）。何时用：「自审 + 跑 lint」这一步干完后的验收审阅。"
+      keywords: [qa, lint, format, self-review, 验收, 自审, 格式化]
 
   - kind: workflow
     name: add-feature
     file: workflow/add-feature.yaml
+    metadata:
+      description: "加新功能的固定工作流：写测试 → 写实现 → 自审跑 lint，每步喂对应技能 + 规范、用对应 QA 标准审过才走下一步，push 前卡审批闸。何时用：用可复现的步骤交付一个新功能或较大改动时。"
+      keywords: [workflow, feature, add-feature, pipeline, 工作流, 新功能, 流程]

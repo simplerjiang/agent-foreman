@@ -28,13 +28,28 @@ from typing import Any
 
 from foreman.shared.config import Config
 from foreman.shared.events import make_event, utc_now_iso
+from foreman.shared.llm.trace import trace_context
 from foreman.shared.i18n import normalize as normalize_lang
 from foreman.shared.llm import LLMStalledError
 
 from ..dispatch import build_session_task
 from ..store.models import ContextSnapshot, MemoryItem, Task
+from .context_budget import (
+    approx_tokens as _ctx_approx_tokens,
+    resolve_window_tokens,
+    should_auto_compact,
+)
 from .context_compression import extract_json_object, memory_items_from_pack
 from .pm_agent import PMPlan, events_to_text
+from .work_mode_context import (
+    WORKMODE_BODY_MAX_CHARS,
+    WORKMODE_INDEX_MAX_TOKENS,
+    WorkModeResolver,
+    approx_tokens,
+    fit_l0_index,
+    make_scorer,
+    render_l0_index,
+)
 
 # Bound the goal so a multi-megabyte string can't inflate every later briefing's token cost (and
 # keeps the argv passed to the agent CLI sane). Truncated, not rejected, to stay friendly.
@@ -93,6 +108,9 @@ class DispatchService:
         pm_agent=None,
         language_getter=None,
         clock=None,
+        injector=None,
+        embedder=None,
+        workflow_engine=None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -101,6 +119,15 @@ class DispatchService:
         self.launcher = launcher
         self.runner = runner
         self.pm_agent = pm_agent
+        # WorkspaceInjector (P2 §7): writes selected work modes into the workspace before launch and
+        # clears them after. None = no coding-agent channel (zero injection, zero residue).
+        self.injector = injector
+        # Optional async embedder (P3): enables semantic work-mode retrieval when work_mode.
+        # semantic_search is on. None or off → pure lexical (default).
+        self._embedder = embedder
+        # Optional WorkflowEngine (P5 §10) for lightweight per-step dispatch (set after construction
+        # in local_app since the two are built together). None → no workflow step dispatch.
+        self.workflow_engine = workflow_engine
         self.language_getter = language_getter
         self._clock = clock or utc_now_iso
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
@@ -121,6 +148,7 @@ class DispatchService:
         session_id: str | None = None,
         source: str | None = None,
         continue_mode: str | None = None,
+        work_mode_ids: list[str] | None = None,
     ) -> dict:
         """Validate + persist a new Root Session/Task; emit ``dispatch``; optionally launch.
 
@@ -228,6 +256,7 @@ class DispatchService:
                     resolved_model,
                     resolved_effort,
                     wait_for_tasks=wait_for_tasks,
+                    work_mode_ids=list(work_mode_ids or []),
                 )
             )
             self._track_launch_task(session.id, launch_task)
@@ -259,7 +288,23 @@ class DispatchService:
             "continue_mode": mode,
         }
 
-    async def compact(self, session_id: str) -> dict:
+    async def _resolve_window_tokens(self, pm_model: str = "") -> int:
+        """The PM model's effective context window (tokens), resolved once per dispatch. Falls back to
+        the budgeter's default when the brain/llm can't report it (§8B / context_budget)."""
+        llm = getattr(self.pm_agent, "llm", None) if self.pm_agent is not None else None
+        if llm is None:
+            from .context_budget import DEFAULT_CTX_WINDOW_TOKENS, OUTPUT_RESERVE_TOKENS
+            return DEFAULT_CTX_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS
+        return await resolve_window_tokens(llm, pm_model)
+
+    async def _safe_compact(self, session_id: str, window_tokens: int) -> None:
+        """Auto-compact wrapper: a compact failure must never break the live dispatch loop."""
+        try:
+            await self.compact(session_id, window_tokens=window_tokens)
+        except Exception:  # noqa: BLE001 — auto-compaction is best-effort
+            return
+
+    async def compact(self, session_id: str, *, window_tokens: int | None = None) -> dict:
         """Compact a session's event timeline into ``Session.plan`` for later follow-up prompts."""
         if self.store is None or not hasattr(self.store, "get_session"):
             return {"ok": False, "error": "no_store"}
@@ -271,12 +316,17 @@ class DispatchService:
         timeline = events_to_text(rows)
         if not timeline:
             return {"ok": False, "error": "no_context"}
+        if window_tokens is None:
+            window_tokens = await self._resolve_window_tokens("")
         existing = (session.plan or "").strip()
         if self.pm_agent is not None and hasattr(self.pm_agent, "compact"):
             kwargs = {"existing_context": existing}
             if _accepts_keyword(self.pm_agent.compact, "on_stream"):
                 kwargs["on_stream"] = self._pm_stream_sink(session_id, None, "compact")
-            summary = await self.pm_agent.compact(session.goal, timeline, **kwargs)
+            if _accepts_keyword(self.pm_agent.compact, "window_tokens"):
+                kwargs["window_tokens"] = window_tokens
+            with trace_context(session_id=session_id, phase="compact"):
+                summary = await self.pm_agent.compact(session.goal, timeline, **kwargs)
         else:
             summary = _fallback_compact(timeline, existing)
         summary = (summary or "").strip()[:MAX_CONTEXT_CHARS]
@@ -294,6 +344,8 @@ class DispatchService:
                     "summary": summary,
                     "original_chars": len(timeline),
                     "summary_chars": len(summary),
+                    "before_tokens": _ctx_approx_tokens(timeline),
+                    "after_tokens": _ctx_approx_tokens(summary),
                     "snapshot_id": snapshot_id,
                     "format": "context_pack_v1" if extract_json_object(summary) else "text",
                 },
@@ -556,12 +608,16 @@ class DispatchService:
         effort: str,
         *,
         wait_for_tasks: list[Awaitable[Any]] | None = None,
+        work_mode_ids: list[str] | None = None,
     ) -> None:
         try:
             if wait_for_tasks:
                 await asyncio.gather(*wait_for_tasks, return_exceptions=True)
                 self._mark_session_unless_terminal(session_id, "running")
-            await self._pm_launch(session_id, task_id, goal, workspace, agent, pm_model, effort)
+            await self._pm_launch(
+                session_id, task_id, goal, workspace, agent, pm_model, effort,
+                work_mode_ids=work_mode_ids,
+            )
         except Exception as exc:  # noqa: BLE001 — PM failure must be visible, not crash the server
             status = "stalled" if isinstance(exc, LLMStalledError) else "failed"
             reason = getattr(exc, "reason", "") if isinstance(exc, LLMStalledError) else ""
@@ -578,6 +634,15 @@ class DispatchService:
                 },
             )
             await self._persist_then_publish(event)
+        finally:
+            # P2 (§7.3): clear THIS task's injected work-mode files once the task truly ends (not per
+            # follow-up). task_id-scoped so a concurrent task's scaffolding is untouched; best-effort
+            # so cleanup never masks the real outcome. agents=None strips both guidance files' blocks.
+            if self.injector is not None:
+                try:
+                    self.injector.clear(workspace, agents=None, task_id=task_id)
+                except Exception:  # noqa: BLE001 — cleanup is best-effort
+                    pass
 
     async def _safe_direct_launch(
         self,
@@ -639,6 +704,41 @@ class DispatchService:
         await asyncio.gather(*(self.runner.wait(handle) for handle in handles))
         self._mark_session_unless_terminal(session_id, "done")
 
+    async def launch_workflow_step(
+        self, run_id: str, *, agent: str = "", model: str = "", effort: str = ""
+    ) -> dict:
+        """Lightweight workflow step dispatch (P5 §10): begin_step (which injects the step's material
+        via the P2 injector) → turn the step goal + L0 index into ONE coding instruction → launch →
+        wait. Deliberately NOT the full PM plan→review loop (avoids ×steps cost). The caller advances
+        with submit_step afterwards; this method does NOT clear (the engine clears at run end)."""
+        eng = self.workflow_engine
+        if eng is None:
+            return {"ok": False, "error": "no_workflow_engine"}
+        if self.runner is None:
+            return {"ok": False, "error": "no_runner"}
+        begun = eng.begin_step(run_id)  # SYNC; injects step material into the workspace
+        if not begun.get("ok"):
+            return begun
+        step = begun["step"]
+        run = step.get("run") or {}
+        session_id = run.get("session_id") or ""
+        session = self.store.get_session(session_id) if (
+            self.store is not None and session_id and hasattr(self.store, "get_session")
+        ) else None
+        workspace = (getattr(session, "workspace", "") or "") if session else ""
+        if not workspace:
+            return {"ok": False, "error": "no_workspace"}
+        resolved_agent = (
+            agent or (getattr(session, "agent_type", "") if session else "") or "claude-code"
+        )
+        language = self._sync_pm_language()
+        instruction = _workflow_step_instruction(step, language=language)
+        handle = await self.runner.launch(
+            resolved_agent, instruction, Path(workspace), session_id, model=model, effort=effort
+        )
+        await self.runner.wait(handle)
+        return {"ok": True, "run_id": run_id, "step_index": run.get("step_index", 0)}
+
     async def _pm_launch(
         self,
         session_id: str,
@@ -648,6 +748,8 @@ class DispatchService:
         agent: str,
         pm_model: str,
         effort: str,
+        *,
+        work_mode_ids: list[str] | None = None,
     ) -> None:
         language = self._sync_pm_language()
         enabled_agents = [
@@ -661,13 +763,39 @@ class DispatchService:
             if cfg.enabled
         ] or [{"name": agent, "model": "", "effort": effort, "full_access": True}]
         context = self._session_context(session_id)
+        # Resolve the PM model window ONCE per dispatch (§8B.8; never per-loop — it can hit /models).
+        window_tokens = await self._resolve_window_tokens(pm_model)
+        # Pre-plan auto-compact: if the carried session memory alone is already near the window,
+        # compact before planning so the plan call doesn't start over budget.
+        if should_auto_compact(
+            _ctx_approx_tokens(context), 0, 0, window_tokens=window_tokens, run_count=0
+        ):
+            await self._safe_compact(session_id, window_tokens)
+            context = self._session_context(session_id)
         await self._emit_pm_status(
             session_id,
             task_id,
             "plan",
             _pm_status_text(language, "plan"),
         )
-        plan_kwargs = {
+        # Work-mode L0 selection (P1, §6/§8): resolve the applicable definitions ONCE. The fitted L0
+        # index (no bodies) goes into the plan prompt; the same resolver backs the work_mode_search /
+        # work_mode_get tools so the PM can pull bodies on demand. Manual picks (work_mode_ids) pass
+        # straight through the funnel. With no active definitions this is a cheap empty resolve.
+        wm_mode = getattr(getattr(self.cfg, "work_mode", None), "semantic_search", "off")
+        work_mode_resolver = WorkModeResolver(
+            self.store, workspace=workspace, goal=goal, agent=agent,
+            manual_ids=list(work_mode_ids or []),
+            scorer=make_scorer(wm_mode, self._embedder),
+        )
+        wm_resolved = await work_mode_resolver.aresolve()
+        wm_index = fit_l0_index(wm_resolved["selected"], max_tokens=WORKMODE_INDEX_MAX_TOKENS)
+        # P4 (§9, D2): soft-constraint review guidance (selected rubric bodies + standard check refs).
+        # rubric_fed reflects whether it will ACTUALLY reach review (guidance present AND the review
+        # signature accepts it) — telemetry must not claim a rubric drove a decision it never saw.
+        review_guidance = self._build_review_guidance(wm_index)
+        rubric_fed = bool(review_guidance) and _accepts_keyword(self.pm_agent.review, "qa_rubric")
+        plan_kwargs: dict[str, Any] = {
             "workspace": workspace,
             "available_agents": enabled_agents,
             "requested_agent": "",
@@ -680,7 +808,17 @@ class DispatchService:
             plan_kwargs["on_stream"] = self._pm_stream_sink(session_id, task_id, "plan")
         if _accepts_keyword(self.pm_agent.plan, "on_tool_event"):
             plan_kwargs["on_tool_event"] = self._pm_tool_event_sink(session_id, task_id)
-        plan = await self.pm_agent.plan(goal, **plan_kwargs)
+        if _accepts_keyword(self.pm_agent.plan, "work_mode_index"):
+            plan_kwargs["work_mode_index"] = wm_index
+        if _accepts_keyword(self.pm_agent.plan, "work_mode_resolver"):
+            plan_kwargs["work_mode_resolver"] = work_mode_resolver
+        with trace_context(session_id=session_id, task_id=task_id, phase="plan"):
+            plan = await self.pm_agent.plan(goal, **plan_kwargs)
+        # Telemetry: one work_mode event per dispatch (after plan, so pulls/body_tokens are counted).
+        await self._emit_work_mode(
+            session_id, task_id, wm_index, wm_resolved["dropped"], work_mode_resolver,
+            session_memory_tokens=_ctx_approx_tokens(context),
+        )
         plan = self._sanitize_pm_plan(plan, pm_model)
         todo_status = _initial_todo_status(plan.todo)
         await self._emit_pm_plan(session_id, task_id, plan, todo_status=todo_status)
@@ -690,6 +828,18 @@ class DispatchService:
             "launch",
             _pm_status_text(language, "launch", plan.agent),
         )
+        # P2 (§7): inject the selected work modes into the workspace BEFORE launch so the coding agent
+        # reads them on startup (claude-code native .claude/skills / codex .foreman/skills + managed
+        # block). Only when there's actual material — a task with NO selected skills/standards gets
+        # ZERO injection / ZERO residue (P2 §4 back-compat; the plan instruction already goes to the
+        # CLI directly). Best-effort: an injection failure must never abort the dispatch.
+        if self.injector is not None:
+            material = self._build_work_mode_material(plan.instruction, wm_index)
+            if material["skills"] or material["standards"]:
+                try:
+                    self.injector.inject(workspace, material, agents=plan.agent, task_id=task_id)
+                except Exception:  # noqa: BLE001 — injection is best-effort
+                    pass
         handle = await self.runner.launch(
             plan.agent, plan.instruction, Path(workspace), session_id,
             model=plan.model, effort=plan.effort,
@@ -721,11 +871,18 @@ class DispatchService:
                 )
             if _accepts_keyword(self.pm_agent.review, "state_key"):
                 review_kwargs["state_key"] = review_state_key
-            review = await self.pm_agent.review(goal, plan, timeline, **review_kwargs)
+            if rubric_fed:
+                review_kwargs["qa_rubric"] = review_guidance
+            with trace_context(
+                session_id=session_id, task_id=task_id, phase=f"review-{run_count}"
+            ):
+                review = await self.pm_agent.review(goal, plan, timeline, **review_kwargs)
             todo_status = _merge_todo_status(todo_status, review.todo_status, done=review.done)
             review.todo_status = todo_status
             reviewed_event_id = (
-                await self._emit_pm_review(session_id, task_id, review, run_count)
+                await self._emit_pm_review(
+                    session_id, task_id, review, run_count, rubric_active=rubric_fed
+                )
             ) or review_cutoff_id
             review_notes.append(
                 {
@@ -756,6 +913,21 @@ class DispatchService:
                     _empty_followup_text(language),
                 )
                 return
+            # Auto-compact (§8B.8) BETWEEN rounds — AFTER this review consumed its raw increment, and
+            # BEFORE the next follow-up runs. Compact when (session memory + pulled bodies + the
+            # just-reviewed timeline) crosses the window threshold OR every N runs, then fold history
+            # into Session.plan and advance the cursor (no double-count; no review ever loses its
+            # increment — the rolling-plan ↔ incremental-review reconciliation).
+            if should_auto_compact(
+                _ctx_approx_tokens(context),
+                (work_mode_resolver.body_chars + 3) // 4,
+                _ctx_approx_tokens(timeline),
+                window_tokens=window_tokens,
+                run_count=run_count,
+            ):
+                await self._safe_compact(session_id, window_tokens)
+                context = self._session_context(session_id)
+                reviewed_event_id = _last_event_id(self.store.get_events(session_id))
             await self.runner.send(handle, review.follow_up)
             self._mark_session_unless_terminal(session_id, "running")
             run_count += 1
@@ -781,6 +953,119 @@ class DispatchService:
             deliberation=plan.deliberation,
             ready=plan.ready,
             planning_rounds=plan.planning_rounds,
+        )
+
+    def _build_work_mode_material(
+        self, instruction: str, wm_index: list[dict[str, Any]]
+    ) -> dict:
+        """Turn the selected L0 index into injection material (§7): skills + code_standards with their
+        bodies (pulled from the same resolver as work_mode_get). Skills go to the coding-agent file
+        channel; standards go full-text into the managed block (D1). qa_rubric/workflow are not file-
+        injected here (rubric is a review-side concern; workflow is P5)."""
+        skills: list[dict] = []
+        standards: list[dict] = []
+        get = getattr(self.store, "get_active_definition", None) if self.store is not None else None
+        for entry in wm_index:
+            kind = entry.get("kind")
+            name = entry.get("name")
+            if kind not in ("skill", "code_standard") or not name or get is None:
+                continue
+            # FULL body for the file-injection channel (D1: standards go full-text into the managed
+            # block). NOT resolver.body() — that applies the 6000-char PM-pull cap, which is for the
+            # PM context window, not the workspace files the coding agent reads.
+            row = get(kind, name)
+            body = (getattr(row, "body", "") or "") if row is not None else ""
+            if not body:
+                continue
+            item = {"name": name, "body": body, "description": entry.get("description", "")}
+            (skills if kind == "skill" else standards).append(item)
+        return {"instruction": instruction, "skills": skills, "standards": standards}
+
+    def _build_review_guidance(self, wm_index: list[dict[str, Any]]) -> str:
+        """Soft-constraint review text (P4 §9, D2): selected qa_rubric bodies + code_standard check
+        fields, capped. Fed to PMAgent.review as the acceptance standard so it shapes done/follow_up.
+        The check command is shown as a JUDGMENT REFERENCE only — it is NOT executed (the hard check
+        gate is deferred to V2). Returns "" when no rubric/standard was selected (no-op, back-compat)."""
+        get = getattr(self.store, "get_active_definition", None) if self.store is not None else None
+        if get is None:
+            return ""
+        parts: list[str] = []
+        for entry in wm_index:
+            kind, name = entry.get("kind"), entry.get("name")
+            if not name:
+                continue
+            if kind == "qa_rubric":
+                row = get("qa_rubric", name)
+                body = (getattr(row, "body", "") or "").strip() if row is not None else ""
+                if body:
+                    parts.append(f"## QA rubric: {name}\n{body}")
+            elif kind == "code_standard":
+                cmd = self._standard_check_cmd(get, name)
+                if cmd:
+                    parts.append(
+                        f"## Code standard check ({name})\n"
+                        f"The change should pass `{cmd}` (use as a judgment reference; not executed)."
+                    )
+        return "\n\n".join(parts)[:WORKMODE_BODY_MAX_CHARS]
+
+    @staticmethod
+    def _standard_check_cmd(get_active, name: str) -> str:
+        """The `metadata.check.cmd` of an active code_standard (P4), or "" if none / non-command."""
+        row = get_active("code_standard", name)
+        if row is None:
+            return ""
+        try:
+            meta = json.loads(getattr(row, "metadata_json", "{}") or "{}")
+        except (TypeError, ValueError):
+            return ""
+        chk = meta.get("check") if isinstance(meta, dict) else None
+        if isinstance(chk, dict) and chk.get("type") == "command":
+            return str(chk.get("cmd") or "").strip()
+        return ""
+
+    async def _emit_work_mode(
+        self,
+        session_id: str,
+        task_id: str,
+        selected: list[dict[str, Any]],
+        dropped: list[dict[str, Any]],
+        resolver: WorkModeResolver,
+        *,
+        session_memory_tokens: int = 0,
+    ) -> None:
+        """Emit one ``work_mode`` telemetry event per dispatch (§8/§16): what was selected/dropped
+        plus the L0 index & pulled-body token accounting and per-lane tokens (§8B.8). Tokens are ~4
+        char/token approximations (P1b swaps in a real tokenizer). Metadata only — no bodies."""
+        index_tokens = approx_tokens(render_l0_index(selected))
+        body_tokens = (resolver.body_chars + 3) // 4
+        await self._persist_then_publish(
+            make_event(
+                "work_mode",
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload={
+                    "selected": [
+                        {"kind": e.get("kind", ""), "name": e.get("name", ""),
+                         "est_tokens": e.get("est_tokens", 0)}
+                        for e in selected
+                    ],
+                    "dropped": [
+                        {"kind": e.get("kind", ""), "name": e.get("name", "")} for e in dropped
+                    ],
+                    "index_tokens": index_tokens,
+                    "pulls": resolver.pulls,
+                    "body_tokens": body_tokens,
+                    "kinds": sorted({e.get("kind", "") for e in selected}),
+                    "per_lane_tokens": {
+                        "l0_index": index_tokens,
+                        "l1_bodies": body_tokens,
+                        "session_memory": session_memory_tokens,
+                    },
+                    "scorer": getattr(resolver, "last_scorer", "lexical"),
+                    "embed_calls": getattr(resolver, "embed_calls", 0),
+                },
+            )
         )
 
     async def _emit_pm_plan(
@@ -811,7 +1096,11 @@ class DispatchService:
         )
         await self._persist_then_publish(event)
 
-    async def _emit_pm_review(self, session_id: str, task_id: str, review, run_count: int) -> str:
+    async def _emit_pm_review(
+        self, session_id: str, task_id: str, review, run_count: int, *, rubric_active: bool = False
+    ) -> str:
+        # P4 (§16): rubric_active = a qa_rubric/standard was fed this review; a rubric-triggered
+        # follow-up is then (rubric_active and not done) — lets us compute the rubric follow-up rate.
         event = make_event(
             "pm_review",
             "pm-agent",
@@ -824,6 +1113,8 @@ class DispatchService:
                 "reason": review.reason,
                 "follow_up": review.follow_up,
                 "todo_status": review.todo_status,
+                "rubric_active": rubric_active,
+                "rubric_followup": bool(rubric_active and not review.done and review.follow_up),
             },
         )
         await self._persist_then_publish(event)
@@ -1134,6 +1425,39 @@ def _empty_followup_text(language: str) -> str:
     if normalize_lang(language) == "en":
         return "PM review asked to continue but did not provide a follow-up prompt."
     return "PM 复查要求继续，但没有给出后续指令。"
+
+
+def _workflow_step_instruction(step: dict, *, language: str = "") -> str:
+    """One coding instruction for a workflow step (P5 §10): step name + instruction + the L0 INDEX of
+    its skills/standards (names only — bodies are injected as workspace files for progressive
+    disclosure, NEVER inlined here). Keeps the per-step prompt small (no ×bodies blowup)."""
+    en = normalize_lang(language) == "en"
+    name = str(step.get("name") or "")
+    instr = str(step.get("instruction") or "")
+    parts: list[str] = []
+    head = f"# Workflow step: {name}" if name else "# Workflow step"
+    parts.append(f"{head}\n{instr}" if instr else head)
+    skills = [str(s.get("name")) for s in (step.get("skills") or []) if s.get("name")]
+    standards = [str(s.get("name")) for s in (step.get("standards") or []) if s.get("name")]
+    if skills or standards:
+        refs = []
+        if skills:
+            refs.append(("skills: " if en else "技能：") + ", ".join(skills))
+        if standards:
+            refs.append(("code standards: " if en else "代码规范：") + ", ".join(standards))
+        note = (
+            "Applicable work modes for this step (full text is injected into the workspace files — "
+            "read them as needed; do NOT expect the bodies inline here):\n"
+            if en else
+            "本步可用工作方式（正文已注入工作区文件，需要时查阅；此处不内联正文）：\n"
+        )
+        parts.append(note + "\n".join(refs))
+    guard = (
+        "Do not push, merge, or deploy unless the user explicitly requested it."
+        if en else "除非用户明确要求，不要推送、合并或部署。"
+    )
+    parts.append(guard)
+    return "\n\n".join(p for p in parts if p)
 
 
 def _fallback_instruction(goal: str, context: str = "", language: str = "") -> str:

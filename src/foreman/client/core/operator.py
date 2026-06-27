@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from foreman.shared.i18n import language_directive
 from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
+from foreman.shared.llm.trace import trace_context
 
 # Session states the Operator may report (DESIGN §4.1). Underscore form matches the DB columns.
 RUNNING = "running"
@@ -189,9 +190,10 @@ class Operator:
             recent_actions=recent_actions,
             max_output_chars=max_output_chars,
         )
-        raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)], json_mode=True
-        )
+        with trace_context(phase="operator"):
+            raw = await self.llm.complete(
+                [Message("system", system), Message("user", prompt)], json_mode=True
+            )
         return parse_operator(raw)
 
 

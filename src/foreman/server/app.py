@@ -65,6 +65,34 @@ class _AutonomyBody(BaseModel):
     level: int
 
 
+class _DebugBody(BaseModel):
+    """Debug switches (work-mode P1b-trace, §8C). llm_trace writes the FULL conversation plaintext to
+    .foreman/debug/ — local-only. Persisted to config_kv; takes effect at next launch."""
+
+    llm_trace: bool
+
+
+# ── Workflow control flow (P5 §10): independent of /api/tasks ──────────────────────────────────────
+class _WorkflowStartBody(BaseModel):
+    session_id: str
+    workflow: str  # active workflow definition name
+    version: int | None = None
+
+
+class _WorkflowStepBody(BaseModel):
+    run_id: str
+
+
+class _WorkflowSubmitBody(BaseModel):
+    run_id: str
+    qa_passed: bool | None = None  # filled by the QA channel; plain advance leaves it None
+
+
+class _WorkflowResumeBody(BaseModel):
+    run_id: str
+    approved: bool
+
+
 class _LLMSettingsBody(BaseModel):
     """PM 大脑 settings (DESIGN §15): switch the brain's provider/model/base_url at runtime. The api
     key is accepted for local save but never returned. Empty field = clear that override/key."""
@@ -198,6 +226,9 @@ class _DispatchBody(BaseModel):
     session_id: str = ""  # when set, append a new task to an existing conversation
     source: str = ""  # desktop | phone | api
     continue_mode: str = "queue"  # queue | interrupt
+    # Manually-picked work-mode definition ids (composer). Threaded to the resolver as manual picks
+    # that pass straight through the funnel (P1). Optional — a request without it is fully auto.
+    work_mode_ids: list[str] = []
 
 
 class _RemoteDispatchBody(BaseModel):
@@ -484,6 +515,8 @@ def create_app(
     definitions: Any = None,
     cache: Any = None,
     cloud: Any = None,
+    workflow_engine: Any = None,
+    workflow_qa: Any = None,
 ) -> FastAPI:
     # In-memory log tail for the admin console's 日志管理 view (process-wide singleton). Re-attached
     # on startup because uvicorn applies its own logging dictConfig AFTER the app is built, which
@@ -518,6 +551,8 @@ def create_app(
     app.state.definitions = definitions
     app.state.cache = cache
     app.state.cloud = cloud
+    app.state.workflow_engine = workflow_engine
+    app.state.workflow_qa = workflow_qa
     app.state.started_at = time.time()  # for the admin overview's uptime stat
     app.state.log_buffer = get_log_buffer()
     # One limiter per app instance, shared across requests (team-mode brute-force speed bump, §8.2).
@@ -1279,6 +1314,26 @@ def create_app(
         store.set_setting("autonomy.level", str(level))
         return {"level": level, "label": level_label(level, _effective_lang())}
 
+    @app.get("/api/settings/debug")
+    async def get_debug_settings() -> dict:
+        """Effective debug switches: config_kv override (if a store) else the config default (§8C)."""
+        current = None
+        if store is not None and hasattr(store, "get_setting"):
+            current = store.get_setting("debug.llm_trace")
+        if current is not None and current != "":
+            on = current.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            on = bool(cfg.debug.llm_trace)
+        return {"llm_trace": on}
+
+    @app.post("/api/settings/debug")
+    async def set_debug_settings(body: _DebugBody) -> dict:
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        store.set_setting("debug.llm_trace", "1" if body.llm_trace else "0")
+        # Note: the tracer is built at app launch, so this takes effect on the next restart.
+        return {"llm_trace": bool(body.llm_trace), "restart_required": True}
+
     @app.get("/api/settings/llm")
     async def get_llm_settings() -> dict:
         """Effective PM 大脑 brain settings: a config_kv override (if a store) else the config
@@ -1531,6 +1586,7 @@ def create_app(
             session_id=body.session_id or None,
             source=body.source or None,
             continue_mode=body.continue_mode,
+            work_mode_ids=body.work_mode_ids or None,
         )
         if res.get("ok"):
             return res
@@ -1543,6 +1599,69 @@ def create_app(
             "no_store": 503,
         }.get(res.get("error", ""), 400)
         raise HTTPException(status_code=status, detail=res.get("error", "decline"))
+
+    # ── Workflow control flow (P5 §10): explicit start → step → submit → resume, independent of
+    # /api/tasks. Delegates to the injected client-side WorkflowEngine / WorkflowQAReviewer; app.py
+    # stays shared-only and 秘方 never leave the local process (§8.3/§14). No engine → 503.
+    _WF_ERR_STATUS = {
+        "no_workflow": 404, "bad_workflow": 400, "no_run": 404, "run_finished": 409,
+        "blocked_on_gate": 409, "not_blocked": 409, "not_in_qa": 409, "no_qa_rubric": 422,
+        "no_workspace": 400, "no_workflow_engine": 503, "no_runner": 503, "no_store": 503,
+    }
+
+    def _wf_engine() -> Any:
+        eng = getattr(app.state, "workflow_engine", None)
+        if eng is None:
+            raise HTTPException(status_code=503, detail="no workflow engine")
+        return eng
+
+    def _wf_result(res: dict) -> dict:
+        if res.get("ok"):
+            return res
+        raise HTTPException(
+            status_code=_WF_ERR_STATUS.get(res.get("error", ""), 400),
+            detail=res.get("error", "decline"),
+        )
+
+    @app.post("/api/workflows/start")
+    async def workflow_start(body: _WorkflowStartBody) -> dict:
+        return _wf_result(await _wf_engine().start(
+            body.session_id, body.workflow, version=body.version
+        ))
+
+    @app.post("/api/workflows/begin")
+    async def workflow_begin(body: _WorkflowStepBody) -> dict:
+        """Run the current step. With a dispatcher (runner) wired, lightweight-dispatches the step
+        (inject material → one coding instruction → launch); otherwise injects only (begin_step)."""
+        eng = _wf_engine()
+        disp = getattr(app.state, "dispatcher", None)
+        if disp is not None and getattr(disp, "runner", None) is not None and hasattr(
+            disp, "launch_workflow_step"
+        ):
+            return _wf_result(await disp.launch_workflow_step(body.run_id))
+        return _wf_result(eng.begin_step(body.run_id))  # begin_step is SYNC (inject-only fallback)
+
+    @app.post("/api/workflows/submit")
+    async def workflow_submit(body: _WorkflowSubmitBody) -> dict:
+        return _wf_result(await _wf_engine().submit_step(body.run_id, qa_passed=body.qa_passed))
+
+    @app.post("/api/workflows/resume")
+    async def workflow_resume(body: _WorkflowResumeBody) -> dict:
+        return _wf_result(await _wf_engine().resume_after_gate(body.run_id, body.approved))
+
+    @app.post("/api/workflows/qa")
+    async def workflow_qa_route(body: _WorkflowStepBody) -> dict:
+        qa = getattr(app.state, "workflow_qa", None)
+        if qa is None:
+            raise HTTPException(status_code=503, detail="no workflow qa")
+        return _wf_result(await qa.review_step(body.run_id))
+
+    @app.get("/api/workflows/{run_id}")
+    async def workflow_view(run_id: str) -> dict:
+        view = _wf_engine().step_view(run_id)  # step_view is SYNC
+        if view is None:
+            raise HTTPException(status_code=404, detail="no run")
+        return view
 
     @app.get("/api/overview")
     async def overview() -> list[dict]:
@@ -1577,6 +1696,7 @@ def create_app(
     _DEFN_ERR_STATUS = {
         "bad_kind": 400, "bad_name": 400, "body_too_large": 400,
         "bad_scope_json": 400, "bad_metadata_json": 400, "bad_status": 400,
+        "missing_description": 400, "description_too_long": 400,
         "version_exists": 409, "not_found": 404, "no_store": 503,
     }
 

@@ -129,8 +129,32 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
             "api_key": cfg.secrets.llm_api_key,
         }
 
+    # LLM debug tracer (work-mode P1b-trace, §8C): one shared instance (so seq is process-monotonic
+    # and files unify) injected into every PM client. None unless debug.llm_trace is on → zero
+    # overhead. log_dir resolves against the config dir (Foreman's own state root), NOT the cwd.
+    _tracer = None
+    _trace_on = cfg.debug.llm_trace
+    _persisted_trace = store.get_setting("debug.llm_trace") if hasattr(store, "get_setting") else None
+    if _persisted_trace:  # a UI toggle persists here; takes effect at next launch
+        _trace_on = _persisted_trace.strip().lower() in {"1", "true", "yes", "on"}
+    if _trace_on:
+        from pathlib import Path as _Path
+
+        from foreman.shared.llm.trace import LLMTracer
+
+        _ld = _Path(cfg.debug.log_dir)
+        if not _ld.is_absolute():
+            _base = _Path(cfg.config_path).parent if cfg.config_path else _Path(".")
+            _ld = _base / cfg.debug.log_dir
+        _tracer = LLMTracer(
+            log_dir=_ld,
+            max_bytes=cfg.debug.llm_trace_max_bytes,
+            keep=cfg.debug.llm_trace_keep,
+            keep_days=cfg.debug.llm_trace_keep_days,
+        )
+
     def _llm() -> LLMClient:
-        return LLMClient(cfg, settings_resolver=_llm_settings)
+        return LLMClient(cfg, settings_resolver=_llm_settings, tracer=_tracer)
 
     toolbelt = Toolbelt(gate=gate)
     auditor = Auditor(_llm(), language=language)
@@ -157,11 +181,38 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     def _current_language() -> str:
         return normalize_lang(store.get_setting("ui.language") or cfg.ui.language)
 
+    # Coding-agent channel (P2 §7): writes selected work modes into the workspace before launch and
+    # clears them after. allowed_roots mirrors the dispatch workspace allowlist (defense in depth).
+    from .core.injector import WorkspaceInjector
+
+    injector = WorkspaceInjector(allowed_roots=[w.path for w in cfg.workspaces] or None)
+
+    # Semantic work-mode retrieval (P3 §3.5): only built when work_mode.semantic_search is on. The
+    # embedder tries the PM provider's /embeddings and falls back to a local offline embedder; the
+    # scorer itself falls back to lexical on any failure — never fatal. Default off → embedder None.
+    _embedder = None
+    if (cfg.work_mode.semantic_search or "off").strip().lower() != "off":
+        from foreman.client.core.work_mode_context import LocalHashEmbedder
+
+        _emb_llm = _llm()
+        _local_emb = LocalHashEmbedder(cfg.work_mode.embedding_dim)
+
+        async def _embedder(texts):  # type: ignore[misc]
+            try:
+                vecs = await _emb_llm.embed(texts, model=cfg.work_mode.embedding_model)
+                if vecs and all(vecs):
+                    return vecs
+            except Exception:  # noqa: BLE001 — provider has no /embeddings or failed → local fallback
+                pass
+            return await _local_emb(texts)
+
     dispatcher = DispatchService(
         cfg,
         store,
         bus=bus,
         runner=runner,
+        injector=injector,
+        embedder=_embedder,
         pm_agent=PMAgent(
             _llm(),
             language=language,
@@ -181,6 +232,19 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     # qa_rubric, §11.2). Injected like the Gate/CardService so app.py stays shared-only; definitions
     # live ONLY in the local store and never reach the shared server (§8.3 / §14).
     definitions = DefinitionService(store, bus=bus, cipher=cipher)
+    # Workflow control flow (P5 §10): wire the (previously zero-instantiated) WorkflowEngine + QA
+    # reviewer into the runtime so a user can explicitly start a workflow recipe and step through it
+    # with the SAME P2 injector (task/step isolation) and the QA gate. The lightweight per-step
+    # dispatch lives on the dispatcher (it owns runner/store), so hand it the engine.
+    from .core.qa_review import WorkflowQAReviewer
+    from .core.reviewer import Reviewer
+    from .core.workflow_engine import WorkflowEngine
+
+    workflow_engine = WorkflowEngine(store, cards=cards, bus=bus, injector=injector)
+    workflow_qa = WorkflowQAReviewer(
+        workflow_engine, Reviewer(_llm(), language=language), store=store, bus=bus
+    )
+    dispatcher.workflow_engine = workflow_engine
     # Cloud relay connection (DESIGN §8.5): the Settings → 云端连接 card links this machine to the
     # team 总机 so the phone can watch + approve from afar. Opt-in (a button) — never auto-dials.
     from .core.cloud import CloudManager
@@ -197,6 +261,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     app = create_app(
         cfg, store, bus, hooks=hooks, gate=gate, cards=cards,
         dispatcher=dispatcher, briefings=briefings, definitions=definitions, cloud=cloud,
+        workflow_engine=workflow_engine, workflow_qa=workflow_qa,
     )
 
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))

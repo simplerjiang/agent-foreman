@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from foreman.shared.i18n import language_directive
 from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
+from foreman.shared.llm.trace import trace_context
 
 # Verdicts (DESIGN §6.7 / §7.1 audits.verdict). escalate is the default-on-doubt / default-on-danger.
 PASS = "pass"
@@ -282,9 +283,10 @@ class Auditor:
             autonomy=autonomy,
             recent_actions=recent_actions,
         )
-        raw = await self.llm.complete(
-            [Message("system", system), Message("user", prompt)], json_mode=True
-        )
+        with trace_context(phase="auditor"):
+            raw = await self.llm.complete(
+                [Message("system", system), Message("user", prompt)], json_mode=True
+            )
         return parse_audit(raw, model=self.llm.model)
 
 

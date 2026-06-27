@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 
 from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
+from foreman.shared.llm.trace import trace_context
 
 from .models import EXTERNAL_WEB, ToolCall, ToolResult
 from .runtime import PMToolRuntime
@@ -114,12 +115,14 @@ class PMToolLoop:
             # submit_plan so a repeated/stalled stream still ends with a real plan instead of silently
             # degrading to the conservative fallback (A1, T1.4 — root fix for #39).
             force_submit = round_no >= self.max_rounds
-            response = await self._complete(
-                transcript,
-                model=model,
-                enabled_agents=enabled_agents,
-                tool_choice=_SUBMIT_PLAN_CHOICE if force_submit else "auto",
-            )
+            # Relabel the trace phase per round (keeps the outer plan session/task — §8C.3).
+            with trace_context(phase=f"tool-round-{round_no}"):
+                response = await self._complete(
+                    transcript,
+                    model=model,
+                    enabled_agents=enabled_agents,
+                    tool_choice=_SUBMIT_PLAN_CHOICE if force_submit else "auto",
+                )
             calls = response["tool_calls"]
             raw = response["text"]
             native = bool(response.get("native"))

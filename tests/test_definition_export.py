@@ -23,6 +23,11 @@ from foreman.shared.crypto import BodyCipher
 pytest.importorskip("cryptography")
 
 
+# Description is required on create now (P0); pass one on the create calls below (these tests check
+# export/import behavior, not the description gate).
+_DESC = '{"description": "test fixture: does X; use when Y"}'
+
+
 def _key_cipher() -> BodyCipher:
     return BodyCipher.from_key(BodyCipher.generate_key())
 
@@ -36,10 +41,12 @@ def _store(tmp_path, *, cipher=None) -> Store:
 
 async def _seed(svc: DefinitionService) -> tuple[str, str]:
     """A workflow + a skill, wired together. Returns (workflow_id, skill_id)."""
-    wf = (await svc.create_definition(kind="workflow", name="add-feature", body="steps: []"))[
+    wf = (await svc.create_definition(
+        kind="workflow", name="add-feature", body="steps: []", metadata_json=_DESC))[
         "definition"
     ]
-    sk = (await svc.create_definition(kind="skill", name="write-tests", body="# how to test"))[
+    sk = (await svc.create_definition(
+        kind="skill", name="write-tests", body="# how to test", metadata_json=_DESC))[
         "definition"
     ]
     svc.store.add_definition_link(
@@ -217,7 +224,7 @@ async def test_import_skips_bad_rows_and_dangling_links(tmp_path):
 async def test_import_enforces_single_live_version(tmp_path):
     # destination already has v1 live; bundle brings v2 also marked active → exactly one stays live
     dst = DefinitionService(_store(tmp_path))
-    await dst.create_definition(kind="skill", name="s", body="v1")  # v1 active
+    await dst.create_definition(kind="skill", name="s", body="v1", metadata_json=_DESC)  # v1 active
     bundle = {
         "format": BUNDLE_FORMAT,
         "version": BUNDLE_VERSION,
@@ -270,3 +277,22 @@ async def test_import_no_store():
     assert (await svc.import_bundle({"format": BUNDLE_FORMAT, "version": BUNDLE_VERSION}))[
         "error"
     ] == "no_store"
+
+
+async def test_import_not_blocked_by_description_gate(tmp_path):
+    """P0 §4.3 backward-compat: the description-required gate is a create/update WRITE check only —
+    importing a legacy bundle whose definitions have no description must still succeed and stay
+    idempotent (re-import imports nothing new), never breaking old backups."""
+    svc = DefinitionService(_store(tmp_path))
+    bundle = {
+        "format": BUNDLE_FORMAT,
+        "version": BUNDLE_VERSION,
+        "definitions": [
+            {"id": "legacy1", "kind": "skill", "name": "legacy", "version": 1, "body": "b"},
+        ],
+        "links": [],
+    }
+    res = await svc.import_bundle(bundle)
+    assert res["imported"] == 1  # no description, yet imported (gate doesn't apply to import)
+    again = await svc.import_bundle(bundle)
+    assert again["imported"] == 0 and again["skipped"] == 1  # idempotent
