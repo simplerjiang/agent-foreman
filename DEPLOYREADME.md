@@ -28,7 +28,7 @@ The PC does the actual project work. The server is just the front door and relay
 
 ### Linux Quick Install
 
-Use this on a fresh Ubuntu/Debian box as `root`. Change `REPO_URL` first.
+Use this on a fresh Ubuntu/Debian box as `root`. Change `REPO_URL` first. You need Python 3.11 or newer; Ubuntu 24.04 / Debian 12+ are the easiest paths.
 
 ```bash
 export REPO_URL="https://github.com/<owner>/<repo>.git"
@@ -38,6 +38,12 @@ export PORT="8787"
 
 apt-get update
 apt-get install -y git python3 python3-venv python3-pip curl
+
+python3 - <<'PY'
+import sys
+if sys.version_info < (3, 11):
+    raise SystemExit("Python 3.11+ is required. Use Ubuntu 24.04 / Debian 12+, or install Python 3.11+ before continuing.")
+PY
 
 id "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 mkdir -p "$(dirname "$APP_DIR")"
@@ -54,7 +60,18 @@ python3 -m venv .venv
 python -m pip install -U pip
 python -m pip install -e ".[server]"
 
-[ -f config.yaml ] || cp config.example.yaml config.yaml
+if [ ! -f config.yaml ]; then
+  cat > config.yaml <<YAML
+server:
+  host: 127.0.0.1
+  port: $PORT
+  public_base_url: ""
+  mode: team
+  db_path: foreman-server.db
+push:
+  enabled: false
+YAML
+fi
 [ -f .env ] || cp .env.example .env
 
 python - <<'PY'
@@ -111,7 +128,7 @@ systemctl enable --now foreman
 curl -fsS "http://127.0.0.1:$PORT/health"
 ```
 
-If that last `curl` returns JSON, the service is alive.
+If that last `curl` returns JSON, the service is alive. The generated config starts the server in `team` mode because that is the mode used for phone relay. Create the first admin before trying to log in or mint access keys.
 
 Now put it behind HTTPS. Caddy is the shortest route:
 
@@ -143,15 +160,28 @@ server {
 }
 ```
 
+After DNS and HTTPS are working, set `server.public_base_url` in `config.yaml` to your real `https://...` URL and restart the service.
+
 ### Windows Quick Install
 
-Run PowerShell as Administrator. Change `$RepoUrl` and `$AppDir` first. This uses Windows Task Scheduler so you do not need NSSM or another service wrapper.
+Run PowerShell as Administrator. Change `$RepoUrl` and `$AppDir` first. Install Git for Windows and Python 3.11+ first; the `py -3` launcher must work. This uses Windows Task Scheduler so you do not need NSSM or another service wrapper.
 
 ```powershell
 $RepoUrl = "https://github.com/<owner>/<repo>.git"
 $AppDir = "C:\Foreman\app"
 $Port = 8787
 $TaskName = "ForemanServer"
+
+if (!(Get-Command git -ErrorAction SilentlyContinue)) {
+    throw "Git is required. Install Git for Windows, then open a new Administrator PowerShell."
+}
+if (!(Get-Command py -ErrorAction SilentlyContinue)) {
+    throw "Python Launcher 'py' is required. Install Python 3.11+ from python.org, then open a new Administrator PowerShell."
+}
+py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
+if ($LASTEXITCODE -ne 0) {
+    throw "Python 3.11+ is required."
+}
 
 New-Item -ItemType Directory -Force -Path (Split-Path $AppDir) | Out-Null
 
@@ -161,19 +191,32 @@ if (!(Test-Path "$AppDir\.git")) {
     git -C $AppDir pull --ff-only
 }
 
-py -3.11 -m venv "$AppDir\.venv"
+py -3 -m venv "$AppDir\.venv"
 & "$AppDir\.venv\Scripts\python.exe" -m pip install -U pip
 & "$AppDir\.venv\Scripts\python.exe" -m pip install -e "$AppDir[server]"
 
 if (!(Test-Path "$AppDir\config.yaml")) {
-    Copy-Item "$AppDir\config.example.yaml" "$AppDir\config.yaml"
+    @"
+server:
+  host: 127.0.0.1
+  port: $Port
+  public_base_url: ""
+  mode: team
+  db_path: foreman-server.db
+push:
+  enabled: false
+"@ | Set-Content -Encoding UTF8 "$AppDir\config.yaml"
 }
 if (!(Test-Path "$AppDir\.env")) {
     Copy-Item "$AppDir\.env.example" "$AppDir\.env"
 }
 
 $EnvPath = "$AppDir\.env"
-$Token = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).TrimEnd("=")
+$Bytes = New-Object byte[] 32
+$Rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$Rng.GetBytes($Bytes)
+$Rng.Dispose()
+$Token = [Convert]::ToBase64String($Bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
 $Lines = Get-Content -Encoding UTF8 $EnvPath
 $Found = $false
 $Generated = $false
@@ -224,7 +267,7 @@ server:
   host: 127.0.0.1
   port: 8787
   public_base_url: "https://foreman.example.com"
-  mode: personal  # or team
+  mode: team
 ```
 
 In `.env`:
@@ -234,14 +277,22 @@ FOREMAN_AUTH_TOKEN=<long-random-token>
 FOREMAN_VAPID_PRIVATE_KEY=<private-web-push-key-if-web-push-is-enabled>
 ```
 
-For the common relay setup, the model/API config belongs on the local PC, not the server. Only put model/API keys on the server if you knowingly enable server-side features that need them.
+For the common relay setup, the model/API config belongs on the local PC, not the server. Only put model/API keys on the server if you knowingly enable server-side features that need them. Use `personal` mode only when you intentionally want a single-user non-relay server.
 
 ### Team Mode
 
-Set `server.mode: team`, start the service, then create the first admin on the server:
+Set `server.mode: team`, start the service, then create the first admin on the server.
+
+Linux:
 
 ```bash
-foreman create-admin admin --config /opt/foreman/app/config.yaml
+/opt/foreman/app/.venv/bin/foreman create-admin admin --config /opt/foreman/app/config.yaml
+```
+
+Windows:
+
+```powershell
+& C:\Foreman\app\.venv\Scripts\foreman.exe create-admin admin --config C:\Foreman\app\config.yaml
 ```
 
 After that, log into the PWA, create users or access keys, and connect each local Foreman app to the relay URL from its settings page.
@@ -263,7 +314,8 @@ Windows:
 ```powershell
 git -C C:\Foreman\app pull --ff-only
 & C:\Foreman\app\.venv\Scripts\python.exe -m pip install -e "C:\Foreman\app[server]"
-Restart-ScheduledTask -TaskName ForemanServer
+Stop-ScheduledTask -TaskName ForemanServer -ErrorAction SilentlyContinue
+Start-ScheduledTask -TaskName ForemanServer
 Invoke-RestMethod http://127.0.0.1:8787/health
 ```
 
@@ -310,7 +362,7 @@ PM Core                         认证 + relay                    审批 / 派�
 
 ### Linux 快速安装
 
-在新的 Ubuntu/Debian 机器上用 `root` 执行。先改 `REPO_URL`。
+在新的 Ubuntu/Debian 机器上用 `root` 执行。先改 `REPO_URL`。需要 Python 3.11 或更新版本；Ubuntu 24.04 / Debian 12+ 最省事。
 
 ```bash
 export REPO_URL="https://github.com/<owner>/<repo>.git"
@@ -320,6 +372,12 @@ export PORT="8787"
 
 apt-get update
 apt-get install -y git python3 python3-venv python3-pip curl
+
+python3 - <<'PY'
+import sys
+if sys.version_info < (3, 11):
+    raise SystemExit("Python 3.11+ is required. Use Ubuntu 24.04 / Debian 12+, or install Python 3.11+ before continuing.")
+PY
 
 id "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 mkdir -p "$(dirname "$APP_DIR")"
@@ -336,7 +394,18 @@ python3 -m venv .venv
 python -m pip install -U pip
 python -m pip install -e ".[server]"
 
-[ -f config.yaml ] || cp config.example.yaml config.yaml
+if [ ! -f config.yaml ]; then
+  cat > config.yaml <<YAML
+server:
+  host: 127.0.0.1
+  port: $PORT
+  public_base_url: ""
+  mode: team
+  db_path: foreman-server.db
+push:
+  enabled: false
+YAML
+fi
 [ -f .env ] || cp .env.example .env
 
 python - <<'PY'
@@ -393,7 +462,7 @@ systemctl enable --now foreman
 curl -fsS "http://127.0.0.1:$PORT/health"
 ```
 
-最后一行 `curl` 如果返回 JSON，说明服务已经活了。
+最后一行 `curl` 如果返回 JSON，说明服务已经活了。生成的配置默认使用 `team` 模式，因为手机 relay 走的就是这个模式。登录或生成 access key 之前，先创建第一个管理员。
 
 然后把它放到 HTTPS 后面。Caddy 最省事：
 
@@ -425,15 +494,28 @@ server {
 }
 ```
 
+DNS 和 HTTPS 跑通后，把 `config.yaml` 里的 `server.public_base_url` 改成真实的 `https://...` 地址，然后重启服务。
+
 ### Windows 快速安装
 
-用管理员身份打开 PowerShell。先改 `$RepoUrl` 和 `$AppDir`。这里用 Windows 计划任务，不需要 NSSM 或其他 service wrapper。
+用管理员身份打开 PowerShell。先改 `$RepoUrl` 和 `$AppDir`。先装好 Git for Windows 和 Python 3.11+，并确认 `py -3` 可用。这里用 Windows 计划任务，不需要 NSSM 或其他 service wrapper。
 
 ```powershell
 $RepoUrl = "https://github.com/<owner>/<repo>.git"
 $AppDir = "C:\Foreman\app"
 $Port = 8787
 $TaskName = "ForemanServer"
+
+if (!(Get-Command git -ErrorAction SilentlyContinue)) {
+    throw "Git is required. Install Git for Windows, then open a new Administrator PowerShell."
+}
+if (!(Get-Command py -ErrorAction SilentlyContinue)) {
+    throw "Python Launcher 'py' is required. Install Python 3.11+ from python.org, then open a new Administrator PowerShell."
+}
+py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
+if ($LASTEXITCODE -ne 0) {
+    throw "Python 3.11+ is required."
+}
 
 New-Item -ItemType Directory -Force -Path (Split-Path $AppDir) | Out-Null
 
@@ -443,19 +525,32 @@ if (!(Test-Path "$AppDir\.git")) {
     git -C $AppDir pull --ff-only
 }
 
-py -3.11 -m venv "$AppDir\.venv"
+py -3 -m venv "$AppDir\.venv"
 & "$AppDir\.venv\Scripts\python.exe" -m pip install -U pip
 & "$AppDir\.venv\Scripts\python.exe" -m pip install -e "$AppDir[server]"
 
 if (!(Test-Path "$AppDir\config.yaml")) {
-    Copy-Item "$AppDir\config.example.yaml" "$AppDir\config.yaml"
+    @"
+server:
+  host: 127.0.0.1
+  port: $Port
+  public_base_url: ""
+  mode: team
+  db_path: foreman-server.db
+push:
+  enabled: false
+"@ | Set-Content -Encoding UTF8 "$AppDir\config.yaml"
 }
 if (!(Test-Path "$AppDir\.env")) {
     Copy-Item "$AppDir\.env.example" "$AppDir\.env"
 }
 
 $EnvPath = "$AppDir\.env"
-$Token = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).TrimEnd("=")
+$Bytes = New-Object byte[] 32
+$Rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$Rng.GetBytes($Bytes)
+$Rng.Dispose()
+$Token = [Convert]::ToBase64String($Bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
 $Lines = Get-Content -Encoding UTF8 $EnvPath
 $Found = $false
 $Generated = $false
@@ -506,7 +601,7 @@ server:
   host: 127.0.0.1
   port: 8787
   public_base_url: "https://foreman.example.com"
-  mode: personal  # 或 team
+  mode: team
 ```
 
 `.env`：
@@ -516,14 +611,22 @@ FOREMAN_AUTH_TOKEN=<long-random-token>
 FOREMAN_VAPID_PRIVATE_KEY=<private-web-push-key-if-web-push-is-enabled>
 ```
 
-常见 relay 部署里，模型/API 配置应该在本地电脑上，不在服务器上。只有你明确启用了服务端模型能力时，才需要把模型/API key 放到服务器。
+常见 relay 部署里，模型/API 配置应该在本地电脑上，不在服务器上。只有你明确启用了服务端模型能力时，才需要把模型/API key 放到服务器。只有在你明确不需要 relay、只想跑单用户服务端时，才改成 `personal`。
 
 ### 团队模式
 
-把 `server.mode` 设成 `team`，启动服务后在服务器上创建第一个管理员：
+把 `server.mode` 设成 `team`，启动服务后在服务器上创建第一个管理员。
+
+Linux：
 
 ```bash
-foreman create-admin admin --config /opt/foreman/app/config.yaml
+/opt/foreman/app/.venv/bin/foreman create-admin admin --config /opt/foreman/app/config.yaml
+```
+
+Windows：
+
+```powershell
+& C:\Foreman\app\.venv\Scripts\foreman.exe create-admin admin --config C:\Foreman\app\config.yaml
 ```
 
 然后登录 PWA，创建用户或 access key，再到每台本地 Foreman app 的设置页里填写 relay URL。
@@ -545,7 +648,8 @@ Windows：
 ```powershell
 git -C C:\Foreman\app pull --ff-only
 & C:\Foreman\app\.venv\Scripts\python.exe -m pip install -e "C:\Foreman\app[server]"
-Restart-ScheduledTask -TaskName ForemanServer
+Stop-ScheduledTask -TaskName ForemanServer -ErrorAction SilentlyContinue
+Start-ScheduledTask -TaskName ForemanServer
 Invoke-RestMethod http://127.0.0.1:8787/health
 ```
 
