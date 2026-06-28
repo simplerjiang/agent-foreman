@@ -25,7 +25,7 @@ from foreman.server.auth import (
 )
 from foreman.server.relay import Relay, RelayClient
 from foreman.server.store import ServerStore
-from foreman.server.store.models import AccessKey, Account
+from foreman.server.store.models import AccessKey, Account, Notification
 from foreman.shared.events import EventBus
 from foreman.shared.protocol import (
     KIND_ACK,
@@ -564,6 +564,52 @@ async def test_server_on_frame_pongs_a_ping_and_drops_a_pong(tmp_path):
     # a ping from the local process: replied with a pong
     await relay._on_frame(client, Envelope(kind=KIND_HEARTBEAT, payload={"ping": True}).to_dict())
     assert len(ws.sent) == 1 and ws.sent[0]["payload"]["pong"] is True
+
+
+async def test_relay_push_notifications_include_click_deep_links(tmp_path):
+    st = ServerStore(str(tmp_path / "team.db"))
+    st.init()
+    st.add_account(Account(id="a1", username="alice"))
+    st.add_push_subscription(account_id="a1", endpoint="https://push/a", p256dh="p", auth="a")
+
+    class _Pusher:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def send_to_all(self, subs, title, body, data=None):
+            self.calls.append({"subs": subs, "title": title, "body": body, "data": data or {}})
+            return []
+
+    pusher = _Pusher()
+    relay = Relay(st, pusher=pusher)
+
+    await relay._push_notification(
+        "a1",
+        Notification(
+            id="n1",
+            account_id="a1",
+            process_id="p1",
+            kind="decision_needed",
+            ref="card-1",
+            title="Approve?",
+            dedup_key="d1",
+        ),
+    )
+    await relay._push_notification(
+        "a1",
+        Notification(
+            id="n2",
+            account_id="a1",
+            process_id="p1",
+            kind="result_ready",
+            ref="s1",
+            title="Done",
+            dedup_key="r1",
+        ),
+    )
+
+    assert pusher.calls[0]["data"]["url"] == "/?view=decisions&process=p1"
+    assert pusher.calls[1]["data"]["url"] == "/?view=workspace&process=p1&session=s1"
 
 
 # ── serve wiring: foreman serve assembles personal vs team mode (DESIGN §8.5, T7.1) ───────────────
