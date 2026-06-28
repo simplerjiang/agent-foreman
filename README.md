@@ -23,7 +23,7 @@ Foreman is meant to sit in that gap. It is not a hosted coding service. It is a 
 
 ### What Foreman Does
 
-| Area | In plain terms |
+| Area | What it means |
 |---|---|
 | Local PM | Runs beside your projects and keeps state in your own local files/database. |
 | Task dispatch | Starts configured coding CLIs in allowed workspaces. |
@@ -160,7 +160,7 @@ Foreman 就是补这个空档。它不是托管编码平台，也不是替代你
 
 ### 它能做什么
 
-| 模块 | 说人话 |
+| 模块 | 说明 |
 |---|---|
 | 本地 PM | 跑在你的电脑上，状态存在你自己的本地文件/数据库里。 |
 | 派发任务 | 在允许的项目目录里启动你配置好的编码 CLI。 |
