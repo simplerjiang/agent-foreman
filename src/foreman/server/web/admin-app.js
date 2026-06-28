@@ -17,8 +17,17 @@
 
   // ── token + api ──────────────────────────────────────────────────────────────────────────
   const TOKEN_KEY = "foreman_token";
-  const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
-  const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
+  const DASHBOARD_TOKEN_KEY = "foreman.token";
+  const getToken = () => localStorage.getItem(TOKEN_KEY) || localStorage.getItem(DASHBOARD_TOKEN_KEY) || "";
+  const setToken = (t) => {
+    if (t) {
+      localStorage.setItem(TOKEN_KEY, t);
+      localStorage.setItem(DASHBOARD_TOKEN_KEY, t);
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(DASHBOARD_TOKEN_KEY);
+    }
+  };
 
   async function api(path, opts) {
     opts = opts || {};
@@ -527,9 +536,12 @@
 
     // 「控制」入口：把成员送进真正的控制台 PWA（index.html → app.js），那里有目标机器选择 +
     // 远端派发 / 审批 / 快照。同源 localStorage，所以先把要操控的机器写进 app.js 的 PROCESS_KEY
-    // （"foreman.process"），让控制台开屏即选中这台；token 由 app.js 回落读 "foreman_token" 自动带过去。
+    // （"foreman.process"），让控制台开屏即选中这台；同时同步当前登录 token，避免旧 dashboard
+    // token 残留时覆盖团队登录态。
     const control = (row) => {
       if (row && row.id) localStorage.setItem("foreman.process", row.id);
+      const token = getToken();
+      if (token) localStorage.setItem(DASHBOARD_TOKEN_KEY, token);
       location.href = "/index.html";
     };
 

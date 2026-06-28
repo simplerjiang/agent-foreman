@@ -5,6 +5,7 @@
   const html = htm.bind(React.createElement);
 
   const TOKEN_KEY = "foreman.token";
+  const CONSOLE_TOKEN_KEY = "foreman_token";
   const LANG_KEY = "foreman.lang";
   const THEME_KEY = "foreman.theme";
   const WORKSPACE_KEY = "foreman.workspace";
@@ -280,12 +281,19 @@
   // ---------------------------------------------------------------------------
   // token + fetch
   // ---------------------------------------------------------------------------
-  // Team members reach this dashboard via the console (admin-app.js, served at /app.html), which
-  // stores its session token under "foreman_token". Fall back to it so arriving from
-  // 「我的机器 → 控制」 keeps the member logged in instead of bouncing to the raw-token prompt.
-  // (Personal mode never sets that key, so the fallback is a no-op there.)
-  const getToken = () => localStorage.getItem(TOKEN_KEY) || localStorage.getItem("foreman_token") || "";
-  const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
+  // Team members may reach this dashboard from the console (admin-app.js, served at /app.html),
+  // which used to store its session token under "foreman_token". The handoff now syncs the current
+  // login into the dashboard's canonical key; keep the old key as a fallback for already-open tabs.
+  const getToken = () => localStorage.getItem(TOKEN_KEY) || localStorage.getItem(CONSOLE_TOKEN_KEY) || "";
+  const setToken = (t) => {
+    if (t) {
+      localStorage.setItem(TOKEN_KEY, t);
+      localStorage.setItem(CONSOLE_TOKEN_KEY, t);
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(CONSOLE_TOKEN_KEY);
+    }
+  };
   let promptedForToken = false;
   function promptForToken() {
     if (promptedForToken) return;
