@@ -159,6 +159,36 @@ def test_cloud_manager_connect_and_disconnect():
     assert off["error"] == ""
 
 
+def test_cloud_autoconnect_skips_unconfigured_startup():
+    store = FakeStore()
+    cfg = load_config()
+    cfg.secrets.cloud_access_key = ""
+    mgr = CloudManager(store=store, cfg=cfg, connector_factory=_factory(ack_ok=True))
+
+    with TestClient(create_app(cfg, store=store, cloud=mgr)) as c:
+        state = c.get("/api/settings/cloud").json()
+        assert state["connected"] is False
+        assert state["error"] == ""
+        assert mgr._thread is None
+
+
+def test_cloud_autoconnect_on_app_startup_when_configured():
+    store = FakeStore()
+    store.set_setting("cloud.url", "wss://relay.example/relay")
+    cfg = load_config()
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    mgr = CloudManager(store=store, cfg=cfg, connector_factory=_factory(ack_ok=True))
+
+    with TestClient(create_app(cfg, store=store, cloud=mgr)) as c:
+        state = c.get("/api/settings/cloud").json()
+        assert state["connected"] is True
+        assert state["error"] == ""
+        assert mgr._thread is not None and mgr._thread.is_alive()
+
+    assert mgr.status()["connected"] is False
+    assert mgr._thread is None or not mgr._thread.is_alive()
+
+
 def test_cloud_manager_does_not_push_periodic_cache_sync():
     store = FakeStore()
     store.set_setting("cloud.url", "wss://relay.example/relay")

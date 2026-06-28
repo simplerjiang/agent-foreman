@@ -9,8 +9,8 @@ in a background thread with its own event loop:
 
 `status()` reports {url, access_key_set, connected, error} for the UI. The actual access key is
 read from `cfg.secrets.cloud_access_key` (stored in local .env, never returned) and the relay URL
-from the local store (`cloud.url`). Connecting is opt-in (a button), never automatic, so the app
-never dials out on its own.
+from the local store (`cloud.url`). When both are configured, app startup auto-starts the same
+reconnect loop as the Connect button; fresh installs without cloud settings stay quietly offline.
 
 The transport is injectable (`connector_factory`) so this is unit-testable with a fake relay —
 the live wss dial-out uses the default `websockets` client (an optional dep, lazily imported).
@@ -411,6 +411,12 @@ class CloudManager:
         # If the handshake is still in progress and no real error arrived, leave error empty so the
         # UI can keep showing "connecting" instead of racing a false timeout before auth completes.
         return self.status()
+
+    def autoconnect(self, *, wait: float = 0.25) -> dict:
+        """Start the reconnect loop at app startup only when cloud settings are complete."""
+        if not self.configured():
+            return self.status()
+        return self.connect(wait=wait)
 
     def disconnect(self) -> dict:
         with self._lock:

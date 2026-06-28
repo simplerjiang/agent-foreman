@@ -529,9 +529,16 @@ def create_app(
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
         get_log_buffer()  # re-attach once uvicorn's logging config is in place
-        if cloud is not None and hasattr(cloud, "bind_app_loop"):
-            cloud.bind_app_loop(asyncio.get_running_loop())
-        yield
+        if cloud is not None:
+            if hasattr(cloud, "bind_app_loop"):
+                cloud.bind_app_loop(asyncio.get_running_loop())
+            if hasattr(cloud, "autoconnect"):
+                await asyncio.to_thread(cloud.autoconnect, wait=0.25)
+        try:
+            yield
+        finally:
+            if cloud is not None and hasattr(cloud, "disconnect"):
+                await asyncio.to_thread(cloud.disconnect)
 
     app = FastAPI(title="Foreman", version=__version__, lifespan=_lifespan)
 
@@ -1458,7 +1465,7 @@ def create_app(
 
     @app.post("/api/settings/cloud/connect")
     async def connect_cloud() -> dict:
-        """Dial the configured relay (DESIGN §8.5). Opt-in — the app never connects on its own."""
+        """Dial the configured relay (DESIGN §8.5). Also used as a manual retry after startup."""
         if cloud is None:
             raise HTTPException(status_code=503, detail="cloud_unavailable")
         state = await asyncio.to_thread(cloud.connect)
