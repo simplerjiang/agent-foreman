@@ -196,9 +196,15 @@ def test_member_console_has_control_entry_into_dashboard():
     # MemberView: per-machine 控制 button → seed the dashboard's target machine + navigate to it.
     assert "控制" in admin_js
     assert 'localStorage.setItem("foreman.process"' in admin_js
+    assert 'const DASHBOARD_TOKEN_KEY = "foreman.token"' in admin_js
+    assert "localStorage.setItem(DASHBOARD_TOKEN_KEY, t)" in admin_js
+    assert "localStorage.setItem(DASHBOARD_TOKEN_KEY, token)" in admin_js
     assert 'location.href = "/index.html"' in admin_js
-    # Dashboard authenticates from the console session ("foreman_token") instead of prompting.
-    assert 'localStorage.getItem("foreman_token")' in app_js
+    # The control handoff refreshes the dashboard's canonical token before navigation; the dashboard
+    # still accepts the old console key as a fallback for already-open tabs.
+    token_start = app_js.index("const getToken =")
+    token_end = app_js.index("const setToken", token_start)
+    assert "localStorage.getItem(TOKEN_KEY) || localStorage.getItem(CONSOLE_TOKEN_KEY)" in app_js[token_start:token_end]
 
 
 def test_local_dashboard_has_remote_execution_toggle():
