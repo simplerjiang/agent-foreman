@@ -4,31 +4,31 @@ Languages: [English](#english) | [中文](#中文)
 
 ## English
 
-This guide is for deploying the server-side Foreman component. The Windows exe is mainly a portable local desktop client: download it, run it on the computer that owns the project workspace, and configure it there. There is no special exe deployment step unless you are distributing the desktop client to users.
+First, the important bit: the exe is not something you deploy to a server. It is the local desktop app. Put it on the computer that has your projects, run it there, and configure it there.
 
-Deploy the server when you need one of these:
+You deploy the server only when you want phone access or relay:
 
-- phone access through HTTPS;
-- a cloud relay so your phone can control the PM agent running on your PC;
-- team-mode accounts and access keys;
-- a long-running public PWA endpoint.
+- you want to open Foreman from your phone over HTTPS;
+- you want your phone to send commands to the PM agent running on your PC;
+- you want team-mode accounts and access keys;
+- you want a PWA endpoint that stays online even when your laptop is asleep.
 
-Do not put real domains, server IPs, tokens, SSH keys, model names, or API keys into committed files. Use placeholders in docs and keep real values in `.env`, `config.yaml` on the target machine, or your secret manager.
+Keep real domains, IPs, tokens, SSH keys, model names, and API keys out of committed files. The examples below use placeholders on purpose.
 
-### Deployment Topology
+### Mental Model
 
 ```text
-Local PC                         Server                         Phone
-Foreman app  -- outbound WSS --> Foreman serve -- HTTPS PWA --> Browser/PWA
-PM Core                           auth + relay                  approve / dispatch
-Project workspaces                no user project checkout      timeline
+PC with your projects             Your server                    Your phone
+Foreman app  -- outbound WSS -->  Foreman serve -- HTTPS PWA -->  Browser/PWA
+PM Core                           auth + relay                   approve / dispatch
+Project workspaces                no user project checkout       timeline
 ```
 
-The local PC is where development work happens. The server should be treated as a relay and web surface, not as the machine that edits your projects.
+The PC does the actual project work. The server is just the front door and relay.
 
 ### Linux Quick Install
 
-Run this on a fresh Ubuntu/Debian server as `root`. Replace `REPO_URL` before running.
+Use this on a fresh Ubuntu/Debian box as `root`. Change `REPO_URL` first.
 
 ```bash
 export REPO_URL="https://github.com/<owner>/<repo>.git"
@@ -111,7 +111,9 @@ systemctl enable --now foreman
 curl -fsS "http://127.0.0.1:$PORT/health"
 ```
 
-After the service is healthy, put it behind HTTPS. Caddy example:
+If that last `curl` returns JSON, the service is alive.
+
+Now put it behind HTTPS. Caddy is the shortest route:
 
 ```caddyfile
 foreman.example.com {
@@ -119,7 +121,7 @@ foreman.example.com {
 }
 ```
 
-Nginx example:
+Nginx works too:
 
 ```nginx
 server {
@@ -143,7 +145,7 @@ server {
 
 ### Windows Quick Install
 
-Run PowerShell as Administrator. Replace `$RepoUrl` and `$AppDir` before running. This uses Windows Task Scheduler so no third-party service wrapper is required.
+Run PowerShell as Administrator. Change `$RepoUrl` and `$AppDir` first. This uses Windows Task Scheduler so you do not need NSSM or another service wrapper.
 
 ```powershell
 $RepoUrl = "https://github.com/<owner>/<repo>.git"
@@ -211,11 +213,11 @@ if ($Generated) {
 }
 ```
 
-For HTTPS on Windows, place Foreman behind a reverse proxy or tunnel that terminates TLS and forwards to `127.0.0.1:8787`. Keep the public URL generic in committed docs, for example `https://foreman.example.com`.
+For public access on Windows, still put Foreman behind HTTPS: a reverse proxy, a tunnel, or a gateway that forwards to `127.0.0.1:8787`.
 
-### Required Configuration
+### Config You Should Actually Check
 
-Set these on the deployed server:
+On the server:
 
 ```yaml
 server:
@@ -232,17 +234,17 @@ FOREMAN_AUTH_TOKEN=<long-random-token>
 FOREMAN_VAPID_PRIVATE_KEY=<private-web-push-key-if-web-push-is-enabled>
 ```
 
-Only add model/API keys on the server if you intentionally run server-side features that require them. For the common relay setup, the local PC owns PM execution and model configuration.
+For the common relay setup, the model/API config belongs on the local PC, not the server. Only put model/API keys on the server if you knowingly enable server-side features that need them.
 
 ### Team Mode
 
-For team mode, set `server.mode: team`, start the service, then create the first admin on the server:
+Set `server.mode: team`, start the service, then create the first admin on the server:
 
 ```bash
 foreman create-admin admin --config /opt/foreman/app/config.yaml
 ```
 
-Log into the PWA, create users or access keys, then connect each local Foreman app to the relay URL and its access key from the app settings.
+After that, log into the PWA, create users or access keys, and connect each local Foreman app to the relay URL from its settings page.
 
 ### Updating
 
@@ -265,50 +267,50 @@ Restart-ScheduledTask -TaskName ForemanServer
 Invoke-RestMethod http://127.0.0.1:8787/health
 ```
 
-### Verification
+### Quick Checks
 
 - Local health: `curl -fsS http://127.0.0.1:8787/health`
 - Public health: `curl -fsS https://foreman.example.com/health`
 - Linux logs: `journalctl -u foreman -f`
-- Windows status: `Get-ScheduledTask -TaskName ForemanServer`
-- Phone: open the public URL, install the PWA, sign in or enter the auth token, then confirm timeline and approval cards load.
+- Windows task: `Get-ScheduledTask -TaskName ForemanServer`
+- Phone check: open the public URL, install the PWA, sign in or enter the auth token, and confirm the timeline loads.
 
-### Production Checklist
+### Production Habits
 
-- Use HTTPS before exposing phone access.
-- Keep `FOREMAN_AUTH_TOKEN` private and rotate it if shared accidentally.
-- Lock down SSH/RDP to known networks or VPNs.
-- Keep firewall rules narrow. The reverse proxy should be public; Foreman can stay on `127.0.0.1:8787`.
+- Do not expose phone access without HTTPS.
+- Keep `FOREMAN_AUTH_TOKEN` private; rotate it if it leaks.
+- Restrict SSH/RDP to trusted networks or VPNs.
+- Let the reverse proxy face the public internet; keep Foreman on `127.0.0.1:8787` when possible.
 - Back up `config.yaml`, `.env`, and the server database if you use accounts/team mode.
-- Never commit generated keys, real domains, IPs, provider URLs, model names, or API keys.
+- Do not commit generated keys, real domains, IPs, provider URLs, model names, or API keys.
 
 ## 中文
 
-本文档用于部署 Foreman 的服务端组件。Windows exe 主要是本地便携桌面客户端：下载后放在拥有项目工作区的电脑上运行并配置即可。除非你要分发桌面客户端，否则 exe 本身没有特殊的“部署”步骤。
+先说最重要的：exe 不需要部署到服务器。它是本地桌面端，应该放在有项目目录的那台电脑上运行，也在那台电脑上配置。
 
-当你需要下面能力时，才需要部署服务端：
+只有下面这些情况才需要部署服务端：
 
-- 通过 HTTPS 在手机上访问；
-- 通过云端 relay 控制运行在电脑上的 PM Agent；
-- 使用团队模式账号和 access key；
-- 提供长期运行的公开 PWA 入口。
+- 你想在手机上通过 HTTPS 打开 Foreman；
+- 你想让手机把命令转给电脑上的 PM Agent；
+- 你需要团队模式账号和 access key；
+- 你希望 PWA 入口一直在线，即使笔记本睡眠也能打开。
 
-不要把真实域名、服务器 IP、token、SSH key、模型名或 API key 写进提交的文件。文档里使用占位符，真实值放在目标机器的 `.env`、`config.yaml` 或你的 secret manager 里。
+真实域名、IP、token、SSH key、模型名、API key 都不要写进提交。下面全部用占位符，是故意的。
 
-### 部署拓扑
+### 先理解拓扑
 
 ```text
-本地电脑                         服务器                         手机
-Foreman app  -- 出站 WSS --> Foreman serve -- HTTPS PWA --> 浏览器/PWA
-PM Core                         认证 + relay                  审批 / 派活
-项目工作区                       不需要用户项目 checkout        时间线
+有项目的电脑                     你的服务器                       你的手机
+Foreman app  -- 出站 WSS -->    Foreman serve -- HTTPS PWA -->    浏览器/PWA
+PM Core                         认证 + relay                    审批 / 派活
+项目工作区                       不需要用户项目 checkout          时间线
 ```
 
-开发工作发生在本地电脑。服务端应该被当作 relay 和 Web 入口，而不是实际改项目代码的机器。
+真正改项目的是电脑。服务器只是入口和转发层。
 
 ### Linux 快速安装
 
-在新的 Ubuntu/Debian 服务器上以 `root` 执行。执行前替换 `REPO_URL`。
+在新的 Ubuntu/Debian 机器上用 `root` 执行。先改 `REPO_URL`。
 
 ```bash
 export REPO_URL="https://github.com/<owner>/<repo>.git"
@@ -391,7 +393,9 @@ systemctl enable --now foreman
 curl -fsS "http://127.0.0.1:$PORT/health"
 ```
 
-服务健康后，把它放到 HTTPS 后面。Caddy 示例：
+最后一行 `curl` 如果返回 JSON，说明服务已经活了。
+
+然后把它放到 HTTPS 后面。Caddy 最省事：
 
 ```caddyfile
 foreman.example.com {
@@ -399,7 +403,7 @@ foreman.example.com {
 }
 ```
 
-Nginx 示例：
+Nginx 也可以：
 
 ```nginx
 server {
@@ -423,7 +427,7 @@ server {
 
 ### Windows 快速安装
 
-以管理员身份运行 PowerShell。执行前替换 `$RepoUrl` 和 `$AppDir`。这里使用 Windows 计划任务，不依赖第三方 service wrapper。
+用管理员身份打开 PowerShell。先改 `$RepoUrl` 和 `$AppDir`。这里用 Windows 计划任务，不需要 NSSM 或其他 service wrapper。
 
 ```powershell
 $RepoUrl = "https://github.com/<owner>/<repo>.git"
@@ -491,11 +495,11 @@ if ($Generated) {
 }
 ```
 
-Windows 上的 HTTPS 建议交给反向代理或隧道：公网 HTTPS 入口终止 TLS，再转发到 `127.0.0.1:8787`。提交到 git 的文档里只写通用占位符，例如 `https://foreman.example.com`。
+Windows 上如果要公网访问，也请放到 HTTPS 后面：反向代理、隧道或网关都行，转发到 `127.0.0.1:8787`。
 
-### 必要配置
+### 真正需要检查的配置
 
-部署服务器上的 `config.yaml`：
+服务器上的 `config.yaml`：
 
 ```yaml
 server:
@@ -512,17 +516,17 @@ FOREMAN_AUTH_TOKEN=<long-random-token>
 FOREMAN_VAPID_PRIVATE_KEY=<private-web-push-key-if-web-push-is-enabled>
 ```
 
-只有当你明确要在服务端运行需要模型调用的功能时，才把模型/API key 放到服务器上。常见 relay 部署里，PM 执行和模型配置属于本地电脑。
+常见 relay 部署里，模型/API 配置应该在本地电脑上，不在服务器上。只有你明确启用了服务端模型能力时，才需要把模型/API key 放到服务器。
 
 ### 团队模式
 
-团队模式下，把 `server.mode` 设成 `team`，启动服务后在服务器上创建第一个管理员：
+把 `server.mode` 设成 `team`，启动服务后在服务器上创建第一个管理员：
 
 ```bash
 foreman create-admin admin --config /opt/foreman/app/config.yaml
 ```
 
-登录 PWA 后创建用户或 access key，再在每台本地 Foreman app 的设置里填写 relay URL 和对应 access key。
+然后登录 PWA，创建用户或 access key，再到每台本地 Foreman app 的设置页里填写 relay URL。
 
 ### 更新
 
@@ -545,19 +549,19 @@ Restart-ScheduledTask -TaskName ForemanServer
 Invoke-RestMethod http://127.0.0.1:8787/health
 ```
 
-### 验证
+### 快速检查
 
 - 本机健康检查：`curl -fsS http://127.0.0.1:8787/health`
 - 公网健康检查：`curl -fsS https://foreman.example.com/health`
 - Linux 日志：`journalctl -u foreman -f`
-- Windows 状态：`Get-ScheduledTask -TaskName ForemanServer`
-- 手机：打开公网 URL，安装 PWA，登录或输入 auth token，确认时间线和审批卡可以加载。
+- Windows 计划任务：`Get-ScheduledTask -TaskName ForemanServer`
+- 手机检查：打开公网 URL，安装 PWA，登录或输入 auth token，确认时间线能加载。
 
-### 生产检查清单
+### 生产习惯
 
-- 手机访问必须先上 HTTPS。
-- `FOREMAN_AUTH_TOKEN` 要保密；如果误发，立即轮换。
-- SSH/RDP 只对可信网络或 VPN 开放。
-- 防火墙规则保持最窄：公网入口给反向代理，Foreman 本体可以只监听 `127.0.0.1:8787`。
+- 没有 HTTPS 时，不要开放手机访问。
+- `FOREMAN_AUTH_TOKEN` 要保密；泄露就轮换。
+- SSH/RDP 只开放给可信网络或 VPN。
+- 尽量让反向代理面对公网，Foreman 本体保持在 `127.0.0.1:8787`。
 - 使用账号/团队模式时，备份 `config.yaml`、`.env` 和服务端数据库。
 - 不要提交生成的 key、真实域名、IP、provider URL、模型名或 API key。
