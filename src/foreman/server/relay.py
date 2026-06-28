@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlencode
 
 from starlette.websockets import WebSocketDisconnect
 
@@ -436,10 +437,22 @@ class Relay:
             subs,
             "Foreman",
             row.title,
-            {"kind": row.kind, "ref": row.ref, "process_id": row.process_id},
+            {
+                "kind": row.kind,
+                "ref": row.ref,
+                "process_id": row.process_id,
+                "url": self._notification_url(row),
+            },
         )
         for endpoint in gone:
             self.store.delete_push_subscription(endpoint, account_id=account_id)
+
+    @staticmethod
+    def _notification_url(row: Notification) -> str:
+        params = {"view": "decisions", "process": row.process_id}
+        if row.kind == "result_ready":
+            params = {"view": "workspace", "process": row.process_id, "session": row.ref}
+        return "/?" + urlencode(params)
 
     async def _publish_health(self, client: RelayClient, *, online: bool) -> None:
         if self.bus is None:
