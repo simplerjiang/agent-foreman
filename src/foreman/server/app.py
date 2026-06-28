@@ -30,6 +30,7 @@ from foreman.shared.config import (
     Config,
     PMToolsCfg,
     WorkspaceCfg,
+    clamp_pm_tool_rounds,
     default_agents,
     remote_execution_enabled,
 )
@@ -723,10 +724,7 @@ def create_app(
         provider = str(raw.get("web_search_provider", current.web_search_provider) or "").strip()
         if provider not in {"duckduckgo", "searxng"}:
             provider = "duckduckgo"
-        try:
-            max_rounds = int(raw.get("max_rounds", current.max_rounds))
-        except (TypeError, ValueError):
-            max_rounds = current.max_rounds
+        max_rounds = clamp_pm_tool_rounds(raw.get("max_rounds", current.max_rounds))
         return PMToolsCfg(
             file_read=flag("file_read", current.file_read),
             file_write=flag("file_write", current.file_write),
@@ -739,7 +737,7 @@ def create_app(
             web_search_provider=provider,
             searxng_url=str(raw.get("searxng_url", current.searxng_url) or "").strip(),
             browser_headless=flag("browser_headless", current.browser_headless),
-            max_rounds=max(1, max_rounds),
+            max_rounds=max_rounds,
         )
 
     def _clean_string_list(value: Any) -> list[str]:

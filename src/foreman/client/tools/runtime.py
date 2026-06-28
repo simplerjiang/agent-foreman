@@ -13,7 +13,7 @@ from urllib.parse import quote_plus, urlparse
 
 import httpx
 
-from foreman.shared.config import Config
+from foreman.shared.config import Config, clamp_pm_tool_rounds
 
 from .models import (
     EXTERNAL_WEB,
@@ -86,7 +86,7 @@ class PMToolRuntime:
                 web_search_provider=pm.web_search_provider,
                 searxng_url=pm.searxng_url,
                 browser_headless=pm.browser_headless,
-                max_rounds=pm.max_rounds,
+                max_rounds=clamp_pm_tool_rounds(pm.max_rounds),
             ),
             gate=gate,
             auditor=auditor,

@@ -237,11 +237,14 @@ def test_dispatch_model_picker_and_no_explicit_agent():
 
 
 def test_pm_review_rendered_in_thread():
-    """pm_review events (PM's post-run verdict) surface in the redesigned thread (codex review)."""
+    """pm_review stays an internal diagnostic, while pm_reply is the user-visible PM bubble."""
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     assert 't === "pm_review"' in js and "follow_up" in js
     assert "todo_status" in js and "mergeTodoRows" in js
+    assert 't === "pm_reply"' in js
+    assert 'nodes.push({ kind: "pm-review"' in js
+    assert 'className=${`pm-review${n.done ? " done" : ""}`}' in js
 
 
 def test_pm_stream_replaces_starting_status():
@@ -438,6 +441,8 @@ def test_pm_tool_settings_frontend_wired():
     assert "pmTools" in js and "savePmTools" in js and "loadPmTools" in js
     assert "allowed_commands" in js and "allowed_origins" in js
     assert "web_search_provider" in js and "browser_headless" in js
+    assert "PM_TOOLS_MAX_ROUNDS = 12" in js and "clampPmToolRounds" in js
+    assert "PM evidence rounds" in js and "PM 取证工具轮次" in js
 
 
 def test_mobile_shell_drawer_and_bottom_tabs_wired():

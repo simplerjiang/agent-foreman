@@ -43,9 +43,11 @@ PLAN_SYSTEM = (
     "coding agent may use its available file read/write/edit, shell command, and web/search tools "
     "when its full_access setting is true. Human-facing JSON string "
     "values must follow the selected output language; keep only identifiers, paths, commands, code, "
-    "and quoted user text as-is. Respond with ONLY JSON: "
+    "and quoted user text as-is. If the user's request only needs a direct answer and no coding CLI, "
+    "set kind='direct_reply' and put the user-facing answer in reply. Respond with ONLY JSON: "
     '{"summary": str, "agent": "claude-code|codex|copilot-cli", "model": str, "effort": "low|medium|high|", '
-    '"instruction": str, "todo": [str], "deliberation": [str], "ready": bool}.'
+    '"instruction": str, "kind": "agent_task|direct_reply", "reply": str, '
+    '"todo": [str], "deliberation": [str], "ready": bool}.'
 )
 
 REVIEW_SYSTEM = (
@@ -95,6 +97,8 @@ class PMPlan:
     model: str
     effort: str
     instruction: str
+    kind: str = "agent_task"
+    reply: str = ""
     summary: str = ""
     todo: list[str] = field(default_factory=list)
     deliberation: list[str] = field(default_factory=list)
@@ -200,6 +204,8 @@ def parse_plan(
         model=_as_str(obj.get("model")) or fallback_model,
         effort=effort,
         instruction=instruction,
+        kind=_plan_kind(obj.get("kind")),
+        reply=_as_str(obj.get("reply")),
         summary=_as_str(obj.get("summary")),
         todo=_as_str_list(obj.get("todo")),
         deliberation=_as_str_list(obj.get("deliberation")),
@@ -223,6 +229,26 @@ def parse_review(raw: str, *, language: str = "") -> PMReview:
         follow_up=_as_str(obj.get("follow_up")),
         todo_status=_as_todo_status(obj.get("todo_status") or obj.get("todo")),
     )
+
+
+def _plan_kind(value: object) -> str:
+    kind = _as_str(value).lower()
+    return kind if kind in {"agent_task", "direct_reply", "blocked", "error"} else "agent_task"
+
+
+def _simple_reply_text(text: str, *, language: str) -> str:
+    lowered = text.lower()
+    if normalize_lang(language) == "en":
+        if "morning" in lowered:
+            return "Good morning. What would you like help with next?"
+        if "confirm" in lowered or "acknowledge" in lowered or "received" in lowered:
+            return "Received."
+        return "Hello. What would you like help with next?"
+    if "确认" in text or "收到" in text:
+        return "收到。"
+    if "早上好" in text or "上午好" in text:
+        return "早上好，需要我帮你处理什么？"
+    return "你好，需要我帮你处理什么？"
 
 
 def _tool_loop_incomplete_summary(language: str) -> str:
@@ -251,6 +277,7 @@ def _simple_reply_plan(
         return None
     simple_terms = (
         "确认收到", "收到本消息", "回复收到", "一句中文", "一句话", "报个到", "打个招呼",
+        "你好", "您好", "早上好", "上午好", "hello", "hi", "hey", "good morning",
         "confirm receipt", "acknowledge", "say hello", "one sentence", "reply with",
     )
     if not any(term in lowered for term in simple_terms):
@@ -264,6 +291,8 @@ def _simple_reply_plan(
             model="",
             effort=effort,
             instruction=f"Reply directly to the user as requested. Do not inspect files or run tools. User request: {text}",
+            kind="direct_reply",
+            reply=_simple_reply_text(text, language=language),
             summary="Simple reply request; skipped PM tool planning.",
             todo=["Reply directly as requested"],
             deliberation=["The request needs no repository evidence or tool planning."],
@@ -273,6 +302,8 @@ def _simple_reply_plan(
         model="",
         effort=effort,
         instruction=f"按用户要求直接回复。不要查看文件、运行工具或修改代码。用户原话：{text}",
+        kind="direct_reply",
+        reply=_simple_reply_text(text, language=language),
         summary="简单回复请求，已跳过 PM 工具规划。",
         todo=["直接按要求回复用户"],
         deliberation=["该请求不需要仓库证据或工具规划。"],
@@ -575,6 +606,8 @@ class PMAgent:
                     effort=_as_str(outcome.final_plan.get("effort")),
                     instruction=_as_str(outcome.final_plan.get("instruction"))
                     or fallback_instruction,
+                    kind=_plan_kind(outcome.final_plan.get("kind")),
+                    reply=_as_str(outcome.final_plan.get("reply")),
                     summary=_as_str(outcome.final_plan.get("summary")),
                     todo=_as_str_list(outcome.final_plan.get("todo")),
                     deliberation=_as_str_list(outcome.final_plan.get("deliberation")),
