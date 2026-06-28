@@ -13,8 +13,11 @@ The full diff / raw return stays on the machine.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from foreman.shared.protocol import KIND_CACHE_SYNC, KIND_SNAPSHOT, Envelope
+from foreman.shared.autonomy import level_label, normalize_level
+from foreman.shared.i18n import normalize as normalize_lang
 
 
 def session_summary(session) -> dict:
@@ -54,6 +57,159 @@ def card_summary(card) -> dict:
     }
 
 
+def approval_summary(approval) -> dict:
+    """A pending approval row, including its one-time nonce so the browser can decide it."""
+    return {
+        "id": approval.id,
+        "session_id": approval.session_id,
+        "task_id": approval.task_id,
+        "action": approval.action,
+        "risk_level": approval.risk_level,
+        "diff_summary": approval.diff_summary,
+        "status": approval.status,
+        "reason": approval.reason,
+        "nonce": approval.nonce,
+        "requested_at": approval.requested_at,
+        "decided_at": approval.decided_at,
+    }
+
+
+def report_summary(report) -> dict:
+    return {
+        "id": report.id,
+        "session_id": report.session_id,
+        "kind": report.kind,
+        "title": report.title,
+        "body_md": report.body_md,
+        "sent": report.sent,
+        "ts": report.ts,
+    }
+
+
+def definition_summary(definition) -> dict:
+    """Definition rows are sent only in the live, on-demand snapshot and are not stored by relay."""
+    return {
+        "id": definition.id,
+        "kind": definition.kind,
+        "name": definition.name,
+        "version": definition.version,
+        "status": definition.status,
+        "is_active": definition.is_active,
+        "scope_json": definition.scope_json,
+        "body": definition.body,
+        "metadata_json": definition.metadata_json,
+        "created_at": definition.created_at,
+        "updated_at": definition.updated_at,
+    }
+
+
+def _setting(store: Any, key: str, default: str = "") -> str:
+    get = getattr(store, "get_setting", None)
+    if callable(get):
+        value = get(key)
+        if value is not None:
+            return str(value)
+    return default
+
+
+def _json_setting(store: Any, key: str, fallback: Any) -> Any:
+    raw = _setting(store, key, "")
+    if raw:
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return fallback
+    return fallback
+
+
+def _model_dump(obj: Any) -> dict:
+    if obj is None:
+        return {}
+    dump = getattr(obj, "model_dump", None)
+    if callable(dump):
+        return dump()
+    if isinstance(obj, dict):
+        return dict(obj)
+    return {
+        k: v for k, v in vars(obj).items()
+        if not k.startswith("_") and isinstance(v, (str, int, bool, list, dict, type(None)))
+    }
+
+
+def _workspace_rows(store: Any, cfg: Any) -> list[dict]:
+    fallback = [
+        {"path": getattr(w, "path", ""), "name": getattr(w, "name", "")}
+        for w in (getattr(cfg, "workspaces", []) if cfg is not None else [])
+    ]
+    rows = _json_setting(store, "workspaces.json", fallback)
+    return [
+        {"path": str((row or {}).get("path") or ""), "name": str((row or {}).get("name") or "")}
+        for row in rows if isinstance(row, dict) and str(row.get("path") or "").strip()
+    ]
+
+
+def _agent_rows(store: Any, cfg: Any) -> list[dict]:
+    agents = getattr(cfg, "agents", {}) if cfg is not None else {}
+    fallback = [
+        {"name": name, **_model_dump(agent)}
+        for name, agent in sorted((agents or {}).items())
+    ]
+    rows = _json_setting(store, "agents.json", fallback)
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _pm_tools(store: Any, cfg: Any) -> dict:
+    fallback = _model_dump(getattr(cfg, "pm_tools", None) if cfg is not None else None)
+    data = _json_setting(store, "pm_tools.json", fallback)
+    return dict(data) if isinstance(data, dict) else fallback
+
+
+def _llm_settings(store: Any, cfg: Any) -> dict:
+    llm = getattr(cfg, "llm", None) if cfg is not None else None
+    secrets = getattr(cfg, "secrets", None) if cfg is not None else None
+    provider = _setting(store, "llm.provider", "") or getattr(llm, "provider", "openai")
+    model = _setting(store, "llm.model", "") or getattr(llm, "model", "")
+    base_url = _setting(store, "llm.base_url", "") or getattr(llm, "base_url", "")
+    transport = _setting(store, "llm.transport", "") or getattr(llm, "transport", "http")
+    reasoning_effort = _setting(store, "llm.reasoning_effort", "") or getattr(llm, "reasoning_effort", "")
+    try:
+        timeout = int(_setting(store, "llm.request_timeout_s", str(getattr(llm, "request_timeout_s", 300))) or 300)
+    except (TypeError, ValueError):
+        timeout = 300
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "transport": transport,
+        "request_timeout_s": timeout,
+        "reasoning_effort": reasoning_effort,
+        "api_key_set": bool(str(getattr(secrets, "llm_api_key", "") or "").strip()),
+    }
+
+
+def local_state_summary(store: Any = None, cfg: Any = None) -> dict:
+    """Display state that must reflect the selected local machine in team mode."""
+    ui = getattr(cfg, "ui", None) if cfg is not None else None
+    autonomy = getattr(cfg, "autonomy", None) if cfg is not None else None
+    lang = normalize_lang(_setting(store, "ui.language", getattr(ui, "language", "zh")))
+    level = normalize_level(_setting(store, "autonomy.level", str(getattr(autonomy, "level", 1))))
+    out: dict[str, Any] = {
+        "workspaces": _workspace_rows(store, cfg),
+        "agent_settings": _agent_rows(store, cfg),
+        "pm_tools": _pm_tools(store, cfg),
+        "llm": _llm_settings(store, cfg),
+        "autonomy": {"level": level, "label": level_label(level, lang)},
+        "language": lang,
+    }
+    if store is not None and hasattr(store, "get_pending_approvals"):
+        out["approvals"] = [approval_summary(a) for a in store.get_pending_approvals()]
+    if store is not None and hasattr(store, "get_reports"):
+        out["reports"] = [report_summary(r) for r in store.get_reports(None)]
+    if store is not None and hasattr(store, "get_definitions"):
+        out["definitions"] = [definition_summary(d) for d in store.get_definitions()]
+    return out
+
+
 def build_cache_sync(sessions, cards) -> Envelope:
     """Legacy v1 helper. Retained for compatibility; v2 uses ``build_snapshot`` on demand."""
     return Envelope(
@@ -65,9 +221,10 @@ def build_cache_sync(sessions, cards) -> Envelope:
     )
 
 
-def build_snapshot(sessions, cards, *, corr_id: str = "") -> Envelope:
+def build_snapshot(sessions, cards, *, corr_id: str = "", store: Any = None, cfg: Any = None) -> Envelope:
     """Assemble an on-demand display-safe snapshot for a subscribed browser."""
     env = build_cache_sync(sessions, cards)
     env.kind = KIND_SNAPSHOT
     env.id = corr_id
+    env.payload.update(local_state_summary(store, cfg))
     return env

@@ -261,6 +261,11 @@ class _SnapshotBody(BaseModel):
     process_id: str
 
 
+class _RemoteAutonomyBody(BaseModel):
+    process_id: str
+    level: int
+
+
 class _NotificationAckBody(BaseModel):
     ids: list[str] = Field(default_factory=list)
 
@@ -1919,6 +1924,16 @@ def create_app(
         env = Envelope(kind=KIND_SNAPSHOT_REQ, id=new_id())
         return await _route_remote_command(account.id, body.process_id, env)
 
+    @app.post("/api/remote/settings/autonomy")
+    async def remote_set_autonomy(body: _RemoteAutonomyBody, request: Request) -> dict:
+        """Write the autonomy dial to the selected local process, not the relay server."""
+        account = require_account(request)
+        return await _route_remote_command(
+            account.id,
+            body.process_id,
+            command_envelope("set_autonomy", {"level": body.level}),
+        )
+
     @app.post("/api/dispatch")
     async def remote_dispatch(body: _RemoteDispatchBody, request: Request) -> dict:
         """Route a browser task dispatch to the selected local process."""
@@ -2280,24 +2295,21 @@ def create_app(
     # (never edge-cached), so the new tokens reach browsers immediately. Other assets (css/js/icons)
     # fall through to StaticFiles below.
     if WEB_DIR.exists():
-        # Team mode is login-gated end to end: the root serves the new Ant Design console SPA
-        # (app.html), which shows a login screen until /api/auth/me succeeds — so visiting the
-        # site without a session never exposes any page content. Personal mode keeps serving the
-        # local dashboard (index.html) unchanged.
-        is_team = (cfg.server.mode or "personal").strip().lower() == "team"
+        # The root always serves the login-gated console app (app.html). Legacy /index.html is a
+        # compatibility shim that redirects into the console's embedded control view.
 
         def _render_page(name: str) -> HTMLResponse:
             html = (WEB_DIR / name).read_text(encoding="utf-8").replace("__VER__", ASSET_VER)
             return HTMLResponse(html)
 
         async def _serve_root() -> HTMLResponse:
-            return _render_page("app.html" if is_team else "index.html")
+            return _render_page("app.html")
 
         async def _serve_app() -> HTMLResponse:
             return _render_page("app.html")
 
         app.add_api_route("/", _serve_root, include_in_schema=False)
-        # The new console SPA. /admin.html kept as a back-compat alias (the old admin URL).
+        # The console app. /admin.html kept as a back-compat alias (the old admin URL).
         for _alias in ("/app.html", "/admin.html"):
             app.add_api_route(_alias, _serve_app, include_in_schema=False)
         # Legacy entry pages still version-stamped so their ?v= asset tokens bust the edge cache.

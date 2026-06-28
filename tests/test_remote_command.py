@@ -103,3 +103,17 @@ def test_remote_snapshot_routes_snapshot_request(tmp_path):
     assert r.status_code == 200
     assert r.json()["kind"] == "snapshot"
     assert relay.calls[0]["kind"] == "snapshot_req"
+
+
+def test_remote_autonomy_routes_to_selected_process(tmp_path):
+    client, token, relay = _client(tmp_path, FakeRelay({"ok": True, "level": 2}))
+    r = client.post(
+        "/api/remote/settings/autonomy",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"process_id": "p1", "level": 2},
+    )
+    assert r.status_code == 200
+    assert r.json()["level"] == 2
+    assert relay.calls[0]["process_id"] == "p1"
+    assert relay.calls[0]["payload"]["action"] == "set_autonomy"
+    assert relay.calls[0]["payload"]["level"] == 2

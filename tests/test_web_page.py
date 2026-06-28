@@ -1,9 +1,9 @@
-"""Non-browser checks for the redesigned personal-mode PWA (warm-paper handoff, 2026-06-23).
+"""Non-browser checks for the Foreman web console (warm-paper handoff, 2026-06-23).
 
 Confirms the static page ships and wires the API + WS + new features (browser/E2E acceptance is
-done separately with codex per the goal). The personal page is a custom React/htm SPA (no Ant
-Design — that stays in the team-mode admin console at app.html). The invariant that survives every
-redesign: untrusted agent output is rendered through React, never assigned to innerHTML.
+done separately with codex per the goal). The control dashboard is embedded inside the login-gated
+team console at app.html. The invariant that survives every redesign: untrusted agent output is
+rendered through React, never assigned to innerHTML.
 """
 
 from __future__ import annotations
@@ -21,17 +21,21 @@ def test_index_served():
     r = c.get("/")
     assert r.status_code == 200
     assert "Foreman" in r.text
-    assert '<div id="root">' in r.text and "/app.js" in r.text
+    assert '<div id="root" data-admin-root="1">' in r.text
+    assert "/admin-app.js" in r.text and "/app.js" in r.text
+    assert "/index-redirect.js" not in r.text
 
 
 def test_index_ships_slim_vendor_and_self_hosted_fonts():
-    """Personal mode drops Ant Design for the custom theme; React + htm still load. Fonts are
-    self-hosted (CSP default-src 'self' blocks Google Fonts, which is also unreliable in China)."""
+    """The single console app loads React/htm/Ant Design plus the embedded control dashboard CSS.
+    Fonts are self-hosted (CSP default-src 'self' blocks Google Fonts, also unreliable in China)."""
     c = TestClient(create_app(load_config()))
     html = c.get("/").text
     assert "/vendor/react.production.min.js" in html
     assert "/vendor/react-dom.production.min.js" in html
     assert "/vendor/htm.umd.js" in html
+    assert "/vendor/antd.min.js" in html
+    assert "/app.css" in html and "/app.js" in html and "/admin-app.js" in html
     # self-hosted variable fonts, preloaded
     assert "plus-jakarta-sans-latin.woff2" in html
     assert "jetbrains-mono-latin.woff2" in html
@@ -40,6 +44,16 @@ def test_index_ships_slim_vendor_and_self_hosted_fonts():
         r = c.get(f"/vendor/fonts/{font}")
         assert r.status_code == 200, font
         assert r.content[:4] == b"wOF2", font
+
+
+def test_legacy_index_redirects_to_console_control_view():
+    c = TestClient(create_app(load_config()))
+    html = c.get("/index.html").text
+    assert "/index-redirect.js" in html
+    assert "/app.js" not in html and "ReactDOM.createRoot" not in html
+    js = c.get("/index-redirect.js").text
+    assert 'params.set("control", "1")' in js
+    assert 'location.replace("/app.html"' in js
 
 
 def test_app_js_wires_api_and_ws_and_is_xss_safe():
@@ -121,7 +135,7 @@ def test_autonomy_dial_wired_in_page():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     css = c.get("/app.css").text
-    assert "/api/settings/autonomy" in js and "loadAutonomy" in js and "saveAutonomy" in js
+    assert "/api/settings/autonomy" in js and "/api/remote/settings/autonomy" in js and "saveAutonomy" in js
     assert "slider-wrap" in js and "autoExec" in js
     assert "自动执行权限" in js
     assert 'const autonomyName = d[`auto${autonomy}`]' in js
@@ -189,22 +203,30 @@ def test_remote_control_ui_wires_process_target_and_approve_endpoint():
 
 def test_member_console_has_control_entry_into_dashboard():
     """A team member's 我的机器 card must offer a 「控制」 entry into the control dashboard, and the
-    dashboard must accept the console session token so the hand-off does not log the member out."""
+    dashboard must accept the console session token without leaving the single /app.html React root."""
     c = TestClient(create_app(load_config()))
     admin_js = c.get("/admin-app.js").text
     app_js = c.get("/app.js").text
-    # MemberView: per-machine 控制 button → seed the dashboard's target machine + navigate to it.
+    # MemberView/Admin processes: per-machine 控制 button → seed the dashboard target and switch view.
     assert "控制" in admin_js
-    assert 'localStorage.setItem("foreman.process"' in admin_js
+    assert "function ControlView" in admin_js and "ForemanControlApp" in admin_js
+    assert "wantsControlView" in admin_js and "controlHref" in admin_js
+    assert "localStorage.setItem(PROCESS_KEY, id)" in admin_js
     assert 'const DASHBOARD_TOKEN_KEY = "foreman.token"' in admin_js
     assert "localStorage.setItem(DASHBOARD_TOKEN_KEY, t)" in admin_js
     assert "localStorage.setItem(DASHBOARD_TOKEN_KEY, token)" in admin_js
-    assert 'location.href = "/index.html"' in admin_js
+    assert 'history.pushState(null, "", controlHref(id))' in admin_js
+    assert 'location.href = "/index.html"' not in admin_js
     # The control handoff refreshes the dashboard's canonical token before navigation; the dashboard
     # still accepts the old console key as a fallback for already-open tabs.
     token_start = app_js.index("const getToken =")
     token_end = app_js.index("const setToken", token_start)
     assert "localStorage.getItem(TOKEN_KEY) || localStorage.getItem(CONSOLE_TOKEN_KEY)" in app_js[token_start:token_end]
+    assert "window.ForemanControlApp = { Root: Shell }" in app_js and "dataset.adminRoot" in app_js
+    assert "/app.html?next=" in app_js and "/api/auth/me" in app_js
+    assert '!path.startsWith("/api/auth/")' in app_js
+    assert "Access token required" not in app_js and "window.prompt" not in app_js
+    assert "nextUrl()" in admin_js and "finishAuth(onAuthed)" in admin_js
 
 
 def test_local_dashboard_has_remote_execution_toggle():
@@ -540,13 +562,28 @@ def test_boot_does_not_block_on_model_discovery():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     # the boot barrier ends with the essential loaders — no loadModels()/loadLlm() inside it
-    assert (
-        "loadWorkspaces(), loadProcesses(), loadSessions(), loadCards(), loadApprovals(), "
-        "loadReports(), loadAutonomy(), loadCloud(), loadNotifications()"
-    ) in js
-    boot = js.split("Promise.allSettled([", 1)[1].split("]).then", 1)[0]
+    assert 'api("/api/auth/me").then(async () =>' in js
+    assert "const processId = await loadProcesses();" in js
+    assert "if (processId) await loadRemoteSnapshot(processId);" in js
+    boot = js.split('api("/api/auth/me").then(async () =>', 1)[1].split("}).catch", 1)[0]
     assert "loadModels()" not in boot
     assert "loadLlm()" not in boot
+
+
+def test_team_snapshot_drives_dashboard_state_and_decision_count():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("const applySnapshot =")
+    end = js.index("const loadRemoteSnapshot", start)
+    helper = js[start:end]
+    assert "setApprovals(snap && snap.approvals || [])" in helper
+    assert "setReports(snap && snap.reports || [])" in helper
+    assert "setDefinitions(snap && snap.definitions || [])" in helper
+    assert "setWorkspaces(snap.workspaces)" in helper
+    assert "setAutonomyState(snap.autonomy.level)" in helper
+    counts = js[js.index("const counts =") : js.index("const composerProps", js.index("const counts ="))]
+    assert "decisions: openCards.length + approvals.length" in counts
+    assert "notifications.length" not in counts
 
 
 def test_mobile_drawer_has_session_picker():
@@ -566,15 +603,17 @@ def test_launch_splash_present(tmp_path):
     assert ".launch" in css and ".boot" in css
 
 
-# ── team-mode console (unchanged by the personal-mode redesign) ─────────────────────────────────
+# ── team-mode console ─────────────────────────────────
 
-def test_admin_console_spa_ships_and_wires(tmp_path):
-    """The team-mode Ant Design console SPA still ships at /app.html and /admin.html (alias)."""
+def test_admin_console_app_ships_and_wires(tmp_path):
+    """The login-gated console ships at /app.html and /admin.html (alias)."""
     c = TestClient(create_app(load_config()))
     for path in ("/app.html", "/admin.html"):
         page = c.get(path)
         assert page.status_code == 200, path
         assert "admin-app.js" in page.text and "/vendor/antd.min.js" in page.text
+        assert "/app.css" in page.text and "/app.js" in page.text
+        assert 'data-admin-root="1"' in page.text
 
     app_js = c.get("/admin-app.js").text
     assert "/api/auth/login" in app_js and "/api/auth/me" in app_js

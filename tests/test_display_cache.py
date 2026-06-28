@@ -9,6 +9,8 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from foreman.client.cache_sync import build_snapshot, card_summary, session_summary
+from foreman.client.store.db import Store
+from foreman.client.store.models import Approval, Definition, Report
 from foreman.server.app import create_app
 from foreman.server.auth_manager import AuthManager
 from foreman.server.relay import Relay, RelayClient
@@ -80,6 +82,48 @@ def test_build_snapshot_frame_shape_is_display_safe():
     assert env.payload["cards"] == [card_summary(Card())]
     blob = str(env.payload)
     assert "access_key" not in blob and "key_hash" not in blob
+
+
+def test_build_snapshot_includes_selected_local_process_state(tmp_path):
+    store = Store(str(tmp_path / "local.db"))
+    store.init()
+    store.set_setting("autonomy.level", "3")
+    store.set_setting("workspaces.json", '[{"path":"E:/AutoWorkAgent","name":"Foreman"}]')
+    store.add_approval(
+        Approval(
+            id="a1",
+            session_id="s1",
+            action="deploy",
+            risk_level="requires-approval",
+            nonce="nonce-1",
+            requested_at="t",
+        )
+    )
+    store.add_report(Report(id="r1", title="Daily", body_md="done", ts="t"))
+    store.add_definition(
+        Definition(
+            id="d1",
+            kind="workflow",
+            name="ship",
+            is_active=True,
+            body="steps: []",
+            metadata_json='{"description":"ship work"}',
+        )
+    )
+    cfg = load_config(tmp_path / "none.yaml")
+    cfg.secrets.cloud_access_key = "fk_live_secret"
+    cfg.secrets.llm_api_key = "sk-local"
+
+    env = build_snapshot([], [], store=store, cfg=cfg)
+
+    assert env.payload["autonomy"]["level"] == 3
+    assert env.payload["workspaces"] == [{"path": "E:/AutoWorkAgent", "name": "Foreman"}]
+    assert env.payload["approvals"][0]["id"] == "a1"
+    assert env.payload["reports"][0]["title"] == "Daily"
+    assert env.payload["definitions"][0]["body"] == "steps: []"
+    assert env.payload["llm"]["api_key_set"] is True
+    blob = str(env.payload)
+    assert "fk_live_secret" not in blob and "sk-local" not in blob
 
 
 async def test_relay_event_republishes_to_bus_without_persistence(tmp_path):

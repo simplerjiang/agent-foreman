@@ -27,7 +27,9 @@ import uuid
 from typing import Any, Callable
 
 from foreman.client.relay import RelayAuthError, RelayConnector
+from foreman.shared.autonomy import level_label, normalize_level
 from foreman.shared.config import remote_execution_enabled
+from foreman.shared.i18n import normalize as normalize_lang
 from foreman.shared.events import AgentEvent
 from foreman.shared.protocol import (
     KIND_ACK,
@@ -167,7 +169,13 @@ class CloudManager:
         try:
             from foreman.client.cache_sync import build_snapshot
 
-            return build_snapshot(store.get_sessions(), store.get_decision_cards(None), corr_id=corr_id)
+            return build_snapshot(
+                store.get_sessions(),
+                store.get_decision_cards(None),
+                corr_id=corr_id,
+                store=store,
+                cfg=self._cfg,
+            )
         except Exception:  # noqa: BLE001 — a snapshot failure must not kill the relay link
             return Envelope(kind=KIND_ACK, id=corr_id, payload={"ok": False, "error": "snapshot_failed"})
 
@@ -287,6 +295,17 @@ class CloudManager:
             return await asyncio.wrap_future(
                 asyncio.run_coroutine_threadsafe(coro, self._app_loop)
             )
+        if action == "set_autonomy":
+            if self._store is None or not hasattr(self._store, "set_setting"):
+                return {"ok": False, "error": "no_store"}
+            level = normalize_level(payload.get("level"))
+            self._store.set_setting("autonomy.level", str(level))
+            lang = normalize_lang(
+                self._store.get_setting("ui.language")
+                if hasattr(self._store, "get_setting")
+                else getattr(getattr(self._cfg, "ui", None), "language", "zh")
+            )
+            return {"ok": True, "level": level, "label": level_label(level, lang)}
         return {"ok": False, "error": "bad_action"}
 
     async def _event_pump(self) -> None:
