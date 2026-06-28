@@ -246,7 +246,8 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     )
     dispatcher.workflow_engine = workflow_engine
     # Cloud relay connection (DESIGN §8.5): the Settings → 云端连接 card links this machine to the
-    # team 总机 so the phone can watch + approve from afar. Opt-in (a button) — never auto-dials.
+    # team 总机 so the phone can watch + approve from afar. Startup auto-dials only when saved
+    # settings include both a relay URL and an access key; the button remains a manual retry.
     from .core.cloud import CloudManager
 
     cloud = CloudManager(
