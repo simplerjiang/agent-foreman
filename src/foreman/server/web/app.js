@@ -2036,7 +2036,10 @@
     }, []);
     const loadSessions = useCallback(async () => { try { try { setSessions(await api("/api/overview") || []); } catch (e) { setSessions(await api("/api/sessions") || []); } } catch (e) { setSessions([]); } }, []);
     const loadCards = useCallback(async () => { try { setCards(await api("/api/cards") || []); } catch (e) { setCards([]); } }, []);
-    const loadApprovals = useCallback(async () => { try { setApprovals(await api("/api/approvals") || []); } catch (e) { setApprovals([]); } }, []);
+    const loadApprovals = useCallback(async () => {
+      try { const rows = await api("/api/approvals") || []; setApprovals(rows); return rows; }
+      catch (e) { setApprovals([]); return []; }
+    }, []);
     const loadProcesses = useCallback(async () => {
       try {
         const rows = await api("/api/processes") || [];
@@ -2194,14 +2197,46 @@
       };
     }, [teamMode]);
 
-    // deep-link approvals
+    async function handleNotificationTarget(rawUrl, action) {
+      let u;
+      try { u = new URL(rawUrl || "/", location.origin); } catch (e) { return; }
+      if (u.origin !== location.origin) return;
+      const params = u.searchParams;
+      const processId = params.get("process") || "";
+      const sessionId = params.get("session") || "";
+      const approvalId = params.get("approval") || "";
+      const decision = action || params.get("action") || "";
+      const viewName = params.get("view") || "";
+      if (processId) { setTeamMode(true); setSelectedProcessId(processId); await loadRemoteSnapshot(processId); }
+      if (approvalId && (decision === "approve" || decision === "reject")) {
+        const rows = await loadApprovals();
+        const row = rows.find((a) => a.id === approvalId);
+        if (row) await decideApproval(row.id, decision, row.nonce);
+        return;
+      }
+      if (sessionId) { openTimeline(sessionId); return; }
+      if (viewName === "decisions" || approvalId) { setView("decisions"); return; }
+      if (viewName === "workspace") { setView("workspace"); return; }
+    }
+
+    // notification/deep-link handling
     useEffect(() => {
       const params = new URLSearchParams(location.search);
-      const id = params.get("approval"); const action = params.get("action");
-      if (id || action) history.replaceState(null, "", location.pathname);
-      if (!id || (action !== "approve" && action !== "reject")) return;
-      loadApprovals().then(() => { const row = approvals.find((a) => a.id === id); if (row) decideApproval(row.id, action, row.nonce); });
+      const hasTarget = ["approval", "action", "view", "session", "process"].some((k) => params.has(k));
+      if (!hasTarget) return;
+      const rawUrl = `${location.pathname}${location.search}${location.hash}`;
+      history.replaceState(null, "", location.pathname);
+      handleNotificationTarget(rawUrl, params.get("action") || "");
     }, []); // eslint-disable-line
+    useEffect(() => {
+      if (!("serviceWorker" in navigator)) return undefined;
+      const onMessage = (ev) => {
+        const msg = ev.data || {};
+        if (msg.type === "notificationclick") handleNotificationTarget(msg.url || "/", msg.action || "");
+      };
+      navigator.serviceWorker.addEventListener("message", onMessage);
+      return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+    });
 
     function openTimeline(sessionId) {
       setSelectedSession(sessionId); setView("workspace"); setEvents([]);
@@ -2511,16 +2546,16 @@
     async function enablePush() {
       if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) { toast(d.pushUnsupported, "error"); return; }
       try {
+        const perm = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+        if (perm !== "granted") { toast(d.pushDenied, "error"); return; }
         const { key, enabled } = await api("/api/push/vapid-public-key");
         if (!enabled || !key) { toast(d.pushNotConfigured, "error"); return; }
-        const perm = await Notification.requestPermission();
-        if (perm !== "granted") { toast(d.pushDenied, "error"); return; }
         const reg = await navigator.serviceWorker.ready;
         let sub = await reg.pushManager.getSubscription();
         if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) });
         await api("/api/push/subscribe", { method: "POST", body: sub.toJSON ? sub.toJSON() : sub });
         toast(d.pushEnabled, "success");
-        await reg.showNotification("Foreman", { body: d.pushNotifSub, icon: "/icon-192.png", badge: "/icon-192.png", tag: "foreman-push-test" });
+        await reg.showNotification("Foreman", { body: d.pushNotifSub, icon: "/icon-192.png", badge: "/icon-192.png", tag: "foreman-push-test", data: { url: "/?view=decisions" } });
       } catch (e) { toast(`${d.pushFailed}: ${friendlyError(e, d)}`, "error"); }
     }
 

@@ -211,6 +211,19 @@ def test_local_dashboard_has_remote_execution_toggle():
     assert "d.remoteExec" in js and "remoteExec:" in js
 
 
+def test_mobile_push_click_paths_are_wired():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    enable = js[js.index("async function enablePush") : js.index("function addAttach")]
+    assert "Notification.requestPermission()" in enable
+    assert enable.index("Notification.requestPermission()") < enable.index('api("/api/push/vapid-public-key")')
+    assert 'navigator.serviceWorker.addEventListener("message", onMessage)' in js
+    assert 'msg.type === "notificationclick"' in js
+    assert "handleNotificationTarget" in js
+    assert 'params.get("view")' in js and 'params.get("process")' in js
+    assert "const rows = await loadApprovals()" in js
+
+
 def test_dispatch_model_picker_and_no_explicit_agent():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
