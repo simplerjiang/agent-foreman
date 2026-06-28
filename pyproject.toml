@@ -7,7 +7,7 @@ name = "agent-foreman"
 # Single source of truth for the version = src/foreman/__init__.py::__version__ (AGENTS.md §四).
 # setuptools reads it dynamically (see [tool.setuptools.dynamic]) — never hardcode the version twice.
 dynamic = ["version"]
-description = "A self-hosted PM agent that supervises local coding agents (Claude Code / Codex) and reports to your phone."
+description = "Open-source local + cloud PM agent for project development, testing, planning, and remote approvals. / 开源本地+云端 PM Agent，用于管理项目开发、测试、规划和远程审批。"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
