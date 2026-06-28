@@ -10,6 +10,9 @@
   const WORKSPACE_KEY = "foreman.workspace";
   const PROCESS_KEY = "foreman.process";
   const DEFAULT_CONTEXT_TOKENS = 128000;
+  const PM_TOOLS_MIN_ROUNDS = 1;
+  const PM_TOOLS_MAX_ROUNDS = 12;
+  const PM_TOOLS_DEFAULT_ROUNDS = 6;
 
   // ---------------------------------------------------------------------------
   // i18n
@@ -98,7 +101,8 @@
       pmBrain: "PM 大脑", pmBrainSub: "给 PM 审阅 / 简报调用的模型。Key 永远留在本地。",
       pmTools: "PM 工具", pmToolsSub: "PM 运行时工具开关和白名单。只读仓库工具默认开启。",
       fileRead: "读取文件", fileWrite: "写入文件", shellTool: "运行命令", webFetch: "抓取 URL", webSearch: "网页搜索", browserTool: "浏览器",
-      allowedCommands: "允许的命令", allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "循环 / 最大轮次",
+      allowedCommands: "允许的命令", allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "PM 取证工具轮次",
+      pmReviewDiag: "PM 复查诊断",
       pmToolsSaved: "PM 工具设置已保存",
       debug: "调试", debugSub: "排错用的高级开关。默认全关。",
       llmTrace: "LLM 对话明文落盘",
@@ -220,7 +224,8 @@
       pmBrain: "PM brain", pmBrainSub: "The model the PM uses to review & brief. Your key never leaves this machine.",
       pmTools: "PM tools", pmToolsSub: "PM runtime tool switches and allowlists. Read-only repo tools are on by default.",
       fileRead: "Read files", fileWrite: "Write files", shellTool: "Run commands", webFetch: "Fetch URL", webSearch: "Web search", browserTool: "Browser",
-      allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "Loop / max rounds",
+      allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "PM evidence rounds",
+      pmReviewDiag: "PM review diagnostics",
       pmToolsSaved: "PM tool settings saved",
       debug: "Debug", debugSub: "Advanced switches for troubleshooting. All off by default.",
       llmTrace: "Trace LLM conversations to disk",
@@ -697,6 +702,11 @@
     const cls = ["markdown-body", className].filter(Boolean).join(" ");
     return html`<div className=${cls}>${renderBlocks(clampMarkdown(text, maxChars), "md")}</div>`;
   }
+  function clampPmToolRounds(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return PM_TOOLS_DEFAULT_ROUNDS;
+    return Math.max(PM_TOOLS_MIN_ROUNDS, Math.min(PM_TOOLS_MAX_ROUNDS, Math.trunc(n)));
+  }
   function normalizeTodoStatus(value) {
     const v = String(value || "pending").toLowerCase();
     if (v === "completed" || v === "done") return "done";
@@ -805,14 +815,15 @@
         lastPlan = { steps, summary: p.summary || "", instruction: p.instruction || "" };
         todos = todoRowsFrom(p.todo_status, steps);
         nodes.push({ kind: "plan", id: e.id || `p-${nodes.length}`, ts: e.ts, steps, summary: p.summary || "", deliberation: Array.isArray(p.deliberation) ? p.deliberation : [], instruction: p.instruction || "" });
+      } else if (t === "pm_reply") {
+        hidePmStatus();
+        const txt = String(p.text || p.reply || "").trim();
+        if (txt) nodes.push({ kind: "pm", id: e.id || `pmr-${nodes.length}`, ts: e.ts, text: txt });
       } else if (t === "pm_review") {
-        // The PM's post-run review (after each agent run): show its verdict + summary/follow-up so
-        // "done" / "needs follow-up" status surfaces in the thread (DispatchService._emit_pm_review).
         const status = p.done ? (lang === "zh" ? "复查通过" : "review passed") : (lang === "zh" ? "需要跟进" : "needs follow-up");
-        const txt = [`**${status}**`, p.summary || "", p.reason || "", p.follow_up ? `→ ${p.follow_up}` : ""].filter(Boolean).join("\n\n");
         todos = mergeTodoRows(todos, p.todo_status, !!p.done);
         if (p.done) hidePmStatus();
-        nodes.push({ kind: "pm", id: e.id || `pr-${nodes.length}`, ts: e.ts, text: txt });
+        nodes.push({ kind: "pm-review", id: e.id || `pr-${nodes.length}`, ts: e.ts, status, summary: p.summary || "", reason: p.reason || "", followUp: p.follow_up || "", done: !!p.done });
       } else if (t === "pm_output" || t === "pm_reasoning") {
         const rawTxt = extractAgentText(p);
         if (!rawTxt) continue;
@@ -1298,6 +1309,13 @@
     if (n.kind === "pm-status") {
       return html`<div className="pm-status"><span className="spin"></span><span>${n.text}</span>${n.started ? html`<${PmElapsed} start=${n.started} lang=${lang} />` : null}</div>`;
     }
+    if (n.kind === "pm-review") {
+      const detail = [n.summary, n.reason, n.followUp ? `→ ${n.followUp}` : ""].filter(Boolean).join("\n\n");
+      return html`<details className=${`pm-review${n.done ? " done" : ""}`}>
+        <summary><span>${d.pmReviewDiag}</span><span className="pm-review-status">${n.status}</span></summary>
+        ${detail ? html`<div className="pm-review-body"><${MD} text=${detail} maxChars=${2400} /></div>` : null}
+      </details>`;
+    }
     if (n.kind === "pm") {
       return html`<div className="pm-note"><div className="pm-avatar">PM</div><div className="body"><${MD} text=${n.text} maxChars=${4000} /></div></div>`;
     }
@@ -1612,7 +1630,13 @@
       cloud, setCloud, saveCloud, saveRemoteExec, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2, setLang } = props;
     const updateAgent = (name, patch) => setAgentSettings((rows) => (rows || []).map((r) => (r.name === name ? { ...r, ...patch } : r)));
-    const updatePmTools = (patch) => setPmTools((cur) => ({ ...(cur || {}), ...patch }));
+    const updatePmTools = (patch) => setPmTools((cur) => {
+      const next = { ...(cur || {}), ...patch };
+      if (Object.prototype.hasOwnProperty.call(patch, "max_rounds")) {
+        next.max_rounds = clampPmToolRounds(patch.max_rounds);
+      }
+      return next;
+    });
     const lines = (value) => Array.isArray(value) ? value.join("\n") : "";
     const splitLines = (value) => String(value || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
     const broadWorkspace = (workspaces || []).some((w) => isWideWorkspace(w.path));
@@ -1729,7 +1753,7 @@
         </div>
         <div style=${{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
           <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${d.browserHeadless} <${Switch} on=${!!pmTools.browser_headless} onChange=${(v) => updatePmTools({ browser_headless: v })} /></label>
-          <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${d.maxRounds}<input className="input mono" style=${{ width: 76 }} value=${pmTools.max_rounds || 6} onChange=${(e) => updatePmTools({ max_rounds: Number(e.target.value) || 6 })} /></label>
+          <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${d.maxRounds}<input className="input mono" type="number" min=${PM_TOOLS_MIN_ROUNDS} max=${PM_TOOLS_MAX_ROUNDS} step="1" style=${{ width: 76 }} value=${clampPmToolRounds(pmTools.max_rounds)} onChange=${(e) => updatePmTools({ max_rounds: e.target.value })} /></label>
         </div>
         ${pmToolsStatus ? html`<div className=${`alert ${pmToolsStatus === d.pmToolsSaved ? "ok" : "error"}`} style=${{ marginBottom: 14 }}>${pmToolsStatus}</div>` : null}
         <button className="btn primary" onClick=${savePmTools}>${d.save}</button>

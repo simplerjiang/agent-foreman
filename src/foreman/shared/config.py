@@ -8,10 +8,24 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+PM_TOOLS_MIN_ROUNDS = 1
+PM_TOOLS_MAX_ROUNDS = 12
+PM_TOOLS_DEFAULT_ROUNDS = 6
+
+
+def clamp_pm_tool_rounds(value: Any) -> int:
+    try:
+        rounds = int(value)
+    except (TypeError, ValueError):
+        rounds = PM_TOOLS_DEFAULT_ROUNDS
+    return max(PM_TOOLS_MIN_ROUNDS, min(PM_TOOLS_MAX_ROUNDS, rounds))
 
 
 class Secrets(BaseSettings):
@@ -197,7 +211,12 @@ class PMToolsCfg(BaseModel):
     web_search_provider: str = "duckduckgo"  # duckduckgo | searxng
     searxng_url: str = ""
     browser_headless: bool = False
-    max_rounds: int = 6
+    max_rounds: int = PM_TOOLS_DEFAULT_ROUNDS
+
+    @field_validator("max_rounds")
+    @classmethod
+    def _clamp_max_rounds(cls, value: int) -> int:
+        return clamp_pm_tool_rounds(value)
 
 
 # Notification channels (DESIGN §776, T6.3). Structure (enabled flags / addresses / hosts) lives

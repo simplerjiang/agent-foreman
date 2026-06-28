@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from foreman.client.core.dispatch_service import DispatchService, _explicit_agent_targets
 from foreman.client.core.pm_agent import PMAgent, PMPlan, PMReview, events_to_text, parse_plan
 from foreman.client.store import Store
@@ -572,6 +574,8 @@ def test_parse_plan_accepts_tool_arguments_dict():
         "model": "gpt-5.5",
         "effort": "high",
         "instruction": "do it",
+        "kind": "direct_reply",
+        "reply": "done directly",
         "todo": ["a", "b"],
         "deliberation": ["because evidence"],
         "ready": True,
@@ -589,6 +593,8 @@ def test_parse_plan_accepts_tool_arguments_dict():
     assert plan.todo == ["a", "b"]
     assert plan.model == "gpt-5.5"
     assert plan.effort == "high"
+    assert plan.kind == "direct_reply"
+    assert plan.reply == "done directly"
     assert plan.deliberation == ["because evidence"]
 
 
@@ -735,6 +741,220 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
     assert len(reviews) == 2
     assert [x["status"] for x in reviews[0]["todo_status"]] == ["done", "in_progress"]
     assert [x["status"] for x in reviews[1]["todo_status"]] == ["done", "done"]
+    assert store.get_session(res["session_id"]).status == "done"
+
+
+async def test_pm_direct_reply_does_not_launch_agent(tmp_path):
+    store = _store(tmp_path)
+    bus = EventBus()
+    live = bus.subscribe_queue()
+
+    class FakePM:
+        language = "zh"
+        max_runs = 2
+
+        async def plan(self, goal, **_kw):
+            assert goal == "hey，早上好"
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="low",
+                instruction="unused",
+                kind="direct_reply",
+                reply="早上好，需要我帮你处理什么？",
+                summary="simple greeting",
+                todo=["reply"],
+            )
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("direct reply must not enter PM review")
+
+    class FakeRunner:
+        async def launch(self, *_args, **_kw):
+            raise AssertionError("direct reply must not launch an execution agent")
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=bus, runner=FakeRunner(), pm_agent=FakePM())
+
+    res = await svc.create("hey，早上好")
+    await asyncio.gather(*list(svc._tasks))
+
+    rows = store.get_events(res["session_id"])
+    assert [e.type for e in rows if e.type in {"pm_plan", "pm_reply", "agent_start"}] == [
+        "pm_reply"
+    ]
+    reply = json.loads(next(e.payload_json for e in rows if e.type == "pm_reply"))
+    assert reply["text"] == "早上好，需要我帮你处理什么？"
+    assert store.get_session(res["session_id"]).status == "done"
+    live_types = [event.type for event in list(live._queue)]
+    assert "pm_reply" in live_types
+
+
+async def test_pm_terminal_plan_does_not_launch_agent(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        language = "zh"
+        max_runs = 2
+
+        async def plan(self, *_args, **_kw):
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="low",
+                instruction="认证缺失",
+                kind="blocked",
+                reply="需要先登录 Claude CLI。",
+            )
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("blocked terminal plan must not enter PM review")
+
+    class FakeRunner:
+        async def launch(self, *_args, **_kw):
+            raise AssertionError("blocked terminal plan must not launch an execution agent")
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    res = await svc.create("do blocked task")
+    await asyncio.gather(*list(svc._tasks))
+
+    rows = store.get_events(res["session_id"])
+    assert "agent_start" not in [e.type for e in rows]
+    err = json.loads(next(e.payload_json for e in rows if e.type == "error"))
+    assert "需要先登录" in err["msg"]
+    assert store.get_session(res["session_id"]).status == "failed"
+
+
+@pytest.mark.parametrize(
+    "auth_text",
+    [
+        "API Error: 401 Invalid authentication credentials",
+        "API Error: 403 Forbidden",
+    ],
+)
+async def test_pm_agent_auth_failure_is_fatal_and_skips_review(tmp_path, auth_text):
+    store = _store(tmp_path)
+
+    class FakePM:
+        language = "zh"
+        max_runs = 3
+
+        async def plan(self, *_args, **_kw):
+            return PMPlan(
+                agent="claude-code",
+                model="",
+                effort="high",
+                instruction="do work",
+                summary="use claude",
+                todo=["run"],
+            )
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("auth fatal exit must not enter PM review")
+
+    class FakeHandle:
+        session_id = ""
+
+    class FakeRunner:
+        def __init__(self):
+            self.launched = 0
+
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            self.launched += 1
+            handle = FakeHandle()
+            handle.session_id = session_id
+            store.add_event(
+                make_event(
+                    "agent_output",
+                    agent,
+                    session_id,
+                    payload={"text": auth_text},
+                )
+            )
+            return handle
+
+        async def wait(self, handle):
+            return None
+
+    runner = FakeRunner()
+    cfg = _cfg(
+        agents={"claude-code": AgentCfg(command="claude", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=FakePM())
+
+    res = await svc.create("run with broken auth")
+    await asyncio.gather(*list(svc._tasks))
+
+    rows = store.get_events(res["session_id"])
+    assert runner.launched == 1
+    assert "pm_review" not in [e.type for e in rows]
+    err = json.loads(next(e.payload_json for e in rows if e.type == "error"))
+    assert "认证失败" in err["msg"]
+    assert store.get_session(res["session_id"]).status == "failed"
+
+
+async def test_rate_limit_failure_still_enters_pm_review(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        language = "en"
+        max_runs = 1
+
+        async def plan(self, *_args, **_kw):
+            return PMPlan(
+                agent="claude-code",
+                model="",
+                effort="high",
+                instruction="do work",
+                summary="use claude",
+                todo=["run"],
+            )
+
+        async def review(self, *_args, **_kw):
+            return PMReview(done=True, summary="retryable failure was reviewed")
+
+    class FakeHandle:
+        session_id = ""
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            handle = FakeHandle()
+            handle.session_id = session_id
+            store.add_event(
+                make_event(
+                    "agent_output",
+                    agent,
+                    session_id,
+                    payload={"text": "HTTP 429 Too Many Requests rate limit"},
+                )
+            )
+            return handle
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"claude-code": AgentCfg(command="claude", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    res = await svc.create("run with rate limit")
+    await asyncio.gather(*list(svc._tasks))
+
+    rows = store.get_events(res["session_id"])
+    reviews = [json.loads(e.payload_json) for e in rows if e.type == "pm_review"]
+    assert len(reviews) == 1
+    assert reviews[0]["summary"] == "retryable failure was reviewed"
     assert store.get_session(res["session_id"]).status == "done"
 
 
@@ -1000,6 +1220,8 @@ async def test_pm_agent_shortcuts_simple_reply_without_tool_loop(tmp_path):
     )
 
     assert plan.agent == "codex"
+    assert plan.kind == "direct_reply"
+    assert plan.reply == "收到。"
     assert plan.todo == ["直接按要求回复用户"]
     assert plan.summary == "简单回复请求，已跳过 PM 工具规划。"
     assert "不要查看文件" in plan.instruction
@@ -1022,6 +1244,7 @@ async def test_pm_agent_simple_reply_only_copilot_does_not_fallback_to_claude(tm
     )
 
     assert plan.agent == "copilot-cli"
+    assert plan.kind == "direct_reply"
 
 
 async def test_pm_agent_plans_for_at_least_two_rounds(tmp_path):

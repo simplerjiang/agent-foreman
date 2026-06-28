@@ -113,6 +113,7 @@ _ERROR_MARKERS = (
     "quota",
     "unauthorized",
     "401",
+    "403",
     "authentication",
     "invalid api key",
     "login expired",

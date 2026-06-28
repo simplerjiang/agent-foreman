@@ -41,6 +41,7 @@ from .context_budget import (
 )
 from .context_compression import extract_json_object, memory_items_from_pack
 from .pm_agent import PMPlan, events_to_text
+from .supervisor import ERRORED, classify_tail
 from .work_mode_context import (
     WORKMODE_BODY_MAX_CHARS,
     WORKMODE_INDEX_MAX_TOKENS,
@@ -65,6 +66,17 @@ PM_AUTO_AGENT = "pm-agent"
 LIVE_SESSION_STATUSES = {"planning", "running", "active", "waiting_approval", "queued"}
 TERMINAL_SESSION_STATUSES = {"failed", "cancelled", "stalled"}
 CONTINUE_MODES = {"queue", "interrupt"}
+FATAL_AGENT_MARKERS = (
+    "401",
+    "403",
+    "unauthorized",
+    "authentication_failed",
+    "invalid authentication credentials",
+    "invalid api key",
+    "login expired",
+    "executable not found",
+    "agent disabled",
+)
 AGENT_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code": ("claude-code", "claude code", "claude"),
     "codex": ("codex",),
@@ -820,6 +832,18 @@ class DispatchService:
             session_memory_tokens=_ctx_approx_tokens(context),
         )
         plan = self._sanitize_pm_plan(plan, pm_model)
+        if plan.kind == "direct_reply":
+            if not (plan.reply or "").strip():
+                await self._emit_pm_error(
+                    session_id, task_id, _empty_direct_reply_text(language)
+                )
+                return
+            await self._emit_pm_reply(session_id, task_id, plan)
+            self._mark_session_unless_terminal(session_id, "done")
+            return
+        if plan.kind in {"blocked", "error"}:
+            await self._emit_pm_error(session_id, task_id, _terminal_plan_text(plan, language))
+            return
         todo_status = _initial_todo_status(plan.todo)
         await self._emit_pm_plan(session_id, task_id, plan, todo_status=todo_status)
         await self._emit_pm_status(
@@ -840,6 +864,7 @@ class DispatchService:
                     self.injector.inject(workspace, material, agents=plan.agent, task_id=task_id)
                 except Exception:  # noqa: BLE001 — injection is best-effort
                     pass
+        agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
         handle = await self.runner.launch(
             plan.agent, plan.instruction, Path(workspace), session_id,
             model=plan.model, effort=plan.effort,
@@ -851,6 +876,13 @@ class DispatchService:
         await self.runner.wait(handle)
         if self._consume_stop_after_reply(session_id):
             self._mark_session_unless_terminal(session_id, "running")
+            return
+        if fatal_msg := _fatal_agent_exit_text(
+            _events_after(self.store.get_events(session_id), agent_run_cursor) if self.store else [],
+            language=language,
+            agent=plan.agent,
+        ):
+            await self._emit_pm_error(session_id, task_id, fatal_msg)
             return
         while True:
             rows = self.store.get_events(session_id)
@@ -928,12 +960,21 @@ class DispatchService:
                 await self._safe_compact(session_id, window_tokens)
                 context = self._session_context(session_id)
                 reviewed_event_id = _last_event_id(self.store.get_events(session_id))
+            agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
             await self.runner.send(handle, review.follow_up)
             self._mark_session_unless_terminal(session_id, "running")
             run_count += 1
             await self.runner.wait(handle)
             if self._consume_stop_after_reply(session_id):
                 self._mark_session_unless_terminal(session_id, "running")
+                return
+            if fatal_msg := _fatal_agent_exit_text(
+                _events_after(self.store.get_events(session_id), agent_run_cursor)
+                if self.store else [],
+                language=language,
+                agent=plan.agent,
+            ):
+                await self._emit_pm_error(session_id, task_id, fatal_msg)
                 return
 
     def _sanitize_pm_plan(self, plan: PMPlan, pm_model: str) -> PMPlan:
@@ -948,6 +989,8 @@ class DispatchService:
             model=cfg_model,
             effort=plan.effort,
             instruction=plan.instruction,
+            kind=plan.kind,
+            reply=plan.reply,
             summary=plan.summary,
             todo=plan.todo,
             deliberation=plan.deliberation,
@@ -1087,6 +1130,8 @@ class DispatchService:
                 "model": plan.model,
                 "effort": plan.effort,
                 "instruction": plan.instruction,
+                "kind": plan.kind,
+                "reply": plan.reply,
                 "todo": plan.todo,
                 "todo_status": todo_status or [],
                 "deliberation": plan.deliberation,
@@ -1095,6 +1140,23 @@ class DispatchService:
             },
         )
         await self._persist_then_publish(event)
+
+    async def _emit_pm_reply(self, session_id: str, task_id: str, plan: PMPlan) -> None:
+        reply = (plan.reply or "").strip()
+        await self._persist_then_publish(
+            make_event(
+                "pm_reply",
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload={
+                    "text": reply,
+                    "summary": plan.summary,
+                    "todo": plan.todo,
+                    "kind": plan.kind,
+                },
+            )
+        )
 
     async def _emit_pm_review(
         self, session_id: str, task_id: str, review, run_count: int, *, rubric_active: bool = False
@@ -1419,6 +1481,39 @@ def _run_limit_text(language: str) -> str:
     if normalize_lang(language) == "en":
         return "PM review still thinks the task is incomplete, but the run limit was reached."
     return "PM 复查仍认为任务未完成，但已达到运行次数上限。"
+
+
+def _empty_direct_reply_text(language: str) -> str:
+    if normalize_lang(language) == "en":
+        return "PM selected a direct reply, but the reply text was empty."
+    return "PM 选择了直接回复，但回复内容为空。"
+
+
+def _terminal_plan_text(plan: PMPlan, language: str) -> str:
+    msg = (plan.reply or plan.summary or plan.instruction or "").strip()
+    if msg:
+        return msg[:2000]
+    if normalize_lang(language) == "en":
+        return "PM could not produce a runnable agent task."
+    return "PM 未能生成可执行的 agent 任务。"
+
+
+def _fatal_agent_exit_text(rows: list[Any], *, language: str, agent: str) -> str:
+    if not rows:
+        return ""
+    timeline = events_to_text(rows, max_chars=8000)
+    if classify_tail(timeline) != ERRORED:
+        return ""
+    low = timeline.lower()
+    is_auth_status = re.search(r"\b(?:401|403)\b", low) is not None
+    is_auth_marker = any(marker in low for marker in FATAL_AGENT_MARKERS if marker not in {"401", "403"})
+    if not (is_auth_status or is_auth_marker):
+        return ""
+    if normalize_lang(language) == "en":
+        return (
+            f"{agent} authentication failed. Fix the local CLI login or API credentials, then retry."
+        )
+    return f"{agent} 认证失败。请修复本地 CLI 登录状态或 API 凭据后重试。"
 
 
 def _empty_followup_text(language: str) -> str:
