@@ -440,12 +440,17 @@ def test_validate_final_plan_clamps_schema_bounds():
         "deliberation": ["d" * 400 for _ in range(20)],
         "ready": True,
     }
-    plan = validate_final_plan(obj, enabled_agents=["codex"], fallback_plan={"agent": "codex"})
+    plan = validate_final_plan(
+        obj,
+        enabled_agents=["codex"],
+        fallback_plan={"agent": "codex"},
+        max_plan_items=15,
+    )
     assert len(plan["summary"]) == 600
     assert len(plan["model"]) == 80
     assert len(plan["instruction"]) == 6000
-    assert len(plan["todo"]) == 12 and all(len(x) <= 200 for x in plan["todo"])
-    assert len(plan["deliberation"]) == 8 and all(len(x) <= 300 for x in plan["deliberation"])
+    assert len(plan["todo"]) == 15 and all(len(x) <= 200 for x in plan["todo"])
+    assert len(plan["deliberation"]) == 15 and all(len(x) <= 300 for x in plan["deliberation"])
 
 
 def test_json_fallback_accepts_flat_tool_arguments():
@@ -481,11 +486,13 @@ def test_json_fallback_accepts_flat_tool_arguments():
 
 
 def test_submit_plan_tool_spec_constrains_agent_enum():
-    spec = submit_plan_tool_spec(["codex"])
+    spec = submit_plan_tool_spec(["codex"], max_plan_items=17)
     assert spec["name"] == SUBMIT_PLAN_TOOL
     schema = spec["input_schema"]
     assert schema["additionalProperties"] is False
     assert schema["properties"]["agent"]["enum"] == ["codex"]
+    assert schema["properties"]["todo"]["maxItems"] == 17
+    assert schema["properties"]["deliberation"]["maxItems"] == 17
     # Empty/None enabled set falls back to all supported planning agents.
     assert submit_plan_tool_spec([])["input_schema"]["properties"]["agent"]["enum"] == [
         "claude-code",
@@ -502,6 +509,7 @@ class _ScriptedToolLLM:
         self.scripted = scripted
         self.tool_choices: list[object] = []
         self.tools_seen: list[list[str]] = []
+        self.raw_tools_seen: list[list[dict]] = []
         self._round = 0
 
     async def tool_complete(
@@ -509,6 +517,7 @@ class _ScriptedToolLLM:
     ) -> LLMToolResponse:
         self.tool_choices.append(tool_choice)
         self.tools_seen.append([t["name"] for t in tools])
+        self.raw_tools_seen.append(tools)
         resp = self.scripted[min(self._round, len(self.scripted) - 1)]
         self._round += 1
         return resp
@@ -580,6 +589,9 @@ async def test_pm_loop_submit_plan_tool_terminates_on_auto_round(tmp_path: Path)
     assert "read_file" in [p["tool"] for t, p in events if t == "tool_pre"]
     assert SUBMIT_PLAN_TOOL in llm.tools_seen[0]
     assert llm.tool_choices[0] == "auto"
+    submit_spec = next(t for t in llm.raw_tools_seen[0] if t["name"] == SUBMIT_PLAN_TOOL)
+    assert submit_spec["input_schema"]["properties"]["todo"]["maxItems"] == 6
+    assert submit_spec["input_schema"]["properties"]["deliberation"]["maxItems"] == 6
 
 
 async def test_pm_loop_forces_submit_plan_on_final_round_no_fallback(tmp_path: Path):

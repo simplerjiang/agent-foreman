@@ -45,11 +45,11 @@ def test_pm_tool_settings_defaults_and_save(tmp_path):
     assert saved["allowed_commands"] == ["python --version"]
     assert saved["allowed_origins"] == ["http://example.test"]
     assert saved["web_search_provider"] == "searxng"
-    assert saved["max_rounds"] == 12
+    assert saved["max_rounds"] == 99
     assert cfg.pm_tools.shell is True
 
 
-def test_pm_tool_settings_clamps_persisted_max_rounds(tmp_path):
+def test_pm_tool_settings_preserves_large_persisted_max_rounds(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.init()
     store.set_setting("pm_tools.json", json.dumps({"max_rounds": 9999999}))
@@ -58,5 +58,5 @@ def test_pm_tool_settings_clamps_persisted_max_rounds(tmp_path):
 
     loaded = c.get("/api/settings/pm-tools").json()
 
-    assert loaded["max_rounds"] == 12
-    assert cfg.pm_tools.max_rounds == 12
+    assert loaded["max_rounds"] == 9999999
+    assert cfg.pm_tools.max_rounds == 9999999
