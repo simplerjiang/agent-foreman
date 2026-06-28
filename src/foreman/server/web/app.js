@@ -41,6 +41,9 @@
       autonomy: "自动权限", briefing: "生成简报", pmThinking: "PM 正在思考...",
       plan: "计划", approved: "已确认", active: "进行中",
       reply: "回复", commandsRun: "执行的命令", fileChanges: "文件改动",
+      processLabel: "执行过程", finalReply: "最终回复", waitingResult: "等待结果…", noChanges: "暂无文件改动", executing: "正在执行",
+      kCmd: "命令", kEdit: "改动", kRead: "读取", kFind: "检索", kWeb: "联网", kTool: "工具", kPlan: "计划", kThink: "思考",
+      fkAdd: "新增", fkUpdate: "修改", fkDelete: "删除", noSteps: "暂无执行步骤", stepsWord: "步", changeDetail: "改动详情",
       open: "展开", hide: "收起",
       decisionNeeded: "需要你拍板", suggestion: "建议", showDiff: "看 diff",
       riskHigh: "高风险", riskMedium: "中风险", riskLow: "低风险",
@@ -160,6 +163,9 @@
       autonomy: "Autonomy", briefing: "Briefing", pmThinking: "PM is thinking...",
       plan: "Plan", approved: "approved", active: "active",
       reply: "Reply", commandsRun: "Commands run", fileChanges: "File changes",
+      processLabel: "Process", finalReply: "Final reply", waitingResult: "Waiting for result…", noChanges: "No file changes", executing: "Executing",
+      kCmd: "cmd", kEdit: "edit", kRead: "read", kFind: "find", kWeb: "web", kTool: "tool", kPlan: "plan", kThink: "think",
+      fkAdd: "add", fkUpdate: "edit", fkDelete: "del", noSteps: "No steps yet", stepsWord: "steps", changeDetail: "Change detail",
       open: "Open", hide: "Hide",
       decisionNeeded: "Decision needed", suggestion: "Suggestion", showDiff: "Show diff",
       riskHigh: "HIGH RISK", riskMedium: "MEDIUM RISK", riskLow: "LOW RISK",
@@ -443,6 +449,95 @@
     if (Array.isArray(value)) return value.map(shellQuote).join(" ");
     return String(value || "").trim();
   }
+
+  // ---- process-step extraction (codex / claude CLI streams) ----
+  // The coding CLIs report what they DO as structured stream events, not just prose: codex
+  // `exec --json` emits item.* lines (command_execution / file_change / reasoning / web_search /
+  // mcp_tool_call / todo_list / agent_message); Claude `stream-json` emits assistant/user messages
+  // whose content blocks are text / thinking / tool_use / tool_result. Both get a dedicated parser
+  // below. Copilot CLI runs `--output-format json --stream off`, so it yields a final answer rather
+  // than a step stream — it has no dedicated parser and falls through to reply text; if it ever maps
+  // onto the assistant/content shape it picks up the Claude path for free. Schemas drift, so every
+  // field access is guarded (DESIGN §13.1).
+  function clip(value, max = 600) {
+    const s = typeof value === "string" ? value : value == null ? "" : String(value);
+    return s.length > max ? `${s.slice(0, max)}…` : s;
+  }
+  function blockText(content) {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content.map((x) => (x && typeof x === "object" ? x.text || "" : typeof x === "string" ? x : "")).join("\n").trim();
+    }
+    return "";
+  }
+  // Claude tool_use block → a typed step. Tool names map to the kind a human reads at a glance.
+  function claudeToolStep(b) {
+    const name = String(b.name || "tool");
+    const inp = b.input && typeof b.input === "object" ? b.input : {};
+    const key = b.id ? `cc-${b.id}` : "";
+    const n = name.toLowerCase();
+    if (n === "bash" || n === "shell" || n === "powershell" || n === "pwsh") return { key, kind: "cmd", title: commandLine(inp.command), detail: inp.description || "", status: "active" };
+    if (n === "write") return { key, kind: "edit", title: inp.file_path || "", fileKind: "add", status: "active" };
+    if (n === "edit" || n === "multiedit" || n === "notebookedit") return { key, kind: "edit", title: inp.file_path || inp.notebook_path || "", fileKind: "update", status: "active" };
+    if (n === "read") return { key, kind: "read", title: inp.file_path || inp.notebook_path || "", status: "active" };
+    if (n === "grep" || n === "glob") return { key, kind: "find", title: inp.pattern || inp.path || "", status: "active" };
+    if (n === "websearch") return { key, kind: "web", title: inp.query || "", status: "active" };
+    if (n === "webfetch") return { key, kind: "web", title: inp.url || "", status: "active" };
+    if (n === "todowrite") return { key, kind: "plan", todos: (Array.isArray(inp.todos) ? inp.todos : []).map((t) => ({ text: t.content || t.text || "", done: t.status === "completed" })), status: "active" };
+    if (n === "task") return { key, kind: "tool", title: inp.description || inp.subagent_type || "subagent", status: "active" };
+    return { key, kind: "tool", title: name, status: "active" };
+  }
+  function stepsFromAgentPayload(p) {
+    if (!p || typeof p !== "object") return [];
+    const out = [];
+    // Codex exec --json: { type: "item.(started|updated|completed)", item: {...} }
+    if (typeof p.type === "string" && p.type.indexOf("item.") === 0 && p.item && typeof p.item === "object") {
+      const it = p.item;
+      const key = it.id ? `cx-${it.id}` : "";
+      const settled = p.type === "item.completed";
+      const raw = String(it.status || (settled ? "completed" : "in_progress")).toLowerCase();
+      // Non-success terminal states (a policy-declined or cancelled command reports
+      // status:"declined"/exit_code:-1) must read as failed, not done.
+      const failed = it.error || ["failed", "declined", "denied", "cancelled", "canceled", "error", "rejected", "timeout"].includes(raw);
+      const status = failed ? "failed" : raw === "completed" || (settled && raw !== "in_progress") ? "done" : "active";
+      if (it.type === "command_execution") out.push({ key, kind: "cmd", title: commandLine(it.command), detail: clip(it.aggregated_output), exit: typeof it.exit_code === "number" ? it.exit_code : null, status });
+      else if (it.type === "file_change") for (const ch of Array.isArray(it.changes) ? it.changes : []) { if (ch && ch.path) out.push({ key: it.id ? `cx-${it.id}-${ch.path}` : "", kind: "edit", title: String(ch.path), fileKind: ch.kind || "update", status }); }
+      else if (it.type === "web_search") out.push({ key, kind: "web", title: String(it.query || ""), status });
+      else if (it.type === "mcp_tool_call") out.push({ key, kind: "tool", title: String(it.tool || "tool"), detail: it.server ? `@${it.server}` : "", status });
+      else if (it.type === "todo_list") out.push({ key, kind: "plan", todos: (Array.isArray(it.items) ? it.items : []).map((x) => ({ text: x.text || "", done: !!x.completed })), status });
+      else if (it.type === "reasoning" && it.text) out.push({ key, kind: "think", title: clip(it.text, 280), status });
+      else if (it.type === "error" && it.message) out.push({ key, kind: "tool", title: clip(it.message, 200), status: "failed" });
+      return out;
+    }
+    // Claude stream-json: { type: "assistant"|"user", message: { content: [...] } }
+    const msg = p.message && typeof p.message === "object" ? p.message : p;
+    const content = Array.isArray(msg.content) ? msg.content : null;
+    if (content) {
+      for (const b of content) {
+        if (!b || typeof b !== "object") continue;
+        if (b.type === "tool_use") out.push(claudeToolStep(b));
+        else if (b.type === "tool_result") out.push({ key: b.tool_use_id ? `cc-${b.tool_use_id}` : "", update: true, status: b.is_error ? "failed" : "done", detail: clip(blockText(b.content)) });
+        else if (b.type === "thinking" && b.thinking) out.push({ kind: "think", title: clip(b.thinking, 280) });
+      }
+    }
+    return out;
+  }
+  // Reply text = only the human-facing answer (codex agent_message / plain text / claude text blocks);
+  // never tool markers or reasoning — those live in the process timeline now.
+  function replyText(p) {
+    if (!p || typeof p !== "object") return "";
+    if (p.item && typeof p.item === "object" && p.item.type === "agent_message" && p.item.text) return String(p.item.text);
+    const parts = [];
+    for (const k of ["text", "result"]) if (typeof p[k] === "string" && p[k].trim()) parts.push(p[k]);
+    const msg = p.message && typeof p.message === "object" ? p.message : p;
+    if (Array.isArray(msg.content)) {
+      // A Claude message that ALSO makes a tool call is mid-task narration ("I'll run X"), not the
+      // final answer — skip its text so the reply isn't polluted by pre-tool chatter (codex review).
+      const hasTool = msg.content.some((b) => b && b.type === "tool_use");
+      if (!hasTool) for (const b of msg.content) if (b && b.type === "text" && typeof b.text === "string" && b.text.trim()) parts.push(b.text);
+    }
+    return parts.join("\n").trim();
+  }
   function formatPmJsonObject(obj) {
     if (!obj || typeof obj !== "object") return "";
     const lines = [];
@@ -661,10 +756,41 @@
       if (!calls.has(k)) {
         calls.set(k, {
           id: k, agent: e.source || (e.payload && e.payload.agent) || "agent",
-          status: "active", reply: "", commands: [], diffs: [], ts: e.ts, started: e.ts,
+          status: "active", reply: "", commands: [], diffs: [], steps: [], stepKeys: new Map(),
+          ts: e.ts, started: e.ts,
         });
       }
       return calls.get(k);
+    };
+    // Add a process step, merging when the same logical step is seen again: codex item.started→
+    // item.completed (matched by key), Claude tool_use→tool_result (matched by tool_use_id), or the
+    // same action echoed by two sources (hook + stream) collapsed by adjacent kind+title.
+    const mergeStep = (c, s) => {
+      if (!s || (!s.title && !s.todos && !s.update)) return;
+      if (s.update) {
+        const idx = s.key && c.stepKeys.has(s.key) ? c.stepKeys.get(s.key) : -1;
+        if (idx >= 0) { const ex = c.steps[idx]; if (s.status) ex.status = s.status; if (s.detail && !ex.detail) ex.detail = s.detail; }
+        return;
+      }
+      if (s.key && c.stepKeys.has(s.key)) {
+        const ex = c.steps[c.stepKeys.get(s.key)];
+        if (s.title) ex.title = s.title;
+        if (s.detail) ex.detail = s.detail;
+        if (s.exit != null) ex.exit = s.exit;
+        if (s.fileKind) ex.fileKind = s.fileKind;
+        if (s.todos) ex.todos = s.todos;
+        if (s.status) ex.status = s.status;
+        return;
+      }
+      const last = c.steps[c.steps.length - 1];
+      if (last && s.title && last.kind === s.kind && last.title === s.title && last.status === "active") {
+        if (s.status) last.status = s.status;
+        if (s.detail && !last.detail) last.detail = s.detail;
+        if (s.exit != null) last.exit = s.exit;
+        return;
+      }
+      c.steps.push(s);
+      if (s.key) c.stepKeys.set(s.key, c.steps.length - 1);
     };
 
     for (const e of events) {
@@ -731,17 +857,37 @@
         if (!nodes.some((n) => n.kind === "call" && n.callId === c.id)) nodes.push({ kind: "call", id: `call-${c.id}`, callId: c.id, ts: e.ts });
       } else if (t === "agent_output" || t === "agent_reasoning") {
         const c = ensureCall(e);
-        const txt = extractAgentText(p);
-        if (txt) c.reply = c.reply ? `${c.reply}\n${txt}` : txt;
-        if (txt && t === "agent_output") terminal.push({ kind: "out", text: txt, ts: e.ts, agent: e.source });
+        if (t === "agent_reasoning") {
+          // Reasoning is a process step (💭), not part of the final answer — keep it out of the reply.
+          const rtxt = extractAgentText(p);
+          if (rtxt) mergeStep(c, { kind: "think", title: clip(rtxt, 280) });
+        } else {
+          for (const s of stepsFromAgentPayload(p)) mergeStep(c, s);
+          const txt = replyText(p);
+          if (txt) c.reply = c.reply ? `${c.reply}\n${txt}` : txt;
+          const rawTxt = extractAgentText(p);
+          if (rawTxt) terminal.push({ kind: "out", text: rawTxt, ts: e.ts, agent: e.source });
+        }
         c.ts = e.ts;
         if (!nodes.some((n) => n.kind === "call" && n.callId === c.id)) nodes.push({ kind: "call", id: `call-${c.id}`, callId: c.id, ts: e.ts });
       } else if (t === "tool_pre") {
+        // Hook/operator-driven tool calls (e.g. Claude Code) → process steps, same as stream tool_use.
         const c = ensureCall(e);
-        const cmd = p.command || p.cmd || (p.tool && p.input ? `${p.tool} ${typeof p.input === "string" ? p.input : JSON.stringify(p.input)}` : "") || p.tool || "";
-        if (cmd) { c.commands.push(String(cmd)); terminal.push({ kind: "cmd", text: String(cmd), ts: e.ts }); }
+        const key = p.tool_use_id || p.id ? `tp-${p.tool_use_id || p.id}` : "";
+        const cmd = p.command || p.cmd;
+        if (cmd) { const line = commandLine(cmd); mergeStep(c, { key, kind: "cmd", title: line, status: "active" }); terminal.push({ kind: "cmd", text: line, ts: e.ts }); }
+        else if (p.tool) mergeStep(c, { key, kind: "tool", title: String(p.tool), status: "active" });
+        c.ts = e.ts;
       } else if (t === "tool_post") {
+        const c = ensureCall(e);
         const out = p.output || p.result || "";
+        const key = p.tool_use_id || p.id ? `tp-${p.tool_use_id || p.id}` : "";
+        if (key && c.stepKeys.has(key)) {
+          const ex = c.steps[c.stepKeys.get(key)];
+          ex.status = p.is_error || p.error ? "failed" : "done";
+          if (out && !ex.detail) ex.detail = clip(out);
+          if (typeof p.exit_code === "number") ex.exit = p.exit_code;
+        }
         if (out) terminal.push({ kind: "out", text: String(out).slice(0, 4000), ts: e.ts, agent: e.source });
       } else if (t === "git_diff") {
         const c = ensureCall(e);
@@ -756,8 +902,15 @@
         nodes.push({ kind: "pm", id: e.id || `b-${nodes.length}`, ts: e.ts, text: `**${p.title || d.briefing}**\n\n${p.body_md || p.summary || ""}` });
       } else if (t === "stop") {
         hidePmStatus();
-        for (const c of calls.values()) if (c.status === "active") c.status = "done";
         const out = terminalText(p);
+        // Settle every active call/step, but the result text (claude's authoritative final answer) is
+        // written ONLY to the call this stop belongs to — never broadcast to other parallel subagents.
+        const target = calls.get(callKey(e)) || (calls.size === 1 ? calls.values().next().value : null);
+        for (const c of calls.values()) {
+          if (c.status === "active") c.status = "done";
+          for (const s of c.steps) if (s.status === "active") s.status = "done";
+        }
+        if (out && target) target.reply = out;
         if (out) terminal.push({ kind: "out", text: out, ts: e.ts, agent: e.source });
         nodes.push({ kind: "system", id: e.id || `s-${nodes.length}`, ts: e.ts, label: d.ev_stop, tone: "green", text: "" });
       } else if (t === "error") {
@@ -780,13 +933,16 @@
 
     if (!todos.length && lastPlan) todos = todoRowsFrom([], lastPlan.steps);
 
-    // subagents from calls
-    const subagents = Array.from(calls.values()).map((c) => ({
-      id: c.id, name: c.reply ? firstSubstantiveLine(c.reply) : c.agent,
-      agent: c.agent, status: c.status,
-      act: c.commands.length ? c.commands[c.commands.length - 1] : (c.reply ? firstSubstantiveLine(c.reply) : ""),
-      detail: c.reply || "",
-    }));
+    // subagents from calls — the activity line is the latest process step, falling back to the reply.
+    const subagents = Array.from(calls.values()).map((c) => {
+      const lastStep = c.steps.length ? c.steps[c.steps.length - 1] : null;
+      return {
+        id: c.id, name: c.reply ? firstSubstantiveLine(c.reply) : c.agent,
+        agent: c.agent, status: c.status,
+        act: lastStep ? (lastStep.title || lastStep.kind) : (c.reply ? firstSubstantiveLine(c.reply) : ""),
+        detail: c.reply || "",
+      };
+    });
 
     return { nodes: nodes.filter((n) => !n.hidden), calls, todos, terminal, subagents };
   }
@@ -804,6 +960,102 @@
     useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
     const secs = Math.max(0, Math.round((now - startMs) / 1000));
     return html`<span className="pm-elapsed">· ${lang === "zh" ? `已 ${secs} 秒` : `${secs}s`}</span>`;
+  }
+
+  // One process-step row in the 执行过程 timeline: a category chip + the action (command / file /
+  // query / tool / plan / thought), with a file-kind chip, a command exit badge, and a live spinner
+  // or failure mark. Kind → chip label + color class.
+  const STEP_META = {
+    cmd: { k: "kCmd", cls: "st-cmd" }, edit: { k: "kEdit", cls: "st-edit" },
+    read: { k: "kRead", cls: "st-read" }, find: { k: "kFind", cls: "st-find" },
+    web: { k: "kWeb", cls: "st-web" }, tool: { k: "kTool", cls: "st-tool" },
+    plan: { k: "kPlan", cls: "st-plan" }, think: { k: "kThink", cls: "st-think" },
+  };
+  function StepRow({ s, d }) {
+    const meta = STEP_META[s.kind] || STEP_META.tool;
+    const active = s.status === "active";
+    const failed = s.status === "failed";
+    const fk = s.fileKind ? (s.fileKind === "add" ? d.fkAdd : s.fileKind === "delete" ? d.fkDelete : d.fkUpdate) : "";
+    return html`<div className=${`proc-step ${meta.cls}${active ? " active" : ""}${failed ? " failed" : ""}`}>
+      <span className="step-chip">${d[meta.k]}</span>
+      <div className="step-main">
+        ${s.kind === "plan" && Array.isArray(s.todos)
+          ? html`<div className="step-todos">${s.todos.map((t, i) => html`<div className=${`step-todo${t.done ? " done" : ""}`} key=${i}><span className="tk">${t.done ? "✓" : "○"}</span>${t.text}</div>`)}</div>`
+          : html`<div className="step-title">${s.title || d[meta.k]}</div>`}
+        ${s.detail ? html`<div className="step-detail">${clip(s.detail, 300)}</div>` : null}
+      </div>
+      ${fk ? html`<span className=${`fk fk-${s.fileKind}`}>${fk}</span>` : null}
+      ${s.kind === "cmd" && s.exit != null ? html`<span className=${`exitb${s.exit === 0 ? " ok" : " bad"}`}>${s.exit === 0 ? "✓ 0" : `✗ ${s.exit}`}</span>` : null}
+      ${active ? html`<span className="step-spin"></span>` : failed ? html`<span className="step-x">!</span>` : null}
+    </div>`;
+  }
+
+  // Subagent execution card — reads chronologically top→bottom as a 3-stage stepper:
+  //   ① 执行的命令 (the launch invocation) → ② 执行过程 (the real step timeline the CLI streams:
+  //   commands, edits, reads, searches, tool calls, reasoning, plan updates + line diffs) → ③ 最终回复.
+  // While the call is live it animates so a running subagent reads as visibly working, not frozen:
+  // a shimmering header bar, a pulsing live dot + self-ticking elapsed timer, a spinning badge on the
+  // frontier stage, a "正在执行" progress bar in the process stage, and a typing-dots "等待结果"
+  // placeholder where the reply will land. A finished call snaps to a calm ✓-stepped record.
+  function CallCard({ c, d, lang, open, onToggle }) {
+    const running = c.status === "active";
+    const avatarColor = c.agent && c.agent.toLowerCase().includes("codex") ? "var(--violet)" : "var(--accent)";
+    const avatar = (c.agent || "A").slice(0, 1).toUpperCase();
+    // Stage badge state: a number until reached, a spinner on the live frontier, ✓ once settled.
+    const s1 = c.commands.length ? "done" : (running ? "active" : "wait");
+    const s2 = running ? "active" : "done";
+    const s3 = c.reply ? "done" : "wait"; // pending (calm numbered badge) until the answer lands
+    const badge = (state, num) =>
+      state === "done" ? html`<span className="stage-badge done">✓</span>`
+      : state === "active" ? html`<span className="stage-badge active"><span className="stage-spin"></span></span>`
+      : html`<span className="stage-badge">${num}</span>`;
+    return html`<div className=${`call${open ? " open" : ""}${running ? " running" : ""}`}>
+      <div className="call-head" onClick=${() => onToggle(c.id)}>
+        <span className="call-avatar" style=${{ background: avatarColor }}>${avatar}</span>
+        <div style=${{ flex: 1, minWidth: 0 }}>
+          <div className="call-title">
+            <span className="call-agent">${c.agent}</span>
+            ${running
+              ? html`<span className="tag accent live"><span className="call-live-dot"></span>${d.running}</span>`
+              : html`<span className="tag green">${d.done}</span>`}
+            ${running && c.started ? html`<${PmElapsed} start=${c.started} lang=${lang} />` : null}
+          </div>
+          <div className="call-summary">${c.steps.length} ${d.stepsWord}${c.diffs.length ? ` · ${c.diffs.length} diff` : ""}${c.reply ? ` · ${firstSubstantiveLine(c.reply).slice(0, 42)}` : ""}</div>
+        </div>
+        <span className="call-toggle">${open ? d.hide : d.open}${open ? " ▾" : " ▸"}</span>
+      </div>
+      ${running ? html`<div className="call-progress"><span></span></div>` : null}
+      ${open ? html`<div className="call-detail stepped">
+        <div className=${`call-stage st-${s1}`}>
+          ${badge(s1, 1)}
+          <div className="stage-body">
+            <div className="stage-name">${d.commandsRun}</div>
+            ${c.commands.length
+              ? html`<div className="term-block">${c.commands.map((cmd, i) => html`<div key=${i} className=${i === 0 ? "cmd-launch" : ""}><span className="cmd-prompt">$</span> ${cmd}</div>`)}</div>`
+              : html`<div className="stage-muted">${running ? "…" : "—"}</div>`}
+          </div>
+        </div>
+        <div className=${`call-stage st-${s2}`}>
+          ${badge(s2, 2)}
+          <div className="stage-body">
+            <div className="stage-name">${d.processLabel}</div>
+            ${running ? html`<div className="proc-live"><span className="proc-bar"><span></span></span><span className="proc-txt">${d.executing}…</span></div>` : null}
+            ${c.steps.length ? html`<div className="proc-steps">${c.steps.map((s, i) => html`<${StepRow} key=${i} s=${s} d=${d} />`)}</div>` : null}
+            ${c.diffs.length ? html`<div className="proc-diffs"><div className="step-sub">${d.changeDetail}</div>${c.diffs.map((df, i) => html`<div className="diff-file" key=${i}><div className="fhead"><span className="muted" style=${{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${df.file}</span><span className="stat">${df.stat}</span></div>${(df.lines || []).slice(0, 30).map((l, j) => html`<div className=${`diff-line ${l.kind === "add" ? "add" : l.kind === "del" ? "del" : ""}`} key=${j}>${l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}${l.text || ""}</div>`)}</div>`)}</div>` : null}
+            ${!c.steps.length && !c.diffs.length && !running ? html`<div className="stage-muted">${d.noSteps}</div>` : null}
+          </div>
+        </div>
+        <div className=${`call-stage st-${s3}`}>
+          ${badge(s3, 3)}
+          <div className="stage-body">
+            <div className="stage-name">${d.finalReply}</div>
+            ${c.reply
+              ? html`<div className="stage-reply"><${MD} text=${c.reply} maxChars=${6000} /></div>`
+              : html`<div className="reply-wait">${running ? d.waitingResult : "—"}${running ? html`<span className="typing"><i></i><i></i><i></i></span>` : null}</div>`}
+          </div>
+        </div>
+      </div>` : null}
+    </div>`;
   }
 
   // ---------------------------------------------------------------------------
@@ -1052,27 +1304,7 @@
     if (n.kind === "call") {
       const c = dig.calls.get(n.callId);
       if (!c) return null;
-      const open = !!openCalls[c.id];
-      const avatarColor = c.agent && c.agent.toLowerCase().includes("codex") ? "var(--violet)" : "var(--accent)";
-      const avatar = (c.agent || "A").slice(0, 1).toUpperCase();
-      return html`<div className=${`call${open ? " open" : ""}`}>
-        <div className="call-head" onClick=${() => toggleCall(c.id)}>
-          <span className="call-avatar" style=${{ background: avatarColor }}>${avatar}</span>
-          <div style=${{ flex: 1, minWidth: 0 }}>
-            <div className="call-title">
-              <span className="call-agent">${c.agent}</span>
-              <span className=${`tag ${c.status === "active" ? "accent" : "green"}`}>${c.status === "active" ? d.running : d.done}</span>
-            </div>
-            <div className="call-summary">${c.commands.length} cmd${c.diffs.length ? ` · ${c.diffs.length} diff` : ""}${c.reply ? ` · ${c.reply.slice(0, 50)}` : ""}</div>
-          </div>
-          <span className="call-toggle">${open ? d.hide : d.open}${open ? " ▾" : " ▸"}</span>
-        </div>
-        ${open ? html`<div className="call-detail">
-          ${c.reply ? html`<div><div className="detail-label">${d.reply}</div><${MD} text=${c.reply} maxChars=${6000} /></div>` : null}
-          ${c.commands.length ? html`<div><div className="detail-label">${d.commandsRun}</div><div className="term-block">${c.commands.map((cmd, i) => html`<div key=${i}><span className="cmd-prompt">$</span> ${cmd}</div>`)}</div></div>` : null}
-          ${c.diffs.length ? html`<div><div className="detail-label">${d.fileChanges}</div>${c.diffs.map((df, i) => html`<div className="diff-file" key=${i}><div className="fhead"><span className="muted" style=${{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${df.file}</span><span className="stat">${df.stat}</span></div>${(df.lines || []).slice(0, 30).map((l, j) => html`<div className=${`diff-line ${l.kind === "add" ? "add" : l.kind === "del" ? "del" : ""}`} key=${j}>${l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}${l.text || ""}</div>`)}</div>`)}</div>` : null}
-        </div>` : null}
-      </div>`;
+      return html`<${CallCard} c=${c} d=${d} lang=${lang} open=${!!openCalls[c.id]} onToggle=${toggleCall} />`;
     }
     if (n.kind === "card") {
       const p = n.payload || {};
