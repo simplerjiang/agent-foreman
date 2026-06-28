@@ -6,6 +6,9 @@
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#141414" media="(prefers-color-scheme: dark)" />
   <title>Foreman · 控制台</title>
+  <link rel="preload" href="/vendor/fonts/plus-jakarta-sans-latin.woff2?v=__VER__" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/vendor/fonts/jetbrains-mono-latin.woff2?v=__VER__" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/app.css?v=__VER__" />
   <style>
     /* Pre-React shell only. Ant Design owns the rest of the styling at runtime (CSS-in-JS). */
     html, body { margin: 0; padding: 0; height: 100%; }
@@ -26,7 +29,7 @@
   </style>
 </head>
 <body>
-  <div id="root">
+  <div id="root" data-admin-root="1">
     <div class="boot" id="boot">
       <div class="spin"></div>
       <div>🦺 Foreman 控制台加载中…</div>
@@ -41,6 +44,7 @@
   <script src="/vendor/ant-design-icons.min.js?v=5.5.2"></script>
   <script src="/vendor/antd.min.js?v=5.22.5"></script>
   <script src="/vendor/htm.umd.js?v=3.1.1"></script>
+  <script src="/app.js?v=__VER__"></script>
   <script src="/admin-app.js?v=__VER__"></script>
 </body>
 </html>

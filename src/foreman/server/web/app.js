@@ -35,7 +35,7 @@
       launchAgents: "连接本地 agent",
       launchLoad: "加载工作区与工作方式…",
       launchBrain: "唤醒 PM 大脑",
-      personalMode: "个人模式 · 离线优先",
+      personalMode: "团队工作台 · 本地同步",
       selectSessionHint: "从左侧选择一个会话，或在下方下发新任务。",
       running: "运行中", live: "运行中", done: "完成", queued: "排队", cancelled: "已取消",
       stalled: "已卡住",
@@ -158,7 +158,7 @@
       launchAgents: "Local agents linked",
       launchLoad: "Loading workspaces & playbook…",
       launchBrain: "Waking PM brain",
-      personalMode: "Personal · offline-first",
+      personalMode: "Team workbench · local sync",
       selectSessionHint: "Pick a session on the left, or dispatch a new task below.",
       running: "RUNNING", live: "LIVE", done: "done", queued: "queued", cancelled: "cancelled",
       stalled: "stalled",
@@ -293,14 +293,15 @@
       localStorage.removeItem(CONSOLE_TOKEN_KEY);
     }
   };
-  let promptedForToken = false;
-  function promptForToken() {
-    if (promptedForToken) return;
-    promptedForToken = true;
-    const t = window.prompt("Access token required (FOREMAN_AUTH_TOKEN):", "");
-    if (t && t.trim()) { setToken(t.trim()); location.reload(); }
-  }
   const rawFetch = window.fetch.bind(window);
+  function loginUrl() {
+    const next = `${location.pathname}${location.search}${location.hash}`;
+    return `/app.html?next=${encodeURIComponent(next || "/app.html")}`;
+  }
+  function redirectToLogin() {
+    setToken("");
+    location.replace(loginUrl());
+  }
   window.fetch = async (input, init = {}) => {
     const url = typeof input === "string" ? input : (input && input.url) || "";
     const sameOrigin = url.startsWith("/") || url.startsWith(location.origin);
@@ -308,7 +309,9 @@
     const token = getToken();
     if (sameOrigin && token) headers.set("Authorization", `Bearer ${token}`);
     const res = await rawFetch(input, { ...init, headers });
-    if (res.status === 401 && sameOrigin) promptForToken();
+    let path = "";
+    try { path = sameOrigin ? new URL(url, location.origin).pathname : ""; } catch (e) { path = ""; }
+    if (res.status === 401 && sameOrigin && !path.startsWith("/api/auth/")) redirectToLogin();
     return res;
   };
   class ApiError extends Error {
@@ -1595,6 +1598,7 @@
   // ===========================================================================
   function Playbook({ d, lang, definitions, filter, setFilter, onNew, onEdit, onActivate, onDelete, onExport, onImportClick, fileRef, onImport, onStartWorkflow }) {
     const pills = [["", "kindAll"], ["workflow", "kindWorkflows"], ["skill", "kindSkills"], ["code_standard", "kindStandards"], ["qa_rubric", "kindQa"]];
+    const rows = filter ? (definitions || []).filter((row) => row.kind === filter) : (definitions || []);
     return html`<div className="page-mid">
       <div className="pb-toolbar">
         ${pills.map(([v, l]) => html`<span key=${v} className=${`pill${filter === v ? " on" : ""}`} onClick=${() => setFilter(v)}>${d[l]}</span>`)}
@@ -1604,8 +1608,8 @@
         <button className="btn primary sm" onClick=${onNew}>+ ${d.newBtn}</button>
         <input ref=${fileRef} type="file" accept="application/json,.json" hidden onChange=${onImport} />
       </div>
-      ${!definitions.length ? html`<${Empty} icon="▦" text=${d.noDefinitions} />` :
-        html`<div className="pb-grid">${definitions.map((row) => html`<div className="pb-card" key=${row.id}>
+      ${!rows.length ? html`<${Empty} icon="▦" text=${d.noDefinitions} />` :
+        html`<div className="pb-grid">${rows.map((row) => html`<div className="pb-card" key=${row.id}>
           <div className="top">
             <span className=${`tag ${KIND_TAGCOLOR[row.kind] || "plain"}`}>${d[KIND_LABEL[row.kind]] || row.kind}</span>
             <span style=${{ marginLeft: "auto" }} className=${row.is_active ? "state-on" : "state-off"}>${row.is_active ? "●" : "○"} ${row.is_active ? d.on : d.off}</span>
@@ -1947,7 +1951,7 @@
   // ===========================================================================
   // Shell
   // ===========================================================================
-  function Shell() {
+  function Shell({ embedded = false, onBack = null } = {}) {
     const storedLang = localStorage.getItem(LANG_KEY);
     const [lang, setLangState] = useState(storedLang === "en" ? "en" : "zh");
     const [languageLoaded, setLanguageLoaded] = useState(Boolean(storedLang));
@@ -2008,7 +2012,7 @@
     const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false, remote_execution_enabled: false });
     const [cloudStatus, setCloudStatus] = useState("");
     const [cloudAvailable, setCloudAvailable] = useState(true);
-    const [teamMode, setTeamMode] = useState(false);
+    const [teamMode, setTeamMode] = useState(true);
     const [processes, setProcesses] = useState([]);
     const [selectedProcessId, setSelectedProcessIdState] = useState(localStorage.getItem(PROCESS_KEY) || "");
     const [notifications, setNotifications] = useState([]);
@@ -2081,9 +2085,11 @@
         const current = selectedProcessId && ids.includes(selectedProcessId) ? selectedProcessId : "";
         const next = current || ((online[0] && online[0].id) || (rows[0] && rows[0].id) || "");
         if (next && next !== selectedProcessId) setSelectedProcessId(next);
+        return next;
       } catch (e) {
         setProcesses([]);
-        setTeamMode(false);
+        setTeamMode(true);
+        return "";
       }
     }, [selectedProcessId]);
     const applySnapshot = useCallback((snap) => {
@@ -2091,6 +2097,22 @@
       const cardsNext = (snap && snap.cards || []).map((c) => ({ id: c.card_id, card_id: c.card_id, status: c.status, ...(c.payload || {}), process_id: snap.process_id || "" }));
       setSessions(sessionsNext);
       setCards(cardsNext);
+      setApprovals(snap && snap.approvals || []);
+      setReports(snap && snap.reports || []);
+      setDefinitions(snap && snap.definitions || []);
+      if (snap && Array.isArray(snap.workspaces)) {
+        setWorkspaces(snap.workspaces);
+        const paths = snap.workspaces.map((w) => w.path);
+        const chosen = paths.includes(localStorage.getItem(WORKSPACE_KEY)) ? localStorage.getItem(WORKSPACE_KEY) : paths[0] || "";
+        setWorkspace(chosen);
+        if (chosen) localStorage.setItem(WORKSPACE_KEY, chosen);
+        else localStorage.removeItem(WORKSPACE_KEY);
+      }
+      if (snap && snap.autonomy && typeof snap.autonomy.level === "number") setAutonomyState(snap.autonomy.level);
+      if (snap && snap.agent_settings) { setAgentSettings(snap.agent_settings || []); setAgentsLoaded(true); }
+      if (snap && snap.pm_tools) setPmTools(snap.pm_tools || {});
+      if (snap && snap.llm) setLlm({ ...snap.llm, api_key: "" });
+      if (snap && snap.language) setLangState(snap.language === "en" ? "en" : "zh");
     }, []);
     const loadRemoteSnapshot = useCallback(async (processId) => {
       if (!processId) return;
@@ -2131,23 +2153,28 @@
     useEffect(() => { document.documentElement.lang = lang === "zh" ? "zh-CN" : "en"; if (!languageLoaded) return; localStorage.setItem(LANG_KEY, lang); api("/api/settings/language", { method: "POST", body: { language: lang } }).catch(() => {}); }, [lang, languageLoaded]);
 
     useEffect(() => {
+      if (!getToken()) { redirectToLogin(); return; }
+      let cancelled = false;
       if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
       api("/health").then((h) => { setStatus({ online: true, version: h.version }); if (loadedVersionRef.current == null && h.version) loadedVersionRef.current = h.version; }).catch(() => setStatus({ online: false, version: "offline" }));
       // Boot on the essentials only. Model + agent discovery hit the provider's /models (or run a
       // CLI --version per agent) and can take the backend request timeout if a key is set but the
       // endpoint is slow — keeping them out of this barrier stops the launch overlay from hanging
       // (codex review finding). They populate the Settings page shortly after, non-blocking.
-      Promise.allSettled([loadWorkspaces(), loadProcesses(), loadSessions(), loadCards(), loadApprovals(), loadReports(), loadAutonomy(), loadCloud(), loadNotifications()]).then(() => {
+      api("/api/auth/me").then(async () => {
+        const processId = await loadProcesses();
+        await loadNotifications();
+        if (processId) await loadRemoteSnapshot(processId);
+      }).catch((e) => {
+        if (e && e.status === 401) return;
+        notifyError(e);
+      }).finally(() => {
+        if (cancelled) return;
         setBooted(true);
         setTimeout(() => setHidingLaunch(true), 350);
       });
-      loadAgentSettings();
-      loadLlm();
-      loadPmTools();
-      loadDebug();
-      loadModels();
-    }, [loadWorkspaces, loadProcesses, loadSessions, loadCards, loadApprovals, loadReports, loadAutonomy, loadCloud, loadNotifications, loadAgentSettings, loadLlm, loadPmTools, loadDebug, loadModels]);
-    useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
+      return () => { cancelled = true; };
+    }, [loadProcesses, loadRemoteSnapshot, loadNotifications, notifyError]);
 
     // polling for cards/approvals/sessions
     useEffect(() => {
@@ -2539,7 +2566,14 @@
     }
     async function saveAutonomy(value) {
       setAutonomyState(value);
-      try { setAutonomyState((await api("/api/settings/autonomy", { method: "POST", body: { level: value } })).level); }
+      try {
+        const path = teamMode ? "/api/remote/settings/autonomy" : "/api/settings/autonomy";
+        const body = teamMode ? { process_id: selectedProcessId, level: value } : { level: value };
+        if (teamMode && !selectedProcessId) { toast(d.remoteProcessRequired, "error"); return; }
+        const res = await api(path, { method: "POST", body });
+        if (typeof res.level === "number") setAutonomyState(res.level);
+        if (teamMode) await loadRemoteSnapshot(selectedProcessId);
+      }
       catch (e) { notifyError(e); }
     }
     async function saveCloud() {
@@ -2600,7 +2634,7 @@
     const toggleSub = (id) => setExpandedSub((cur) => (cur === id ? null : id));
     const onCopy = (text) => { try { navigator.clipboard.writeText(text); toast(d.copied, "success"); } catch (e) {} };
 
-    const counts = { workspace: sessions.filter((s) => (s.status || "").toLowerCase().match(/run|active/)).length, decisions: openCards.length + approvals.length + notifications.length };
+    const counts = { workspace: sessions.filter((s) => (s.status || "").toLowerCase().match(/run|active/)).length, decisions: openCards.length + approvals.length };
 
     const composerProps = {
       workspaces, workspace, setWorkspace: (v) => { setWorkspace(v); if (v) localStorage.setItem(WORKSPACE_KEY, v); },
@@ -2637,6 +2671,7 @@
     };
 
     return html`<div>
+      ${embedded && onBack ? html`<button className="btn control-back" onClick=${onBack}>返回总控制台</button>` : null}
       ${!hidingLaunch ? html`<${Launch} d=${d} lang=${lang} hiding=${booted} steps=${launchSteps} />` : null}
 
       <div className="toasts">${toasts.map((t) => html`<div key=${t.id} className=${`toast ${t.type || ""}`}>${t.text}</div>`)}</div>
@@ -2711,6 +2746,10 @@
     </div>`;
   }
 
+  window.ForemanControlApp = { Root: Shell };
+
   const rootEl = document.getElementById("root");
-  ReactDOM.createRoot(rootEl).render(html`<${Shell} />`);
+  if (rootEl && !rootEl.dataset.adminRoot) {
+    ReactDOM.createRoot(rootEl).render(html`<${Shell} />`);
+  }
 })();

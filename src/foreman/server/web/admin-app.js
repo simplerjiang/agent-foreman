@@ -1,4 +1,4 @@
-/* Foreman 控制台 — login-gated Ant Design SPA (team mode).
+/* Foreman 控制台 — login-gated Ant Design console (team mode).
  *
  * No build step: React + Ant Design + dayjs + htm are vendored UMD bundles loaded by app.html;
  * this file is plain first-party JS (htm gives JSX-like templates without a transpiler). The whole
@@ -18,6 +18,7 @@
   // ── token + api ──────────────────────────────────────────────────────────────────────────
   const TOKEN_KEY = "foreman_token";
   const DASHBOARD_TOKEN_KEY = "foreman.token";
+  const PROCESS_KEY = "foreman.process";
   const getToken = () => localStorage.getItem(TOKEN_KEY) || localStorage.getItem(DASHBOARD_TOKEN_KEY) || "";
   const setToken = (t) => {
     if (t) {
@@ -28,6 +29,28 @@
       localStorage.removeItem(DASHBOARD_TOKEN_KEY);
     }
   };
+  function nextUrl() {
+    const raw = new URLSearchParams(location.search).get("next") || "";
+    return raw.startsWith("/") && !raw.startsWith("//") ? raw : "";
+  }
+  function finishAuth(onAuthed) {
+    const next = nextUrl();
+    if (next) {
+      location.href = next;
+      return;
+    }
+    onAuthed();
+  }
+  function wantsControlView() {
+    const p = new URLSearchParams(location.search);
+    return p.get("control") === "1" || ["view", "session", "process", "approval", "action"].some((k) => p.has(k));
+  }
+  function controlHref(processId) {
+    const p = new URLSearchParams();
+    p.set("control", "1");
+    if (processId) p.set("process", processId);
+    return "/app.html?" + p.toString();
+  }
 
   async function api(path, opts) {
     opts = opts || {};
@@ -115,7 +138,7 @@
       try {
         const r = await api("/api/auth/login", { method: "POST", body: { username: v.username, password: v.password } });
         setToken(r.token);
-        onAuthed();
+        finishAuth(onAuthed);
       } catch (e) {
         toast.err(e.status === 429 ? "尝试过于频繁，请稍后再试" : "用户名或密码错误");
       } finally { setBusy(false); }
@@ -126,7 +149,7 @@
         const r = await api("/api/auth/redeem", { method: "POST", body: { code: v.code.trim(), password: v.password } });
         setToken(r.token);
         toast.ok("已设置密码并登录");
-        onAuthed();
+        finishAuth(onAuthed);
       } catch (e) {
         toast.err(e.status === 400 ? "邀请码无效/已用/已过期，或密码太短(≥8位)" : "兑换失败");
       } finally { setBusy(false); }
@@ -329,7 +352,7 @@
   }
 
   // ── admin: processes ─────────────────────────────────────────────────────────────────────
-  function ProcessesSection() {
+  function ProcessesSection({ onControl }) {
     const { data, loading, error, reload } = useAsync(() => api("/api/admin/processes"));
     const columns = [
       { title: "账户", dataIndex: "username", key: "username", render: (t) => html`<strong>${t}</strong>` },
@@ -337,6 +360,7 @@
       { title: "状态", dataIndex: "online", key: "online", render: (o) => html`<${A.Badge} status=${o ? "success" : "default"} text=${o ? "在线" : "离线"} />` },
       { title: "最后心跳", dataIndex: "last_heartbeat", key: "last_heartbeat", render: fmtTime },
       { title: "注册时间", dataIndex: "created_at", key: "created_at", responsive: ["lg"], render: fmtTime },
+      { title: "操作", key: "ops", width: 96, render: (_, r) => html`<${A.Tooltip} title=${r.online ? "进入控制台：远程查看会话 / 派发任务 / 审批" : "机器离线，无法控制"}><${A.Button} size="small" type="link" disabled=${!r.online} onClick=${() => onControl && onControl(r.id)}>控制</${A.Button}></${A.Tooltip}>` },
     ];
     return html`
       <${F}>
@@ -469,7 +493,17 @@
     logs: { label: "日志", icon: "FileTextOutlined", comp: LogsSection },
   };
 
-  function AdminConsole({ me, onLogout, dark, onToggleTheme }) {
+  function ControlView({ onBack }) {
+    const ControlRoot = window.ForemanControlApp && window.ForemanControlApp.Root;
+    if (!ControlRoot) {
+      return html`<div style=${{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+        <${A.Result} status="error" title="控制台组件未加载" subTitle="请刷新页面后重试。" extra=${html`<${A.Button} type="primary" onClick=${onBack}>返回总控制台</${A.Button}>`} />
+      </div>`;
+    }
+    return html`<${ControlRoot} embedded=${true} onBack=${onBack} />`;
+  }
+
+  function AdminConsole({ me, onLogout, dark, onToggleTheme, onControl }) {
     const [key, setKey] = useState("overview");
     const [collapsed, setCollapsed] = useState(false);
     const Section = SECTIONS[key].comp;
@@ -500,7 +534,7 @@
           </${A.Layout.Header}>
           <${A.Layout.Content} style=${{ margin: 16 }}>
             <div style=${{ background: dark ? "#141414" : "#fff", padding: 20, borderRadius: 8, minHeight: "100%" }}>
-              <${Section} />
+              <${Section} onControl=${onControl} />
             </div>
           </${A.Layout.Content}>
         </${A.Layout}>
@@ -508,7 +542,7 @@
   }
 
   // ── member view (non-admin) ──────────────────────────────────────────────────────────────
-  function MemberView({ me, onLogout, dark, onToggleTheme }) {
+  function MemberView({ me, onLogout, dark, onToggleTheme, onControl }) {
     const procs = useAsync(() => api("/api/processes"));
     const keys = useAsync(() => api("/api/keys"));
     const [minting, setMinting] = useState(false);
@@ -534,15 +568,10 @@
     };
     const revoke = async (id) => { try { await api("/api/keys/" + id, { method: "DELETE" }); toast.ok("已吊销"); keys.reload(); } catch (e) { toast.err(e.message); } };
 
-    // 「控制」入口：把成员送进真正的控制台 PWA（index.html → app.js），那里有目标机器选择 +
-    // 远端派发 / 审批 / 快照。同源 localStorage，所以先把要操控的机器写进 app.js 的 PROCESS_KEY
-    // （"foreman.process"），让控制台开屏即选中这台；同时同步当前登录 token，避免旧 dashboard
-    // token 残留时覆盖团队登录态。
+    // 「控制」入口：仍然先写目标机器和 dashboard token，但渲染留在 /app.html 的同一个
+    // React 根应用里，由 Root 切换到控制台视图。
     const control = (row) => {
-      if (row && row.id) localStorage.setItem("foreman.process", row.id);
-      const token = getToken();
-      if (token) localStorage.setItem(DASHBOARD_TOKEN_KEY, token);
-      location.href = "/index.html";
+      if (onControl) onControl(row && row.id);
     };
 
     return html`
@@ -605,14 +634,18 @@
   function Root() {
     const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
     const [dark, setDark] = useState(localStorage.getItem("foreman_theme") ? localStorage.getItem("foreman_theme") === "dark" : prefersDark);
-    const [state, setState] = useState({ phase: "loading", me: null }); // loading | login | ready
+    const [state, setState] = useState({ phase: "loading", me: null }); // loading | login | ready | unconfigured
+    const [controlMode, setControlMode] = useState(wantsControlView);
 
     const checkAuth = useCallback(() => {
       if (!getToken()) { setState({ phase: "login", me: null }); return; }
       api("/api/auth/me")
-        .then((me) => setState({ phase: "ready", me }))
+        .then((me) => {
+          if (me && (me.display_name || me.username)) localStorage.setItem("foreman.user", me.display_name || me.username);
+          setState({ phase: "ready", me });
+        })
         .catch((e) => {
-          if (e.status === 503) setState({ phase: "personal", me: null });
+          if (e.status === 503) setState({ phase: "unconfigured", me: null });
           else { setToken(""); setState({ phase: "login", me: null }); }
         });
     }, []);
@@ -622,16 +655,35 @@
       window.addEventListener("foreman:unauthorized", onUnauth);
       return () => window.removeEventListener("foreman:unauthorized", onUnauth);
     }, []);
+    useEffect(() => {
+      const onPop = () => setControlMode(wantsControlView());
+      window.addEventListener("popstate", onPop);
+      return () => window.removeEventListener("popstate", onPop);
+    }, []);
 
     const toggleTheme = () => setDark((d) => { localStorage.setItem("foreman_theme", !d ? "dark" : "light"); return !d; });
     const logout = async () => { try { await api("/api/auth/logout", { method: "POST" }); } catch (e) { /* ignore */ } setToken(""); setState({ phase: "login", me: null }); };
+    const openControl = useCallback((processId) => {
+      const id = processId || "";
+      if (id) localStorage.setItem(PROCESS_KEY, id);
+      else localStorage.removeItem(PROCESS_KEY);
+      const token = getToken();
+      if (token) localStorage.setItem(DASHBOARD_TOKEN_KEY, token);
+      history.pushState(null, "", controlHref(id));
+      setControlMode(true);
+    }, []);
+    const closeControl = useCallback(() => {
+      history.pushState(null, "", "/app.html");
+      setControlMode(false);
+    }, []);
 
     let body;
     if (state.phase === "loading") body = html`<div style=${{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}><${A.Spin} size="large" /></div>`;
-    else if (state.phase === "personal") body = html`<div style=${{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}><${A.Result} status="info" title="此服务器处于个人模式" subTitle="个人模式没有账户系统。请使用本机仪表盘 (/index.html)。" /></div>`;
+    else if (state.phase === "unconfigured") body = html`<div style=${{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}><${A.Result} status="warning" title="团队模式未启用" subTitle="当前前端只支持团队模式。请以团队模式启动服务后再访问总控制台。" /></div>`;
     else if (state.phase === "login") body = html`<${LoginView} onAuthed=${checkAuth} />`;
-    else if (state.me && state.me.role === "admin") body = html`<${AdminConsole} me=${state.me} onLogout=${logout} dark=${dark} onToggleTheme=${toggleTheme} />`;
-    else body = html`<${MemberView} me=${state.me} onLogout=${logout} dark=${dark} onToggleTheme=${toggleTheme} />`;
+    else if (controlMode) body = html`<${ControlView} onBack=${closeControl} />`;
+    else if (state.me && state.me.role === "admin") body = html`<${AdminConsole} me=${state.me} onLogout=${logout} dark=${dark} onToggleTheme=${toggleTheme} onControl=${openControl} />`;
+    else body = html`<${MemberView} me=${state.me} onLogout=${logout} dark=${dark} onToggleTheme=${toggleTheme} onControl=${openControl} />`;
 
     return html`
       <${A.ConfigProvider} theme=${{ algorithm: dark ? A.theme.darkAlgorithm : A.theme.defaultAlgorithm, token: { colorPrimary: "#1677ff" } }}>

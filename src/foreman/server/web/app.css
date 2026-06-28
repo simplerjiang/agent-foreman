@@ -227,6 +227,13 @@ a { color: var(--accent-text); }
 
 /* ---------- app shell ---------- */
 .app { display: flex; min-height: 100vh; background: var(--bg); }
+.control-back {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 320;
+  box-shadow: var(--shadow);
+}
 .sidebar {
   width: 236px; flex: none; border-right: 1px solid var(--border); background: var(--surface);
   display: flex; flex-direction: column; padding: 18px 14px; position: sticky; top: 0; height: 100vh;

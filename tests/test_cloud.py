@@ -208,7 +208,10 @@ async def test_cloud_manager_snapshot_request_is_on_demand():
     reply = await mgr._on_frame(Envelope(kind=KIND_SNAPSHOT_REQ, id="corr"))
     assert reply.kind == KIND_SNAPSHOT
     assert reply.id == "corr"
-    assert reply.payload == {"sessions": [], "cards": []}
+    assert reply.payload["sessions"] == []
+    assert reply.payload["cards"] == []
+    assert reply.payload["autonomy"]["level"] == cfg.autonomy.level
+    assert "workspaces" in reply.payload
 
 
 async def test_cloud_manager_command_disabled_by_default():
