@@ -348,6 +348,79 @@ a { color: var(--accent-text); }
 .term-block .cmd-dim { color: #8a8578; }
 .call-result { font-size: 12.5px; font-weight: 600; color: var(--green); background: var(--green-soft); padding: 9px 13px; border-radius: 8px; }
 
+/* ---------- subagent call card: live-running affordances + 命令→过程→回复 stepper ---------- */
+.call.running { border-color: var(--accent-line); }
+.call-title .pm-elapsed { font-size: 11px; color: var(--faint); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.tag.accent.live { display: inline-flex; align-items: center; gap: 5px; }
+.call-live-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: fdpulse 1.4s ease-in-out infinite; }
+/* thin shimmering bar under the header while the agent runs — visible even when the card is collapsed */
+.call-progress { height: 3px; background: var(--accent-soft); overflow: hidden; }
+.call-progress > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--violet)); animation: fdbar 4.6s cubic-bezier(0.4, 0, 0.2, 1) infinite; position: relative; overflow: hidden; }
+.call-progress > span::after { content: ""; position: absolute; inset: 0; width: 40%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent); animation: fdshim 1.3s linear infinite; }
+
+/* stepped detail: a vertical timeline so the run reads top→bottom in chronological order */
+.call-detail.stepped { gap: 0; }
+.call-stage { display: grid; grid-template-columns: 25px 1fr; gap: 12px; position: relative; padding-bottom: 16px; }
+.call-stage:last-child { padding-bottom: 0; }
+.call-stage:not(:last-child)::before { content: ""; position: absolute; left: 12px; top: 27px; bottom: 2px; width: 1.5px; background: var(--border); }
+.stage-badge { width: 25px; height: 25px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 800; border: 1.5px solid var(--border2); color: var(--faint); background: var(--surface); z-index: 1; }
+.stage-badge.done { background: var(--green-soft); border-color: transparent; color: var(--green); }
+.stage-badge.active { border-color: var(--accent); color: var(--accent-text); box-shadow: 0 0 0 3px var(--accent-soft); }
+.stage-spin { width: 11px; height: 11px; border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: fdspin 0.7s linear infinite; }
+.stage-body { min-width: 0; animation: fdup 0.3s ease both; }
+.stage-name { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--faint); text-transform: uppercase; margin-bottom: 7px; }
+.stage-muted { font-size: 12px; color: var(--faint); font-family: var(--mono); }
+.stage-reply { animation: fdfade 0.4s ease both; }
+/* the launch command (the codex/claude invocation) is highlighted vs. any sub-commands below it */
+.term-block .cmd-launch .cmd-prompt { color: #e0b96d; }
+
+/* process stage: a "正在执行" bar that fills + shimmers while the agent is mid-run */
+.proc-live { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+.proc-bar { flex: 1; height: 5px; border-radius: 5px; background: var(--accent-soft); overflow: hidden; position: relative; }
+.proc-bar > span { display: block; height: 100%; border-radius: 5px; background: linear-gradient(90deg, var(--accent), var(--violet)); animation: fdbar 3.2s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+.proc-txt { font-size: 11.5px; color: var(--accent-text); font-family: var(--mono); flex: none; }
+
+/* reply stage: a typing-dots placeholder marking where the final answer will stream in */
+.reply-wait { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.reply-wait .typing { display: inline-flex; gap: 3px; }
+.reply-wait .typing i { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); animation: fdblink 1.2s ease-in-out infinite; }
+.reply-wait .typing i:nth-child(2) { animation-delay: 0.2s; }
+.reply-wait .typing i:nth-child(3) { animation-delay: 0.4s; }
+
+/* process timeline: each thing the CLI reported doing (command / edit / read / find / web / tool /
+   plan / think) as a typed row, instead of a flattened text blob */
+.proc-steps { display: flex; flex-direction: column; }
+.proc-step { display: flex; align-items: flex-start; gap: 9px; padding: 7px 0; border-top: 1px solid var(--border); animation: fdup 0.25s ease both; }
+.proc-steps > .proc-step:first-child { border-top: none; padding-top: 1px; }
+.step-chip { flex: none; font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; padding: 2px 6px; border-radius: 5px; margin-top: 1px; line-height: 1.5; }
+.st-cmd .step-chip, .st-tool .step-chip { background: var(--accent-soft); color: var(--accent-text); }
+.st-edit .step-chip { background: var(--amber-soft); color: var(--amber); }
+.st-read .step-chip { background: var(--bg2); color: var(--muted); }
+.st-find .step-chip, .st-web .step-chip { background: var(--violet-soft); color: var(--violet); }
+.st-plan .step-chip { background: var(--green-soft); color: var(--green); }
+.st-think .step-chip { background: var(--bg2); color: var(--faint); }
+.step-main { flex: 1; min-width: 0; }
+.step-title { font-family: var(--mono); font-size: 11.5px; color: var(--text); word-break: break-word; line-height: 1.5; }
+.st-think .step-title { font-family: var(--sans); font-style: italic; color: var(--muted); }
+.proc-step.failed .step-title { color: var(--red); }
+.step-detail { font-family: var(--mono); font-size: 10.5px; color: var(--faint); margin-top: 3px; white-space: pre-wrap; word-break: break-word; max-height: 64px; overflow: hidden; }
+.step-todos { display: flex; flex-direction: column; gap: 3px; }
+.step-todo { display: flex; gap: 6px; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.step-todo .tk { color: var(--faint); flex: none; }
+.step-todo.done { color: var(--faint); text-decoration: line-through; }
+.step-todo.done .tk { color: var(--green); text-decoration: none; }
+.fk { flex: none; font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 10px; margin-top: 2px; }
+.fk-add { background: var(--green-soft); color: var(--green); }
+.fk-update { background: var(--amber-soft); color: var(--amber); }
+.fk-delete { background: var(--red-soft); color: var(--red); }
+.exitb { flex: none; font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; margin-top: 2px; white-space: nowrap; }
+.exitb.ok { background: var(--green-soft); color: var(--green); }
+.exitb.bad { background: var(--red-soft); color: var(--red); }
+.step-spin { flex: none; width: 11px; height: 11px; margin-top: 3px; border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: fdspin 0.7s linear infinite; }
+.step-x { flex: none; width: 15px; height: 15px; margin-top: 1px; border-radius: 50%; background: var(--red-soft); color: var(--red); font-size: 10px; font-weight: 800; display: grid; place-items: center; }
+.proc-diffs { margin-top: 11px; display: flex; flex-direction: column; gap: 7px; }
+.step-sub { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+
 /* decision card (inline + page) */
 .dcard { border: 1.5px solid var(--amber); border-radius: 11px; background: var(--surface); box-shadow: 0 12px 30px -16px var(--amber); overflow: hidden; }
 .dcard.low { border: 1px solid var(--border); box-shadow: var(--shadow-sm); }

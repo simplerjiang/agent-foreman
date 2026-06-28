@@ -269,6 +269,66 @@ if (noVisibleFields !== "") {
     subprocess.run(["node", "-e", script], check=True)
 
 
+def test_process_steps_parsed_from_codex_and_claude_streams():
+    """执行过程 renders a structured timeline, so the digest must turn each CLI's real stream events
+    into typed process steps: codex `exec --json` item.* lines (command_execution / file_change /
+    web_search) and Claude `stream-json` tool_use / tool_result blocks. Reply text must stay clean
+    (the final answer only — never tool markers or reasoning)."""
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function shellQuote")
+    end = js.index("function formatPmJsonObject", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const must = (cond, label) => { if (!cond) { console.error("FAIL: " + label); process.exit(1); } };
+
+// Codex command_execution (item.completed) -> a cmd step with exit code + key.
+const cx = stepsFromAgentPayload({ type: "item.completed", item: { id: "i1", type: "command_execution", command: "npm install -g @github/copilot", aggregated_output: "added 1 package", exit_code: 0, status: "completed" } });
+must(cx.length === 1 && cx[0].kind === "cmd", "codex cmd kind");
+must(cx[0].exit === 0 && cx[0].status === "done" && cx[0].key === "cx-i1", "codex cmd fields");
+must(cx[0].title === "npm install -g @github/copilot", "codex cmd title");
+
+// Codex file_change -> edit step per changed path, carrying the change kind.
+const fc = stepsFromAgentPayload({ type: "item.completed", item: { id: "i2", type: "file_change", status: "completed", changes: [{ path: "config.json", kind: "update" }, { path: "new.txt", kind: "add" }] } });
+must(fc.length === 2 && fc[0].kind === "edit" && fc[0].fileKind === "update", "codex file_change update");
+must(fc[1].fileKind === "add" && fc[1].title === "new.txt", "codex file_change add");
+
+// Codex web_search -> web step with the query.
+const ws = stepsFromAgentPayload({ type: "item.completed", item: { id: "i3", type: "web_search", query: "copilot cli install" } });
+must(ws.length === 1 && ws[0].kind === "web" && ws[0].title === "copilot cli install", "codex web_search");
+
+// Claude Bash tool_use -> cmd step keyed by tool id; WebSearch -> web step.
+const cb = stepsFromAgentPayload({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls -la" } }] } });
+must(cb.length === 1 && cb[0].kind === "cmd" && cb[0].title === "ls -la" && cb[0].key === "cc-t1", "claude bash");
+const cw = stepsFromAgentPayload({ type: "assistant", message: { content: [{ type: "tool_use", id: "t2", name: "WebSearch", input: { query: "anthropic" } }] } });
+must(cw.length === 1 && cw[0].kind === "web" && cw[0].title === "anthropic", "claude websearch");
+const ce = stepsFromAgentPayload({ type: "assistant", message: { content: [{ type: "tool_use", id: "t3", name: "Write", input: { file_path: "a.py" } }] } });
+must(ce[0].kind === "edit" && ce[0].fileKind === "add", "claude write is edit/add");
+// Claude PowerShell (the real Windows command tool) maps to a cmd step with the command as title.
+const cps = stepsFromAgentPayload({ type: "assistant", message: { content: [{ type: "tool_use", id: "t9", name: "PowerShell", input: { command: "Get-Location", description: "cwd" } }] } });
+must(cps.length === 1 && cps[0].kind === "cmd" && cps[0].title === "Get-Location", "claude PowerShell is cmd");
+
+// Codex policy-declined command (status:"declined", exit_code:-1) must read as failed, not done.
+const cd = stepsFromAgentPayload({ type: "item.completed", item: { id: "i9", type: "command_execution", command: "rm -rf /", exit_code: -1, status: "declined" } });
+must(cd.length === 1 && cd[0].status === "failed" && cd[0].exit === -1, "codex declined -> failed");
+// file_change steps carry a per-path key so a re-emitted item.id merges instead of duplicating.
+must(fc[0].key === "cx-i2-config.json" && fc[1].key === "cx-i2-new.txt", "codex file_change per-path key");
+
+// Claude tool_result -> an update marker matched to its tool_use by id.
+const cr = stepsFromAgentPayload({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: false, content: "ok" }] } });
+must(cr.length === 1 && cr[0].update === true && cr[0].key === "cc-t1" && cr[0].status === "done", "claude tool_result update");
+
+// replyText is the clean final answer only.
+must(replyText({ type: "item.completed", item: { type: "agent_message", text: "all set." } }) === "all set.", "codex agent_message reply");
+must(replyText({ type: "item.completed", item: { type: "command_execution", command: "ls" } }) === "", "command is not reply text");
+// A claude message that ALSO calls a tool is pre-tool narration ("I'll run it.") — excluded from reply.
+must(replyText({ type: "assistant", message: { content: [{ type: "text", text: "I'll run it." }, { type: "tool_use", id: "x", name: "Bash", input: { command: "ls" } }] } }) === "", "claude pre-tool narration excluded from reply");
+// A no-tool claude message is the genuine final answer.
+must(replyText({ type: "assistant", message: { content: [{ type: "text", text: "done" }] } }) === "done", "claude final text is reply");
+'''
+    subprocess.run(["node", "-e", script], check=True)
+
+
 def test_first_substantive_line_skips_common_opening_meta_text():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
