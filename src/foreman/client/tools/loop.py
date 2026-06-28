@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
 from foreman.shared.llm.trace import trace_context
+from foreman.shared.config import PM_TOOLS_DEFAULT_ROUNDS
 
 from .models import EXTERNAL_WEB, ToolCall, ToolResult
 from .runtime import PMToolRuntime
@@ -27,7 +28,11 @@ _SUBMIT_PLAN_CHOICE = {"type": "function", "name": SUBMIT_PLAN_TOOL}
 _DEFAULT_PLAN_AGENTS = ("claude-code", "codex", "copilot-cli")
 
 
-def submit_plan_tool_spec(enabled_agents: list[str] | None = None) -> dict[str, Any]:
+def submit_plan_tool_spec(
+    enabled_agents: list[str] | None = None,
+    *,
+    max_plan_items: int = PM_TOOLS_DEFAULT_ROUNDS,
+) -> dict[str, Any]:
     """Schema for the terminal ``submit_plan`` tool; ``agent`` is constrained to the enabled set.
 
     Fields mirror ``PMPlan`` so ``validate_final_plan`` (and downstream ``parse_plan``) need no
@@ -36,6 +41,7 @@ def submit_plan_tool_spec(enabled_agents: list[str] | None = None) -> dict[str, 
     old token ceiling.
     """
     agents = [agent for agent in (enabled_agents or []) if agent] or list(_DEFAULT_PLAN_AGENTS)
+    item_limit = max(1, int(max_plan_items))
     return {
         "name": SUBMIT_PLAN_TOOL,
         "description": "Emit exactly one launch plan for the selected coding agent. Call once.",
@@ -55,12 +61,12 @@ def submit_plan_tool_spec(enabled_agents: list[str] | None = None) -> dict[str, 
                 "reply": {"type": "string", "maxLength": 2000},
                 "todo": {
                     "type": "array",
-                    "maxItems": 12,
+                    "maxItems": item_limit,
                     "items": {"type": "string", "maxLength": 200},
                 },
                 "deliberation": {
                     "type": "array",
-                    "maxItems": 8,
+                    "maxItems": item_limit,
                     "items": {"type": "string", "maxLength": 300},
                 },
                 "ready": {"type": "boolean"},
@@ -151,6 +157,7 @@ class PMToolLoop:
                         plan_args,
                         enabled_agents=enabled_agents,
                         fallback_plan=fallback_plan,
+                        max_plan_items=self.max_rounds,
                     )
                 except ValueError as exc:
                     transcript.append(
@@ -250,7 +257,7 @@ class PMToolLoop:
     ) -> dict[str, Any]:
         if hasattr(self.llm, "tool_complete"):
             tools = [spec.to_native() for spec in self.runtime.specs()]
-            tools.append(submit_plan_tool_spec(enabled_agents))
+            tools.append(submit_plan_tool_spec(enabled_agents, max_plan_items=self.max_rounds))
             kwargs: dict[str, Any] = {"tools": tools, "model": model, "json_mode": True}
             if _accepts_keyword(self.llm.tool_complete, "tool_choice"):
                 kwargs["tool_choice"] = tool_choice
@@ -333,6 +340,7 @@ def validate_final_plan(
     *,
     enabled_agents: list[str],
     fallback_plan: dict[str, Any],
+    max_plan_items: int = PM_TOOLS_DEFAULT_ROUNDS,
 ) -> dict[str, Any]:
     if not isinstance(obj, dict):
         raise ValueError("final_plan_not_object")
@@ -346,6 +354,7 @@ def validate_final_plan(
     effort = str(obj.get("effort") or fallback_plan.get("effort") or "").strip().lower()
     if effort not in {"", "low", "medium", "high"}:
         raise ValueError("final_plan_bad_effort")
+    item_limit = max(1, int(max_plan_items))
     # Re-enforce the §5 schema bounds locally: the ws backend isn't guaranteed to enforce the
     # tool input_schema, so clamp the structural limits (maxLength/maxItems) here rather than trust
     # the upstream — these bounds are what replace a raw token ceiling (design §5).
@@ -357,8 +366,8 @@ def validate_final_plan(
         "instruction": instruction[:6000],
         "kind": str(obj.get("kind") or "agent_task").strip()[:40],
         "reply": str(obj.get("reply") or "").strip()[:2000],
-        "todo": _str_list(obj.get("todo"), max_items=12, max_len=200),
-        "deliberation": _str_list(obj.get("deliberation"), max_items=8, max_len=300),
+        "todo": _str_list(obj.get("todo"), max_items=item_limit, max_len=200),
+        "deliberation": _str_list(obj.get("deliberation"), max_items=item_limit, max_len=300),
         "ready": bool(obj.get("ready", True)),
     }
 
@@ -431,7 +440,12 @@ def _verifies_search_leads(result: ToolResult) -> bool:
     }
 
 
-def _str_list(value: object, *, max_items: int = 12, max_len: int = 200) -> list[str]:
+def _str_list(
+    value: object,
+    *,
+    max_items: int = PM_TOOLS_DEFAULT_ROUNDS,
+    max_len: int = 200,
+) -> list[str]:
     if isinstance(value, str):
         items = [value]
     elif isinstance(value, list):

@@ -15,6 +15,7 @@ from typing import Any
 from foreman.shared.i18n import language_directive, normalize as normalize_lang
 from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
+from foreman.shared.config import PM_TOOLS_DEFAULT_ROUNDS
 
 from .context_budget import LANE_BUDGET_RATIO, char_budget
 from .context_compression import context_pack_to_text, parse_context_pack
@@ -130,7 +131,7 @@ def _as_bool(value: object, *, default: bool = False) -> bool:
     return default
 
 
-def _as_str_list(value: object, *, max_items: int = 12) -> list[str]:
+def _as_str_list(value: object, *, max_items: int = PM_TOOLS_DEFAULT_ROUNDS) -> list[str]:
     if isinstance(value, str):
         items = [line.strip(" -\t") for line in value.splitlines()]
     elif isinstance(value, list):
@@ -140,7 +141,7 @@ def _as_str_list(value: object, *, max_items: int = 12) -> list[str]:
     return [item for item in items if item][:max_items]
 
 
-def _as_todo_status(value: object, *, max_items: int = 12) -> list[dict[str, str]]:
+def _as_todo_status(value: object, *, max_items: int = PM_TOOLS_DEFAULT_ROUNDS) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
     out: list[dict[str, str]] = []
@@ -556,6 +557,7 @@ class PMAgent:
             if work_mode_resolver is not None and hasattr(runtime, "set_work_mode_resolver"):
                 runtime.set_work_mode_resolver(work_mode_resolver)
             try:
+                plan_item_limit = max(1, int(getattr(runtime.cfg, "max_rounds", 6)))
                 fallback_plan = {
                     "agent": requested_agent or (enabled[0] if enabled else "claude-code"),
                     "model": "",
@@ -572,7 +574,7 @@ class PMAgent:
                     context=context,
                     round_no=1,
                     min_rounds=1,
-                    max_rounds=max(1, int(getattr(runtime.cfg, "max_rounds", 6))),
+                    max_rounds=plan_item_limit,
                 )
                 prompt = (
                     prompt
@@ -590,7 +592,7 @@ class PMAgent:
                 loop = PMToolLoop(
                     self.llm,
                     runtime,
-                    max_rounds=int(getattr(runtime.cfg, "max_rounds", 6)),
+                    max_rounds=plan_item_limit,
                     on_tool_event=on_tool_event,
                     on_stream=on_stream,
                 )
@@ -609,8 +611,11 @@ class PMAgent:
                     kind=_plan_kind(outcome.final_plan.get("kind")),
                     reply=_as_str(outcome.final_plan.get("reply")),
                     summary=_as_str(outcome.final_plan.get("summary")),
-                    todo=_as_str_list(outcome.final_plan.get("todo")),
-                    deliberation=_as_str_list(outcome.final_plan.get("deliberation")),
+                    todo=_as_str_list(outcome.final_plan.get("todo"), max_items=plan_item_limit),
+                    deliberation=_as_str_list(
+                        outcome.final_plan.get("deliberation"),
+                        max_items=plan_item_limit,
+                    ),
                     ready=_as_bool(outcome.final_plan.get("ready"), default=True),
                     planning_rounds=outcome.rounds,
                 )
