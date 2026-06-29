@@ -373,6 +373,49 @@ async def test_openai_stream_callback_receives_output_and_reasoning():
     ]
 
 
+async def test_openai_tool_stream_callback_receives_reasoning_and_tool_call():
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://example.test/v1"
+    cfg.llm.model = "tool-stream-model"
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["json"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            text="\n\n".join(
+                [
+                    'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}',
+                    'data: {"choices":[{"delta":{"content":"Plan"}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"submit_plan","arguments":"{\\"agent\\":\\"codex\\""}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":",\\"ready\\":true}"}}]}}]}',
+                    "data: [DONE]",
+                ]
+            ),
+        )
+
+    chunks: list[dict] = []
+    c = LLMClient(cfg, transport=httpx.MockTransport(handler))
+    out = await c.tool_complete(
+        [Message("user", "x")],
+        tools=[{"name": "submit_plan", "description": "", "input_schema": {"type": "object"}}],
+        on_stream=lambda chunk: chunks.append(chunk),
+    )
+    await c.aclose()
+
+    assert cap["json"]["stream"] is True
+    assert [(c["kind"], c["delta"]) for c in chunks] == [
+        ("reasoning", "think"),
+        ("output", "Plan"),
+    ]
+    assert out.text == "Plan"
+    assert [(call.id, call.name, call.arguments) for call in out.tool_calls] == [
+        ("call_1", "submit_plan", {"agent": "codex", "ready": True})
+    ]
+
+
 async def test_anthropic_request_and_parse():
     cap: dict = {}
     c = _client("anthropic", cap)

@@ -346,7 +346,9 @@ class LLMClient:
         if provider == "anthropic":
             return await self._anthropic_tools(messages, tools, base_url, model)
         return await self._openai_tools(
-            messages, tools, json_mode, base_url, model, tool_choice=tool_choice
+            messages, tools, json_mode, base_url, model,
+            tool_choice=tool_choice,
+            on_stream=on_stream,
         )
 
     async def list_models(self) -> list[str]:
@@ -439,6 +441,7 @@ class LLMClient:
         model: str,
         *,
         tool_choice: object | None = "auto",
+        on_stream: StreamCallback | None = None,
     ) -> LLMToolResponse:
         payload: dict = {
             "model": model,
@@ -452,6 +455,9 @@ class LLMClient:
         effort = self._reasoning_effort()
         if effort:
             payload["reasoning_effort"] = effort
+        if on_stream is not None:
+            payload["stream"] = True
+            return await self._openai_tools_stream(payload, base_url, on_stream)
         r = await self._client.post(
             f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key()}"},
@@ -477,6 +483,70 @@ class LLMClient:
                 )
             )
         return LLMToolResponse(text=msg.get("content") or "", tool_calls=calls)
+
+    async def _openai_tools_stream(
+        self, payload: dict, base_url: str, on_stream: StreamCallback
+    ) -> LLMToolResponse:
+        buf: list[str] = []
+        tool_items: dict[int, dict[str, Any]] = {}
+        async with self._client.stream(
+            "POST",
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self._api_key()}"},
+            json=payload,
+            timeout=self._request_timeout(),
+        ) as r:
+            r.raise_for_status()
+            async for line in r.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(data)
+                except (TypeError, ValueError):
+                    continue
+                for chunk in _openai_stream_chunks(obj):
+                    if chunk["kind"] == "output":
+                        buf.append(chunk["delta"])
+                    await _call_stream(on_stream, chunk)
+                for choice in obj.get("choices") or []:
+                    if not isinstance(choice, dict):
+                        continue
+                    raw_delta = choice.get("delta")
+                    if not isinstance(raw_delta, dict):
+                        continue
+                    for raw in raw_delta.get("tool_calls") or []:
+                        if not isinstance(raw, dict):
+                            continue
+                        try:
+                            idx = int(raw.get("index") or 0)
+                        except (TypeError, ValueError):
+                            idx = 0
+                        state = tool_items.setdefault(idx, {"id": "", "name": "", "arguments": []})
+                        if raw.get("id"):
+                            state["id"] = str(raw.get("id") or "")
+                        raw_fn = raw.get("function")
+                        fn = raw_fn if isinstance(raw_fn, dict) else {}
+                        if fn.get("name"):
+                            state["name"] = str(fn.get("name") or "")
+                        if fn.get("arguments") is not None:
+                            state["arguments"].append(str(fn.get("arguments") or ""))
+        calls: list[LLMToolCall] = []
+        for idx in sorted(tool_items):
+            state = tool_items[idx]
+            name = str(state.get("name") or "").strip()
+            if not name:
+                continue
+            calls.append(
+                LLMToolCall(
+                    id=str(state.get("id") or f"call_{idx}"),
+                    name=name,
+                    arguments=_json_args("".join(state.get("arguments") or [])),
+                )
+            )
+        return LLMToolResponse(text="".join(buf), tool_calls=calls)
 
     async def _openai_stream(
         self, payload: dict, base_url: str, on_stream: StreamCallback
