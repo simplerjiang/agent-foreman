@@ -47,6 +47,10 @@ OLD_EXE = "foreman.old.exe"
 # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — the relaunched app/swap helper outlives us and is not
 # tied to our (dying) console/process group. Windows-only flags; guarded by is_frozen() before use.
 _DETACHED = 0x00000008 | 0x00000200
+_SWAP_RENAME_ATTEMPTS = 180
+_SWAP_RENAME_DELAY = 0.5
+_STALE_TARGET_PROCESS_GRACE = 10.0
+_STALE_TARGET_PROCESS_TERMINATE_WAIT = 10.0
 
 # Set by the desktop entry (app_cmd) to a callback that closes the window for a clean shutdown.
 # When unset (headless), the apply worker falls back to os._exit so the swap helper can proceed.
@@ -101,11 +105,15 @@ def cleanup_stale(directory: Path | str | None = None) -> None:
     if not is_frozen():
         return
     base = Path(directory) if directory else exe_path().parent
-    for name in (OLD_EXE, NEW_EXE):
-        p = base / name
+    paths = [base / OLD_EXE, base / NEW_EXE]
+    try:
+        paths.extend(base.glob("foreman.old.*.exe"))
+    except OSError:
+        pass
+    for p in paths:
         try:
             if p.exists():
-                p.unlink()
+                _retry(lambda: p.unlink(), attempts=10, delay=0.2)
         except OSError:
             pass  # still locked (rare race) — next startup will get it
 
@@ -285,24 +293,49 @@ def run_swap(argv: list[str]) -> None:
     log.write(f"swap start: old_pid={old_pid} target={target} running={running}")
 
     _wait_pid_gone(old_pid, timeout=120.0)
+    blockers = _wait_processes_using_path_gone(
+        target,
+        timeout=_STALE_TARGET_PROCESS_GRACE,
+        exclude_pids={os.getpid()},
+    )
+    if blockers:
+        log.write(f"target exe still used after shutdown wait: {_format_processes(blockers)}")
+        _terminate_processes(blockers, timeout=_STALE_TARGET_PROCESS_TERMINATE_WAIT)
+        blockers = _wait_processes_using_path_gone(
+            target,
+            timeout=5.0,
+            exclude_pids={os.getpid()},
+        )
+        if blockers:
+            log.write(f"target exe still used after terminate: {_format_processes(blockers)}")
     time.sleep(0.5)  # small grace for the OS to release the old image handle
 
-    backup = target.with_name(OLD_EXE)
-    try:
-        if backup.exists():
-            backup.unlink()
-    except OSError:
-        pass
+    backup = _backup_path(target, log)
 
     # 1. old foreman.exe → foreman.old.exe (it has exited, so it's unlocked now)
     if target.exists():
-        if not _retry(lambda: os.replace(target, backup)):
-            log.write("could not move old exe aside — abort (old version stays intact)")
+        ok, err = _retry_with_error(
+            lambda: os.replace(target, backup),
+            attempts=_SWAP_RENAME_ATTEMPTS,
+            delay=_SWAP_RENAME_DELAY,
+        )
+        if not ok:
+            log.write(
+                "could not move old exe aside "
+                f"after {_SWAP_RENAME_ATTEMPTS} attempts: {_format_os_error(err)} — "
+                "abort (old version stays intact)"
+            )
             return
     # 2. this running foreman.new.exe → foreman.exe (renaming a running image is allowed on Windows)
-    if not _retry(lambda: os.replace(running, target)):
-        log.write("could not move new exe into place — rolling back")
-        _retry(lambda: os.replace(backup, target))  # restore the old exe so the folder still works
+    ok, err = _retry_with_error(
+        lambda: os.replace(running, target),
+        attempts=_SWAP_RENAME_ATTEMPTS,
+        delay=_SWAP_RENAME_DELAY,
+    )
+    if not ok:
+        log.write(f"could not move new exe into place: {_format_os_error(err)} — rolling back")
+        if backup.exists():
+            _retry(lambda: os.replace(backup, target))  # restore the old exe so the folder still works
         return
     log.write("swap done — relaunching")
     # 3. relaunch the app in the same folder (cwd) so it finds the sibling data files.
@@ -337,15 +370,128 @@ def _to_int(s: str | None) -> int:
         return 0
 
 
-def _retry(fn: Callable[[], object], attempts: int = 30, delay: float = 0.5) -> bool:
-    """Run ``fn`` until it stops raising OSError (file still locked), up to ``attempts`` times."""
-    for _ in range(attempts):
+def _backup_path(target: Path, log: _SwapLog) -> Path:
+    preferred = target.with_name(OLD_EXE)
+    if not preferred.exists():
+        return preferred
+    ok, err = _retry_with_error(lambda: preferred.unlink(), attempts=10, delay=0.2)
+    if ok:
+        return preferred
+    for i in range(100):
+        candidate = target.with_name(f"foreman.old.{int(time.time())}.{os.getpid()}.{i}.exe")
+        if not candidate.exists():
+            log.write(
+                f"could not remove existing {OLD_EXE}: {_format_os_error(err)}; "
+                f"using {candidate.name}"
+            )
+            return candidate
+    return target.with_name(f"foreman.old.{os.getpid()}.exe")
+
+
+def _retry_with_error(
+    fn: Callable[[], object],
+    attempts: int = 30,
+    delay: float = 0.5,
+) -> tuple[bool, OSError | None]:
+    """Run ``fn`` until it stops raising OSError; return the last error when it never succeeds."""
+    last_error: OSError | None = None
+    for attempt in range(attempts):
         try:
             fn()
-            return True
-        except OSError:
-            time.sleep(delay)
-    return False
+            return True, None
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(delay)
+    return False, last_error
+
+
+def _retry(fn: Callable[[], object], attempts: int = 30, delay: float = 0.5) -> bool:
+    """Run ``fn`` until it stops raising OSError (file still locked), up to ``attempts`` times."""
+    ok, _err = _retry_with_error(fn, attempts=attempts, delay=delay)
+    return ok
+
+
+def _format_os_error(exc: OSError | None) -> str:
+    if exc is None:
+        return "unknown OSError"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _processes_using_path(path: Path, exclude_pids: set[int]) -> list[dict[str, object]]:
+    try:
+        import psutil
+    except Exception:  # noqa: BLE001 — psutil missing: best-effort swap still relies on rename retry
+        return []
+    wanted = _norm_path(path)
+    out: list[dict[str, object]] = []
+    for proc in psutil.process_iter(["pid", "name", "exe"]):
+        try:
+            info = proc.info
+            pid = int(info.get("pid") or 0)
+            exe = str(info.get("exe") or "")
+            if pid in exclude_pids or not exe:
+                continue
+            if _norm_path(exe) == wanted:
+                out.append({"pid": pid, "name": info.get("name") or "", "exe": exe})
+        except Exception:  # noqa: BLE001 — process exited or access denied while enumerating
+            continue
+    return out
+
+
+def _wait_processes_using_path_gone(
+    path: Path,
+    timeout: float,
+    exclude_pids: set[int],
+) -> list[dict[str, object]]:
+    deadline = time.monotonic() + timeout
+    blockers: list[dict[str, object]] = []
+    while time.monotonic() < deadline:
+        blockers = _processes_using_path(path, exclude_pids)
+        if not blockers:
+            return []
+        time.sleep(0.5)
+    return _processes_using_path(path, exclude_pids) or blockers
+
+
+def _terminate_processes(processes: list[dict[str, object]], timeout: float) -> None:
+    try:
+        import psutil
+    except Exception:  # noqa: BLE001
+        return
+    procs = []
+    for item in processes:
+        pid = _to_int(str(item.get("pid") or ""))
+        if pid <= 0 or pid == os.getpid():
+            continue
+        try:
+            proc = psutil.Process(pid)
+            proc.terminate()
+            procs.append(proc)
+        except Exception:  # noqa: BLE001 — stale pid or access denied
+            continue
+    if not procs:
+        return
+    try:
+        _gone, alive = psutil.wait_procs(procs, timeout=timeout)
+        for proc in alive:
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _format_processes(processes: list[dict[str, object]]) -> str:
+    return ", ".join(
+        f"pid={item.get('pid')} name={item.get('name')} exe={item.get('exe')}"
+        for item in processes
+    )
+
+
+def _norm_path(path: Path | str) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
 
 
 def _wait_pid_gone(pid: int, timeout: float) -> None:

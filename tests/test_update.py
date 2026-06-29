@@ -84,15 +84,35 @@ def test_parse_kv():
 def test_cleanup_stale_removes_leftovers(monkeypatch, tmp_path):
     monkeypatch.setattr(update, "is_frozen", lambda: True)
     old = tmp_path / update.OLD_EXE
+    old_unique = tmp_path / "foreman.old.123.456.0.exe"
     new = tmp_path / update.NEW_EXE
     old.write_text("old")
+    old_unique.write_text("old unique")
     new.write_text("new")
     keep = tmp_path / "foreman.db"
     keep.write_text("data")
     update.cleanup_stale(tmp_path)
     assert not old.exists()
+    assert not old_unique.exists()
     assert not new.exists()
     assert keep.read_text() == "data"  # data file untouched
+
+
+def test_backup_path_uses_unique_name_when_existing_old_is_locked(monkeypatch, tmp_path):
+    target = tmp_path / "foreman.exe"
+    locked = tmp_path / update.OLD_EXE
+    locked.write_text("LOCKED")
+    messages: list[str] = []
+
+    monkeypatch.setattr(update, "_retry_with_error",
+                        lambda *a, **k: (False, OSError(5, "locked")))
+
+    backup = update._backup_path(target, type("Log", (), {"write": messages.append})())
+
+    assert backup.name.startswith("foreman.old.")
+    assert backup != locked
+    assert locked.read_text() == "LOCKED"
+    assert messages and "using" in messages[0]
 
 
 def test_run_swap_replaces_exe_only(monkeypatch, tmp_path):
@@ -123,6 +143,46 @@ def test_run_swap_replaces_exe_only(monkeypatch, tmp_path):
     # relaunched the new exe in the exe folder (cwd) so it keeps finding the data
     assert launched and launched[0][1]["cwd"] == str(tmp_path)
     assert launched[0][0][0] == [str(target), "app"]
+
+
+def test_run_swap_terminates_stale_target_process_before_replace(monkeypatch, tmp_path):
+    target = tmp_path / "foreman.exe"
+    new_exe = tmp_path / update.NEW_EXE
+    target.write_text("OLD")
+    new_exe.write_text("NEW")
+
+    monkeypatch.setattr(update, "exe_path", lambda: new_exe)
+    monkeypatch.setattr(update.subprocess, "Popen", lambda *a, **k: object())
+    blocker = {"pid": 4242, "name": "foreman.exe", "exe": str(target)}
+    terminated: list[dict[str, object]] = []
+
+    def fake_wait(path, timeout, exclude_pids):
+        assert path == target
+        assert update.os.getpid() in exclude_pids
+        return [] if terminated else [blocker]
+
+    monkeypatch.setattr(update, "_wait_processes_using_path_gone", fake_wait)
+    monkeypatch.setattr(update, "_terminate_processes",
+                        lambda processes, timeout: terminated.extend(processes))
+
+    update.run_swap(["--old-pid", "0", "--target", str(target)])
+
+    assert terminated == [blocker]
+    assert target.read_text() == "NEW"
+
+
+def test_retry_with_error_returns_last_oserror():
+    attempts = []
+
+    def fail():
+        attempts.append(1)
+        raise OSError(5, "locked")
+
+    ok, err = update._retry_with_error(fail, attempts=2, delay=0)
+
+    assert ok is False
+    assert isinstance(err, OSError)
+    assert len(attempts) == 2
 
 
 def test_run_swap_aborts_without_target(monkeypatch, tmp_path):
