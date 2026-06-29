@@ -162,10 +162,10 @@ def test_version_information_page_wired():
     assert health["version"]
     assert "navVersion" in js and "function VersionInfo" in js
     assert "Current runtime version" in js and "当前运行版本" in js
-    assert "Removed provider max output tokens" in js
-    assert "移除 Provider 最大输出 token" in js
+    assert "Removed auto-agent explanatory copy" in js
+    assert "移除自动执行 agent 说明文案" in js
     assert "VERSION_HISTORY" in js and "Historical update records" in js
-    assert "v1.2.2" in js and "v1.2.1" in js and "v1.2.0" in js
+    assert "v1.2.3" in js and "v1.2.2" in js and "v1.2.1" in js and "v1.2.0" in js
     assert "version=${status.version}" in js
     assert '["briefings", "rules", "settings", "version"].includes(viewName)' in js
     assert ".version-number" in css and ".version-path" in css and ".version-history" in css
@@ -177,13 +177,13 @@ def test_readme_and_agents_require_version_notes():
     history = (ROOT / "docs" / "VERSION_HISTORY.md").read_text(encoding="utf-8")
 
     assert "### Version Information" in readme and "### 版本信息" in readme
-    assert "v1.2.2" in readme
+    assert "v1.2.3" in readme and "v1.2.2" in readme
     assert "Recent history:" in readme and "最近历史：" in readme
     assert "docs/VERSION_HISTORY.md" in readme
     assert "v1.2.1" in readme and "v1.2.0" in readme
     assert "每次改版本号都必须注明本次更新内容，并能看到历史更新记录" in agents
     assert "README.md" in agents and "Version / 版本" in agents and "docs/VERSION_HISTORY.md" in agents
-    assert "## v1.2.2" in history and "## v1.2.1" in history and "## v1.2.0" in history
+    assert "## v1.2.3" in history and "## v1.2.2" in history and "## v1.2.1" in history and "## v1.2.0" in history
     assert "历史更新记录" in agents and "不能只显示最新版本" in agents
 
 
@@ -360,8 +360,9 @@ def test_dispatch_model_picker_and_no_explicit_agent():
     assert "body.model = model.trim()" in js
     # per-dispatch model override is wired (datalist from /api/models) — not a dead path
     assert 'list="composer-models"' in js and "setModel(e.target.value)" in js
-    # agent is auto-picked by the PM — the composer never forces an agent choice
-    assert "agentAuto" in js
+    # agent stays auto-picked by the PM; the composer never forces or advertises an agent choice
+    assert "执行 agent 由 PM 自动选择" not in js
+    assert "agent auto-picked by PM" not in js
     assert "body.agent = agent" not in js
 
 

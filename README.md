@@ -115,16 +115,17 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.2.2`.
+Current documented release: `v1.2.3`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
-This release removes the configurable PM provider max output token setting and stops sending output caps to OpenAI-compatible HTTP and Responses WebSocket providers. Anthropic keeps an internal default because its Messages API requires `max_tokens`.
+This release removes the redundant auto-agent explanatory copy from the task composer and dispatch timeline chips. PM-driven agent selection behavior is unchanged.
 
 Recent history:
 
 | Version | Update |
 |---|---|
+| `v1.2.3` | Removed redundant auto-agent explanatory copy while keeping PM-driven agent selection unchanged. |
 | `v1.2.2` | Removed the PM provider max output token setting and stopped sending OpenAI-compatible output caps. |
 | `v1.2.1` | Bilingual README and exe version pages, visible version history, and stricter version-note rules. |
 | `v1.2.0` | PM context token limits exposed in the product configuration flow. |
@@ -270,16 +271,17 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.2.2`。
+当前文档版本：`v1.2.3`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
-本次更新移除 PM Provider 的可配置最大输出 token 设置，并停止向 OpenAI 兼容 HTTP 与 Responses WebSocket Provider 发送输出上限。Anthropic 因 Messages API 必填 `max_tokens`，仍保留代码内默认值。
+本次更新从任务输入区和下发时间线标签中移除冗余的自动执行 agent 说明文案。PM 自动选择执行 agent 的实际行为不变。
 
 最近历史：
 
 | 版本 | 更新 |
 |---|---|
+| `v1.2.3` | 移除冗余的自动执行 agent 说明文案，PM 自动选择行为不变。 |
 | `v1.2.2` | 移除 PM Provider 最大输出 token 设置，并停止发送 OpenAI 兼容输出上限。 |
 | `v1.2.1` | 中英文 README 与 exe 版本页、可见版本历史，以及更严格的版本说明规则。 |
 | `v1.2.0` | 在产品配置流程中暴露 PM 上下文 token 上限设置。 |

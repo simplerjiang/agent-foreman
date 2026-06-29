@@ -67,7 +67,7 @@
       decisionNeeded: "需要你拍板", suggestion: "建议", showDiff: "看 diff",
       riskHigh: "高风险", riskMedium: "中风险", riskLow: "低风险",
       context: "上下文", compact: "压缩上下文", compacting: "压缩中...", compactDone: "上下文已压缩", compactFailed: "压缩失败",
-      attach: "附件", agentAuto: "执行 agent 由 PM 自动选择", modelPlaceholder: "模型·默认",
+      attach: "附件", modelPlaceholder: "模型·默认",
       fast: "快速", std: "标准", deep: "深度", send: "发送", sendHint: "发送",
       guiding: "引导中…", queueing: "排序发送中…", guide: "引导", queueSend: "排序发送",
       guideHelp: "引导：中止当前思考，带上原上下文直接处理新提示。", queueHelp: "排序：等当前回复结束后发送，不等整轮 loop 完成。",
@@ -159,8 +159,8 @@
       readOnlyLog: "只读日志", workspaceRisk: "当前工作区范围很大；工具全开时请确认这是你想授权的路径。",
       versionCurrent: "当前运行版本", versionUnavailable: "等待 /health 返回版本",
       versionSource: "版本来源", versionSourceText: "Foreman 的包版本只从 src/foreman/__init__.py 的 __version__ 读取；exe、/health、PWA 与 README 的版本说明都必须跟随这个版本更新。",
-      versionUpdates: "本次更新内容", versionReleaseNoteTitle: "移除 Provider 最大输出 token",
-      versionReleaseNoteBody: "本次更新移除 PM Provider 的可配置最大输出 token 设置，并停止向 OpenAI 兼容 HTTP 与 Responses WebSocket Provider 发送输出上限。Anthropic 因协议必填，仍使用代码内默认值。",
+      versionUpdates: "本次更新内容", versionReleaseNoteTitle: "移除自动执行 agent 说明文案",
+      versionReleaseNoteBody: "本次更新从任务输入区和下发时间线标签中移除冗余的自动执行 agent 说明文案。PM 自动选择执行 agent 的实际行为不变。",
       versionHistory: "历史更新记录",
       versionMaint: "维护要求", versionMaintText: "每次改 __version__ 时，同步更新 README.md 的 Version Information / 版本信息、docs/VERSION_HISTORY.md，以及 exe 控制台的版本页文案；必须保留历史记录，不能只显示最新版本。",
     },
@@ -200,7 +200,7 @@
       decisionNeeded: "Decision needed", suggestion: "Suggestion", showDiff: "Show diff",
       riskHigh: "HIGH RISK", riskMedium: "MEDIUM RISK", riskLow: "LOW RISK",
       context: "Context", compact: "Compact", compacting: "Compacting...", compactDone: "Context compacted", compactFailed: "Compact failed",
-      attach: "Attach", agentAuto: "agent auto-picked by PM", modelPlaceholder: "model · default",
+      attach: "Attach", modelPlaceholder: "model · default",
       fast: "Fast", std: "Std", deep: "Deep", send: "Send", sendHint: "send",
       guiding: "Guiding…", queueing: "Queue sending…", guide: "Guide", queueSend: "Queue send",
       guideHelp: "Guide: interrupt the current thought and handle the new prompt with prior context.", queueHelp: "Queue: send after the current reply finishes, without waiting for the full loop.",
@@ -292,8 +292,8 @@
       readOnlyLog: "Read-only log", workspaceRisk: "This workspace is very broad; confirm that full tool access is intentional.",
       versionCurrent: "Current runtime version", versionUnavailable: "Waiting for /health version",
       versionSource: "Version source", versionSourceText: "Foreman's package version is read only from __version__ in src/foreman/__init__.py; the exe, /health, PWA, and README version notes must follow that release.",
-      versionUpdates: "This release", versionReleaseNoteTitle: "Removed provider max output tokens",
-      versionReleaseNoteBody: "This update removes the configurable PM provider max output token setting and stops sending output caps to OpenAI-compatible HTTP and Responses WebSocket providers. Anthropic still uses an internal default because its protocol requires it.",
+      versionUpdates: "This release", versionReleaseNoteTitle: "Removed auto-agent explanatory copy",
+      versionReleaseNoteBody: "This update removes the redundant auto-agent explanatory copy from the task composer and dispatch timeline chips. PM-driven agent selection behavior is unchanged.",
       versionHistory: "Historical update records",
       versionMaint: "Maintenance rule", versionMaintText: "Whenever __version__ changes, update README.md's Version Information / 版本信息 section, docs/VERSION_HISTORY.md, and the exe console's Version page copy. Keep visible history; do not show only the latest version.",
     },
@@ -320,6 +320,11 @@
   const KIND_TAGCOLOR = { workflow: "accent", skill: "violet", code_standard: "amber", qa_rubric: "green" };
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
+    {
+      version: "v1.2.3",
+      en: "Removed redundant auto-agent explanatory copy while keeping PM-driven agent selection unchanged.",
+      zh: "移除冗余的自动执行 agent 说明文案，PM 自动选择行为不变。",
+    },
     {
       version: "v1.2.2",
       en: "Removed the PM provider max output token setting and stopped sending OpenAI-compatible output caps.",
@@ -529,7 +534,7 @@
     return `${Math.round(n)}`;
   }
   function displayAgent(agentType, d) {
-    if (!agentType || agentType === "pm-agent") return d.agentAuto;
+    if (!agentType || agentType === "pm-agent") return "PM";
     return agentType;
   }
 
@@ -924,7 +929,7 @@
       const p = e.payload || {};
       if (t === "dispatch") {
         const autoAgent = p.pm_agent && !(Array.isArray(p.direct_agents) && p.direct_agents.length);
-        nodes.push({ kind: "user", id: e.id || `u-${nodes.length}`, ts: e.ts, goal: p.goal || "", chips: [autoAgent ? d.agentAuto : p.agent, p.model, p.effort].filter(Boolean) });
+        nodes.push({ kind: "user", id: e.id || `u-${nodes.length}`, ts: e.ts, goal: p.goal || "", chips: [autoAgent ? null : p.agent, p.model, p.effort].filter(Boolean) });
       } else if (t === "pm_plan") {
         hidePmStatus("plan");
         const steps = Array.isArray(p.todo) ? p.todo.map((x) => String(x)) : (typeof p.todo === "string" && p.todo ? [p.todo] : []);
@@ -1595,7 +1600,6 @@
             ${wsOpts.length ? html`<select className="ws-select" value=${workspace} onChange=${(e) => setWorkspace(e.target.value)} disabled=${!!sessionRow}>${wsOpts.map((w) => html`<option key=${w.path} value=${w.path}>📁 ${w.name || shortPath(w.path, d)}</option>`)}</select>` : null}
             <input className="ws-select model-pick" value=${model} onChange=${(e) => setModel(e.target.value)} list="composer-models" placeholder=${d.modelPlaceholder} aria-label=${d.model} />
             <datalist id="composer-models">${(modelOptions || []).map((o) => html`<option key=${o.value} value=${o.value}></option>`)}</datalist>
-            <span className="tool-chip dashed">🤖 ${d.agentAuto}</span>
             ${wmOptions.length ? html`<div style=${{ position: "relative" }}>
               <button className=${`tool-chip${wmSelected.length ? " on" : ""}`} onClick=${() => setWmOpen(!wmOpen)} title=${d.workModePick}>🧩 ${d.workMode}${wmSelected.length ? ` (${wmSelected.length})` : ""}</button>
               ${wmOpen ? html`<div className="wm-pop" style=${{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, zIndex: 30, minWidth: 240, maxWidth: 340, maxHeight: 260, overflow: "auto", background: "var(--surface, #fff)", border: "1px solid var(--border, #ddd)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.16)", padding: 8 }}>
