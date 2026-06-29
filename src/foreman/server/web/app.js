@@ -2012,7 +2012,7 @@
     const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false, remote_execution_enabled: false });
     const [cloudStatus, setCloudStatus] = useState("");
     const [cloudAvailable, setCloudAvailable] = useState(true);
-    const [teamMode, setTeamMode] = useState(true);
+    const [teamMode, setTeamMode] = useState(() => !!getToken());
     const [processes, setProcesses] = useState([]);
     const [selectedProcessId, setSelectedProcessIdState] = useState(localStorage.getItem(PROCESS_KEY) || "");
     const [notifications, setNotifications] = useState([]);
@@ -2031,6 +2031,7 @@
     const wsRef = useRef(null);
     const fileRef = useRef(null);
     const toastSeq = useRef(0);
+    const bootStartedRef = useRef(false);
 
     const toast = useCallback((text, type) => {
       const id = ++toastSeq.current;
@@ -2153,7 +2154,8 @@
     useEffect(() => { document.documentElement.lang = lang === "zh" ? "zh-CN" : "en"; if (!languageLoaded) return; localStorage.setItem(LANG_KEY, lang); api("/api/settings/language", { method: "POST", body: { language: lang } }).catch(() => {}); }, [lang, languageLoaded]);
 
     useEffect(() => {
-      if (!getToken()) { redirectToLogin(); return; }
+      if (bootStartedRef.current) return undefined;
+      bootStartedRef.current = true;
       let cancelled = false;
       if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
       api("/health").then((h) => { setStatus({ online: true, version: h.version }); if (loadedVersionRef.current == null && h.version) loadedVersionRef.current = h.version; }).catch(() => setStatus({ online: false, version: "offline" }));
@@ -2162,12 +2164,34 @@
       // endpoint is slow — keeping them out of this barrier stops the launch overlay from hanging
       // (codex review finding). They populate the Settings page shortly after, non-blocking.
       api("/api/auth/me").then(async () => {
+        setTeamMode(true);
         const processId = await loadProcesses();
         await loadNotifications();
         if (processId) await loadRemoteSnapshot(processId);
       }).catch((e) => {
-        if (e && e.status === 401) return;
+        if (e && e.status === 503) {
+          setToken("");
+          setTeamMode(false);
+          setProcesses([]);
+          setSelectedProcessId("");
+          return Promise.all([
+            loadWorkspaces(),
+            loadSessions(),
+            loadCards(),
+            loadApprovals(),
+            loadReports(),
+            loadDefinitions(),
+            loadAgentSettings(),
+            loadPmTools(),
+            loadDebug(),
+            loadLlm(),
+            loadAutonomy(),
+            loadCloud(),
+          ]);
+        }
+        if (e && e.status === 401) { redirectToLogin(); return undefined; }
         notifyError(e);
+        return undefined;
       }).finally(() => {
         if (cancelled) return;
         setBooted(true);

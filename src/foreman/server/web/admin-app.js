@@ -1,8 +1,9 @@
-/* Foreman 控制台 — login-gated Ant Design console (team mode).
+/* Foreman 控制台 — Ant Design console.
  *
  * No build step: React + Ant Design + dayjs + htm are vendored UMD bundles loaded by app.html;
- * this file is plain first-party JS (htm gives JSX-like templates without a transpiler). The whole
- * app is gated behind login — nothing but the login screen renders until /api/auth/me succeeds.
+ * this file is plain first-party JS (htm gives JSX-like templates without a transpiler). Team
+ * relay deployments are gated behind login; local desktop servers have no account manager and
+ * fall straight through to the embedded control dashboard.
  * Admins land on the dashboard (概览/账户/会话/进程/数据库/日志); members get a minimal machine/key view.
  */
 (function () {
@@ -634,18 +635,20 @@
   function Root() {
     const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
     const [dark, setDark] = useState(localStorage.getItem("foreman_theme") ? localStorage.getItem("foreman_theme") === "dark" : prefersDark);
-    const [state, setState] = useState({ phase: "loading", me: null }); // loading | login | ready | unconfigured
+    const [state, setState] = useState({ phase: "loading", me: null }); // loading | login | ready | local
     const [controlMode, setControlMode] = useState(wantsControlView);
 
     const checkAuth = useCallback(() => {
-      if (!getToken()) { setState({ phase: "login", me: null }); return; }
       api("/api/auth/me")
         .then((me) => {
           if (me && (me.display_name || me.username)) localStorage.setItem("foreman.user", me.display_name || me.username);
           setState({ phase: "ready", me });
         })
         .catch((e) => {
-          if (e.status === 503) setState({ phase: "unconfigured", me: null });
+          if (e.status === 503) {
+            setToken("");
+            setState({ phase: "local", me: null });
+          }
           else { setToken(""); setState({ phase: "login", me: null }); }
         });
     }, []);
@@ -679,7 +682,7 @@
 
     let body;
     if (state.phase === "loading") body = html`<div style=${{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}><${A.Spin} size="large" /></div>`;
-    else if (state.phase === "unconfigured") body = html`<div style=${{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}><${A.Result} status="warning" title="团队模式未启用" subTitle="当前前端只支持团队模式。请以团队模式启动服务后再访问总控制台。" /></div>`;
+    else if (state.phase === "local") body = html`<${ControlView} />`;
     else if (state.phase === "login") body = html`<${LoginView} onAuthed=${checkAuth} />`;
     else if (controlMode) body = html`<${ControlView} onBack=${closeControl} />`;
     else if (state.me && state.me.role === "admin") body = html`<${AdminConsole} me=${state.me} onLogout=${logout} dark=${dark} onToggleTheme=${toggleTheme} onControl=${openControl} />`;
