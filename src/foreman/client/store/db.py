@@ -88,6 +88,7 @@ class Store:
         self,
         session_id: str,
         *,
+        goal: str | None = None,
         plan: str | None = None,
         status: str | None = None,
         updated_at: str | None = None,
@@ -96,6 +97,8 @@ class Store:
             row = s.get(Session, session_id)
             if row is None:
                 return None
+            if goal is not None:
+                row.goal = goal
             if plan is not None:
                 row.plan = plan
             if status is not None:

@@ -291,6 +291,21 @@ async def test_cloud_manager_local_api_routes_to_local_app_even_when_remote_exec
     assert write_reply.payload["data"]["level"] == 3
     assert store.get_setting("autonomy.level") == "3"
 
+    rename = command_envelope(
+        "local_api",
+        {"method": "PATCH", "path": "/api/sessions/s1", "body": {"title": "renamed remotely"}},
+    )
+    rename.seq = 3
+    rename.nonce = "n-local-rename"
+    rename.ts = 3.0
+    attach_mac(rename, hashlib.sha256(b"fk_live_test").hexdigest())
+    rename_reply = await mgr._on_frame(rename)
+
+    assert rename_reply.payload["ok"] is True
+    assert rename_reply.payload["status"] == 200
+    assert rename_reply.payload["data"]["goal"] == "renamed remotely"
+    assert store.get_session("s1").goal == "renamed remotely"
+
 
 async def test_cloud_manager_command_enabled_via_config_kv():
     """Toggling 允许远端执行 (config_kv override) lets a command past the breaker without a restart —

@@ -59,6 +59,7 @@ def _personal_app(tmp_path, *, token: str = TOKEN):
         ("post", "/api/tasks"),
         ("get", "/api/definitions"),
         ("post", "/api/settings/autonomy"),
+        ("patch", "/api/sessions/s1"),
         ("post", "/api/sessions/s1/cancel"),
         ("delete", "/api/sessions/s1"),
         ("post", "/hooks"),

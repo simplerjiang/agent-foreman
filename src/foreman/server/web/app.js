@@ -42,6 +42,8 @@
       rulesSubtitle: "维护工作流、技能、代码规范和验收标准 —— PM 规划时按相关性选用，干活时按需取用。",
       settingsSubtitle: "配置工作区、PM 大脑和界面偏好。",
       sessions: "会话", newSession: "新会话",
+      editSessionTitle: "修改会话标题", sessionTitle: "会话标题", sessionTitleHint: "输入新的会话标题",
+      sessionTitleEmpty: "会话标题不能为空。", sessionTitleTooLong: "会话标题太长了，请控制在 300 字以内。", sessionTitleUpdated: "会话标题已更新",
       launchTag: "正在唤醒你的工程包工头 —— 把活儿交给本地 agent，PM 大脑替你盯着。",
       launchEngine: "引擎已就绪 · PM Core",
       launchAgents: "连接本地 agent",
@@ -165,6 +167,8 @@
       rulesSubtitle: "Maintain workflows, skills, code standards & QA rubrics — selected by relevance and pulled in on demand.",
       settingsSubtitle: "Configure workspaces, the PM brain, and UI preferences.",
       sessions: "Sessions", newSession: "New session",
+      editSessionTitle: "Edit session title", sessionTitle: "Session title", sessionTitleHint: "Enter a new session title",
+      sessionTitleEmpty: "Session title cannot be empty.", sessionTitleTooLong: "Session title is too long; keep it under 300 characters.", sessionTitleUpdated: "Session title updated",
       launchTag: "Waking your engineering foreman — hand work to local agents, the PM brain watches over it.",
       launchEngine: "Engine ready · PM Core",
       launchAgents: "Local agents linked",
@@ -412,6 +416,7 @@
       rate_limited: d.remoteRateLimited, auth: d.cloudAuthFailed,
       timeout: d.cloudTimeout, unreachable: d.cloudUnreachable,
       missing_description: d.missingDescription, description_too_long: d.descriptionTooLong,
+      title_too_long: d.sessionTitleTooLong,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
   }
@@ -1158,7 +1163,7 @@
     </nav>`;
   }
 
-  function Sidebar({ d, lang, view, onView, counts, sessions, selected, onSelect, onNew, version }) {
+  function Sidebar({ d, lang, view, onView, counts, sessions, selected, onSelect, onNew, onRename, version }) {
     return html`
       <aside className="sidebar desktop">
         <div className="sb-brand">
@@ -1169,7 +1174,7 @@
         <div className="sb-section"><span>${d.sessions}</span><span className="add" onClick=${onNew} title=${d.newSession}>+</span></div>
         <div className="sb-sessions">
           ${!sessions.length ? html`<${Empty} icon="✉" text=${d.noActiveSession} />` :
-            sessions.map((s) => html`<${SessionItem} key=${s.id} s=${s} d=${d} lang=${lang} active=${s.id === selected} onClick=${() => onSelect(s.id)} />`)}
+            sessions.map((s) => html`<${SessionItem} key=${s.id} s=${s} d=${d} lang=${lang} active=${s.id === selected} onClick=${() => onSelect(s.id)} onRename=${onRename} />`)}
         </div>
         <div className="sb-user">
           <div className="avatar">${(localStorage.getItem("foreman.user") || "J").slice(0, 1).toUpperCase()}</div>
@@ -1217,7 +1222,7 @@
     return "";
   }
 
-  function SessionItem({ s, d, lang, active, onClick }) {
+  function SessionItem({ s, d, lang, active, onClick, onRename }) {
     const st = (s.status || "").toLowerCase();
     const dotColor = st.includes("run") || st.includes("active") ? "var(--accent)" : (s.pending_approvals || s.open_cards) ? "var(--amber)" : st.includes("done") || st.includes("complete") ? "var(--green)" : st.includes("stall") || st.includes("fail") || st.includes("error") ? "var(--red)" : "var(--faint)";
     const live = st.includes("run") || st.includes("active");
@@ -1226,7 +1231,7 @@
       <div className=${`sess${active ? " active" : ""}`} onClick=${onClick}>
         <div className="sess-head">
           <span className=${`dot${live ? " live" : ""}`} style=${{ background: dotColor }}></span>
-          <span className="sess-title">${s.goal || s.id}</span>
+          <span className="sess-title editable-title" title=${d.editSessionTitle} onDoubleClick=${(e) => { e.stopPropagation(); onRename && onRename(s); }}>${s.goal || s.id}</span>
         </div>
         <div className="sess-meta">${metaBits.join(" · ")}</div>
       </div>`;
@@ -1256,7 +1261,7 @@
   function Workspace(props) {
     const { d, lang, dig, sessionRow, events, autonomy, openCalls, toggleCall, expandedSub, toggleSub,
       rightTab, setRightTab, onCard, onApproval, openDetail, composer, runCompact, compacting, compactStatus, onBriefing,
-      cards, approvals, onCancelSession, onRetrySession, onDeleteSession, topControls } = props;
+      cards, approvals, onCancelSession, onRetrySession, onDeleteSession, onRenameSession, topControls } = props;
     const threadNodes = threadExtras(dig, cards, approvals, sessionRow);
     const agentType = displayAgent(sessionRow && sessionRow.agent_type, d);
     const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
@@ -1278,7 +1283,7 @@
         <div className="sess-header">
           <div style=${{ minWidth: 0 }}>
             <div style=${{ display: "flex", alignItems: "center", gap: "9px" }}>
-              <h2>${sessionRow ? (sessionRow.goal || sessionRow.id) : d.navWorkspace}</h2>
+              <h2 className=${sessionRow ? "editable-title" : ""} title=${sessionRow ? d.editSessionTitle : ""} onDoubleClick=${sessionRow ? () => onRenameSession && onRenameSession(sessionRow) : undefined}>${sessionRow ? (sessionRow.goal || sessionRow.id) : d.navWorkspace}</h2>
               ${sessionRow ? html`<span className=${`tag ${terminalFail ? "red" : done ? "green" : "plain"}`} title=${failReason || ""}><span className=${`dot${live ? " live" : ""}`} style=${{ background: terminalFail ? "var(--red)" : done ? "var(--green)" : "var(--faint)" }}></span>${statusText}</span>` : null}
             </div>
             <div className="meta">${sessionRow ? `${shortPath(sessionRow.workspace, d)} · ${agentType}` : d.workspaceSubtitle}</div>
@@ -1875,6 +1880,21 @@
     </div>`;
   }
 
+  function SessionTitleModal({ d, title, saving, error, setTitle, onClose, onSave }) {
+    return html`<${Modal} title=${d.editSessionTitle} onClose=${onClose} footer=${[
+      html`<button key="c" className="btn" onClick=${onClose}>${d.cancel}</button>`,
+      html`<button key="s" className="btn primary" onClick=${onSave} disabled=${saving}>${saving ? html`<span className="spin"></span>` : null}${d.save}</button>`,
+    ]}>
+      <div className="field">
+        <span className="field-label">${d.sessionTitle}</span>
+        <input className="input" autoFocus value=${title} maxLength=${300} placeholder=${d.sessionTitleHint}
+          onInput=${(e) => setTitle(e.target.value)}
+          onKeyDown=${(e) => { if (e.key === "Enter") onSave(); if (e.key === "Escape") onClose(); }} />
+      </div>
+      ${error ? html`<div className="alert error">${error}</div>` : null}
+    </${Modal}>`;
+  }
+
   function DefinitionEditor({ d, draft, setDraft }) {
     const row = draft || {};
     const update = (patch) => setDraft({ ...(draft || {}), ...patch });
@@ -1912,7 +1932,7 @@
   // ===========================================================================
   function MobileShell(props) {
     const { d, lang, view, setView, mTab, setMTab, drawerOpen, setDrawerOpen, counts, sessionRow,
-      dig, mainProps, sessions, selected, onSelect, onNew } = props;
+      dig, mainProps, sessions, selected, onSelect, onNew, onRename } = props;
     const titles = { workspace: sessionRow ? (sessionRow.goal || d.navWorkspace) : d.navWorkspace, decisions: d.navDecisions, briefings: d.navBriefings, rules: d.navRules, settings: d.navSettings };
     const live = sessionRow && (sessionRow.status || "").toLowerCase().match(/run|active/);
     const sessionStatus = String((sessionRow && sessionRow.status) || "").toLowerCase().replace(/[\s-]+/g, "_");
@@ -1920,7 +1940,7 @@
     return html`<div className="mobile">
       <div className="appbar">
         <button className="burger" onClick=${() => setDrawerOpen(true)}>☰</button>
-        <div style=${{ flex: 1, minWidth: 0 }}><div className="ttl">${titles[view]}</div><div className="sub">${view === "workspace" && sessionRow ? `${sessionRow.agent_type || ""}` : ""}</div></div>
+        <div style=${{ flex: 1, minWidth: 0 }}><div className=${`ttl${view === "workspace" && sessionRow ? " editable-title" : ""}`} title=${view === "workspace" && sessionRow ? d.editSessionTitle : ""} onDoubleClick=${view === "workspace" && sessionRow ? () => onRename && onRename(sessionRow) : undefined}>${titles[view]}</div><div className="sub">${view === "workspace" && sessionRow ? `${sessionRow.agent_type || ""}` : ""}</div></div>
         ${view === "workspace" && live ? html`<span className="tag green"><span className="dot live" style=${{ background: "var(--green)" }}></span>LIVE</span>` : null}
       </div>
       ${drawerOpen ? html`<div className="m-drawer-mask" onClick=${() => setDrawerOpen(false)}></div>
@@ -1930,7 +1950,7 @@
           <div className="sb-section" style=${{ marginTop: 18 }}><span>${d.sessions}</span><span className="add" onClick=${() => { onNew(); setDrawerOpen(false); }} title=${d.newSession}>+</span></div>
           <div className="sb-sessions" style=${{ flex: "0 1 auto", maxHeight: "40vh" }}>
             ${!(sessions || []).length ? html`<${Empty} icon="✉" text=${d.noActiveSession} />` :
-              sessions.map((s) => html`<${SessionItem} key=${s.id} s=${s} d=${d} lang=${lang} active=${s.id === selected} onClick=${() => { onSelect(s.id); setDrawerOpen(false); }} />`)}
+              sessions.map((s) => html`<${SessionItem} key=${s.id} s=${s} d=${d} lang=${lang} active=${s.id === selected} onClick=${() => { onSelect(s.id); setDrawerOpen(false); }} onRename=${(row) => { onRename && onRename(row); setDrawerOpen(false); }} />`)}
           </div>
           <div className="sb-user" style=${{ marginTop: "auto" }}><div className="avatar">J</div><div><div className="uname">jiang</div><div className="urole">${d.personalMode}</div></div></div>
         </div>` : null}
@@ -2064,6 +2084,10 @@
     const [confirmDefnDelete, setConfirmDefnDelete] = useState(null);
     const [wfRun, setWfRun] = useState(null);  // P5: current workflow run view (null = closed)
     const [confirmSessionDelete, setConfirmSessionDelete] = useState(null);
+    const [renameSession, setRenameSession] = useState(null);
+    const [renameTitle, setRenameTitle] = useState("");
+    const [renameError, setRenameError] = useState("");
+    const [renamingSession, setRenamingSession] = useState(false);
     const [openCalls, setOpenCalls] = useState({});
     const [expandedSub, setExpandedSub] = useState(null);
     const [toasts, setToasts] = useState([]);
@@ -2495,6 +2519,35 @@
       if (!id) return;
       setConfirmSessionDelete({ id });
     }
+    function openRenameSession(row) {
+      if (!row || !row.id) return;
+      setRenameSession(row);
+      setRenameTitle(row.goal || row.id);
+      setRenameError("");
+    }
+    async function saveSessionTitle() {
+      const row = renameSession;
+      const title = renameTitle.trim();
+      if (!row || !row.id) return;
+      if (!title) { setRenameError(d.sessionTitleEmpty); return; }
+      if (title.length > 300) { setRenameError(d.sessionTitleTooLong); return; }
+      setRenamingSession(true);
+      setRenameError("");
+      try {
+        if (teamMode && !selectedProcessId) throw new Error(d.remoteProcessRequired);
+        await api(`/api/sessions/${encodeURIComponent(row.id)}`, { method: "PATCH", body: { title } });
+        if (teamMode) await loadRemoteSnapshot(selectedProcessId);
+        else await loadSessions();
+        setSessions((prev) => prev.map((s) => (s.id === row.id ? { ...s, goal: title } : s)));
+        setRenameSession(null);
+        setRenameTitle("");
+        toast(d.sessionTitleUpdated, "success");
+      } catch (e) {
+        setRenameError(friendlyError(e, d));
+      } finally {
+        setRenamingSession(false);
+      }
+    }
     async function confirmDeleteSession() {
       const id = confirmSessionDelete && confirmSessionDelete.id;
       if (!id) return;
@@ -2742,6 +2795,7 @@
       onCancelSession: cancelSession,
       onRetrySession: retrySession,
       onDeleteSession: deleteSession,
+      onRenameSession: openRenameSession,
       topControls: html`<${TopCtrls} d=${d} lang=${lang} dark=${theme === "dark"} onToggleTheme=${() => setTheme(theme === "dark" ? "light" : "dark")} onToggleLang=${() => setLang(lang === "zh" ? "en" : "zh")} onPush=${enablePush} />`,
     };
 
@@ -2765,14 +2819,14 @@
 
       <!-- desktop -->
       <div className="app desktop">
-        <${Sidebar} d=${d} lang=${lang} view=${view} onView=${setView} counts=${counts} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} version=${status.version} />
+        <${Sidebar} d=${d} lang=${lang} view=${view} onView=${setView} counts=${counts} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} onRename=${openRenameSession} version=${status.version} />
         ${view === "workspace" ? html`<${Workspace}
             d=${d} lang=${lang} dig=${dig} sessionRow=${sessionRow} events=${events} autonomy=${autonomy}
             openCalls=${openCalls} toggleCall=${toggleCall} expandedSub=${expandedSub} toggleSub=${toggleSub}
             rightTab=${rightTab} setRightTab=${setRightTab} onCard=${onCard} onApproval=${decideApproval} openDetail=${openDetail}
             composer=${composerProps} runCompact=${runCompact} compacting=${compacting} compactStatus=${compactStatus} onBriefing=${runBriefing}
             cards=${openCards} approvals=${approvals} onCancelSession=${cancelSession} onDeleteSession=${deleteSession}
-            onRetrySession=${retrySession}
+            onRetrySession=${retrySession} onRenameSession=${openRenameSession}
             topControls=${mainProps.topControls} />`
           : html`<div className="main">
               <div className="page-head">
@@ -2793,9 +2847,10 @@
       <!-- mobile -->
       <${MobileShell} d=${d} lang=${lang} view=${view} setView=${setView} mTab=${mTab} setMTab=${setMTab}
         drawerOpen=${drawerOpen} setDrawerOpen=${setDrawerOpen} counts=${counts} sessionRow=${sessionRow}
-        dig=${dig} mainProps=${mainProps} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} />
+        dig=${dig} mainProps=${mainProps} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} onRename=${openRenameSession} />
 
       ${detailOpen ? html`<${DetailModal} d=${d} lang=${lang} detail=${detail} onClose=${() => setDetailOpen(false)} />` : null}
+      ${renameSession ? html`<${SessionTitleModal} d=${d} title=${renameTitle} saving=${renamingSession} error=${renameError} setTitle=${setRenameTitle} onClose=${() => { setRenameSession(null); setRenameError(""); }} onSave=${saveSessionTitle} />` : null}
       ${defnOpen ? html`<${Modal} title=${defnDraft && defnDraft.id ? d.edit : d.newBtn} onClose=${() => setDefnOpen(false)} footer=${[html`<button key="c" className="btn" onClick=${() => setDefnOpen(false)}>${d.cancel}</button>`, html`<button key="s" className="btn primary" onClick=${saveDefinition}>${d.save}</button>`]}>
         <${DefinitionEditor} d=${d} draft=${defnDraft} setDraft=${setDefnDraft} />
       </${Modal}>` : null}
