@@ -120,7 +120,6 @@ class _LLMSettingsBody(BaseModel):
     transport: str | None = None  # "http" | "ws"
     request_timeout_s: int | None = None
     context_window_tokens: int | None = None
-    max_tokens: int | None = None
     reasoning_effort: str | None = None
     api_key: str | None = None
 
@@ -977,7 +976,6 @@ def create_app(
         transport = cfg.llm.transport
         request_timeout_s = int(cfg.llm.request_timeout_s)
         context_window_tokens = int(getattr(cfg.llm, "context_window_tokens", 272_000))
-        max_tokens = int(getattr(cfg.llm, "max_tokens", 2048))
         reasoning_effort = getattr(cfg.llm, "reasoning_effort", "")
         if store is not None and hasattr(store, "get_setting"):
             provider = store.get_setting("llm.provider") or provider
@@ -987,9 +985,6 @@ def create_app(
             raw_context = store.get_setting("llm.context_window_tokens")
             if raw_context not in (None, ""):
                 context_window_tokens = _token_limit(raw_context, context_window_tokens)
-            raw_max_tokens = store.get_setting("llm.max_tokens")
-            if raw_max_tokens not in (None, ""):
-                max_tokens = _token_limit(raw_max_tokens, max_tokens)
             raw_timeout = store.get_setting("llm.request_timeout_s")
             if raw_timeout not in (None, ""):
                 try:
@@ -1004,7 +999,6 @@ def create_app(
             "transport": transport,
             "request_timeout_s": max(30, min(3600, request_timeout_s)),
             "context_window_tokens": _token_limit(context_window_tokens, 272_000),
-            "max_tokens": _token_limit(max_tokens, 2048),
             "reasoning_effort": reasoning_effort,
             "api_key": cfg.secrets.llm_api_key,
         }
@@ -1025,8 +1019,6 @@ def create_app(
             settings["context_window_tokens"] = _token_limit(
                 body.context_window_tokens, settings["context_window_tokens"]
             )
-        if body.max_tokens is not None:
-            settings["max_tokens"] = _token_limit(body.max_tokens, settings["max_tokens"])
         if body.reasoning_effort is not None:
             settings["reasoning_effort"] = body.reasoning_effort.strip().lower()
         if body.api_key is not None and body.api_key.strip():
@@ -1044,7 +1036,6 @@ def create_app(
             source: str,
             *,
             context_length: int | None = None,
-            max_tokens: int | None = None,
         ) -> None:
             mid = (model_id or "").strip()
             if mid and mid not in seen:
@@ -1052,8 +1043,6 @@ def create_app(
                 item: dict[str, object] = {"id": mid, "source": source}
                 if context_length:
                     item["context_length"] = context_length
-                if max_tokens:
-                    item["max_tokens"] = max_tokens
                 models.append(item)
 
         agent_cfg = _effective_agents().get((agent or "").strip())
@@ -1069,7 +1058,6 @@ def create_app(
                     str(info.get("id") or ""),
                     "provider",
                     context_length=info.get("context_length"),
-                    max_tokens=info.get("max_tokens"),
                 )
         except Exception as exc:  # noqa: BLE001 - optional UI discovery must not block the form
             error = f"{type(exc).__name__}: {str(exc)[:160]}"
@@ -1503,7 +1491,6 @@ def create_app(
             "transport": settings["transport"],
             "request_timeout_s": settings["request_timeout_s"],
             "context_window_tokens": settings["context_window_tokens"],
-            "max_tokens": settings["max_tokens"],
             "reasoning_effort": settings["reasoning_effort"],
             "api_key_set": bool((cfg.secrets.llm_api_key or "").strip()),
         }
@@ -1540,10 +1527,6 @@ def create_app(
             )
             store.set_setting("llm.context_window_tokens", str(context_window_tokens))
             cfg.llm.context_window_tokens = context_window_tokens
-        if body.max_tokens is not None:
-            max_tokens = _token_limit(body.max_tokens, getattr(cfg.llm, "max_tokens", 2048))
-            store.set_setting("llm.max_tokens", str(max_tokens))
-            cfg.llm.max_tokens = max_tokens
         if body.reasoning_effort is not None:
             reasoning_effort = body.reasoning_effort.strip().lower()
             if reasoning_effort not in _VALID_LLM_REASONING_EFFORTS:
