@@ -42,6 +42,9 @@ server:
   host: 0.0.0.0
   port: $PORT
   public_base_url: ""
+  trust_proxy_headers: true
+  force_https: true
+  health_show_db: false
 llm:
   provider: openai
   base_url: http://127.0.0.1/v1   # LLM gateway runs on this box -> loopback (see DESIGN §8.3)
@@ -69,6 +72,13 @@ if [ -z "${CUR_TOKEN:-}" ]; then
   chown foreman:foreman "$APP/.env"
   chmod 600 "$APP/.env"
 fi
+
+sudo -u foreman bash -lc "
+  set -euo pipefail
+  cd '$APP'
+  . .venv/bin/activate
+  python deploy/harden_config.py config.yaml
+"
 
 echo "== 5. sudoers: foreman may manage ONLY foreman.service =="
 cat > /etc/sudoers.d/foreman <<'EOF'
