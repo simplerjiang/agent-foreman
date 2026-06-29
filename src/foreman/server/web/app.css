@@ -227,6 +227,7 @@ a { color: var(--accent-text); }
 
 /* ---------- app shell ---------- */
 .app { display: flex; min-height: 100vh; background: var(--bg); }
+.app.desktop { height: 100vh; min-height: 0; overflow: hidden; }
 .control-back {
   position: fixed;
   right: 18px;
@@ -259,7 +260,7 @@ a { color: var(--accent-text); }
   color: var(--faint); text-transform: uppercase; display: flex; align-items: center; justify-content: space-between;
 }
 .sb-section .add { font-size: 14px; cursor: pointer; color: var(--muted); }
-.sb-sessions { display: flex; flex-direction: column; gap: 4px; overflow: auto; flex: 1; min-height: 0; }
+.sb-sessions { display: flex; flex-direction: column; gap: 4px; overflow-x: hidden; overflow-y: auto; flex: 1; min-height: 0; scrollbar-gutter: stable; }
 .sess {
   padding: 9px 11px; border-radius: 8px; cursor: pointer; border: 1px solid transparent;
   transition: background 0.15s;
@@ -269,12 +270,14 @@ a { color: var(--accent-text); }
 .sess-head { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; }
 .sess-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sess-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.editable-title { cursor: text; }
+.editable-title:hover { color: var(--accent-text); }
 .sb-user { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 9px; }
 .sb-user .avatar { width: 30px; height: 30px; border-radius: 8px; background: var(--surface2); border: 1px solid var(--border); display: grid; place-items: center; font-size: 13px; font-weight: 700; }
 .sb-user .uname { font-size: 12.5px; font-weight: 600; line-height: 1.2; }
 .sb-user .urole { font-size: 10.5px; color: var(--faint); }
 
-.main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.main { flex: 1; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
 
 /* page header (non-workspace views) */
 .page-head { padding: 24px 30px 18px; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; align-items: flex-start; gap: 14px; }
@@ -300,9 +303,9 @@ a { color: var(--accent-text); }
 .autonomy-pill .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; color: var(--text); }
 
 /* ---------- workspace ---------- */
-.ws-body { flex: 1; display: flex; min-height: 0; }
-.ws-left { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.thread { flex: 1; overflow: auto; padding: 26px 26px 12px; }
+.ws-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+.ws-left { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.thread { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 26px 26px 12px; scrollbar-gutter: stable; }
 .thread-inner { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
 .thread-divider { display: flex; align-items: center; gap: 12px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
 .thread-divider .line { flex: 1; height: 1px; background: var(--border); }
@@ -488,7 +491,7 @@ a { color: var(--accent-text); }
 .composer .model-pick { max-width: 150px; font-family: var(--mono); font-weight: 500; }
 
 /* ---------- right panel ---------- */
-.ws-right { width: 392px; flex: none; border-left: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; min-height: 0; }
+.ws-right { width: 392px; flex: none; border-left: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .rp-head { padding: 13px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
 .rp-head .ic { width: 30px; height: 30px; flex: none; border-radius: 8px; background: var(--surface2); border: 1px solid var(--border); display: grid; place-items: center; font-size: 14px; }
 .rp-head .nm { font-size: 13px; font-weight: 700; }
@@ -497,7 +500,7 @@ a { color: var(--accent-text); }
 .rp-tabs { display: flex; gap: 4px; padding: 11px 13px 2px; }
 .rp-tab { padding: 6px 13px; border: none; border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer; background: transparent; color: var(--muted); }
 .rp-tab.on { font-weight: 700; background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); background: var(--accent-soft); color: var(--accent-text); }
-.rp-body { flex: 1; overflow: auto; padding: 13px; }
+.rp-body { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 13px; scrollbar-gutter: stable; }
 .todo-progress { display: flex; align-items: center; gap: 9px; margin-bottom: 11px; }
 .todo-progress .track { flex: 1; height: 6px; border-radius: 6px; background: var(--bg2); overflow: hidden; }
 .todo-progress .track > span { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--accent), var(--green)); transition: width 0.3s; }

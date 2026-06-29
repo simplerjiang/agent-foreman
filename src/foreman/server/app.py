@@ -259,6 +259,10 @@ class _RemoteDispatchBody(BaseModel):
     continue_mode: str = "queue"
 
 
+class _SessionTitleBody(BaseModel):
+    title: str
+
+
 class _RemoteApproveBody(BaseModel):
     """Team-mode approval/card decision routed to one local process."""
 
@@ -398,6 +402,15 @@ def _session_to_dict(s) -> dict:
         "id": s.id, "goal": s.goal, "status": s.status, "workspace": s.workspace,
         "agent_type": s.agent_type, "created_at": s.created_at, "updated_at": s.updated_at,
     }
+
+
+def _clean_session_title(title: str) -> str:
+    value = (title or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="empty_goal")
+    if len(value) > 300:
+        raise HTTPException(status_code=400, detail="title_too_long")
+    return value
 
 
 def _row_to_dict(row) -> dict:
@@ -1336,6 +1349,20 @@ def create_app(
         if store is None:
             raise HTTPException(status_code=503, detail="no local store")
         return [_row_to_dict(e) for e in store.get_events(session_id)]
+
+    @app.patch("/api/sessions/{session_id}")
+    async def rename_session(session_id: str, body: _SessionTitleBody) -> dict:
+        """Rename one local session by updating its display goal/title."""
+        if store is None or not hasattr(store, "update_session"):
+            raise HTTPException(status_code=503, detail="no_store")
+        row = store.update_session(
+            session_id,
+            goal=_clean_session_title(body.title),
+            updated_at=utc_now_iso(),
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        return _session_to_dict(row)
 
     @app.post("/api/sessions/{session_id}/compact")
     async def compact_session(session_id: str) -> dict:

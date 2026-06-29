@@ -464,6 +464,25 @@ def test_session_controls_and_custom_delete_confirm_wired():
     assert "confirmSessionDelete" in js and "confirmDefnDelete" in js
 
 
+def test_session_title_rename_and_column_scrollbars_wired():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+
+    assert "function SessionTitleModal" in js
+    assert "onDoubleClick" in js and "openRenameSession" in js
+    assert 'api(`/api/sessions/${encodeURIComponent(row.id)}`' in js
+    assert "/api/remote/sessions" not in js
+    assert "method: \"PATCH\"" in js
+    assert "editSessionTitle" in js and "sessionTitleUpdated" in js
+
+    assert ".app.desktop" in css and "overflow: hidden" in css
+    assert ".sb-sessions" in css and "overflow-y: auto" in css
+    assert ".thread" in css and "scrollbar-gutter: stable" in css
+    assert ".rp-body" in css and "overflow-y: auto" in css
+    assert ".editable-title" in css
+
+
 def test_mobile_failed_session_retry_controls_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

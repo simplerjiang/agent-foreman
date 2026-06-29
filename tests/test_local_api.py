@@ -41,6 +41,26 @@ def test_api_events(tmp_path):
     assert payloads["agent_output"] == {"text": "hi"}  # payload_json parsed back to an object
 
 
+def test_api_renames_session_title(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="old title"))
+    c = TestClient(create_app(load_config(), store, EventBus()))
+
+    renamed = c.patch("/api/sessions/s1", json={"title": "  new title  "})
+    assert renamed.status_code == 200
+    assert renamed.json()["goal"] == "new title"
+    assert store.get_session("s1").goal == "new title"
+
+    empty = c.patch("/api/sessions/s1", json={"title": "  "})
+    assert empty.status_code == 400
+    assert empty.json()["detail"] == "empty_goal"
+
+    missing = c.patch("/api/sessions/nope", json={"title": "x"})
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "session_not_found"
+
+
 def test_api_cancel_and_delete_session(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.init()
@@ -78,6 +98,7 @@ def test_api_503_without_store():
     c = TestClient(create_app(load_config()))  # store=None
     assert c.get("/api/sessions").status_code == 503
     assert c.get("/api/sessions/x/events").status_code == 503
+    assert c.patch("/api/sessions/x", json={"title": "new"}).status_code == 503
 
 
 def test_ws_streams_backlog(tmp_path):
