@@ -115,16 +115,17 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.2.3`.
+Current documented release: `v1.2.6`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
-This release removes the redundant auto-agent explanatory copy from the task composer and dispatch timeline chips. PM-driven agent selection behavior is unchanged.
+This release adds an in-session stop action, merges follow-up sending into one button, switches the task composer model and thinking-level controls to dropdowns, supports pasted image chips, and shows PM reasoning as a small gray stream.
 
 Recent history:
 
 | Version | Update |
 |---|---|
+| `v1.2.6` | Session stop control, single follow-up send button, dropdown model/thinking controls, image paste chips, and visible PM reasoning stream. |
 | `v1.2.3` | Removed redundant auto-agent explanatory copy while keeping PM-driven agent selection unchanged. |
 | `v1.2.2` | Removed the PM provider max output token setting and stopped sending OpenAI-compatible output caps. |
 | `v1.2.1` | Bilingual README and exe version pages, visible version history, and stricter version-note rules. |
@@ -271,16 +272,17 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.2.3`。
+当前文档版本：`v1.2.6`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
-本次更新从任务输入区和下发时间线标签中移除冗余的自动执行 agent 说明文案。PM 自动选择执行 agent 的实际行为不变。
+本次更新在运行中的会话里增加停止入口，合并继续发送按钮，把任务输入区的模型和 thinking level 改成下拉选择，支持粘贴图片附件，并用灰色小字流式显示 PM reasoning。
 
 最近历史：
 
 | 版本 | 更新 |
 |---|---|
+| `v1.2.6` | 增加会话停止入口、合并继续发送按钮、模型与 thinking level 下拉、图片粘贴附件，以及可见 PM reasoning 流。 |
 | `v1.2.3` | 移除冗余的自动执行 agent 说明文案，PM 自动选择行为不变。 |
 | `v1.2.2` | 移除 PM Provider 最大输出 token 设置，并停止发送 OpenAI 兼容输出上限。 |
 | `v1.2.1` | 中英文 README 与 exe 版本页、可见版本历史，以及更严格的版本说明规则。 |

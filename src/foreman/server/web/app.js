@@ -67,10 +67,10 @@
       decisionNeeded: "需要你拍板", suggestion: "建议", showDiff: "看 diff",
       riskHigh: "高风险", riskMedium: "中风险", riskLow: "低风险",
       context: "上下文", compact: "压缩上下文", compacting: "压缩中...", compactDone: "上下文已压缩", compactFailed: "压缩失败",
-      attach: "附件", modelPlaceholder: "模型·默认",
+      attach: "附件", modelPlaceholder: "模型·默认", thinkingLevel: "thinking level", thinkingTrace: "thinking",
       fast: "快速", std: "标准", deep: "深度", send: "发送", sendHint: "发送",
-      guiding: "引导中…", queueing: "排序发送中…", guide: "引导", queueSend: "排序发送",
-      guideHelp: "引导：中止当前思考，带上原上下文直接处理新提示。", queueHelp: "排序：等当前回复结束后发送，不等整轮 loop 完成。",
+      guiding: "发送中…", queueing: "发送中…", guide: "发送", queueSend: "发送",
+      guideHelp: "停止当前会话后再发送新指令。", queueHelp: "发送：等当前回复结束后继续处理，不等整轮 loop 完成。",
       composerPlaceholder: "继续和 PM 对话… 可添加附件，选择档位，或直接下指令",
       mComposerPlaceholder: "继续下指令…",
       tabTodos: "任务清单", tabSubagents: "子代理", tabTerminal: "原始输出",
@@ -96,7 +96,7 @@
       workMode: "工作方式", workModePick: "手选工作方式", workModeNone: "暂无可选工作方式", workModeAuto: "自动（PM 按相关性选）",
       cancel: "取消", retry: "重试", save: "保存", saved: "已保存", saveFailed: "保存失败", failed: "失败",
       confirmDeleteTitle: "确认删除", confirmDelete: "确定删除这条工作方式？", confirmSessionDelete: "确定删除这个会话及其本地记录？",
-      deleteSession: "删除会话", cancelSession: "取消会话", sessionCanceled: "已取消会话", notification: "通知",
+      deleteSession: "删除会话", cancelSession: "停止", sessionCanceled: "已停止会话", notification: "通知",
       sessionBusy: "会话仍有后台任务未结束，请稍后再删除。",
       noContext: "当前会话还没有可压缩的上下文。",
       noStore: "本地数据存储不可用，请重启 Foreman 后重试。",
@@ -159,8 +159,8 @@
       readOnlyLog: "只读日志", workspaceRisk: "当前工作区范围很大；工具全开时请确认这是你想授权的路径。",
       versionCurrent: "当前运行版本", versionUnavailable: "等待 /health 返回版本",
       versionSource: "版本来源", versionSourceText: "Foreman 的包版本只从 src/foreman/__init__.py 的 __version__ 读取；exe、/health、PWA 与 README 的版本说明都必须跟随这个版本更新。",
-      versionUpdates: "本次更新内容", versionReleaseNoteTitle: "移除自动执行 agent 说明文案",
-      versionReleaseNoteBody: "本次更新从任务输入区和下发时间线标签中移除冗余的自动执行 agent 说明文案。PM 自动选择执行 agent 的实际行为不变。",
+      versionUpdates: "本次更新内容", versionReleaseNoteTitle: "会话控制与 PM thinking 流",
+      versionReleaseNoteBody: "本次更新在运行中的会话里增加停止入口，合并继续发送按钮，模型与 thinking level 改为下拉选择，并把 PM reasoning 以灰色小字流式显示。",
       versionHistory: "历史更新记录",
       versionMaint: "维护要求", versionMaintText: "每次改 __version__ 时，同步更新 README.md 的 Version Information / 版本信息、docs/VERSION_HISTORY.md，以及 exe 控制台的版本页文案；必须保留历史记录，不能只显示最新版本。",
     },
@@ -200,10 +200,10 @@
       decisionNeeded: "Decision needed", suggestion: "Suggestion", showDiff: "Show diff",
       riskHigh: "HIGH RISK", riskMedium: "MEDIUM RISK", riskLow: "LOW RISK",
       context: "Context", compact: "Compact", compacting: "Compacting...", compactDone: "Context compacted", compactFailed: "Compact failed",
-      attach: "Attach", modelPlaceholder: "model · default",
+      attach: "Attach", modelPlaceholder: "model · default", thinkingLevel: "thinking level", thinkingTrace: "thinking",
       fast: "Fast", std: "Std", deep: "Deep", send: "Send", sendHint: "send",
-      guiding: "Guiding…", queueing: "Queue sending…", guide: "Guide", queueSend: "Queue send",
-      guideHelp: "Guide: interrupt the current thought and handle the new prompt with prior context.", queueHelp: "Queue: send after the current reply finishes, without waiting for the full loop.",
+      guiding: "Sending…", queueing: "Sending…", guide: "Send", queueSend: "Send",
+      guideHelp: "Stop the current session before sending a new instruction.", queueHelp: "Send: continue after the current reply finishes, without waiting for the full loop.",
       composerPlaceholder: "Continue with the PM… add attachments, pick a level, or just give an order",
       mComposerPlaceholder: "Continue…",
       tabTodos: "To-dos", tabSubagents: "Subagents", tabTerminal: "Raw output",
@@ -229,7 +229,7 @@
       workMode: "Work modes", workModePick: "Pick work modes", workModeNone: "No work modes available", workModeAuto: "Auto (PM picks by relevance)",
       cancel: "Cancel", retry: "Retry", save: "Save", saved: "Saved", saveFailed: "Save failed", failed: "failed",
       confirmDeleteTitle: "Confirm delete", confirmDelete: "Delete this playbook item?", confirmSessionDelete: "Delete this session and its local records?",
-      deleteSession: "Delete session", cancelSession: "Cancel session", sessionCanceled: "Session cancelled", notification: "Notification",
+      deleteSession: "Delete session", cancelSession: "Stop", sessionCanceled: "Session stopped", notification: "Notification",
       sessionBusy: "A background task is still active; delete it after the task finishes.",
       noContext: "This session has no context to compact yet.",
       noStore: "Local storage is unavailable. Restart Foreman and try again.",
@@ -292,8 +292,8 @@
       readOnlyLog: "Read-only log", workspaceRisk: "This workspace is very broad; confirm that full tool access is intentional.",
       versionCurrent: "Current runtime version", versionUnavailable: "Waiting for /health version",
       versionSource: "Version source", versionSourceText: "Foreman's package version is read only from __version__ in src/foreman/__init__.py; the exe, /health, PWA, and README version notes must follow that release.",
-      versionUpdates: "This release", versionReleaseNoteTitle: "Removed auto-agent explanatory copy",
-      versionReleaseNoteBody: "This update removes the redundant auto-agent explanatory copy from the task composer and dispatch timeline chips. PM-driven agent selection behavior is unchanged.",
+      versionUpdates: "This release", versionReleaseNoteTitle: "Session controls and PM thinking stream",
+      versionReleaseNoteBody: "This update adds an in-session stop action, merges follow-up sending into one button, switches model and thinking-level controls to dropdowns, and streams PM reasoning as small gray text.",
       versionHistory: "Historical update records",
       versionMaint: "Maintenance rule", versionMaintText: "Whenever __version__ changes, update README.md's Version Information / 版本信息 section, docs/VERSION_HISTORY.md, and the exe console's Version page copy. Keep visible history; do not show only the latest version.",
     },
@@ -320,6 +320,11 @@
   const KIND_TAGCOLOR = { workflow: "accent", skill: "violet", code_standard: "amber", qa_rubric: "green" };
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
+    {
+      version: "v1.2.6",
+      en: "Session stop control, single follow-up send button, dropdown model/thinking controls, image paste chips, and visible PM reasoning stream.",
+      zh: "增加会话停止入口、合并继续发送按钮、模型与 thinking level 下拉、图片粘贴附件，以及可见 PM reasoning 流。",
+    },
     {
       version: "v1.2.3",
       en: "Removed redundant auto-agent explanatory copy while keeping PM-driven agent selection unchanged.",
@@ -532,6 +537,17 @@
     const n = Math.max(0, Number(value) || 0);
     if (n >= 1000) return `${Math.round(n / 100) / 10}k`;
     return `${Math.round(n)}`;
+  }
+  function clipboardImageFiles(ev) {
+    const items = ev && ev.clipboardData && ev.clipboardData.items;
+    if (!items) return [];
+    const files = [];
+    for (const item of Array.from(items)) {
+      if (!item || item.kind !== "file") continue;
+      const file = item.getAsFile && item.getAsFile();
+      if (file && String(file.type || "").toLowerCase().startsWith("image/")) files.push(file);
+    }
+    return files;
   }
   function displayAgent(agentType, d) {
     if (!agentType || agentType === "pm-agent") return "PM";
@@ -961,10 +977,10 @@
           }
           continue;
         }
-        if (t === "pm_reasoning") continue;
         const sid = p.stream_id || "";
         const gk = `${t}-${e.source || ""}-${sid || "plain"}`;
-        const txt = displayPmStreamText(cleanPmStreamText(sid ? `${pmStreamBuffers.get(gk) || ""}${rawTxt}` : rawTxt), lang, d);
+        const cleaned = cleanPmStreamText(sid ? `${pmStreamBuffers.get(gk) || ""}${rawTxt}` : rawTxt);
+        const txt = t === "pm_reasoning" ? cleaned : displayPmStreamText(cleaned, lang, d);
         if (sid) pmStreamBuffers.set(gk, `${pmStreamBuffers.get(gk) || ""}${rawTxt}`);
         if (!txt) continue;
         if (p.phase) hidePmStatus(p.phase);
@@ -972,7 +988,7 @@
           const idx = streamGroups.get(gk);
           nodes[idx].text = txt;
         } else {
-          const node = { kind: "pm", id: e.id || `pm-${nodes.length}`, ts: e.ts, text: txt };
+          const node = { kind: t === "pm_reasoning" ? "pm-thinking" : "pm", id: e.id || `pm-${nodes.length}`, ts: e.ts, text: txt };
           if (sid) streamGroups.set(gk, nodes.length);
           nodes.push(node);
         }
@@ -1440,6 +1456,9 @@
     if (n.kind === "pm") {
       return html`<div className="pm-note"><div className="pm-avatar">PM</div><div className="body"><${MD} text=${n.text} maxChars=${4000} /></div></div>`;
     }
+    if (n.kind === "pm-thinking") {
+      return html`<div className="pm-thinking"><span>${d.thinkingTrace}</span><pre>${n.text}</pre></div>`;
+    }
     if (n.kind === "call") {
       const c = dig.calls.get(n.callId);
       if (!c) return null;
@@ -1554,9 +1573,9 @@
 
   function Composer(props) {
     const { d, lang, workspaces, workspace, setWorkspace, task, setTask, model, setModel, modelOptions, llm, effort, setEffort,
-      attachments, addAttach, removeAttach, dispatching, runDispatch, dispatchStatus, sessionRow, events,
+      attachments, addAttach, addPastedImages, removeAttach, dispatching, runDispatch, dispatchStatus, sessionRow, events,
       compacting, runCompact, compactStatus, processes, selectedProcessId, setSelectedProcessId, teamMode,
-      definitions, selectedWorkModeIds, setSelectedWorkModeIds } = props;
+      definitions, selectedWorkModeIds, setSelectedWorkModeIds, onCancelSession } = props;
     const wsOpts = workspaces.length ? workspaces : [];
     const procOpts = processes || [];
     const [wmOpen, setWmOpen] = useState(false);
@@ -1574,6 +1593,22 @@
     const sessionStatus = String((sessionRow && sessionRow.status) || "").toLowerCase().replace(/[\s-]+/g, "_");
     const busy = !!sessionRow && ["planning", "queued", "running", "active", "waiting_approval"].includes(sessionStatus);
     const sendBusy = !!dispatching;
+    const modelChoices = [];
+    const seenModels = new Set();
+    const addModelChoice = (value) => {
+      const v = String(value || "").trim();
+      if (!v || seenModels.has(v)) return;
+      seenModels.add(v);
+      modelChoices.push(v);
+    };
+    (modelOptions || []).forEach((o) => addModelChoice(o && (o.value || o.id)));
+    addModelChoice(model);
+    const onPaste = (e) => {
+      const files = clipboardImageFiles(e);
+      if (!files.length) return;
+      e.preventDefault();
+      addPastedImages(files);
+    };
     const onKey = (e) => {
       if (e.key === "@") { e.preventDefault(); addAttach(); return; }
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busy && !sendBusy) runDispatch(); }
@@ -1590,7 +1625,7 @@
         ${dispatchStatus ? html`<div className=${`alert ${dispatchStatus.includes(d.dispatchFailed) ? "error" : "ok"}`} style=${{ marginBottom: 9 }}>${dispatchStatus}</div>` : null}
         <div className="composer-box">
           ${attachments.length ? html`<div className="composer-attach">${attachments.map((a) => html`<div className="attach-chip" key=${a.id}><span className=${`ic ${a.isImage ? "img" : "file"}`}>${a.isImage ? "🖼" : "📄"}</span><span className="nm">${a.name}</span><span className="rm" onClick=${() => removeAttach(a.id)}>×</span></div>`)}</div>` : null}
-          <textarea className="composer-input" rows="2" value=${task} onChange=${(e) => setTask(e.target.value)} onKeyDown=${onKey} placeholder=${d.composerPlaceholder}></textarea>
+          <textarea className="composer-input" rows="2" value=${task} onChange=${(e) => setTask(e.target.value)} onKeyDown=${onKey} onPaste=${onPaste} placeholder=${d.composerPlaceholder}></textarea>
           <div className="composer-tools">
             <button className="tool-chip" onClick=${addAttach}>📎 ${d.attach}</button>
             ${teamMode ? html`<select className="ws-select machine-select" value=${selectedProcessId || ""} onChange=${(e) => setSelectedProcessId(e.target.value)}>
@@ -1598,8 +1633,10 @@
               ${procOpts.map((p) => html`<option key=${p.id} value=${p.id} disabled=${!p.online}>${p.online ? "●" : "○"} ${p.name || p.id}</option>`)}
             </select>` : null}
             ${wsOpts.length ? html`<select className="ws-select" value=${workspace} onChange=${(e) => setWorkspace(e.target.value)} disabled=${!!sessionRow}>${wsOpts.map((w) => html`<option key=${w.path} value=${w.path}>📁 ${w.name || shortPath(w.path, d)}</option>`)}</select>` : null}
-            <input className="ws-select model-pick" value=${model} onChange=${(e) => setModel(e.target.value)} list="composer-models" placeholder=${d.modelPlaceholder} aria-label=${d.model} />
-            <datalist id="composer-models">${(modelOptions || []).map((o) => html`<option key=${o.value} value=${o.value}></option>`)}</datalist>
+            <select className="ws-select model-pick" value=${model} onChange=${(e) => setModel(e.target.value)} aria-label=${d.model}>
+              <option value="">${d.modelPlaceholder}</option>
+              ${modelChoices.map((value) => html`<option key=${value} value=${value}>${value}</option>`)}
+            </select>
             ${wmOptions.length ? html`<div style=${{ position: "relative" }}>
               <button className=${`tool-chip${wmSelected.length ? " on" : ""}`} onClick=${() => setWmOpen(!wmOpen)} title=${d.workModePick}>🧩 ${d.workMode}${wmSelected.length ? ` (${wmSelected.length})` : ""}</button>
               ${wmOpen ? html`<div className="wm-pop" style=${{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, zIndex: 30, minWidth: 240, maxWidth: 340, maxHeight: 260, overflow: "auto", background: "var(--surface, #fff)", border: "1px solid var(--border, #ddd)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.16)", padding: 8 }}>
@@ -1610,18 +1647,18 @@
                 </label>`)}
               </div>` : null}
             </div>` : null}
-            <div className="seg">
-              <button className=${`opt${effort === "low" ? " on" : ""}`} onClick=${() => setEffort("low")}>${d.fast}</button>
-              <button className=${`opt${effort === "medium" ? " on" : ""}`} onClick=${() => setEffort("medium")}>${d.std}</button>
-              <button className=${`opt${effort === "high" ? " on" : ""}`} onClick=${() => setEffort("high")}>${d.deep}</button>
-            </div>
+            <select className="ws-select effort-pick" value=${effort || ""} onChange=${(e) => setEffort(e.target.value)} aria-label=${d.thinkingLevel}>
+              <option value="">${d.thinkingLevel}</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
             <div style=${{ flex: 1 }}></div>
             <span className="composer-send-hint">⏎ ${d.sendHint}</span>
             ${busy ? html`
               <span className="busy-chip"><span className="spin"></span>${d.pmThinking}</span>
-              <span className="faint" style=${{ fontSize: 11 }}>${d.queueHelp}</span>
-              <button className="btn danger" title=${d.guideHelp} onClick=${() => runDispatch("interrupt")} disabled=${sendBusy || !task.trim()}>${sendBusy ? d.guiding : d.guide}</button>
-              <button className="btn primary" title=${d.queueHelp} onClick=${() => runDispatch("queue")} disabled=${sendBusy || !task.trim()}>${sendBusy ? d.queueing : d.queueSend}</button>
+              <button className="btn danger" title=${d.cancelSession} onClick=${() => onCancelSession && sessionRow && onCancelSession(sessionRow.id)} disabled=${sendBusy || !sessionRow}>${d.cancelSession}</button>
+              <button className="btn primary" title=${d.queueHelp} onClick=${() => runDispatch("queue")} disabled=${sendBusy || !task.trim()}>${sendBusy ? d.queueing : html`${d.send} ↑`}</button>
             ` : html`<button className="btn primary" onClick=${() => runDispatch()} disabled=${sendBusy}>${sendBusy ? html`<span className="spin"></span>` : null}${d.send} ↑</button>`}
           </div>
         </div>
@@ -1764,6 +1801,16 @@
     });
     const lines = (value) => Array.isArray(value) ? value.join("\n") : "";
     const splitLines = (value) => String(value || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    const pmModelChoices = [];
+    const seenPmModels = new Set();
+    const addPmModelChoice = (value) => {
+      const v = String(value || "").trim();
+      if (!v || seenPmModels.has(v)) return;
+      seenPmModels.add(v);
+      pmModelChoices.push(v);
+    };
+    (pmModelOptions || []).forEach((o) => addPmModelChoice(o && (o.value || o.id)));
+    addPmModelChoice(llm && llm.model);
     const broadWorkspace = (workspaces || []).some((w) => isWideWorkspace(w.path));
     const fullAccessAgent = (agentSettings || []).some((row) => row.enabled && row.full_access !== false);
     const sliderRef = useRef(null);
@@ -1831,8 +1878,10 @@
             <select className="select" value=${llm.provider || "openai"} onChange=${(e) => setLlm({ ...llm, provider: e.target.value })}><option value="openai">OpenAI-compatible</option><option value="anthropic">Anthropic</option></select>
           </div>
           <div className="field"><span className="field-label">${d.model}</span>
-            <input className="input mono" value=${llm.model || ""} onChange=${(e) => setLlm({ ...llm, model: e.target.value })} list="pm-models" placeholder="gpt-5.5" />
-            <datalist id="pm-models">${(pmModelOptions || []).map((o) => html`<option key=${o.value} value=${o.value}></option>`)}</datalist>
+            <select className="select mono" value=${llm.model || ""} onChange=${(e) => setLlm({ ...llm, model: e.target.value })}>
+              <option value="">${d.modelDefaultHint}</option>
+              ${pmModelChoices.map((value) => html`<option key=${value} value=${value}>${value}</option>`)}
+            </select>
           </div>
         </div>
         <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.baseUrl}</span><input className="input mono" value=${llm.base_url || ""} onChange=${(e) => setLlm({ ...llm, base_url: e.target.value })} placeholder="https://api.openai.com/v1" /></div>
@@ -1848,7 +1897,7 @@
           <div className="card-sub" style=${{ marginTop: 6, marginBottom: 0 }}>${d.contextWindowHelp}</div>
         </div>
         <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.reasoningEffort}</span>
-          <select className="select" value=${llm.reasoning_effort || ""} onChange=${(e) => setLlm({ ...llm, reasoning_effort: e.target.value })}><option value="">${d.effortDefault}</option><option value="low">${d.fast}</option><option value="medium">${d.std}</option><option value="high">${d.deep}</option><option value="max">max</option></select>
+          <select className="select" value=${llm.reasoning_effort || ""} onChange=${(e) => setLlm({ ...llm, reasoning_effort: e.target.value })}><option value="">${d.effortDefault}</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="max">max</option></select>
         </div>
         <div className="field" style=${{ marginBottom: 11 }}><span className="field-label">${d.apiKey}</span><input className="input mono" type="password" value=${llm.api_key || ""} onChange=${(e) => setLlm({ ...llm, api_key: e.target.value })} placeholder=${d.pmKeyPlaceholder} autoComplete="off" /></div>
         <div className=${`alert ${llm.api_key_set ? "info" : "warn"}`} style=${{ marginBottom: 14 }}>ⓘ ${llm.api_key_set ? d.pmKeyHint : d.pmKeyMissing}</div>
@@ -2079,8 +2128,8 @@
           <option value="">${d.machine}</option>
           ${(mainProps.composer.processes || []).map((p) => html`<option key=${p.id} value=${p.id} disabled=${!p.online}>${p.online ? "●" : "○"} ${p.name || p.id}</option>`)}
         </select>` : null}
-        <div className="box"><input value=${mainProps.composer.task} onChange=${(e) => mainProps.composer.setTask(e.target.value)} onKeyDown=${(e) => { if (e.key === "@") { e.preventDefault(); mainProps.composer.addAttach(); return; } if (e.key === "Enter") { e.preventDefault(); if (!busy && !mainProps.composer.dispatching) mainProps.composer.runDispatch(); } }} placeholder=${busy ? d.queueHelp : d.mComposerPlaceholder} /></div>
-        ${busy ? html`<span className="faint" style=${{ fontSize: 11 }}>${d.queueHelp}</span><button className="btn danger sm" onClick=${() => mainProps.composer.runDispatch("interrupt")} disabled=${mainProps.composer.dispatching || !mainProps.composer.task.trim()}>${d.guide}</button><button className="btn primary sm" onClick=${() => mainProps.composer.runDispatch("queue")} disabled=${mainProps.composer.dispatching || !mainProps.composer.task.trim()}>${d.queueSend}</button>` : html`<button className="btn primary icon" onClick=${() => mainProps.composer.runDispatch()} disabled=${mainProps.composer.dispatching}>${mainProps.composer.dispatching ? html`<span className="spin"></span>` : "↑"}</button>`}
+        <div className="box"><input value=${mainProps.composer.task} onChange=${(e) => mainProps.composer.setTask(e.target.value)} onPaste=${(e) => { const files = clipboardImageFiles(e); if (files.length) { e.preventDefault(); mainProps.composer.addPastedImages(files); } }} onKeyDown=${(e) => { if (e.key === "@") { e.preventDefault(); mainProps.composer.addAttach(); return; } if (e.key === "Enter") { e.preventDefault(); if (!busy && !mainProps.composer.dispatching) mainProps.composer.runDispatch(); } }} placeholder=${busy ? d.queueHelp : d.mComposerPlaceholder} /></div>
+        ${busy ? html`<button className="btn danger sm" onClick=${() => mainProps.composer.onCancelSession && sessionRow && mainProps.composer.onCancelSession(sessionRow.id)} disabled=${mainProps.composer.dispatching || !sessionRow}>${d.cancelSession}</button><button className="btn primary sm" onClick=${() => mainProps.composer.runDispatch("queue")} disabled=${mainProps.composer.dispatching || !mainProps.composer.task.trim()}>${mainProps.composer.dispatching ? d.queueing : d.send}</button>` : html`<button className="btn primary icon" onClick=${() => mainProps.composer.runDispatch()} disabled=${mainProps.composer.dispatching}>${mainProps.composer.dispatching ? html`<span className="spin"></span>` : "↑"}</button>`}
       </div>` : null}
       ${view === "workspace" ? html`<div className="m-bottom">
         <button className=${`m-tab${mTab === "chat" ? " on" : ""}`} onClick=${() => setMTab("chat")}><span className="ic">💬</span>${d.mTabChat}</button>
@@ -2390,6 +2439,11 @@
       });
       return () => { cancelled = true; };
     }, [loadProcesses, loadRemoteSnapshot, loadNotifications, notifyError]);
+    useEffect(() => {
+      if (!booted) return undefined;
+      const t = setTimeout(() => { loadModels(); loadPmModels(llm); }, 0);
+      return () => clearTimeout(t);
+    }, [booted]);
 
     // polling for cards/approvals/sessions
     useEffect(() => {
@@ -2867,9 +2921,29 @@
       } catch (e) { toast(`${d.pushFailed}: ${friendlyError(e, d)}`, "error"); }
     }
 
+    function attachmentFromFile(file, index = 0) {
+      const type = String(file && file.type || "");
+      const ext = type.split("/")[1] || "png";
+      const name = String(file && file.name || "").trim() || `pasted-image-${Date.now()}-${index + 1}.${ext}`;
+      return {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        name,
+        isImage: type.toLowerCase().startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(name),
+        type,
+        size: Number(file && file.size) || 0,
+      };
+    }
+    function addFiles(files) {
+      const rows = Array.from(files || []).map((f, i) => attachmentFromFile(f, i));
+      if (rows.length) setAttachments((p) => [...p, ...rows]);
+    }
+    function addPastedImages(files) {
+      addFiles(files);
+    }
     function addAttach() {
       const input = document.createElement("input"); input.type = "file"; input.accept = "*/*";
-      input.onchange = () => { const f = input.files && input.files[0]; if (!f) return; setAttachments((p) => [...p, { id: Date.now(), name: f.name, isImage: /\.(png|jpe?g|gif|webp|svg)$/i.test(f.name) }]); };
+      input.multiple = true;
+      input.onchange = () => addFiles(input.files || []);
       input.click();
     }
     const removeAttach = (id) => setAttachments((p) => p.filter((a) => a.id !== id));
@@ -2881,8 +2955,8 @@
 
     const composerProps = {
       workspaces, workspace, setWorkspace: (v) => { setWorkspace(v); if (v) localStorage.setItem(WORKSPACE_KEY, v); },
-      task, setTask, model, setModel, modelOptions, llm, effort, setEffort, attachments, addAttach, removeAttach,
-      dispatching, runDispatch, dispatchStatus, onAddStep,
+      task, setTask, model, setModel, modelOptions, llm, effort, setEffort, attachments, addAttach, addPastedImages, removeAttach,
+      dispatching, runDispatch, dispatchStatus, onAddStep, onCancelSession: cancelSession,
       processes, selectedProcessId, setSelectedProcessId, teamMode,
       definitions, selectedWorkModeIds, setSelectedWorkModeIds,
     };

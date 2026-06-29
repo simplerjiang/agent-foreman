@@ -4,6 +4,24 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.2.6
+
+English:
+
+- Added a stop action in active conversations so a running session can be cancelled from the composer area.
+- Merged the busy follow-up controls into one queued send button.
+- Replaced task composer model and thinking-level freeform/segmented controls with dropdowns.
+- Added pasted image chips for Ctrl+V image clipboard input.
+- Surfaced PM reasoning chunks as a small gray streaming trace, including OpenAI-compatible HTTP tool-call streams.
+
+中文：
+
+- 在运行中的会话里增加停止入口，可从输入区直接取消当前会话。
+- 将运行中继续发送的多个按钮合并为一个排序发送按钮。
+- 将任务输入区的模型和 thinking level 控件改成下拉框。
+- 支持 Ctrl+V 粘贴图片并显示为附件 chip。
+- 将 PM reasoning chunk 用灰色小字流式显示，并覆盖 OpenAI 兼容 HTTP tool-call 流。
+
 ## v1.2.3
 
 English:
