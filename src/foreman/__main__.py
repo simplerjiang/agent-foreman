@@ -313,6 +313,9 @@ def backfill_descriptions_cmd(
             "model": store.get_setting("llm.model") or "",
             "base_url": store.get_setting("llm.base_url") or "",
             "transport": store.get_setting("llm.transport") or cfg.llm.transport,
+            "context_window_tokens": store.get_setting("llm.context_window_tokens") or "",
+            "max_tokens": store.get_setting("llm.max_tokens") or "",
+            "reasoning_effort": store.get_setting("llm.reasoning_effort") or "",
             "api_key": cfg.secrets.llm_api_key,
         }
 

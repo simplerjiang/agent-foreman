@@ -199,6 +199,32 @@ async def test_complete_model_override_wins_for_one_request():
     assert cap["json"]["model"] == "dispatch-pm-model"
 
 
+async def test_settings_resolver_overrides_token_limits():
+    cfg = Config()
+    cfg.llm.provider = "openai"
+    cfg.llm.base_url = "https://config.test/v1"
+    cfg.llm.model = "config-model"
+    cfg.llm.context_window_tokens = 272000
+    cfg.llm.max_tokens = 2048
+    cfg.secrets.llm_api_key = "secret-key"
+    cap: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["json"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    override = {"context_window_tokens": 300000, "max_tokens": 128000}
+    c = LLMClient(
+        cfg, transport=httpx.MockTransport(handler), settings_resolver=lambda: override
+    )
+    await c.complete([Message("user", "hi")])
+    await c.aclose()
+
+    assert c.runtime_context_window_tokens() == 300000
+    assert c.runtime_max_tokens() == 128000
+    assert cap["json"]["max_tokens"] == 128000
+
+
 async def test_settings_resolver_overrides_api_key_without_restart():
     cfg = Config()
     cfg.llm.base_url = "https://config.test/v1"
