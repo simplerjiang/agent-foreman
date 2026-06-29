@@ -12,7 +12,14 @@ import json
 import pytest
 
 from foreman.client.core.dispatch_service import DispatchService, _explicit_agent_targets
-from foreman.client.core.pm_agent import PMAgent, PMPlan, PMReview, events_to_text, parse_plan
+from foreman.client.core.pm_agent import (
+    PMAgent,
+    PMPlan,
+    PMRecovery,
+    PMReview,
+    events_to_text,
+    parse_plan,
+)
 from foreman.client.store import Store
 from foreman.client.store.models import (
     Approval,
@@ -898,6 +905,158 @@ async def test_pm_agent_auth_failure_is_fatal_and_skips_review(tmp_path, auth_te
     assert runner.launched == 1
     assert "pm_review" not in [e.type for e in rows]
     err = json.loads(next(e.payload_json for e in rows if e.type == "error"))
+    assert "认证失败" in err["msg"]
+    assert store.get_session(res["session_id"]).status == "failed"
+
+
+async def test_pm_agent_rotates_after_fatal_agent_failure(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        language = "zh"
+        max_runs = 2
+
+        def __init__(self):
+            self.recoveries = []
+
+        async def plan(self, *_args, **_kw):
+            return PMPlan(
+                agent="copilot-cli",
+                model="gpt-5.5",
+                effort="high",
+                instruction="do work with copilot",
+                summary="use copilot",
+                todo=["run"],
+            )
+
+        async def recover(self, goal, plan, failure_timeline, **kw):
+            self.recoveries.append((goal, plan.agent, failure_timeline, kw["available_agents"]))
+            assert kw["failed_agent"] == "copilot-cli"
+            assert [row["name"] for row in kw["available_agents"]] == ["codex"]
+            assert "401 Invalid authentication credentials" in failure_timeline
+            return PMRecovery(
+                action="switch_agent",
+                agent="codex",
+                model="",
+                effort="high",
+                instruction="Continue with codex after copilot auth failure.",
+                summary="改派给 codex",
+                todo=["run"],
+            )
+
+        async def review(self, goal, plan, timeline, **_kw):
+            assert plan.agent == "codex"
+            assert "Continue with codex" in plan.instruction
+            assert "codex done" in timeline
+            return PMReview(done=True, summary="done")
+
+    class FakeHandle:
+        session_id = ""
+
+    class FakeRunner:
+        def __init__(self):
+            self.launched = []
+
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            self.launched.append((agent, instruction, model, effort))
+            handle = FakeHandle()
+            handle.session_id = session_id
+            if agent == "copilot-cli":
+                store.add_event(
+                    make_event(
+                        "agent_output",
+                        agent,
+                        session_id,
+                        payload={"text": "API Error: 401 Invalid authentication credentials"},
+                    )
+                )
+            elif agent == "codex":
+                store.add_event(make_event("stop", agent, session_id, payload={"result": "codex done"}))
+            return handle
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={
+            "codex": AgentCfg(command="codex", enabled=True),
+            "copilot-cli": AgentCfg(command="copilot", enabled=True, model="gpt-5.5"),
+        },
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    pm = FakePM()
+    runner = FakeRunner()
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=runner, pm_agent=pm)
+
+    res = await svc.create("run with fallback")
+    await asyncio.gather(*list(svc._tasks))
+
+    assert runner.launched == [
+        ("copilot-cli", "do work with copilot", "gpt-5.5", "high"),
+        ("codex", "Continue with codex after copilot auth failure.", "", "high"),
+    ]
+    assert len(pm.recoveries) == 1
+    rows = store.get_events(res["session_id"])
+    plans = [json.loads(e.payload_json) for e in rows if e.type == "pm_plan"]
+    assert [p["agent"] for p in plans] == ["copilot-cli", "codex"]
+    assert "error" not in [e.type for e in rows]
+    assert store.get_session(res["session_id"]).status == "done"
+
+
+async def test_pm_agent_stops_after_fatal_failure_when_no_other_agent_available(tmp_path):
+    store = _store(tmp_path)
+
+    class FakePM:
+        language = "zh"
+        max_runs = 2
+
+        async def plan(self, *_args, **_kw):
+            return PMPlan(
+                agent="copilot-cli",
+                model="gpt-5.5",
+                effort="high",
+                instruction="do work with copilot",
+                summary="use copilot",
+            )
+
+        async def recover(self, *_args, **_kw):
+            raise AssertionError("no alternatives means PM recovery should not be called")
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("fatal local failure must not enter normal review")
+
+    class FakeHandle:
+        session_id = ""
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            handle = FakeHandle()
+            handle.session_id = session_id
+            store.add_event(
+                make_event(
+                    "agent_output",
+                    agent,
+                    session_id,
+                    payload={"text": "API Error: 401 Invalid authentication credentials"},
+                )
+            )
+            return handle
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"copilot-cli": AgentCfg(command="copilot", enabled=True, model="gpt-5.5")},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    res = await svc.create("run without fallback")
+    await asyncio.gather(*list(svc._tasks))
+
+    rows = store.get_events(res["session_id"])
+    err = json.loads(next(e.payload_json for e in rows if e.type == "error"))
+    assert "所有已启用的本地 coding agent 都不可用" in err["msg"]
     assert "认证失败" in err["msg"]
     assert store.get_session(res["session_id"]).status == "failed"
 
