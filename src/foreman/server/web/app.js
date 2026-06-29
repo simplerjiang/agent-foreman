@@ -2158,7 +2158,8 @@
         setProcesses(rows);
         const ids = rows.map((p) => p.id);
         const online = rows.filter((p) => p.online);
-        const current = selectedProcessId && ids.includes(selectedProcessId) ? selectedProcessId : "";
+        const currentRow = rows.find((p) => p.id === selectedProcessId) || null;
+        const current = currentRow && (currentRow.online || !online.length) ? currentRow.id : "";
         const next = current || ((online[0] && online[0].id) || (rows[0] && rows[0].id) || "");
         if (next && next !== selectedProcessId) setSelectedProcessId(next);
         return next;

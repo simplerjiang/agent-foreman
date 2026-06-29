@@ -224,6 +224,14 @@ def test_remote_control_ui_wires_process_target_and_approve_endpoint():
     assert "machine-select" in js and ".m-machine" in css
 
 
+def test_remote_control_prefers_online_process_over_stale_offline_selection():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "const currentRow = rows.find((p) => p.id === selectedProcessId) || null;" in js
+    assert "const current = currentRow && (currentRow.online || !online.length) ? currentRow.id : \"\";" in js
+    assert "const current = selectedProcessId && ids.includes(selectedProcessId)" not in js
+
+
 def test_member_console_has_control_entry_into_dashboard():
     """A team member's 我的机器 card must offer a 「控制」 entry into the control dashboard, and the
     dashboard must accept the console session token without leaving the single /app.html React root."""

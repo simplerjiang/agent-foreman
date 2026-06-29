@@ -162,6 +162,23 @@ def test_register_marks_online_and_unregister_offline(tmp_path):
     assert relay.clients_for("a1") == []  # connection dropped from the in-memory registry
 
 
+def test_unregister_keeps_process_online_while_duplicate_connection_lives(tmp_path):
+    st, _ = _seed(tmp_path)
+    relay = Relay(st, now=lambda: "2026-06-20T00:00:00Z")
+    c1 = RelayClient(account_id="a1", process_id="p1", key_id="k1", name="box", ws=_SendOnlyWS())
+    c2 = RelayClient(account_id="a1", process_id="p1", key_id="k1", name="box", ws=_SendOnlyWS())
+
+    relay.register(c1)
+    relay.register(c2)
+    relay.unregister(c1)
+
+    assert {p.id for p in st.get_online_processes("a1")} == {"p1"}
+    assert relay.clients_for("a1", process_id="p1") == [c2]
+
+    relay.unregister(c2)
+    assert st.get_online_processes("a1") == []
+
+
 async def test_route_only_to_matching_account_and_process(tmp_path):
     st, _ = _seed(tmp_path)
     st.add_account(Account(id="a2", username="bob"))
