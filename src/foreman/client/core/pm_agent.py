@@ -68,6 +68,19 @@ REVIEW_SYSTEM = (
     '"todo_status": [{"title": str, "status": "pending|in_progress|done|blocked"}]}.'
 )
 
+RECOVERY_SYSTEM = (
+    "You are the PM agent recovering from a fatal local coding-agent failure. Foreman, not a "
+    "coding agent, owns process launches. The failed agent cannot be used again in this recovery "
+    "decision. If alternative enabled agents are listed, choose the best one and write the exact "
+    "instruction for that agent to continue the original task with the failure context included. "
+    "Only stop when no alternative enabled agent is available. Human-facing JSON string values must "
+    "follow the selected output language; keep only identifiers, paths, commands, code, and quoted "
+    "user text as-is. Respond with ONLY JSON: "
+    '{"action": "switch_agent|stop", "summary": str, "reason": str, '
+    '"agent": "claude-code|codex|copilot-cli", "model": str, "effort": "low|medium|high|", '
+    '"instruction": str, "todo": [str]}.'
+)
+
 COMPACT_SYSTEM = (
     "You are the PM agent compacting a Foreman coding session. The raw event log remains the source "
     "of truth; your output is only a derived ContextPack for future LLM calls. Extract facts from "
@@ -114,6 +127,18 @@ class PMReview:
     reason: str = ""
     follow_up: str = ""
     todo_status: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class PMRecovery:
+    action: str
+    agent: str = ""
+    model: str = ""
+    effort: str = ""
+    instruction: str = ""
+    summary: str = ""
+    reason: str = ""
+    todo: list[str] = field(default_factory=list)
 
 
 def _as_str(value: object) -> str:
@@ -229,6 +254,38 @@ def parse_review(raw: str, *, language: str = "") -> PMReview:
         reason=_as_str(obj.get("reason")),
         follow_up=_as_str(obj.get("follow_up")),
         todo_status=_as_todo_status(obj.get("todo_status") or obj.get("todo")),
+    )
+
+
+def parse_recovery(
+    raw: str,
+    *,
+    available_agents: list[str],
+    fallback_agent: str,
+    fallback_effort: str,
+    fallback_instruction: str,
+) -> PMRecovery:
+    obj = _extract_json_object(raw) or {}
+    allowed = [a for a in available_agents if a in VALID_AGENTS]
+    if not allowed:
+        return PMRecovery(action="stop", summary=_as_str(obj.get("summary")))
+    action = _as_str(obj.get("action")).lower()
+    agent = _as_str(obj.get("agent"))
+    if action != "switch_agent" or agent not in allowed:
+        action = "switch_agent"
+        agent = fallback_agent if fallback_agent in allowed else allowed[0]
+    effort = _as_str(obj.get("effort")).lower()
+    if effort not in VALID_EFFORTS:
+        effort = fallback_effort if fallback_effort in VALID_EFFORTS else ""
+    return PMRecovery(
+        action=action,
+        agent=agent,
+        model=_as_str(obj.get("model")),
+        effort=effort,
+        instruction=_as_str(obj.get("instruction")) or fallback_instruction,
+        summary=_as_str(obj.get("summary")),
+        reason=_as_str(obj.get("reason")),
+        todo=_as_str_list(obj.get("todo")),
     )
 
 
@@ -497,6 +554,43 @@ def build_review_prompt(
     return "\n\n".join(parts)
 
 
+def build_recovery_prompt(
+    goal: str,
+    plan: PMPlan,
+    failure_timeline: str,
+    *,
+    failed_agent: str,
+    available_agents: list[dict[str, Any]],
+    context: str = "",
+) -> str:
+    parts = [
+        f"# Original user task\n{goal}",
+        "# Failed agent\n"
+        + json.dumps(
+            {
+                "agent": failed_agent,
+                "summary": plan.summary,
+                "model": plan.model,
+                "effort": plan.effort,
+                "instruction": plan.instruction,
+            },
+            ensure_ascii=False,
+        ),
+        f"# Fatal failure evidence\n{failure_timeline or '(no failure details captured)'}",
+        "# Alternative enabled agents\n" + json.dumps(available_agents, ensure_ascii=False),
+    ]
+    if context:
+        parts.append(f"# Existing session context\n{context}")
+    parts.append(
+        "# Recovery rule\n"
+        "If Alternative enabled agents is non-empty, choose one of those agents and set "
+        "action='switch_agent'. Include the failed-agent evidence in the new instruction so the "
+        "next agent does not repeat the same local-provider/auth mistake. If it is empty, set "
+        "action='stop'."
+    )
+    return "\n\n".join(parts)
+
+
 def build_compact_prompt(goal: str, timeline: str, *, existing_context: str = "") -> str:
     parts = [f"# Session goal\n{goal}"]
     if existing_context:
@@ -723,6 +817,45 @@ class PMAgent:
         raw = await self.llm.complete([Message("system", system), Message("user", prompt)], **kwargs)
         return parse_review(raw, language=self.language)
 
+    async def recover(
+        self,
+        goal: str,
+        plan: PMPlan,
+        failure_timeline: str,
+        *,
+        failed_agent: str,
+        available_agents: list[dict[str, Any]],
+        context: str = "",
+        pm_model: str = "",
+        on_stream=None,
+        state_key: str = "",
+    ) -> PMRecovery:
+        system = RECOVERY_SYSTEM + "\n" + language_directive(self.language)
+        prompt = build_recovery_prompt(
+            goal,
+            plan,
+            failure_timeline,
+            failed_agent=failed_agent,
+            available_agents=available_agents,
+            context=context,
+        )
+        kwargs = {"json_mode": True, "model": pm_model, "on_stream": on_stream}
+        if state_key and _accepts_keyword(self.llm.complete, "state_key"):
+            kwargs["state_key"] = state_key
+        raw = await self.llm.complete([Message("system", system), Message("user", prompt)], **kwargs)
+        enabled = [_as_str(a.get("name")) for a in available_agents]
+        return parse_recovery(
+            raw,
+            available_agents=enabled,
+            fallback_agent=enabled[0] if enabled else "",
+            fallback_effort=plan.effort,
+            fallback_instruction=(
+                "Continue the original user task with a different available agent. "
+                f"Do not use the failed agent {failed_agent}. Failure evidence:\n"
+                f"{failure_timeline}\n\nOriginal instruction:\n{plan.instruction}"
+            ),
+        )
+
     async def compact(
         self,
         goal: str,
@@ -758,10 +891,13 @@ __all__ = [
     "PMAgent",
     "PMPlan",
     "PMReview",
+    "PMRecovery",
     "parse_plan",
     "parse_review",
+    "parse_recovery",
     "events_to_text",
     "build_plan_prompt",
     "build_review_prompt",
+    "build_recovery_prompt",
     "build_compact_prompt",
 ]

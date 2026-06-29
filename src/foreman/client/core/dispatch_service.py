@@ -861,13 +861,7 @@ class DispatchService:
         # block). Only when there's actual material — a task with NO selected skills/standards gets
         # ZERO injection / ZERO residue (P2 §4 back-compat; the plan instruction already goes to the
         # CLI directly). Best-effort: an injection failure must never abort the dispatch.
-        if self.injector is not None:
-            material = self._build_work_mode_material(plan.instruction, wm_index)
-            if material["skills"] or material["standards"]:
-                try:
-                    self.injector.inject(workspace, material, agents=plan.agent, task_id=task_id)
-                except Exception:  # noqa: BLE001 — injection is best-effort
-                    pass
+        self._inject_work_modes_for_plan(workspace, task_id, plan, wm_index)
         agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
         handle = await self.runner.launch(
             plan.agent, plan.instruction, Path(workspace), session_id,
@@ -877,17 +871,42 @@ class DispatchService:
         reviewed_event_id = ""
         review_notes: list[dict[str, Any]] = []
         review_state_key = f"{session_id}:{task_id}:pm-review"
+        failed_agents: set[str] = set()
         await self.runner.wait(handle)
         if self._consume_stop_after_reply(session_id):
             self._mark_session_unless_terminal(session_id, "running")
             return
-        if fatal_msg := _fatal_agent_exit_text(
-            _events_after(self.store.get_events(session_id), agent_run_cursor) if self.store else [],
-            language=language,
-            agent=plan.agent,
-        ):
-            await self._emit_pm_error(session_id, task_id, fatal_msg)
-            return
+        while True:
+            fatal_rows = (
+                _events_after(self.store.get_events(session_id), agent_run_cursor)
+                if self.store else []
+            )
+            fatal_msg = _fatal_agent_exit_text(fatal_rows, language=language, agent=plan.agent)
+            if not fatal_msg:
+                break
+            recovered = await self._recover_from_fatal_agent_exit(
+                session_id=session_id,
+                task_id=task_id,
+                goal=goal,
+                workspace=workspace,
+                plan=plan,
+                fatal_rows=fatal_rows,
+                fatal_msg=fatal_msg,
+                failed_agents=failed_agents,
+                enabled_agents=enabled_agents,
+                context=context,
+                pm_model=pm_model,
+                language=language,
+                wm_index=wm_index,
+                todo_status=todo_status,
+            )
+            if recovered is None:
+                return
+            handle, plan, agent_run_cursor, todo_status = recovered
+            await self.runner.wait(handle)
+            if self._consume_stop_after_reply(session_id):
+                self._mark_session_unless_terminal(session_id, "running")
+                return
         while True:
             rows = self.store.get_events(session_id)
             timeline = events_to_text(_events_after(rows, reviewed_event_id))
@@ -972,14 +991,39 @@ class DispatchService:
             if self._consume_stop_after_reply(session_id):
                 self._mark_session_unless_terminal(session_id, "running")
                 return
-            if fatal_msg := _fatal_agent_exit_text(
-                _events_after(self.store.get_events(session_id), agent_run_cursor)
-                if self.store else [],
-                language=language,
-                agent=plan.agent,
-            ):
-                await self._emit_pm_error(session_id, task_id, fatal_msg)
-                return
+            while True:
+                fatal_rows = (
+                    _events_after(self.store.get_events(session_id), agent_run_cursor)
+                    if self.store else []
+                )
+                fatal_msg = _fatal_agent_exit_text(
+                    fatal_rows, language=language, agent=plan.agent
+                )
+                if not fatal_msg:
+                    break
+                recovered = await self._recover_from_fatal_agent_exit(
+                    session_id=session_id,
+                    task_id=task_id,
+                    goal=goal,
+                    workspace=workspace,
+                    plan=plan,
+                    fatal_rows=fatal_rows,
+                    fatal_msg=fatal_msg,
+                    failed_agents=failed_agents,
+                    enabled_agents=enabled_agents,
+                    context=context,
+                    pm_model=pm_model,
+                    language=language,
+                    wm_index=wm_index,
+                    todo_status=todo_status,
+                )
+                if recovered is None:
+                    return
+                handle, plan, agent_run_cursor, todo_status = recovered
+                await self.runner.wait(handle)
+                if self._consume_stop_after_reply(session_id):
+                    self._mark_session_unless_terminal(session_id, "running")
+                    return
 
     def _sanitize_pm_plan(self, plan: PMPlan, pm_model: str) -> PMPlan:
         if not pm_model or plan.model != pm_model:
@@ -1001,6 +1045,108 @@ class DispatchService:
             ready=plan.ready,
             planning_rounds=plan.planning_rounds,
         )
+
+    async def _recover_from_fatal_agent_exit(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        goal: str,
+        workspace: str,
+        plan: PMPlan,
+        fatal_rows: list[Any],
+        fatal_msg: str,
+        failed_agents: set[str],
+        enabled_agents: list[dict[str, Any]],
+        context: str,
+        pm_model: str,
+        language: str,
+        wm_index: list[dict[str, Any]],
+        todo_status: list[dict[str, str]],
+    ) -> tuple[Any, PMPlan, str, list[dict[str, str]]] | None:
+        failed_agents.add(plan.agent)
+        candidates = [
+            row for row in enabled_agents
+            if str(row.get("name") or "").strip() not in failed_agents
+        ]
+        if not candidates:
+            await self._emit_pm_error(
+                session_id,
+                task_id,
+                _all_agents_unavailable_text(language, failed_agents, fatal_msg),
+            )
+            return None
+        if not hasattr(self.pm_agent, "recover"):
+            await self._emit_pm_error(session_id, task_id, fatal_msg)
+            return None
+        failure_timeline = events_to_text(fatal_rows, max_chars=8000)
+        recover_kwargs: dict[str, Any] = {
+            "failed_agent": plan.agent,
+            "available_agents": candidates,
+            "context": context,
+            "pm_model": pm_model,
+        }
+        if _accepts_keyword(self.pm_agent.recover, "on_stream"):
+            recover_kwargs["on_stream"] = self._pm_stream_sink(
+                session_id, task_id, f"recover-{len(failed_agents)}"
+            )
+        if _accepts_keyword(self.pm_agent.recover, "state_key"):
+            recover_kwargs["state_key"] = f"{session_id}:{task_id}:pm-recover"
+        with trace_context(
+            session_id=session_id, task_id=task_id, phase=f"recover-{len(failed_agents)}"
+        ):
+            recovery = await self.pm_agent.recover(goal, plan, failure_timeline, **recover_kwargs)
+        candidate_names = {str(row.get("name") or "").strip() for row in candidates}
+        recovery_agent = str(getattr(recovery, "agent", "") or "").strip()
+        if recovery_agent not in candidate_names:
+            recovery_agent = str(candidates[0].get("name") or "").strip()
+        recovery_plan = PMPlan(
+            agent=recovery_agent,
+            model=str(getattr(recovery, "model", "") or "").strip(),
+            effort=str(getattr(recovery, "effort", "") or "").strip(),
+            instruction=str(getattr(recovery, "instruction", "") or "").strip()
+            or _recovery_fallback_instruction(goal, plan, fatal_msg, language),
+            summary=str(getattr(recovery, "summary", "") or "").strip()
+            or _recovery_summary(language, plan.agent, recovery_agent),
+            todo=list(getattr(recovery, "todo", []) or []),
+            deliberation=[str(getattr(recovery, "reason", "") or "").strip()]
+            if str(getattr(recovery, "reason", "") or "").strip() else [],
+        )
+        recovery_plan = self._sanitize_pm_plan(recovery_plan, pm_model)
+        if recovery_plan.todo:
+            todo_status = _initial_todo_status(recovery_plan.todo)
+        await self._emit_pm_plan(session_id, task_id, recovery_plan, todo_status=todo_status)
+        await self._emit_pm_status(
+            session_id,
+            task_id,
+            "recover",
+            _pm_status_text(language, "recover", recovery_plan.agent),
+        )
+        self._inject_work_modes_for_plan(workspace, task_id, recovery_plan, wm_index)
+        agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+        handle = await self.runner.launch(
+            recovery_plan.agent,
+            recovery_plan.instruction,
+            Path(workspace),
+            session_id,
+            model=recovery_plan.model,
+            effort=recovery_plan.effort,
+        )
+        self._mark_session_unless_terminal(session_id, "running")
+        return handle, recovery_plan, agent_run_cursor, todo_status
+
+    def _inject_work_modes_for_plan(
+        self, workspace: str, task_id: str, plan: PMPlan, wm_index: list[dict[str, Any]]
+    ) -> None:
+        if self.injector is None:
+            return
+        material = self._build_work_mode_material(plan.instruction, wm_index)
+        if not material["skills"] and not material["standards"]:
+            return
+        try:
+            self.injector.inject(workspace, material, agents=plan.agent, task_id=task_id)
+        except Exception:  # noqa: BLE001 — injection is best-effort
+            pass
 
     def _build_work_mode_material(
         self, instruction: str, wm_index: list[dict[str, Any]]
@@ -1473,9 +1619,13 @@ def _stream_delta(chunk: dict) -> str:
 
 def _pm_status_text(language: str, phase: str, agent: str = "") -> str:
     if normalize_lang(language) == "en":
+        if phase == "recover":
+            return f"PM is switching to {agent} after the previous agent failed..."
         if phase == "launch":
             return f"PM selected {agent}; launching the coding agent..."
         return "PM is planning agent choice, todo list, and launch instruction..."
+    if phase == "recover":
+        return f"PM 检测到当前 agent 失败，正在改派给 {agent}..."
     if phase == "launch":
         return f"PM 已选择 {agent}，正在启动执行 agent..."
     return "PM 正在规划 agent 选择、任务清单和执行指令..."
@@ -1518,6 +1668,41 @@ def _fatal_agent_exit_text(rows: list[Any], *, language: str, agent: str) -> str
             f"{agent} authentication failed. Fix the local CLI login or API credentials, then retry."
         )
     return f"{agent} 认证失败。请修复本地 CLI 登录状态或 API 凭据后重试。"
+
+
+def _all_agents_unavailable_text(language: str, failed_agents: set[str], fatal_msg: str) -> str:
+    agents = ", ".join(sorted(failed_agents))
+    if normalize_lang(language) == "en":
+        return (
+            "All enabled local coding agents are unavailable or have failed. "
+            f"Failed agents: {agents}. Last failure: {fatal_msg}"
+        )
+    return f"所有已启用的本地 coding agent 都不可用或已失败。失败 agent：{agents}。最后失败：{fatal_msg}"
+
+
+def _recovery_summary(language: str, failed_agent: str, next_agent: str) -> str:
+    if normalize_lang(language) == "en":
+        return f"{failed_agent} failed locally; PM is switching to {next_agent}."
+    return f"{failed_agent} 本地失败；PM 改派给 {next_agent}。"
+
+
+def _recovery_fallback_instruction(
+    goal: str, plan: PMPlan, fatal_msg: str, language: str
+) -> str:
+    if normalize_lang(language) == "en":
+        return (
+            "Continue the original user task with this available agent. "
+            "Do not invoke the failed coding agent yourself.\n\n"
+            f"Original user task:\n{goal}\n\n"
+            f"Previous failed instruction:\n{plan.instruction}\n\n"
+            f"Failure evidence:\n{fatal_msg}"
+        )
+    return (
+        "使用当前可用 agent 继续完成原始用户任务。不要自行调用已经失败的 coding agent。\n\n"
+        f"原始用户任务：\n{goal}\n\n"
+        f"上一个失败指令：\n{plan.instruction}\n\n"
+        f"失败证据：\n{fatal_msg}"
+    )
 
 
 def _empty_followup_text(language: str) -> str:
