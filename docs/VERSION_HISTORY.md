@@ -4,6 +4,18 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.2.3
+
+English:
+
+- Removed the redundant auto-agent explanatory copy from the task composer and dispatch timeline chips.
+- Kept PM-driven agent selection behavior unchanged.
+
+中文：
+
+- 从任务输入区和下发时间线标签中移除冗余的自动执行 agent 说明文案。
+- PM 自动选择执行 agent 的实际行为不变。
+
 ## v1.2.2
 
 English:
