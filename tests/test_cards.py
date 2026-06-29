@@ -182,6 +182,66 @@ def test_record_choice_persists_and_emits(tmp_path):
     assert ev.type == "card_decided" and ev.payload["execution_deferred"] is True
 
 
+def test_ask_question_waits_for_arbitrary_option_choice(tmp_path):
+    import asyncio
+
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="g", workspace="/ws"))
+    svc = CardService(store, clock=lambda: "2026-01-01T00:00:00Z")
+
+    async def go():
+        pending = asyncio.create_task(
+            svc.ask_question(
+                session_id="s1",
+                question="How should PM proceed?",
+                options=[
+                    {"label": "Read docs", "action": "A"},
+                    {"label": "Observe demo", "action": "B"},
+                ],
+                timeout_s=1,
+            )
+        )
+        await asyncio.sleep(0)
+        card = svc.list_cards("s1")[0]
+        assert card["action_id"] == ""
+        assert {o["action"] for o in card["options"]} == {"A", "B"}
+        chosen = await svc.record_choice(card["id"], "B")
+        answer = await pending
+        return chosen, answer
+
+    chosen, answer = asyncio.run(go())
+    assert chosen == {"ok": True, "id": chosen["id"], "chosen": "B"}
+    assert answer == {"ok": True, "card_id": chosen["id"], "choice": "B", "label": "Observe demo"}
+    assert svc.list_cards("s1")[0]["chosen"] == "B"
+
+
+def test_ask_question_timeout_closes_question_card(tmp_path):
+    import asyncio
+
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="g", workspace="/ws"))
+    svc = CardService(store, clock=lambda: "2026-01-01T00:00:00Z")
+
+    async def go():
+        answer = await svc.ask_question(
+            session_id="s1",
+            question="Pick one",
+            options=[
+                {"label": "A", "action": "A"},
+                {"label": "B", "action": "B"},
+            ],
+            timeout_s=0.001,
+        )
+        card = svc.list_cards("s1")[0]
+        late_choice = await svc.record_choice(card["id"], "A")
+        return answer, card, late_choice
+
+    answer, card, late_choice = asyncio.run(go())
+    assert answer == {"ok": False, "error": "timeout", "card_id": card["id"]}
+    assert card["chosen"] == "timeout"
+    assert late_choice == {"ok": False, "error": "closed"}
+
+
 def test_record_choice_rejects_bad_option_and_unknown_card(tmp_path):
     import asyncio
 

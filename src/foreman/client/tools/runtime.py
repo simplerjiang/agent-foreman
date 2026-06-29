@@ -42,10 +42,12 @@ class PMToolRuntime:
         auditor: Any = None,
         http_client: httpx.AsyncClient | None = None,
         work_mode_resolver: Any = None,
+        cards: Any = None,
     ) -> None:
         self.cfg = cfg
         self.gate = gate
         self.auditor = auditor
+        self.cards = cards
         self.guard = PathGuard(cfg.workspace, cfg.allowed_roots)
         self._http = http_client
         self._browser: BrowserRuntime | None = None
@@ -53,11 +55,18 @@ class PMToolRuntime:
         # tools → core import. Backs work_mode_search / work_mode_get; None = tools return
         # "work_mode_unavailable" instead of crashing. Usually attached via set_work_mode_resolver.
         self._work_mode_resolver = work_mode_resolver
+        self._session_id = ""
+        self._task_id = ""
 
     def set_work_mode_resolver(self, resolver: Any) -> None:
         """Attach the per-task work-mode resolver (the live path builds it per dispatch and sets it
         here after the runtime is constructed by the factory)."""
         self._work_mode_resolver = resolver
+
+    def set_decision_context(self, session_id: str, task_id: str = "") -> None:
+        """Attach the live session context used by ask_question decision cards."""
+        self._session_id = str(session_id or "")
+        self._task_id = str(task_id or "")
 
     @classmethod
     def from_config(
@@ -68,6 +77,7 @@ class PMToolRuntime:
         gate: Any = None,
         auditor: Any = None,
         work_mode_resolver: Any = None,
+        cards: Any = None,
     ) -> "PMToolRuntime":
         roots = [Path(w.path) for w in cfg.workspaces] or [Path(workspace)]
         pm = cfg.pm_tools
@@ -91,6 +101,7 @@ class PMToolRuntime:
             gate=gate,
             auditor=auditor,
             work_mode_resolver=work_mode_resolver,
+            cards=cards,
         )
 
     @staticmethod
@@ -213,6 +224,32 @@ class PMToolRuntime:
                 "type": "object", "properties": {}, "additionalProperties": False,
             }, SAFE),
             ToolSpec(
+                "ask_question",
+                "Ask the human to choose one option before PM planning continues. Use this only "
+                "when the plan would materially change based on the user's choice. The returned "
+                "tool result contains the chosen action and label.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "question": string,
+                        "options": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"label": string, "value": string, "action": string},
+                                "required": ["label"],
+                                "additionalProperties": False,
+                            },
+                            "minItems": 2,
+                            "maxItems": 8,
+                        },
+                    },
+                    "required": ["question", "options"],
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
                 "work_mode_search",
                 "Search applicable work-mode definitions (skills / code standards / QA rubrics) "
                 "for this task. Returns lightweight index entries (name + description), NOT full "
@@ -299,6 +336,8 @@ class PMToolRuntime:
                 return await self._fetch_url(call.id, args)
             if call.name == "web_search":
                 return await self._web_search(call.id, args)
+            if call.name == "ask_question":
+                return await self._ask_question(call.id, args)
             if call.name.startswith("browser_"):
                 return await self._browser_call(ToolCall(call.id, call.name, args))
             if call.name == "work_mode_search":
@@ -319,6 +358,33 @@ class PMToolRuntime:
             self._browser = None
         if self._http is not None:
             await self._http.aclose()
+
+    async def _ask_question(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if self.cards is None or not hasattr(self.cards, "ask_question"):
+            return ToolResult(cid, "ask_question", False, error="decision_cards_unavailable")
+        if not self._session_id:
+            return ToolResult(cid, "ask_question", False, error="missing_session")
+        question = str(args.get("question") or "").strip()
+        raw_options_value = args.get("options")
+        raw_options: list[Any] = raw_options_value if isinstance(raw_options_value, list) else []
+        options: list[dict[str, str]] = []
+        for idx, raw in enumerate(raw_options[:8], start=1):
+            if isinstance(raw, dict):
+                label = str(raw.get("label") or raw.get("text") or "").strip()
+                action = str(raw.get("action") or raw.get("value") or label or idx).strip()
+            else:
+                label = str(raw or "").strip()
+                action = label or str(idx)
+            if label and action:
+                options.append({"label": label[:120], "action": action[:80]})
+        res = await self.cards.ask_question(
+            session_id=self._session_id,
+            question=question,
+            options=options,
+        )
+        if not res.get("ok"):
+            return ToolResult(cid, "ask_question", False, data=res, error=str(res.get("error") or "failed"))
+        return ToolResult(cid, "ask_question", True, res)
 
     async def _work_mode_search(self, cid: str, args: dict[str, Any]) -> ToolResult:
         """L1 discovery: return the L0 index (metadata only, never a body) of work modes applicable

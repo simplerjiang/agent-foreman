@@ -16,7 +16,7 @@ import subprocess
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -1124,7 +1124,7 @@ def create_app(
         try:
             import httpx
 
-            transport = httpx.ASGITransport(app=app)
+            transport = httpx.ASGITransport(app=cast(Any, app))
             async with httpx.AsyncClient(transport=transport, base_url="http://foreman.local") as client:
                 res = await client.request(
                     method,

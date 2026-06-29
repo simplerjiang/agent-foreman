@@ -824,6 +824,10 @@ class DispatchService:
             plan_kwargs["work_mode_index"] = wm_index
         if _accepts_keyword(self.pm_agent.plan, "work_mode_resolver"):
             plan_kwargs["work_mode_resolver"] = work_mode_resolver
+        if _accepts_keyword(self.pm_agent.plan, "session_id"):
+            plan_kwargs["session_id"] = session_id
+        if _accepts_keyword(self.pm_agent.plan, "task_id"):
+            plan_kwargs["task_id"] = task_id
         with trace_context(session_id=session_id, task_id=task_id, phase="plan"):
             plan = await self.pm_agent.plan(goal, **plan_kwargs)
         # Telemetry: one work_mode event per dispatch (after plan, so pulls/body_tokens are counted).

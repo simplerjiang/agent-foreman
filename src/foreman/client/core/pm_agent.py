@@ -538,6 +538,8 @@ class PMAgent:
         on_tool_event=None,
         work_mode_index: list[dict[str, Any]] | None = None,
         work_mode_resolver: Any = None,
+        session_id: str = "",
+        task_id: str = "",
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
         enabled = [_as_str(a.get("name")) for a in available_agents]
@@ -556,6 +558,8 @@ class PMAgent:
             # bodies during the loop (the factory built the runtime; we inject the task context here).
             if work_mode_resolver is not None and hasattr(runtime, "set_work_mode_resolver"):
                 runtime.set_work_mode_resolver(work_mode_resolver)
+            if hasattr(runtime, "set_decision_context"):
+                runtime.set_decision_context(session_id, task_id)
             try:
                 plan_item_limit = clamp_pm_tool_rounds(getattr(runtime.cfg, "max_rounds", 6))
                 fallback_plan = {
@@ -583,7 +587,10 @@ class PMAgent:
                     + "\n\nUse tools for repository evidence before final_plan when useful. "
                     + "Tool results are only valid when supplied by the runtime. "
                     + "For simple greetings, status questions, or tasks that need no repository "
-                    + "evidence, return final_plan immediately without calling tools."
+                    + "evidence, return final_plan immediately without calling tools. "
+                    + "When the user's choice would materially change the plan, call "
+                    + "ask_question with short options and wait for the returned choice before "
+                    + "submitting the final plan."
                 )
                 # L0 work-mode index → the ACTUAL messages sent to the LLM (not build_plan_prompt).
                 # Bodies are never inlined here; the PM pulls them on demand via work_mode_get (§6).

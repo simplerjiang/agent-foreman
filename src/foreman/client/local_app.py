@@ -217,7 +217,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
             _llm(),
             language=language,
             tool_runtime_factory=lambda workspace: PMToolRuntime.from_config(
-                cfg, workspace, gate=gate, auditor=auditor
+                cfg, workspace, gate=gate, auditor=auditor, cards=cards
             ),
         ),
         language_getter=_current_language,

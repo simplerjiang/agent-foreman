@@ -39,9 +39,9 @@ def _serve_text() -> tuple[HTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_port}/x"
 
 
-def _runtime(tmp_path: Path, **kwargs) -> PMToolRuntime:
+def _runtime(tmp_path: Path, *, cards=None, **kwargs) -> PMToolRuntime:
     cfg = ToolRuntimeConfig(workspace=tmp_path, allowed_roots=[tmp_path], **kwargs)
-    return PMToolRuntime(cfg, gate=Gate(Config().gates))
+    return PMToolRuntime(cfg, gate=Gate(Config().gates), cards=cards)
 
 
 async def test_pm_tool_loop_forwards_llm_stream_chunks(tmp_path: Path):
@@ -595,6 +595,59 @@ async def test_pm_loop_submit_plan_tool_terminates_on_auto_round(tmp_path: Path)
     submit_spec = next(t for t in llm.raw_tools_seen[0] if t["name"] == SUBMIT_PLAN_TOOL)
     assert submit_spec["input_schema"]["properties"]["todo"]["maxItems"] == 6
     assert submit_spec["input_schema"]["properties"]["deliberation"]["maxItems"] == 6
+
+
+async def test_pm_loop_can_ask_question_before_submit_plan(tmp_path: Path):
+    class _FakeCards:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def ask_question(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"ok": True, "card_id": "q1", "choice": "B", "label": "Observe demo"}
+
+    scripted = [
+        LLMToolResponse(
+            text="",
+            tool_calls=[
+                LLMToolCall(
+                    id="q",
+                    name="ask_question",
+                    arguments={
+                        "question": "Pick a path",
+                        "options": [
+                            {"label": "Read docs", "value": "A"},
+                            {"label": "Observe demo", "value": "B"},
+                        ],
+                    },
+                )
+            ],
+        ),
+        LLMToolResponse(text="", tool_calls=[_submit_call(summary="user picked B")]),
+    ]
+    cards = _FakeCards()
+    runtime = _runtime(tmp_path, cards=cards)
+    runtime.set_decision_context("s1", "t1")
+    events: list[tuple[str, dict]] = []
+
+    outcome = await PMToolLoop(
+        _ScriptedToolLLM(scripted),
+        runtime,
+        max_rounds=6,
+        on_tool_event=lambda t, p: events.append((t, p)),
+    ).run(
+        [Message("user", "plan")],
+        fallback_plan={"agent": "codex", "model": "", "effort": "high", "instruction": "fallback"},
+        enabled_agents=["codex"],
+    )
+
+    assert outcome.incomplete is False
+    assert outcome.final_plan["summary"] == "user picked B"
+    assert cards.calls[0]["session_id"] == "s1"
+    assert cards.calls[0]["question"] == "Pick a path"
+    post = [p for t, p in events if t == "tool_post" and p["tool"] == "ask_question"][0]
+    result = json.loads(post["output"])["data"]
+    assert result["choice"] == "B"
 
 
 async def test_pm_loop_forces_submit_plan_on_final_round_no_fallback(tmp_path: Path):
