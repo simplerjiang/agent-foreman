@@ -229,6 +229,32 @@ def test_member_console_has_control_entry_into_dashboard():
     assert "nextUrl()" in admin_js and "finishAuth(onAuthed)" in admin_js
 
 
+def test_local_desktop_console_does_not_require_team_login():
+    """The packaged desktop app serves the same app.html shell, but local servers have no account
+    manager. A 503 from /api/auth/me must enter the local dashboard, not the team login form."""
+    c = TestClient(create_app(load_config()))
+    admin_js = c.get("/admin-app.js").text
+    app_js = c.get("/app.js").text
+
+    check_start = admin_js.index("const checkAuth =")
+    check_end = admin_js.index("useEffect(() => { checkAuth();", check_start)
+    check = admin_js[check_start:check_end]
+    assert 'api("/api/auth/me")' in check
+    assert 'if (!getToken()) { setState({ phase: "login"' not in check
+    assert 'setState({ phase: "local", me: null })' in check
+    assert 'state.phase === "local"' in admin_js and "<${ControlView} />" in admin_js
+
+    boot_start = app_js.rindex("useEffect(() => {", 0, app_js.index("if (bootStartedRef.current)"))
+    boot_end = app_js.index("}, [", boot_start)
+    boot = app_js[boot_start:boot_end]
+    assert 'if (!getToken()) { redirectToLogin(); return; }' not in boot
+    assert "e && e.status === 503" in boot
+    assert "setTeamMode(false)" in boot
+    assert "loadWorkspaces()" in boot and "loadSessions()" in boot
+    assert "loadCards()" in boot and "loadApprovals()" in boot
+    assert "loadLlm()" in boot and "loadAutonomy()" in boot
+
+
 def test_local_dashboard_has_remote_execution_toggle():
     """The machine owner can grant/revoke remote execution from the local 云端连接 card; the toggle
     POSTs the breaker flag and reads it back from /api/settings/cloud."""
