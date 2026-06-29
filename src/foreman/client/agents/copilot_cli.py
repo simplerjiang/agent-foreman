@@ -22,6 +22,11 @@ from .base import AgentHandle
 class CopilotCliAdapter(SubprocessCliAdapter):
     name = "copilot-cli"
 
+    def _env_overrides(self, model: str = "", effort: str = "") -> dict[str, str]:
+        if model.strip().lower().startswith("gpt-5"):
+            return {"COPILOT_PROVIDER_WIRE_API": "responses"}
+        return {}
+
     def _effort_args(self, effort: str) -> list[str]:
         return ["--effort", effort] if effort else []
 

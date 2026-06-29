@@ -123,16 +123,36 @@ async def test_start_model_and_effort_override_config(tmp_path):
     assert "cfg-model" not in adapter.spawned_cmd
 
 
+async def test_start_sets_responses_wire_api_for_gpt5_byok(tmp_path):
+    proc = FakeProc(pid=123)
+    adapter = fake_adapter(CopilotCliAdapter, _cfg(model="gpt-5.5"), proc)
+
+    await adapter.start("do Z", tmp_path, "foreman-session")
+
+    assert adapter.spawned_env == {"COPILOT_PROVIDER_WIRE_API": "responses"}
+
+
+async def test_start_leaves_wire_api_unset_for_non_gpt5_models(tmp_path):
+    proc = FakeProc(pid=123)
+    adapter = fake_adapter(CopilotCliAdapter, _cfg(model="gpt-4"), proc)
+
+    await adapter.start("do Z", tmp_path, "foreman-session")
+
+    assert adapter.spawned_env == {}
+
+
 class _MultiSpawnCopilot(CopilotCliAdapter):
     def __init__(self, cfg, procs):
         super().__init__(cfg)
         self._queue = list(procs)
         self.spawned_cmds = []
         self.spawned_cwds = []
+        self.spawned_envs = []
 
     async def _spawn(self, cmd, workspace, env=None):
         self.spawned_cmds.append(cmd)
         self.spawned_cwds.append(workspace)
+        self.spawned_envs.append(env)
         return self._queue.pop(0)
 
 
@@ -147,6 +167,21 @@ async def test_send_uses_fresh_prompt_without_foreman_session_resume(tmp_path):
     resume_cmd = adapter.spawned_cmds[1]
     _assert_no_resume_selector(resume_cmd, "foreman-session")
     assert "follow up" in resume_cmd
+
+
+async def test_send_preserves_responses_wire_api_for_gpt5_byok(tmp_path):
+    first = FakeProc(pid=1, stdout_lines=[b'{"type":"result","result":"done"}\n'])
+    second = FakeProc(pid=2, stdout_lines=[b'{"type":"result","result":"done again"}\n'])
+    adapter = _MultiSpawnCopilot(_cfg(model="gpt-5.5"), [first, second])
+
+    handle = await adapter.start("first", tmp_path, "foreman-session")
+    await adapter.send(handle, "follow up")
+
+    assert adapter.spawned_envs == [
+        {"COPILOT_PROVIDER_WIRE_API": "responses"},
+        {"COPILOT_PROVIDER_WIRE_API": "responses"},
+    ]
+
 
 
 async def test_send_does_not_use_captured_native_session_id_as_resume_selector(tmp_path):
