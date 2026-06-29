@@ -36,12 +36,13 @@
       newVersionReady: "新版本已发布", refreshNow: "刷新", later: "稍后",
       appUpdateReady: "发现新版本", updateNow: "立即更新", updating: "正在下载更新，应用将自动重启…",
       updateFailed: "更新失败，请稍后重试或手动下载",
-      navWorkspace: "工作台", navDecisions: "决策", navBriefings: "简报", navRules: "工作方式", navSettings: "设置",
+      navWorkspace: "工作台", navDecisions: "决策", navBriefings: "简报", navRules: "工作方式", navSettings: "设置", navVersion: "版本",
       workspaceSubtitle: "选择工作区，给本机 agent 下发任务。",
       decisionsSubtitle: "处理需要你确认的卡片和审批。",
       briefingsSubtitle: "把当前进展整理成可读状态。",
       rulesSubtitle: "维护工作流、技能、代码规范和验收标准 —— PM 规划时按相关性选用，干活时按需取用。",
       settingsSubtitle: "配置工作区、PM 大脑和界面偏好。",
+      versionSubtitle: "查看当前版本、版本来源和本次更新内容。",
       sessions: "会话", newSession: "新会话",
       editSessionTitle: "修改会话标题", sessionTitle: "会话标题", sessionTitleHint: "输入新的会话标题",
       sessionTitleEmpty: "会话标题不能为空。", sessionTitleTooLong: "会话标题太长了，请控制在 300 字以内。", sessionTitleUpdated: "会话标题已更新",
@@ -157,18 +158,25 @@
       ev_review: "复查", ev_audit: "审查", ev_undo: "回退", ev_recover: "恢复", ev_stall: "卡住",
       noActiveSession: "暂无活动会话。", noAgent: "无 agent",
       readOnlyLog: "只读日志", workspaceRisk: "当前工作区范围很大；工具全开时请确认这是你想授权的路径。",
+      versionCurrent: "当前运行版本", versionUnavailable: "等待 /health 返回版本",
+      versionSource: "版本来源", versionSourceText: "Foreman 的包版本只从 src/foreman/__init__.py 的 __version__ 读取；exe、/health、PWA 与 README 的版本说明都必须跟随这个版本更新。",
+      versionUpdates: "本次更新内容", versionReleaseNoteTitle: "README 与 exe 版本信息页",
+      versionReleaseNoteBody: "本次更新增加 GitHub README 与 exe 内控制台的中英文版本信息页，增加可见的历史更新记录，并把“版本号变更必须注明更新内容和历史记录”写入 AGENTS.md。",
+      versionHistory: "历史更新记录",
+      versionMaint: "维护要求", versionMaintText: "每次改 __version__ 时，同步更新 README.md 的 Version Information / 版本信息、docs/VERSION_HISTORY.md，以及 exe 控制台的版本页文案；必须保留历史记录，不能只显示最新版本。",
     },
     en: {
       productSubtitle: "Local workbench",
       newVersionReady: "A new version is available", refreshNow: "Refresh", later: "Later",
       appUpdateReady: "Update available", updateNow: "Update now", updating: "Downloading update — the app will restart automatically…",
       updateFailed: "Update failed — try again later or download manually",
-      navWorkspace: "Workspace", navDecisions: "Decisions", navBriefings: "Briefings", navRules: "Playbook", navSettings: "Settings",
+      navWorkspace: "Workspace", navDecisions: "Decisions", navBriefings: "Briefings", navRules: "Playbook", navSettings: "Settings", navVersion: "Version",
       workspaceSubtitle: "Pick a workspace and dispatch work to the local agent.",
       decisionsSubtitle: "Handle the cards and approvals that need you.",
       briefingsSubtitle: "Turn current progress into readable status.",
       rulesSubtitle: "Maintain workflows, skills, code standards & QA rubrics — selected by relevance and pulled in on demand.",
       settingsSubtitle: "Configure workspaces, the PM brain, and UI preferences.",
+      versionSubtitle: "Review the current version, version source, and this release's changes.",
       sessions: "Sessions", newSession: "New session",
       editSessionTitle: "Edit session title", sessionTitle: "Session title", sessionTitleHint: "Enter a new session title",
       sessionTitleEmpty: "Session title cannot be empty.", sessionTitleTooLong: "Session title is too long; keep it under 300 characters.", sessionTitleUpdated: "Session title updated",
@@ -284,6 +292,12 @@
       ev_review: "Review", ev_audit: "Audit", ev_undo: "Undo", ev_recover: "Recover", ev_stall: "Stall",
       noActiveSession: "No active sessions yet.", noAgent: "no agent",
       readOnlyLog: "Read-only log", workspaceRisk: "This workspace is very broad; confirm that full tool access is intentional.",
+      versionCurrent: "Current runtime version", versionUnavailable: "Waiting for /health version",
+      versionSource: "Version source", versionSourceText: "Foreman's package version is read only from __version__ in src/foreman/__init__.py; the exe, /health, PWA, and README version notes must follow that release.",
+      versionUpdates: "This release", versionReleaseNoteTitle: "README and exe version information pages",
+      versionReleaseNoteBody: "This update adds bilingual version information pages to the GitHub README and the exe console, adds visible historical update records, and records in AGENTS.md that every version bump must describe what changed and preserve history.",
+      versionHistory: "Historical update records",
+      versionMaint: "Maintenance rule", versionMaintText: "Whenever __version__ changes, update README.md's Version Information / 版本信息 section, docs/VERSION_HISTORY.md, and the exe console's Version page copy. Keep visible history; do not show only the latest version.",
     },
   };
   function normalizeUiLang(value) {
@@ -302,10 +316,43 @@
     { key: "briefings", ico: "▤", label: "navBriefings" },
     { key: "rules", ico: "▦", label: "navRules" },
     { key: "settings", ico: "⚙", label: "navSettings" },
+    { key: "version", ico: "v", label: "navVersion" },
   ];
   const KIND_LABEL = { workflow: "kindWorkflow", skill: "kindSkill", code_standard: "kindStandard", qa_rubric: "kindQaOne" };
   const KIND_TAGCOLOR = { workflow: "accent", skill: "violet", code_standard: "amber", qa_rubric: "green" };
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
+  const VERSION_HISTORY = [
+    {
+      version: "v1.2.1",
+      en: "Bilingual README and exe version pages, visible version history, and stricter version-note rules.",
+      zh: "中英文 README 与 exe 版本页、可见版本历史，以及更严格的版本说明规则。",
+    },
+    {
+      version: "v1.2.0",
+      en: "PM context token limits exposed in the product configuration flow.",
+      zh: "在产品配置流程中暴露 PM 上下文 token 上限设置。",
+    },
+    {
+      version: "v1.1.9",
+      en: "PM askQuestion decision tool.",
+      zh: "PM askQuestion 决策工具。",
+    },
+    {
+      version: "v1.1.8",
+      en: "Packaged-exe cloud relay offline flap handling.",
+      zh: "打包 exe 的云端 relay 离线反复跳变处理。",
+    },
+    {
+      version: "v1.1.7",
+      en: "Automatic UI language detection.",
+      zh: "UI 语言自动检测。",
+    },
+    {
+      version: "v1.1.6",
+      en: "PM tool evidence rounds raised and clamped for larger investigations.",
+      zh: "提高并限制 PM 工具取证轮次，支持更长的取证运行。",
+    },
+  ];
 
   // ---------------------------------------------------------------------------
   // token + fetch
@@ -1955,13 +2002,51 @@
     </${Modal}>`;
   }
 
+  function VersionInfo({ d, lang, version }) {
+    const current = version || d.versionUnavailable;
+    return html`<div className="page-narrow version-page">
+      <div className="card version-hero">
+        <div>
+          <div className="card-title">${d.versionCurrent}</div>
+          <div className="version-number">${current}</div>
+        </div>
+        <span className="tag green">/health</span>
+      </div>
+      <div className="card">
+        <div className="card-title">${d.versionUpdates}</div>
+        <div className="version-note">
+          <div className="t">${d.versionReleaseNoteTitle}</div>
+          <div className="h">${d.versionReleaseNoteBody}</div>
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-title">${d.versionHistory}</div>
+        <div className="version-history">
+          ${VERSION_HISTORY.map((item) => html`<div className="version-row" key=${item.version}>
+            <div className="version-tag mono">${item.version}</div>
+            <div className="version-copy">${lang === "zh" ? item.zh : item.en}</div>
+          </div>`)}
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-title">${d.versionSource}</div>
+        <div className="card-sub">${d.versionSourceText}</div>
+        <div className="version-path mono">src/foreman/__init__.py::__version__</div>
+      </div>
+      <div className="card">
+        <div className="card-title">${d.versionMaint}</div>
+        <div className="card-sub">${d.versionMaintText}</div>
+      </div>
+    </div>`;
+  }
+
   // ===========================================================================
   // Mobile shell
   // ===========================================================================
   function MobileShell(props) {
     const { d, lang, view, setView, mTab, setMTab, drawerOpen, setDrawerOpen, counts, sessionRow,
       dig, mainProps, sessions, selected, onSelect, onNew, onRename } = props;
-    const titles = { workspace: sessionRow ? (sessionRow.goal || d.navWorkspace) : d.navWorkspace, decisions: d.navDecisions, briefings: d.navBriefings, rules: d.navRules, settings: d.navSettings };
+    const titles = { workspace: sessionRow ? (sessionRow.goal || d.navWorkspace) : d.navWorkspace, decisions: d.navDecisions, briefings: d.navBriefings, rules: d.navRules, settings: d.navSettings, version: d.navVersion };
     const live = sessionRow && (sessionRow.status || "").toLowerCase().match(/run|active/);
     const sessionStatus = String((sessionRow && sessionRow.status) || "").toLowerCase().replace(/[\s-]+/g, "_");
     const busy = !!sessionRow && ["planning", "queued", "running", "active", "waiting_approval"].includes(sessionStatus);
@@ -1988,6 +2073,7 @@
         ${view === "briefings" ? html`<div style=${{ padding: 13 }}>${mainProps.briefingsTop}<${Briefings} ...${mainProps.briefings} /></div>` : null}
         ${view === "rules" ? html`<div style=${{ padding: 13 }}><${Playbook} ...${mainProps.playbook} /></div>` : null}
         ${view === "settings" ? html`<div style=${{ padding: 13 }}><${Settings} ...${mainProps.settings} /></div>` : null}
+        ${view === "version" ? html`<div style=${{ padding: 13 }}><${VersionInfo} d=${d} lang=${lang} version=${mainProps.version} /></div>` : null}
       </div>
       ${view === "workspace" && mTab === "chat" ? html`<div className="m-composer">
         <button className="burger" onClick=${mainProps.composer.addAttach}>📎</button>
@@ -2406,6 +2492,7 @@
       if (sessionId) { openTimeline(sessionId, processId); return; }
       if (viewName === "decisions" || approvalId) { setView("decisions"); return; }
       if (viewName === "workspace") { setView("workspace"); return; }
+      if (["briefings", "rules", "settings", "version"].includes(viewName)) { setView(viewName); return; }
     }
 
     // notification/deep-link handling
@@ -2820,6 +2907,7 @@
       decisions: decisionsProps, briefings: briefingsProps,
       briefingsTop: html`<button className="btn primary block" style=${{ marginBottom: 13 }} onClick=${runBriefing}>✦ ${d.generate}</button>`,
       playbook: playbookProps, settings: settingsProps, composer: composerProps,
+      version: status.version,
       openCalls, toggleCall, expandedSub, toggleSub, onCard, onApproval: decideApproval, openDetail, sessionRow,
       cards: openCards, approvals,
       onCancelSession: cancelSession,
@@ -2870,6 +2958,7 @@
                 ${view === "briefings" ? html`<${Briefings} ...${briefingsProps} />` : null}
                 ${view === "rules" ? html`<${Playbook} ...${playbookProps} />` : null}
                 ${view === "settings" ? html`<${Settings} ...${settingsProps} />` : null}
+                ${view === "version" ? html`<${VersionInfo} d=${d} lang=${lang} version=${status.version} />` : null}
               </div>
             </div>`}
       </div>
