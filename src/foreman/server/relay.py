@@ -152,9 +152,11 @@ class Relay:
         live = self.conns.get(client.account_id)
         if live and client in live:
             live.remove(client)
+        same_process_live = bool(live and any(c.process_id == client.process_id for c in live))
         if live is not None and not live:
             self.conns.pop(client.account_id, None)
-        self.store.set_process_online(client.process_id, False, self._now())
+        if not same_process_live:
+            self.store.set_process_online(client.process_id, False, self._now())
 
     # ── routing (DESIGN §8.5 ②) ──────────────────────────────────────────────────────────────
     def clients_for(self, account_id: str, process_id: str | None = None) -> list[RelayClient]:
