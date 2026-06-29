@@ -28,6 +28,9 @@ import httpx
 from ..config import Config
 
 
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 2048
+
+
 @dataclass
 class Message:
     role: str  # "system" | "user" | "assistant"
@@ -116,7 +119,7 @@ class LLMClient:
         self.model = cfg.llm.model
         self.api_key = (cfg.secrets.llm_api_key or "").strip()
         self.context_window_tokens = getattr(cfg.llm, "context_window_tokens", 272_000)
-        self.max_tokens = cfg.llm.max_tokens
+        self.max_tokens = _ANTHROPIC_DEFAULT_MAX_TOKENS
         self.reasoning_effort = (getattr(cfg.llm, "reasoning_effort", "") or "").strip().lower()
         self.timeout = cfg.llm.request_timeout_s
         self.mode = (cfg.llm.transport or "http").strip().lower()
@@ -189,7 +192,7 @@ class LLMClient:
         return self._context_window_tokens()
 
     def runtime_max_tokens(self) -> int:
-        return self._max_tokens()
+        return _positive_setting(self.max_tokens, _ANTHROPIC_DEFAULT_MAX_TOKENS)
 
     def _context_window_tokens(self) -> int:
         tokens = _positive_setting(self.context_window_tokens, 272_000)
@@ -204,16 +207,9 @@ class LLMClient:
         return tokens
 
     def _max_tokens(self) -> int:
-        tokens = _positive_setting(self.max_tokens, 2048)
-        if self._settings_resolver is not None:
-            try:
-                ov = self._settings_resolver() or {}
-            except Exception:  # noqa: BLE001 - a broken resolver must never break defaults
-                ov = {}
-            raw = ov.get("max_tokens")
-            if raw not in (None, ""):
-                tokens = _positive_setting(raw, tokens)
-        return tokens
+        # Anthropic requires a max_tokens field; OpenAI-compatible providers do not. Keep this as an
+        # internal protocol default instead of a user/provider setting.
+        return _positive_setting(self.max_tokens, _ANTHROPIC_DEFAULT_MAX_TOKENS)
 
     def _reasoning_effort(self) -> str:
         effort = self.reasoning_effort
@@ -415,7 +411,6 @@ class LLMClient:
     ) -> str:
         payload: dict = {
             "model": model,
-            "max_tokens": self._max_tokens(),
             "messages": [{"role": m.role, "content": m.content} for m in messages],
         }
         if json_mode:
@@ -447,7 +442,6 @@ class LLMClient:
     ) -> LLMToolResponse:
         payload: dict = {
             "model": model,
-            "max_tokens": self._max_tokens(),
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "tools": [_openai_tool_schema(tool) for tool in tools],
         }
@@ -654,7 +648,6 @@ class LLMClient:
             "model": model,
             "stream": True,
             "store": False,
-            "max_output_tokens": self._max_tokens(),
             "input": items,
         }
         reasoning = {"summary": "auto"}
@@ -1175,17 +1168,8 @@ def _model_infos(data: object) -> list[dict[str, object]]:
                 or item.get("inputTokenLimit")
                 or item.get("maxInputTokens")
             )
-            max_tokens = _positive_int(
-                item.get("max_completion_tokens")
-                or item.get("max_tokens")
-                or item.get("output_token_limit")
-                or item.get("outputTokenLimit")
-                or item.get("maxOutputTokens")
-            )
             if context_length is not None:
                 info["context_length"] = context_length
-            if max_tokens is not None:
-                info["max_tokens"] = max_tokens
         else:
             mid = ""
             info = {"id": mid}

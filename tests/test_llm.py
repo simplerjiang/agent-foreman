@@ -199,13 +199,12 @@ async def test_complete_model_override_wins_for_one_request():
     assert cap["json"]["model"] == "dispatch-pm-model"
 
 
-async def test_settings_resolver_overrides_token_limits():
+async def test_settings_resolver_overrides_context_limit_without_output_cap():
     cfg = Config()
     cfg.llm.provider = "openai"
     cfg.llm.base_url = "https://config.test/v1"
     cfg.llm.model = "config-model"
     cfg.llm.context_window_tokens = 272000
-    cfg.llm.max_tokens = 2048
     cfg.secrets.llm_api_key = "secret-key"
     cap: dict = {}
 
@@ -221,8 +220,8 @@ async def test_settings_resolver_overrides_token_limits():
     await c.aclose()
 
     assert c.runtime_context_window_tokens() == 300000
-    assert c.runtime_max_tokens() == 128000
-    assert cap["json"]["max_tokens"] == 128000
+    assert c.runtime_max_tokens() == 2048
+    assert "max_tokens" not in cap["json"]
 
 
 async def test_settings_resolver_overrides_api_key_without_restart():
@@ -291,7 +290,7 @@ async def test_list_models_openai_compatible():
     await c.aclose()
     assert cap == {"url": "https://example.test/v1/models", "auth": "Bearer secret-key"}
     assert models == ["gpt-5", "gpt-5-mini"]
-    assert infos[0] == {"id": "gpt-5", "context_length": 272000, "max_tokens": 128000}
+    assert infos[0] == {"id": "gpt-5", "context_length": 272000}
 
 
 async def test_list_models_anthropic_shape():
@@ -383,6 +382,7 @@ async def test_anthropic_request_and_parse():
     assert str(cap["request"].url) == "https://example.test/v1/messages"
     assert cap["request"].headers["x-api-key"] == "secret-key"
     assert cap["request"].headers["anthropic-version"] == "2023-06-01"
+    assert cap["json"]["max_tokens"] == 2048
     # system is split out of messages; turns exclude system
     assert cap["json"]["system"] == "sys"
     assert cap["json"]["messages"] == [{"role": "user", "content": "hello"}]
@@ -449,6 +449,7 @@ async def test_ws_responses_accumulates_deltas_and_builds_request():
     req = json.loads(sent[0])                                            # the response.create frame
     assert req["type"] == "response.create" and req["model"] == "gpt-5.5" and req["stream"] is True
     assert req["store"] is False
+    assert "max_output_tokens" not in req
     assert req["reasoning"] == {"summary": "auto"}
     assert req["instructions"] == "be terse"                            # system -> instructions
     assert req["input"] == [

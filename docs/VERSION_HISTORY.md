@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.2.2
+
+English:
+
+- Removed the configurable PM provider max output token setting from the Settings UI and settings API.
+- Stopped sending output cap fields to OpenAI-compatible Chat Completions and Responses WebSocket providers.
+- Kept an internal Anthropic default because the Messages API requires `max_tokens`.
+
+中文：
+
+- 从设置页和设置 API 移除 PM Provider 的可配置最大输出 token。
+- 停止向 OpenAI 兼容 Chat Completions 与 Responses WebSocket Provider 发送输出上限字段。
+- Anthropic Messages API 必须传 `max_tokens`，因此仅保留代码内默认值。
+
 ## v1.2.1
 
 English:

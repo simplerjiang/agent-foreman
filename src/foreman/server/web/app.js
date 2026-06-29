@@ -127,7 +127,6 @@
       provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key", transport: "传输方式",
       requestTimeout: "规划超时（秒）", requestTimeoutHelp: "控制 PM 大脑单次规划/复查的墙钟上限；范围 30–3600 秒，默认 300 秒。",
       contextWindow: "上下文上限 token", contextWindowHelp: "用于 PM 上下文预算和自动压缩；默认 272000。",
-      maxOutputTokens: "最大输出 token", maxOutputTokensHelp: "发送给 Provider 的单次最大输出上限，也会作为上下文预算预留。",
       reasoningEffort: "推理强度",
       pmKeyHint: "已配置 API Key。输入新 key 后保存可替换；留空不修改。", pmKeyMissing: "未检测到 API Key。可在这里输入并保存。",
       pmKeyPlaceholder: "留空不修改；输入新 key 后保存", clearKey: "清空 Key",
@@ -160,8 +159,8 @@
       readOnlyLog: "只读日志", workspaceRisk: "当前工作区范围很大；工具全开时请确认这是你想授权的路径。",
       versionCurrent: "当前运行版本", versionUnavailable: "等待 /health 返回版本",
       versionSource: "版本来源", versionSourceText: "Foreman 的包版本只从 src/foreman/__init__.py 的 __version__ 读取；exe、/health、PWA 与 README 的版本说明都必须跟随这个版本更新。",
-      versionUpdates: "本次更新内容", versionReleaseNoteTitle: "README 与 exe 版本信息页",
-      versionReleaseNoteBody: "本次更新增加 GitHub README 与 exe 内控制台的中英文版本信息页，增加可见的历史更新记录，并把“版本号变更必须注明更新内容和历史记录”写入 AGENTS.md。",
+      versionUpdates: "本次更新内容", versionReleaseNoteTitle: "移除 Provider 最大输出 token",
+      versionReleaseNoteBody: "本次更新移除 PM Provider 的可配置最大输出 token 设置，并停止向 OpenAI 兼容 HTTP 与 Responses WebSocket Provider 发送输出上限。Anthropic 因协议必填，仍使用代码内默认值。",
       versionHistory: "历史更新记录",
       versionMaint: "维护要求", versionMaintText: "每次改 __version__ 时，同步更新 README.md 的 Version Information / 版本信息、docs/VERSION_HISTORY.md，以及 exe 控制台的版本页文案；必须保留历史记录，不能只显示最新版本。",
     },
@@ -261,7 +260,6 @@
       provider: "Provider", model: "Model", baseUrl: "Base URL", apiKey: "API Key", transport: "Transport",
       requestTimeout: "Planning timeout (s)", requestTimeoutHelp: "Wall-clock limit for one PM planning/review call; range 30–3600 seconds, default 300 seconds.",
       contextWindow: "Context limit tokens", contextWindowHelp: "Used for PM context budgeting and auto-compaction; default 272000.",
-      maxOutputTokens: "Max output tokens", maxOutputTokensHelp: "Sent to the provider as the per-call output cap and reserved in the context budget.",
       reasoningEffort: "Reasoning effort",
       pmKeyHint: "API key is set. Enter a new key and save to replace it; blank keeps it.", pmKeyMissing: "No API key detected. You can enter and save one here.",
       pmKeyPlaceholder: "blank = unchanged; enter a new key to save", clearKey: "Clear key",
@@ -294,8 +292,8 @@
       readOnlyLog: "Read-only log", workspaceRisk: "This workspace is very broad; confirm that full tool access is intentional.",
       versionCurrent: "Current runtime version", versionUnavailable: "Waiting for /health version",
       versionSource: "Version source", versionSourceText: "Foreman's package version is read only from __version__ in src/foreman/__init__.py; the exe, /health, PWA, and README version notes must follow that release.",
-      versionUpdates: "This release", versionReleaseNoteTitle: "README and exe version information pages",
-      versionReleaseNoteBody: "This update adds bilingual version information pages to the GitHub README and the exe console, adds visible historical update records, and records in AGENTS.md that every version bump must describe what changed and preserve history.",
+      versionUpdates: "This release", versionReleaseNoteTitle: "Removed provider max output tokens",
+      versionReleaseNoteBody: "This update removes the configurable PM provider max output token setting and stops sending output caps to OpenAI-compatible HTTP and Responses WebSocket providers. Anthropic still uses an internal default because its protocol requires it.",
       versionHistory: "Historical update records",
       versionMaint: "Maintenance rule", versionMaintText: "Whenever __version__ changes, update README.md's Version Information / 版本信息 section, docs/VERSION_HISTORY.md, and the exe console's Version page copy. Keep visible history; do not show only the latest version.",
     },
@@ -322,6 +320,11 @@
   const KIND_TAGCOLOR = { workflow: "accent", skill: "violet", code_standard: "amber", qa_rubric: "green" };
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
+    {
+      version: "v1.2.2",
+      en: "Removed the PM provider max output token setting and stopped sending OpenAI-compatible output caps.",
+      zh: "移除 PM Provider 最大输出 token 设置，并停止发送 OpenAI 兼容输出上限。",
+    },
     {
       version: "v1.2.1",
       en: "Bilingual README and exe version pages, visible version history, and stricter version-note rules.",
@@ -515,11 +518,8 @@
     const wanted = String(selectedModel || fallbackModel || "").trim();
     const found = models.find((m) => m.value === wanted || m.id === wanted) || models.find((m) => m.context_length);
     const contextLength = Number(found && found.context_length);
-    const outputReserve = Number(found && found.max_tokens);
     if (Number.isFinite(contextLength) && contextLength > 0) {
-      return Number.isFinite(outputReserve) && outputReserve > 0 && outputReserve < contextLength
-        ? contextLength - outputReserve
-        : contextLength;
+      return contextLength;
     }
     return DEFAULT_CONTEXT_TOKENS;
   }
@@ -1839,15 +1839,9 @@
           <input className="input mono" type="number" min="30" max="3600" value=${llm.request_timeout_s || 300} onChange=${(e) => setLlm({ ...llm, request_timeout_s: Number(e.target.value) || 300 })} />
           <div className="card-sub" style=${{ marginTop: 6, marginBottom: 0 }}>${d.requestTimeoutHelp}</div>
         </div>
-        <div className="row cols2" style=${{ marginBottom: 13 }}>
-          <div className="field"><span className="field-label">${d.contextWindow}</span>
-            <input className="input mono" type="number" min="1000" max="2000000" value=${llm.context_window_tokens || 272000} onChange=${(e) => setLlm({ ...llm, context_window_tokens: Number(e.target.value) || 272000 })} />
-            <div className="card-sub" style=${{ marginTop: 6, marginBottom: 0 }}>${d.contextWindowHelp}</div>
-          </div>
-          <div className="field"><span className="field-label">${d.maxOutputTokens}</span>
-            <input className="input mono" type="number" min="1000" max="2000000" value=${llm.max_tokens || 2048} onChange=${(e) => setLlm({ ...llm, max_tokens: Number(e.target.value) || 2048 })} />
-            <div className="card-sub" style=${{ marginTop: 6, marginBottom: 0 }}>${d.maxOutputTokensHelp}</div>
-          </div>
+        <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.contextWindow}</span>
+          <input className="input mono" type="number" min="1000" max="2000000" value=${llm.context_window_tokens || 272000} onChange=${(e) => setLlm({ ...llm, context_window_tokens: Number(e.target.value) || 272000 })} />
+          <div className="card-sub" style=${{ marginTop: 6, marginBottom: 0 }}>${d.contextWindowHelp}</div>
         </div>
         <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.reasoningEffort}</span>
           <select className="select" value=${llm.reasoning_effort || ""} onChange=${(e) => setLlm({ ...llm, reasoning_effort: e.target.value })}><option value="">${d.effortDefault}</option><option value="low">${d.fast}</option><option value="medium">${d.std}</option><option value="high">${d.deep}</option><option value="max">max</option></select>
@@ -2176,7 +2170,7 @@
     const [dispatchStatus, setDispatchStatus] = useState("");
     const [compacting, setCompacting] = useState(false);
     const [compactStatus, setCompactStatus] = useState("");
-    const [llm, setLlm] = useState({ provider: "openai", model: "", base_url: "", transport: "http", request_timeout_s: 300, context_window_tokens: 272000, max_tokens: 2048, reasoning_effort: "", api_key_set: true, api_key: "" });
+    const [llm, setLlm] = useState({ provider: "openai", model: "", base_url: "", transport: "http", request_timeout_s: 300, context_window_tokens: 272000, reasoning_effort: "", api_key_set: true, api_key: "" });
     const [llmStatus, setLlmStatus] = useState("");
     const [agentStatus, setAgentStatus] = useState("");
     const [pmTools, setPmTools] = useState({ file_read: true, file_write: false, shell: false, web_fetch: false, web_search: false, browser: false, allowed_commands: ["python --version"], allowed_origins: [], web_search_provider: "duckduckgo", searxng_url: "", browser_headless: false, max_rounds: 6 });
@@ -2242,12 +2236,12 @@
     const loadPmTools = useCallback(async () => { try { setPmTools(await api("/api/settings/pm-tools") || {}); } catch (e) { /* server mode */ } }, []);
     const loadDebug = useCallback(async () => { try { setDebugSettings(await api("/api/settings/debug") || { llm_trace: false }); } catch (e) { /* server mode */ } }, []);
     const saveDebug = useCallback(async (on) => { try { const r = await api("/api/settings/debug", { method: "POST", body: { llm_trace: !!on } }); setDebugSettings({ llm_trace: !!(r && r.llm_trace) }); setDebugStatus(d.debugSaved); } catch (e) { notifyError(e); } }, [d]);
-    const loadModels = useCallback(async () => { try { const data = await api("/api/models"); setModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, max_tokens: m.max_tokens, source: m.source }))); } catch (e) { setModelOptions([]); } }, []);
+    const loadModels = useCallback(async () => { try { const data = await api("/api/models"); setModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, source: m.source }))); } catch (e) { setModelOptions([]); } }, []);
     const loadPmModels = useCallback(async (draft) => {
       const cur = draft || {};
-      const body = { provider: cur.provider || "openai", model: (cur.model || "").trim(), base_url: (cur.base_url || "").trim(), transport: cur.transport || "http", request_timeout_s: Number(cur.request_timeout_s) || 300, context_window_tokens: Number(cur.context_window_tokens) || 272000, max_tokens: Number(cur.max_tokens) || 2048, reasoning_effort: cur.reasoning_effort || "" };
+      const body = { provider: cur.provider || "openai", model: (cur.model || "").trim(), base_url: (cur.base_url || "").trim(), transport: cur.transport || "http", request_timeout_s: Number(cur.request_timeout_s) || 300, context_window_tokens: Number(cur.context_window_tokens) || 272000, reasoning_effort: cur.reasoning_effort || "" };
       if ((cur.api_key || "").trim()) body.api_key = cur.api_key.trim();
-      try { const data = await api("/api/models/preview", { method: "POST", body }); setPmModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, max_tokens: m.max_tokens, source: m.source }))); } catch (e) { setPmModelOptions([]); }
+      try { const data = await api("/api/models/preview", { method: "POST", body }); setPmModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, source: m.source }))); } catch (e) { setPmModelOptions([]); }
     }, []);
     const loadSessions = useCallback(async () => { try { try { setSessions(await api("/api/overview") || []); } catch (e) { setSessions(await api("/api/sessions") || []); } } catch (e) { setSessions([]); } }, []);
     const loadCards = useCallback(async () => { try { setCards(await api("/api/cards") || []); } catch (e) { setCards([]); } }, []);
@@ -2795,7 +2789,7 @@
     }
     async function saveLlm() {
       try {
-        const body = { provider: llm.provider || "openai", model: (llm.model || "").trim(), base_url: (llm.base_url || "").trim(), transport: llm.transport || "http", request_timeout_s: Number(llm.request_timeout_s) || 300, context_window_tokens: Number(llm.context_window_tokens) || 272000, max_tokens: Number(llm.max_tokens) || 2048, reasoning_effort: llm.reasoning_effort || "" };
+        const body = { provider: llm.provider || "openai", model: (llm.model || "").trim(), base_url: (llm.base_url || "").trim(), transport: llm.transport || "http", request_timeout_s: Number(llm.request_timeout_s) || 300, context_window_tokens: Number(llm.context_window_tokens) || 272000, reasoning_effort: llm.reasoning_effort || "" };
         if ((llm.api_key || "").trim()) body.api_key = llm.api_key.trim();
         const data = await api("/api/settings/llm", { method: "POST", body }); const next = { ...data, api_key: "" }; setLlm(next); setLlmStatus(d.saved); await loadPmModels(next); await loadModels();
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }

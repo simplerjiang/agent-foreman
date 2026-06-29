@@ -260,7 +260,6 @@ def test_api_models_preserves_provider_context_metadata(monkeypatch):
         "id": "big-model",
         "source": "provider",
         "context_length": 256000,
-        "max_tokens": 8192,
     } in data["models"]
 
 
@@ -366,7 +365,7 @@ def test_llm_settings_default_and_override(tmp_path):
     assert got["provider"] == "openai" and got["model"] == "gpt-4o" and got["api_key_set"] is True
     assert got["transport"] == "http"
     assert got["context_window_tokens"] == 272000
-    assert got["max_tokens"] == 2048
+    assert "max_tokens" not in got
 
     saved = c.post(
         "/api/settings/llm",
@@ -381,16 +380,16 @@ def test_llm_settings_default_and_override(tmp_path):
     assert saved["model"] == "gpt-5" and saved["provider"] == "anthropic"
     assert saved["transport"] == "ws"
     assert saved["context_window_tokens"] == 272000
-    assert saved["max_tokens"] == 128000
+    assert "max_tokens" not in saved
     assert cfg.llm.transport == "ws"
     assert cfg.llm.context_window_tokens == 272000
-    assert cfg.llm.max_tokens == 128000
     # persisted as a config_kv override (survives a fresh GET)
     got = c.get("/api/settings/llm").json()
     assert got["model"] == "gpt-5"
     assert got["transport"] == "ws"
     assert got["context_window_tokens"] == 272000
-    assert got["max_tokens"] == 128000
+    assert "max_tokens" not in got
+    assert store.get_setting("llm.max_tokens") is None
 
 
 def test_llm_settings_blank_key_is_not_configured(tmp_path):

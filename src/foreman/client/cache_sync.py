@@ -201,10 +201,6 @@ def _llm_settings(store: Any, cfg: Any) -> dict:
         context_window_tokens = int(_setting(store, "llm.context_window_tokens", str(getattr(llm, "context_window_tokens", 272000))) or 272000)
     except (TypeError, ValueError):
         context_window_tokens = 272000
-    try:
-        max_tokens = int(_setting(store, "llm.max_tokens", str(getattr(llm, "max_tokens", 2048))) or 2048)
-    except (TypeError, ValueError):
-        max_tokens = 2048
     return {
         "provider": provider,
         "model": model,
@@ -212,7 +208,6 @@ def _llm_settings(store: Any, cfg: Any) -> dict:
         "transport": transport,
         "request_timeout_s": timeout,
         "context_window_tokens": context_window_tokens,
-        "max_tokens": max_tokens,
         "reasoning_effort": reasoning_effort,
         "api_key_set": bool(str(getattr(secrets, "llm_api_key", "") or "").strip()),
     }

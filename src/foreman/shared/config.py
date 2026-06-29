@@ -108,7 +108,6 @@ class LLMCfg(BaseModel):
     model: str = "gpt-4o"
     request_timeout_s: int = 300
     context_window_tokens: int = 272_000
-    max_tokens: int = 2048
     # Optional PM-brain reasoning effort for providers that require an explicit knob.
     # Empty means "do not send a provider-specific parameter".
     reasoning_effort: str = ""

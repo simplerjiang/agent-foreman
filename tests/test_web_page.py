@@ -162,10 +162,10 @@ def test_version_information_page_wired():
     assert health["version"]
     assert "navVersion" in js and "function VersionInfo" in js
     assert "Current runtime version" in js and "当前运行版本" in js
-    assert "README and exe version information pages" in js
-    assert "GitHub README 与 exe 内控制台" in js
+    assert "Removed provider max output tokens" in js
+    assert "移除 Provider 最大输出 token" in js
     assert "VERSION_HISTORY" in js and "Historical update records" in js
-    assert "v1.2.0" in js and "v1.1.9" in js
+    assert "v1.2.2" in js and "v1.2.1" in js and "v1.2.0" in js
     assert "version=${status.version}" in js
     assert '["briefings", "rules", "settings", "version"].includes(viewName)' in js
     assert ".version-number" in css and ".version-path" in css and ".version-history" in css
@@ -177,13 +177,13 @@ def test_readme_and_agents_require_version_notes():
     history = (ROOT / "docs" / "VERSION_HISTORY.md").read_text(encoding="utf-8")
 
     assert "### Version Information" in readme and "### 版本信息" in readme
-    assert "v1.2.1" in readme
+    assert "v1.2.2" in readme
     assert "Recent history:" in readme and "最近历史：" in readme
     assert "docs/VERSION_HISTORY.md" in readme
-    assert "v1.2.0" in readme and "v1.1.9" in readme
+    assert "v1.2.1" in readme and "v1.2.0" in readme
     assert "每次改版本号都必须注明本次更新内容，并能看到历史更新记录" in agents
     assert "README.md" in agents and "Version / 版本" in agents and "docs/VERSION_HISTORY.md" in agents
-    assert "## v1.2.1" in history and "## v1.2.0" in history and "## v1.1.9" in history
+    assert "## v1.2.2" in history and "## v1.2.1" in history and "## v1.2.0" in history
     assert "历史更新记录" in agents and "不能只显示最新版本" in agents
 
 
@@ -228,8 +228,8 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert "effort" in js and 'setEffort("low")' in js and 'setEffort("high")' in js
     # context meter + compact action
     assert "ctx-meter" in js and "/compact" in js and "runCompact" in js
-    assert "contextLimitFor" in js and "context_length" in js and "max_tokens" in js
-    assert "contextLength - outputReserve" in js
+    assert "contextLimitFor" in js and "context_length" in js
+    assert "contextLength - outputReserve" not in js
     assert ".ctx-meter" in css and ".seg" in css
     assert 'e.key === "@"' in js and "addAttach(); return;" in js
     assert 'attachments.map((a) => `@${a.name}`).join(" ")' in js
@@ -241,17 +241,18 @@ def test_pm_brain_timeout_setting_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     assert "request_timeout_s" in js
-    assert "context_window_tokens" in js and "max_tokens" in js
+    assert "context_window_tokens" in js
+    assert "max_tokens" not in js
     assert "Planning timeout (s)" in js and "规划超时（秒）" in js
     assert "Context limit tokens" in js and "上下文上限 token" in js
-    assert "Max output tokens" in js and "最大输出 token" in js
+    assert "Max output tokens" not in js and "maxOutputTokens" not in js
     assert "30–3600 seconds" in js and "30–3600 秒" in js
     assert "DEFAULT_CONTEXT_TOKENS = 272000" in js
     start = js.index("async function saveLlm")
     end = js.index("async function clearLlmKey", start)
     assert "request_timeout_s: Number(llm.request_timeout_s) || 300" in js[start:end]
     assert "context_window_tokens: Number(llm.context_window_tokens) || 272000" in js[start:end]
-    assert "max_tokens: Number(llm.max_tokens) || 2048" in js[start:end]
+    assert "max_tokens" not in js[start:end]
 
 
 def test_remote_control_ui_wires_process_target_and_approve_endpoint():

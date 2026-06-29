@@ -15,7 +15,7 @@ from __future__ import annotations
 # ── budget constants (single source; mirrored in 90-conventions-and-glossary.md) ──
 CHARS_PER_TOKEN = 4
 DEFAULT_CTX_WINDOW_TOKENS = 272_000  # [default 2026-06-29] GPT-compatible fallback window
-OUTPUT_RESERVE_TOKENS = 4_000        # reserve for the response (mirrors app.js outputReserve)
+OUTPUT_RESERVE_TOKENS = 4_000        # internal reserve for the response; not sent to providers
 AUTO_COMPACT_THRESHOLD = 0.70        # [default 2026-06-24] compact when (lane5+6+7) ≥ this × window
 AUTO_COMPACT_EVERY_N_RUNS = 8        # [default 2026-06-24] also compact every N review runs
 
