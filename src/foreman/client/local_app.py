@@ -126,6 +126,9 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
             "base_url": store.get_setting("llm.base_url") or "",
             "transport": store.get_setting("llm.transport") or cfg.llm.transport,
             "request_timeout_s": timeout,
+            "context_window_tokens": store.get_setting("llm.context_window_tokens") or "",
+            "max_tokens": store.get_setting("llm.max_tokens") or "",
+            "reasoning_effort": store.get_setting("llm.reasoning_effort") or "",
             "api_key": cfg.secrets.llm_api_key,
         }
 

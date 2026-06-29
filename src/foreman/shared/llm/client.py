@@ -115,6 +115,7 @@ class LLMClient:
         self.base_url = cfg.llm.base_url.rstrip("/")
         self.model = cfg.llm.model
         self.api_key = (cfg.secrets.llm_api_key or "").strip()
+        self.context_window_tokens = getattr(cfg.llm, "context_window_tokens", 272_000)
         self.max_tokens = cfg.llm.max_tokens
         self.reasoning_effort = (getattr(cfg.llm, "reasoning_effort", "") or "").strip().lower()
         self.timeout = cfg.llm.request_timeout_s
@@ -183,6 +184,36 @@ class LLMClient:
                 except (TypeError, ValueError):
                     timeout = float(self.timeout or 0)
         return max(float(timeout or 0), 1.0)
+
+    def runtime_context_window_tokens(self) -> int:
+        return self._context_window_tokens()
+
+    def runtime_max_tokens(self) -> int:
+        return self._max_tokens()
+
+    def _context_window_tokens(self) -> int:
+        tokens = _positive_setting(self.context_window_tokens, 272_000)
+        if self._settings_resolver is not None:
+            try:
+                ov = self._settings_resolver() or {}
+            except Exception:  # noqa: BLE001 - a broken resolver must never break defaults
+                ov = {}
+            raw = ov.get("context_window_tokens")
+            if raw not in (None, ""):
+                tokens = _positive_setting(raw, tokens)
+        return tokens
+
+    def _max_tokens(self) -> int:
+        tokens = _positive_setting(self.max_tokens, 2048)
+        if self._settings_resolver is not None:
+            try:
+                ov = self._settings_resolver() or {}
+            except Exception:  # noqa: BLE001 - a broken resolver must never break defaults
+                ov = {}
+            raw = ov.get("max_tokens")
+            if raw not in (None, ""):
+                tokens = _positive_setting(raw, tokens)
+        return tokens
 
     def _reasoning_effort(self) -> str:
         effort = self.reasoning_effort
@@ -384,7 +415,7 @@ class LLMClient:
     ) -> str:
         payload: dict = {
             "model": model,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self._max_tokens(),
             "messages": [{"role": m.role, "content": m.content} for m in messages],
         }
         if json_mode:
@@ -416,7 +447,7 @@ class LLMClient:
     ) -> LLMToolResponse:
         payload: dict = {
             "model": model,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self._max_tokens(),
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "tools": [_openai_tool_schema(tool) for tool in tools],
         }
@@ -488,7 +519,7 @@ class LLMClient:
         turns = [
             {"role": m.role, "content": m.content} for m in messages if m.role != "system"
         ]
-        payload: dict = {"model": model, "max_tokens": self.max_tokens, "messages": turns}
+        payload: dict = {"model": model, "max_tokens": self._max_tokens(), "messages": turns}
         if system:
             payload["system"] = system
         r = await self._client.post(
@@ -510,7 +541,7 @@ class LLMClient:
         ]
         payload: dict = {
             "model": model,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self._max_tokens(),
             "messages": turns,
             "tools": [_anthropic_tool_schema(tool) for tool in tools],
         }
@@ -623,6 +654,7 @@ class LLMClient:
             "model": model,
             "stream": True,
             "store": False,
+            "max_output_tokens": self._max_tokens(),
             "input": items,
         }
         reasoning = {"summary": "auto"}
@@ -1103,6 +1135,14 @@ def _string_part(value: object) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
+
+
+def _positive_setting(value: object, default: int) -> int:
+    try:
+        n = int(value)  # type: ignore[arg-type,call-overload]
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
 
 
 def _model_ids(data: object) -> list[str]:

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 # ── budget constants (single source; mirrored in 90-conventions-and-glossary.md) ──
 CHARS_PER_TOKEN = 4
-DEFAULT_CTX_WINDOW_TOKENS = 32_000   # [default 2026-06-24] fallback window when /models omits it
+DEFAULT_CTX_WINDOW_TOKENS = 272_000  # [default 2026-06-29] GPT-compatible fallback window
 OUTPUT_RESERVE_TOKENS = 4_000        # reserve for the response (mirrors app.js outputReserve)
 AUTO_COMPACT_THRESHOLD = 0.70        # [default 2026-06-24] compact when (lane5+6+7) ≥ this × window
 AUTO_COMPACT_EVERY_N_RUNS = 8        # [default 2026-06-24] also compact every N review runs
@@ -49,7 +49,9 @@ async def resolve_window_tokens(llm: object, model: str = "") -> int:
     ``context_length``. Falls back to :data:`DEFAULT_CTX_WINDOW_TOKENS` when unavailable (no static
     per-model table exists, and many proxies omit context_length). Never raises — a broken /models
     call must not break a dispatch."""
-    window = DEFAULT_CTX_WINDOW_TOKENS
+    configured_window = _runtime_context_window_tokens(llm) or DEFAULT_CTX_WINDOW_TOKENS
+    window = configured_window
+    output_reserve = _runtime_max_tokens(llm) or OUTPUT_RESERVE_TOKENS
     fetch = getattr(llm, "list_model_infos", None)
     if fetch is not None:
         try:
@@ -58,8 +60,37 @@ async def resolve_window_tokens(llm: object, model: str = "") -> int:
             infos = None
         ctx = _context_length_for(infos, model)
         if ctx and ctx > 0:
-            window = ctx
-    return max(1_000, window - OUTPUT_RESERVE_TOKENS)
+            window = min(ctx, configured_window)
+    output_reserve = max(0, min(output_reserve, window - 1_000))
+    return max(1_000, window - output_reserve)
+
+
+def _runtime_context_window_tokens(llm: object) -> int:
+    read = getattr(llm, "runtime_context_window_tokens", None)
+    if callable(read):
+        try:
+            return _positive_int(read())
+        except Exception:  # noqa: BLE001 - bad resolver/config falls back
+            return 0
+    return _positive_int(getattr(llm, "context_window_tokens", 0))
+
+
+def _runtime_max_tokens(llm: object) -> int:
+    read = getattr(llm, "runtime_max_tokens", None)
+    if callable(read):
+        try:
+            return _positive_int(read())
+        except Exception:  # noqa: BLE001 - bad resolver/config falls back
+            return 0
+    return _positive_int(getattr(llm, "max_tokens", 0))
+
+
+def _positive_int(value: object) -> int:
+    try:
+        n = int(value)  # type: ignore[arg-type,call-overload]
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
 
 
 def _context_length_for(infos: object, model: str) -> int:

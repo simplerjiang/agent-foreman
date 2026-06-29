@@ -55,6 +55,8 @@ _CLOUD_KEY_ENV = "FOREMAN_CLOUD_ACCESS_KEY"
 _VALID_AGENT_EFFORTS = frozenset({"", "low", "medium", "high"})
 _VALID_LLM_REASONING_EFFORTS = frozenset({"", "low", "medium", "high", "max"})
 _SUPPORTED_AGENTS = frozenset(default_agents())
+_MIN_TOKEN_LIMIT = 1_000
+_MAX_TOKEN_LIMIT = 2_000_000
 _REMOTE_LOCAL_METHODS = frozenset({"GET", "POST", "PATCH", "DELETE"})
 _REMOTE_LOCAL_DENY_PREFIXES = (
     "/api/admin",
@@ -117,6 +119,8 @@ class _LLMSettingsBody(BaseModel):
     base_url: str | None = None
     transport: str | None = None  # "http" | "ws"
     request_timeout_s: int | None = None
+    context_window_tokens: int | None = None
+    max_tokens: int | None = None
     reasoning_effort: str | None = None
     api_key: str | None = None
 
@@ -684,6 +688,13 @@ def create_app(
             return False
         return default
 
+    def _token_limit(value: Any, default: int) -> int:
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            n = int(default)
+        return max(_MIN_TOKEN_LIMIT, min(_MAX_TOKEN_LIMIT, n))
+
     def _clean_agents(items: list[Any]) -> dict[str, AgentCfg]:
         base = {**default_agents(), **(cfg.agents or {})}
         out: dict[str, AgentCfg] = {}
@@ -965,12 +976,20 @@ def create_app(
         base_url = cfg.llm.base_url
         transport = cfg.llm.transport
         request_timeout_s = int(cfg.llm.request_timeout_s)
+        context_window_tokens = int(getattr(cfg.llm, "context_window_tokens", 272_000))
+        max_tokens = int(getattr(cfg.llm, "max_tokens", 2048))
         reasoning_effort = getattr(cfg.llm, "reasoning_effort", "")
         if store is not None and hasattr(store, "get_setting"):
             provider = store.get_setting("llm.provider") or provider
             model = store.get_setting("llm.model") or model
             base_url = store.get_setting("llm.base_url") or base_url
             transport = store.get_setting("llm.transport") or transport
+            raw_context = store.get_setting("llm.context_window_tokens")
+            if raw_context not in (None, ""):
+                context_window_tokens = _token_limit(raw_context, context_window_tokens)
+            raw_max_tokens = store.get_setting("llm.max_tokens")
+            if raw_max_tokens not in (None, ""):
+                max_tokens = _token_limit(raw_max_tokens, max_tokens)
             raw_timeout = store.get_setting("llm.request_timeout_s")
             if raw_timeout not in (None, ""):
                 try:
@@ -984,6 +1003,8 @@ def create_app(
             "base_url": base_url,
             "transport": transport,
             "request_timeout_s": max(30, min(3600, request_timeout_s)),
+            "context_window_tokens": _token_limit(context_window_tokens, 272_000),
+            "max_tokens": _token_limit(max_tokens, 2048),
             "reasoning_effort": reasoning_effort,
             "api_key": cfg.secrets.llm_api_key,
         }
@@ -1000,6 +1021,12 @@ def create_app(
             settings["transport"] = body.transport.strip().lower()
         if body.request_timeout_s is not None:
             settings["request_timeout_s"] = max(30, min(3600, int(body.request_timeout_s)))
+        if body.context_window_tokens is not None:
+            settings["context_window_tokens"] = _token_limit(
+                body.context_window_tokens, settings["context_window_tokens"]
+            )
+        if body.max_tokens is not None:
+            settings["max_tokens"] = _token_limit(body.max_tokens, settings["max_tokens"])
         if body.reasoning_effort is not None:
             settings["reasoning_effort"] = body.reasoning_effort.strip().lower()
         if body.api_key is not None and body.api_key.strip():
@@ -1475,6 +1502,8 @@ def create_app(
             "base_url": settings["base_url"],
             "transport": settings["transport"],
             "request_timeout_s": settings["request_timeout_s"],
+            "context_window_tokens": settings["context_window_tokens"],
+            "max_tokens": settings["max_tokens"],
             "reasoning_effort": settings["reasoning_effort"],
             "api_key_set": bool((cfg.secrets.llm_api_key or "").strip()),
         }
@@ -1505,6 +1534,16 @@ def create_app(
             timeout = max(30, min(3600, int(body.request_timeout_s)))
             store.set_setting("llm.request_timeout_s", str(timeout))
             cfg.llm.request_timeout_s = timeout
+        if body.context_window_tokens is not None:
+            context_window_tokens = _token_limit(
+                body.context_window_tokens, getattr(cfg.llm, "context_window_tokens", 272_000)
+            )
+            store.set_setting("llm.context_window_tokens", str(context_window_tokens))
+            cfg.llm.context_window_tokens = context_window_tokens
+        if body.max_tokens is not None:
+            max_tokens = _token_limit(body.max_tokens, getattr(cfg.llm, "max_tokens", 2048))
+            store.set_setting("llm.max_tokens", str(max_tokens))
+            cfg.llm.max_tokens = max_tokens
         if body.reasoning_effort is not None:
             reasoning_effort = body.reasoning_effort.strip().lower()
             if reasoning_effort not in _VALID_LLM_REASONING_EFFORTS:

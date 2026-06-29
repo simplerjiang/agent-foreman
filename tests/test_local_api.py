@@ -365,18 +365,32 @@ def test_llm_settings_default_and_override(tmp_path):
     got = c.get("/api/settings/llm").json()
     assert got["provider"] == "openai" and got["model"] == "gpt-4o" and got["api_key_set"] is True
     assert got["transport"] == "http"
+    assert got["context_window_tokens"] == 272000
+    assert got["max_tokens"] == 2048
 
     saved = c.post(
         "/api/settings/llm",
-        json={"model": "gpt-5", "provider": "anthropic", "transport": "ws"},
+        json={
+            "model": "gpt-5",
+            "provider": "anthropic",
+            "transport": "ws",
+            "context_window_tokens": 272000,
+            "max_tokens": 128000,
+        },
     ).json()
     assert saved["model"] == "gpt-5" and saved["provider"] == "anthropic"
     assert saved["transport"] == "ws"
+    assert saved["context_window_tokens"] == 272000
+    assert saved["max_tokens"] == 128000
     assert cfg.llm.transport == "ws"
+    assert cfg.llm.context_window_tokens == 272000
+    assert cfg.llm.max_tokens == 128000
     # persisted as a config_kv override (survives a fresh GET)
     got = c.get("/api/settings/llm").json()
     assert got["model"] == "gpt-5"
     assert got["transport"] == "ws"
+    assert got["context_window_tokens"] == 272000
+    assert got["max_tokens"] == 128000
 
 
 def test_llm_settings_blank_key_is_not_configured(tmp_path):

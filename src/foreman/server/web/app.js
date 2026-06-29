@@ -10,7 +10,7 @@
   const THEME_KEY = "foreman.theme";
   const WORKSPACE_KEY = "foreman.workspace";
   const PROCESS_KEY = "foreman.process";
-  const DEFAULT_CONTEXT_TOKENS = 128000;
+  const DEFAULT_CONTEXT_TOKENS = 272000;
   const PM_TOOLS_MIN_ROUNDS = 1;
   const PM_TOOLS_DEFAULT_ROUNDS = 6;
   const PM_TOOLS_MAX_ROUNDS = 999;
@@ -125,6 +125,8 @@
       debugSaved: "调试设置已保存（重启生效）",
       provider: "服务商", model: "模型", baseUrl: "接口地址", apiKey: "API Key", transport: "传输方式",
       requestTimeout: "规划超时（秒）", requestTimeoutHelp: "控制 PM 大脑单次规划/复查的墙钟上限；范围 30–3600 秒，默认 300 秒。",
+      contextWindow: "上下文上限 token", contextWindowHelp: "用于 PM 上下文预算和自动压缩；默认 272000。",
+      maxOutputTokens: "最大输出 token", maxOutputTokensHelp: "发送给 Provider 的单次最大输出上限，也会作为上下文预算预留。",
       reasoningEffort: "推理强度",
       pmKeyHint: "已配置 API Key。输入新 key 后保存可替换；留空不修改。", pmKeyMissing: "未检测到 API Key。可在这里输入并保存。",
       pmKeyPlaceholder: "留空不修改；输入新 key 后保存", clearKey: "清空 Key",
@@ -250,6 +252,8 @@
       debugSaved: "Debug settings saved (restart to apply)",
       provider: "Provider", model: "Model", baseUrl: "Base URL", apiKey: "API Key", transport: "Transport",
       requestTimeout: "Planning timeout (s)", requestTimeoutHelp: "Wall-clock limit for one PM planning/review call; range 30–3600 seconds, default 300 seconds.",
+      contextWindow: "Context limit tokens", contextWindowHelp: "Used for PM context budgeting and auto-compaction; default 272000.",
+      maxOutputTokens: "Max output tokens", maxOutputTokensHelp: "Sent to the provider as the per-call output cap and reserved in the context budget.",
       reasoningEffort: "Reasoning effort",
       pmKeyHint: "API key is set. Enter a new key and save to replace it; blank keeps it.", pmKeyMissing: "No API key detected. You can enter and save one here.",
       pmKeyPlaceholder: "blank = unchanged; enter a new key to save", clearKey: "Clear key",
@@ -1788,6 +1792,16 @@
           <input className="input mono" type="number" min="30" max="3600" value=${llm.request_timeout_s || 300} onChange=${(e) => setLlm({ ...llm, request_timeout_s: Number(e.target.value) || 300 })} />
           <div className="card-sub" style=${{ marginTop: 6, marginBottom: 0 }}>${d.requestTimeoutHelp}</div>
         </div>
+        <div className="row cols2" style=${{ marginBottom: 13 }}>
+          <div className="field"><span className="field-label">${d.contextWindow}</span>
+            <input className="input mono" type="number" min="1000" max="2000000" value=${llm.context_window_tokens || 272000} onChange=${(e) => setLlm({ ...llm, context_window_tokens: Number(e.target.value) || 272000 })} />
+            <div className="card-sub" style=${{ marginTop: 6, marginBottom: 0 }}>${d.contextWindowHelp}</div>
+          </div>
+          <div className="field"><span className="field-label">${d.maxOutputTokens}</span>
+            <input className="input mono" type="number" min="1000" max="2000000" value=${llm.max_tokens || 2048} onChange=${(e) => setLlm({ ...llm, max_tokens: Number(e.target.value) || 2048 })} />
+            <div className="card-sub" style=${{ marginTop: 6, marginBottom: 0 }}>${d.maxOutputTokensHelp}</div>
+          </div>
+        </div>
         <div className="field" style=${{ marginBottom: 13 }}><span className="field-label">${d.reasoningEffort}</span>
           <select className="select" value=${llm.reasoning_effort || ""} onChange=${(e) => setLlm({ ...llm, reasoning_effort: e.target.value })}><option value="">${d.effortDefault}</option><option value="low">${d.fast}</option><option value="medium">${d.std}</option><option value="high">${d.deep}</option><option value="max">max</option></select>
         </div>
@@ -2076,7 +2090,7 @@
     const [dispatchStatus, setDispatchStatus] = useState("");
     const [compacting, setCompacting] = useState(false);
     const [compactStatus, setCompactStatus] = useState("");
-    const [llm, setLlm] = useState({ provider: "openai", model: "", base_url: "", transport: "http", request_timeout_s: 300, reasoning_effort: "", api_key_set: true, api_key: "" });
+    const [llm, setLlm] = useState({ provider: "openai", model: "", base_url: "", transport: "http", request_timeout_s: 300, context_window_tokens: 272000, max_tokens: 2048, reasoning_effort: "", api_key_set: true, api_key: "" });
     const [llmStatus, setLlmStatus] = useState("");
     const [agentStatus, setAgentStatus] = useState("");
     const [pmTools, setPmTools] = useState({ file_read: true, file_write: false, shell: false, web_fetch: false, web_search: false, browser: false, allowed_commands: ["python --version"], allowed_origins: [], web_search_provider: "duckduckgo", searxng_url: "", browser_headless: false, max_rounds: 6 });
@@ -2145,7 +2159,7 @@
     const loadModels = useCallback(async () => { try { const data = await api("/api/models"); setModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, max_tokens: m.max_tokens, source: m.source }))); } catch (e) { setModelOptions([]); } }, []);
     const loadPmModels = useCallback(async (draft) => {
       const cur = draft || {};
-      const body = { provider: cur.provider || "openai", model: (cur.model || "").trim(), base_url: (cur.base_url || "").trim(), transport: cur.transport || "http", request_timeout_s: Number(cur.request_timeout_s) || 300, reasoning_effort: cur.reasoning_effort || "" };
+      const body = { provider: cur.provider || "openai", model: (cur.model || "").trim(), base_url: (cur.base_url || "").trim(), transport: cur.transport || "http", request_timeout_s: Number(cur.request_timeout_s) || 300, context_window_tokens: Number(cur.context_window_tokens) || 272000, max_tokens: Number(cur.max_tokens) || 2048, reasoning_effort: cur.reasoning_effort || "" };
       if ((cur.api_key || "").trim()) body.api_key = cur.api_key.trim();
       try { const data = await api("/api/models/preview", { method: "POST", body }); setPmModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, max_tokens: m.max_tokens, source: m.source }))); } catch (e) { setPmModelOptions([]); }
     }, []);
@@ -2694,7 +2708,7 @@
     }
     async function saveLlm() {
       try {
-        const body = { provider: llm.provider || "openai", model: (llm.model || "").trim(), base_url: (llm.base_url || "").trim(), transport: llm.transport || "http", request_timeout_s: Number(llm.request_timeout_s) || 300, reasoning_effort: llm.reasoning_effort || "" };
+        const body = { provider: llm.provider || "openai", model: (llm.model || "").trim(), base_url: (llm.base_url || "").trim(), transport: llm.transport || "http", request_timeout_s: Number(llm.request_timeout_s) || 300, context_window_tokens: Number(llm.context_window_tokens) || 272000, max_tokens: Number(llm.max_tokens) || 2048, reasoning_effort: llm.reasoning_effort || "" };
         if ((llm.api_key || "").trim()) body.api_key = llm.api_key.trim();
         const data = await api("/api/settings/llm", { method: "POST", body }); const next = { ...data, api_key: "" }; setLlm(next); setLlmStatus(d.saved); await loadPmModels(next); await loadModels();
       } catch (e) { setLlmStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }

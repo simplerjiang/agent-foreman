@@ -204,11 +204,17 @@ def test_pm_brain_timeout_setting_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     assert "request_timeout_s" in js
+    assert "context_window_tokens" in js and "max_tokens" in js
     assert "Planning timeout (s)" in js and "规划超时（秒）" in js
+    assert "Context limit tokens" in js and "上下文上限 token" in js
+    assert "Max output tokens" in js and "最大输出 token" in js
     assert "30–3600 seconds" in js and "30–3600 秒" in js
+    assert "DEFAULT_CONTEXT_TOKENS = 272000" in js
     start = js.index("async function saveLlm")
     end = js.index("async function clearLlmKey", start)
     assert "request_timeout_s: Number(llm.request_timeout_s) || 300" in js[start:end]
+    assert "context_window_tokens: Number(llm.context_window_tokens) || 272000" in js[start:end]
+    assert "max_tokens: Number(llm.max_tokens) || 2048" in js[start:end]
 
 
 def test_remote_control_ui_wires_process_target_and_approve_endpoint():
