@@ -20,6 +20,21 @@
   const TOKEN_KEY = "foreman_token";
   const DASHBOARD_TOKEN_KEY = "foreman.token";
   const PROCESS_KEY = "foreman.process";
+  const LANG_KEY = "foreman.lang";
+  function normalizeUiLang(value) {
+    return String(value || "").trim().toLowerCase().startsWith("zh") ? "zh" : "en";
+  }
+  function detectedUiLang() {
+    const stored = localStorage.getItem(LANG_KEY);
+    if (stored) return normalizeUiLang(stored);
+    const langs = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ""]);
+    return normalizeUiLang(langs[0]);
+  }
+  const uiLang = detectedUiLang();
+  const zh = (cn, en) => (uiLang === "zh" ? cn : en);
+  const keyStatus = (s) => ({ active: zh("活跃", "active"), revoked: zh("已吊销", "revoked"), expired: zh("已过期", "expired") }[s] || s);
+  document.documentElement.lang = uiLang === "zh" ? "zh-CN" : "en";
+  document.title = zh("Foreman · 控制台", "Foreman · Console");
   const getToken = () => localStorage.getItem(TOKEN_KEY) || localStorage.getItem(DASHBOARD_TOKEN_KEY) || "";
   const setToken = (t) => {
     if (t) {
@@ -96,9 +111,9 @@
     const d = Math.floor(sec / 86400);
     const h = Math.floor((sec % 86400) / 3600);
     const m = Math.floor((sec % 3600) / 60);
-    if (d) return d + "天 " + h + "小时";
-    if (h) return h + "小时 " + m + "分";
-    return m + "分钟";
+    if (d) return uiLang === "zh" ? d + "天 " + h + "小时" : d + "d " + h + "h";
+    if (h) return uiLang === "zh" ? h + "小时 " + m + "分" : h + "h " + m + "m";
+    return uiLang === "zh" ? m + "分钟" : m + "m";
   }
 
   // toast bridge: A.App.useApp() gives theme-aware message/modal; stored here for non-component use.
@@ -141,7 +156,7 @@
         setToken(r.token);
         finishAuth(onAuthed);
       } catch (e) {
-        toast.err(e.status === 429 ? "尝试过于频繁，请稍后再试" : "用户名或密码错误");
+        toast.err(e.status === 429 ? zh("尝试过于频繁，请稍后再试", "Too many attempts. Try again later.") : zh("用户名或密码错误", "Wrong username or password"));
       } finally { setBusy(false); }
     };
     const doRedeem = async (v) => {
@@ -149,40 +164,40 @@
       try {
         const r = await api("/api/auth/redeem", { method: "POST", body: { code: v.code.trim(), password: v.password } });
         setToken(r.token);
-        toast.ok("已设置密码并登录");
+        toast.ok(zh("已设置密码并登录", "Password set. Signed in."));
         finishAuth(onAuthed);
       } catch (e) {
-        toast.err(e.status === 400 ? "邀请码无效/已用/已过期，或密码太短(≥8位)" : "兑换失败");
+        toast.err(e.status === 400 ? zh("邀请码无效/已用/已过期，或密码太短(≥8位)", "Invalid, used, or expired invite code, or the password is too short (8+ chars)") : zh("兑换失败", "Invite redemption failed"));
       } finally { setBusy(false); }
     };
 
     const items = [
       {
         key: "login",
-        label: "登录",
+        label: zh("登录", "Sign in"),
         children: html`
           <${A.Form} layout="vertical" onFinish=${doLogin} requiredMark=${false} style=${{ marginTop: 8 }}>
-            <${A.Form.Item} name="username" label="用户名" rules=${[{ required: true, message: "请输入用户名" }]}>
-              <${A.Input} size="large" prefix=${icon("UserOutlined")} placeholder="用户名" autoComplete="username" />
+            <${A.Form.Item} name="username" label=${zh("用户名", "Username")} rules=${[{ required: true, message: zh("请输入用户名", "Enter a username") }]}>
+              <${A.Input} size="large" prefix=${icon("UserOutlined")} placeholder=${zh("用户名", "Username")} autoComplete="username" />
             </${A.Form.Item}>
-            <${A.Form.Item} name="password" label="密码" rules=${[{ required: true, message: "请输入密码" }]}>
-              <${A.Input.Password} size="large" prefix=${icon("LockOutlined")} placeholder="密码" autoComplete="current-password" />
+            <${A.Form.Item} name="password" label=${zh("密码", "Password")} rules=${[{ required: true, message: zh("请输入密码", "Enter a password") }]}>
+              <${A.Input.Password} size="large" prefix=${icon("LockOutlined")} placeholder=${zh("密码", "Password")} autoComplete="current-password" />
             </${A.Form.Item}>
-            <${A.Button} type="primary" htmlType="submit" size="large" block loading=${busy}>登录</${A.Button}>
+            <${A.Button} type="primary" htmlType="submit" size="large" block loading=${busy}>${zh("登录", "Sign in")}</${A.Button}>
           </${A.Form}>`,
       },
       {
         key: "redeem",
-        label: "兑换邀请码",
+        label: zh("兑换邀请码", "Redeem invite"),
         children: html`
           <${A.Form} layout="vertical" onFinish=${doRedeem} requiredMark=${false} style=${{ marginTop: 8 }}>
-            <${A.Form.Item} name="code" label="邀请码" rules=${[{ required: true, message: "请输入邀请码" }]}>
-              <${A.Input} size="large" placeholder="管理员发给你的一次性邀请码" />
+            <${A.Form.Item} name="code" label=${zh("邀请码", "Invite code")} rules=${[{ required: true, message: zh("请输入邀请码", "Enter the invite code") }]}>
+              <${A.Input} size="large" placeholder=${zh("管理员发给你的一次性邀请码", "One-time invite code from an admin")} />
             </${A.Form.Item}>
-            <${A.Form.Item} name="password" label="设置密码" rules=${[{ required: true, min: 8, message: "至少 8 位" }]}>
-              <${A.Input.Password} size="large" placeholder="为自己设置一个密码 (≥8位)" autoComplete="new-password" />
+            <${A.Form.Item} name="password" label=${zh("设置密码", "Set password")} rules=${[{ required: true, min: 8, message: zh("至少 8 位", "At least 8 characters") }]}>
+              <${A.Input.Password} size="large" placeholder=${zh("为自己设置一个密码 (≥8位)", "Set your password (8+ chars)")} autoComplete="new-password" />
             </${A.Form.Item}>
-            <${A.Button} type="primary" htmlType="submit" size="large" block loading=${busy}>设置密码并登录</${A.Button}>
+            <${A.Button} type="primary" htmlType="submit" size="large" block loading=${busy}>${zh("设置密码并登录", "Set password and sign in")}</${A.Button}>
           </${A.Form}>`,
       },
     ];
@@ -192,8 +207,8 @@
         <${A.Card} style=${{ width: 380, maxWidth: "100%" }} variant="outlined">
           <div style=${{ textAlign: "center", marginBottom: 8 }}>
             <div style=${{ fontSize: 30 }}>🦺</div>
-            <${A.Typography.Title} level=${3} style=${{ margin: "6px 0 0" }}>Foreman 控制台</${A.Typography.Title}>
-            <${A.Typography.Text} type="secondary">请先登录</${A.Typography.Text}>
+            <${A.Typography.Title} level=${3} style=${{ margin: "6px 0 0" }}>${zh("Foreman 控制台", "Foreman Console")}</${A.Typography.Title}>
+            <${A.Typography.Text} type="secondary">${zh("请先登录", "Sign in to continue")}</${A.Typography.Text}>
           </div>
           <${A.Tabs} activeKey=${tab} onChange=${setTab} items=${items} centered />
         </${A.Card}>
@@ -203,7 +218,7 @@
   // ── admin: overview ──────────────────────────────────────────────────────────────────────
   function OverviewSection() {
     const { data, loading, error, reload } = useAsync(() => api("/api/admin/overview"));
-    if (error) return html`<${A.Alert} type="error" message=${"加载失败: " + error.message} />`;
+    if (error) return html`<${A.Alert} type="error" message=${zh("加载失败: ", "Load failed: ") + error.message} />`;
     const d = data || {};
     const acc = d.accounts || {};
     const proc = d.processes || {};
@@ -213,24 +228,24 @@
       </${A.Col}>`;
     return html`
       <${F}>
-        <${SectionHeader} title="概览" onReload=${reload} loading=${loading} />
+        <${SectionHeader} title=${zh("概览", "Overview")} onReload=${reload} loading=${loading} />
         <${A.Spin} spinning=${loading}>
           <${A.Row} gutter=${[16, 16]}>
-            ${stat("账户总数", acc.total ?? 0)}
-            ${stat("活跃账户", acc.active ?? 0, null, "#52c41a")}
-            ${stat("待激活", acc.invited ?? 0, null, "#faad14")}
-            ${stat("已禁用", acc.disabled ?? 0, null, "#ff4d4f")}
-            ${stat("在线进程", proc.online ?? 0, "/ " + (proc.total ?? 0))}
-            ${stat("在线会话", d.active_sessions ?? 0)}
-            ${stat("数据库", fmtBytes(d.db && d.db.size_bytes))}
-            ${stat("运行时长", fmtDuration(d.uptime_seconds))}
+            ${stat(zh("账户总数", "Total accounts"), acc.total ?? 0)}
+            ${stat(zh("活跃账户", "Active accounts"), acc.active ?? 0, null, "#52c41a")}
+            ${stat(zh("待激活", "Pending activation"), acc.invited ?? 0, null, "#faad14")}
+            ${stat(zh("已禁用", "Disabled"), acc.disabled ?? 0, null, "#ff4d4f")}
+            ${stat(zh("在线进程", "Online processes"), proc.online ?? 0, "/ " + (proc.total ?? 0))}
+            ${stat(zh("在线会话", "Online sessions"), d.active_sessions ?? 0)}
+            ${stat(zh("数据库", "Database"), fmtBytes(d.db && d.db.size_bytes))}
+            ${stat(zh("运行时长", "Uptime"), fmtDuration(d.uptime_seconds))}
           </${A.Row}>
           <${A.Descriptions} style=${{ marginTop: 16 }} bordered size="small" column=${1}
             items=${[
-              { key: "v", label: "版本", children: "v" + (d.version || "?") },
-              { key: "m", label: "模式", children: d.mode || "team" },
-              { key: "s", label: "数据库 schema", children: String((d.db && d.db.schema_version) ?? "—") },
-              { key: "p", label: "数据库路径", children: (d.db && d.db.path) || "—" },
+              { key: "v", label: zh("版本", "Version"), children: "v" + (d.version || "?") },
+              { key: "m", label: zh("模式", "Mode"), children: d.mode || "team" },
+              { key: "s", label: zh("数据库 schema", "Database schema"), children: String((d.db && d.db.schema_version) ?? "—") },
+              { key: "p", label: zh("数据库路径", "Database path"), children: (d.db && d.db.path) || "—" },
             ]} />
         </${A.Spin}>
       </${F}>`;
@@ -242,7 +257,7 @@
         <${A.Typography.Title} level=${4} style=${{ margin: 0, flex: 1 }}>${title}</${A.Typography.Title}>
         ${extra}
         ${onReload &&
-          html`<${A.Button} icon=${icon("ReloadOutlined")} onClick=${onReload} loading=${loading}>刷新</${A.Button}>`}
+          html`<${A.Button} icon=${icon("ReloadOutlined")} onClick=${onReload} loading=${loading}>${zh("刷新", "Refresh")}</${A.Button}>`}
       </div>`;
   }
 
@@ -255,12 +270,12 @@
     const showInvite = (code) => {
       ui.modal &&
         ui.modal.info({
-          title: "一次性邀请码（仅显示一次）",
+          title: zh("一次性邀请码（仅显示一次）", "One-time invite code (shown once)"),
           width: 460,
           content: html`
             <div>
               <${A.Typography.Paragraph} copyable=${{ text: code }} style=${{ fontFamily: "monospace", fontSize: 13, background: "rgba(127,127,127,.12)", padding: 8, borderRadius: 6, wordBreak: "break-all" }}>${code}</${A.Typography.Paragraph}>
-              <${A.Typography.Text} type="secondary">把它发给用户，让 TA 在登录页「兑换邀请码」里设置密码。</${A.Typography.Text}>
+              <${A.Typography.Text} type="secondary">${zh("把它发给用户，让 TA 在登录页「兑换邀请码」里设置密码。", "Send this to the user. They can set a password from the Redeem invite tab.")}</${A.Typography.Text}>
             </div>`,
         });
     };
@@ -274,59 +289,59 @@
         form.resetFields();
         reload();
         if (r && r.invite_code) showInvite(r.invite_code);
-        else toast.ok("用户已创建");
+        else toast.ok(zh("用户已创建", "User created"));
       } catch (e) {
-        toast.err(e.status === 409 ? "用户名已存在" : "创建失败: " + e.message);
+        toast.err(e.status === 409 ? zh("用户名已存在", "Username already exists") : zh("创建失败: ", "Create failed: ") + e.message);
       }
     };
     const setStatus = async (id, enabled) => {
-      try { await api("/api/admin/accounts/" + id + "/status", { method: "POST", body: { enabled } }); toast.ok(enabled ? "已启用" : "已禁用"); reload(); }
-      catch (e) { toast.err("操作失败: " + e.message); }
+      try { await api("/api/admin/accounts/" + id + "/status", { method: "POST", body: { enabled } }); toast.ok(enabled ? zh("已启用", "Enabled") : zh("已禁用", "Disabled")); reload(); }
+      catch (e) { toast.err(zh("操作失败: ", "Operation failed: ") + e.message); }
     };
     const reinvite = async (id) => {
       try { const r = await api("/api/admin/accounts/" + id + "/invite", { method: "POST" }); if (r && r.invite_code) showInvite(r.invite_code); }
-      catch (e) { toast.err("重新邀请失败: " + e.message); }
+      catch (e) { toast.err(zh("重新邀请失败: ", "Re-invite failed: ") + e.message); }
     };
 
-    const roleTag = (r) => html`<${A.Tag} color=${r === "admin" ? "geekblue" : "default"}>${r === "admin" ? "管理员" : "成员"}</${A.Tag}>`;
+    const roleTag = (r) => html`<${A.Tag} color=${r === "admin" ? "geekblue" : "default"}>${r === "admin" ? zh("管理员", "Admin") : zh("成员", "Member")}</${A.Tag}>`;
     const statusTag = (s) =>
-      html`<${A.Tag} color=${s === "active" ? "green" : s === "invited" ? "gold" : "red"}>${s === "active" ? "活跃" : s === "invited" ? "待激活" : "已禁用"}</${A.Tag}>`;
+      html`<${A.Tag} color=${s === "active" ? "green" : s === "invited" ? "gold" : "red"}>${s === "active" ? zh("活跃", "Active") : s === "invited" ? zh("待激活", "Invited") : zh("已禁用", "Disabled")}</${A.Tag}>`;
 
     const columns = [
-      { title: "用户名", dataIndex: "username", key: "username", render: (t) => html`<strong>${t}</strong>` },
-      { title: "显示名", dataIndex: "display_name", key: "display_name", responsive: ["md"] },
-      { title: "角色", dataIndex: "role", key: "role", render: roleTag },
-      { title: "状态", dataIndex: "status", key: "status", render: statusTag },
-      { title: "创建时间", dataIndex: "created_at", key: "created_at", responsive: ["lg"], render: fmtTime },
+      { title: zh("用户名", "Username"), dataIndex: "username", key: "username", render: (t) => html`<strong>${t}</strong>` },
+      { title: zh("显示名", "Display name"), dataIndex: "display_name", key: "display_name", responsive: ["md"] },
+      { title: zh("角色", "Role"), dataIndex: "role", key: "role", render: roleTag },
+      { title: zh("状态", "Status"), dataIndex: "status", key: "status", render: statusTag },
+      { title: zh("创建时间", "Created"), dataIndex: "created_at", key: "created_at", responsive: ["lg"], render: fmtTime },
       {
-        title: "操作", key: "ops", render: (_, row) =>
+        title: zh("操作", "Actions"), key: "ops", render: (_, row) =>
           html`<${A.Space} size="small">
             ${row.status === "active"
-              ? html`<${A.Popconfirm} title="禁用该账户？" onConfirm=${() => setStatus(row.id, false)} okText="禁用" cancelText="取消"><${A.Button} size="small" danger>禁用</${A.Button}></${A.Popconfirm}>`
-              : html`<${A.Button} size="small" onClick=${() => setStatus(row.id, true)}>启用</${A.Button}>`}
-            <${A.Button} size="small" onClick=${() => reinvite(row.id)}>重新邀请</${A.Button}>
+              ? html`<${A.Popconfirm} title=${zh("禁用该账户？", "Disable this account?")} onConfirm=${() => setStatus(row.id, false)} okText=${zh("禁用", "Disable")} cancelText=${zh("取消", "Cancel")}><${A.Button} size="small" danger>${zh("禁用", "Disable")}</${A.Button}></${A.Popconfirm}>`
+              : html`<${A.Button} size="small" onClick=${() => setStatus(row.id, true)}>${zh("启用", "Enable")}</${A.Button}>`}
+            <${A.Button} size="small" onClick=${() => reinvite(row.id)}>${zh("重新邀请", "Re-invite")}</${A.Button}>
           </${A.Space}>`,
       },
     ];
 
     return html`
       <${F}>
-        <${SectionHeader} title="账户管理" onReload=${reload} loading=${loading}
-          extra=${html`<${A.Button} type="primary" icon=${icon("PlusOutlined")} onClick=${() => setCreating(true)}>新建用户</${A.Button}>`} />
+        <${SectionHeader} title=${zh("账户管理", "Account management")} onReload=${reload} loading=${loading}
+          extra=${html`<${A.Button} type="primary" icon=${icon("PlusOutlined")} onClick=${() => setCreating(true)}>${zh("新建用户", "New user")}</${A.Button}>`} />
         ${error
-          ? html`<${A.Alert} type="error" message=${"加载失败: " + error.message} />`
+          ? html`<${A.Alert} type="error" message=${zh("加载失败: ", "Load failed: ") + error.message} />`
           : html`<${A.Table} rowKey="id" loading=${loading} columns=${columns} dataSource=${data || []} size="middle" pagination=${{ pageSize: 20, hideOnSinglePage: true }} scroll=${{ x: "max-content" }} />`}
-        <${A.Modal} title="新建用户" open=${creating} onCancel=${() => setCreating(false)} onOk=${() => form.submit()} okText="创建" cancelText="取消" destroyOnClose>
+        <${A.Modal} title=${zh("新建用户", "New user")} open=${creating} onCancel=${() => setCreating(false)} onOk=${() => form.submit()} okText=${zh("创建", "Create")} cancelText=${zh("取消", "Cancel")} destroyOnClose>
           <${A.Form} form=${form} layout="vertical" onFinish=${onCreate} requiredMark=${false} preserve=${false}>
-            <${A.Form.Item} name="username" label="用户名" rules=${[{ required: true, message: "请输入用户名" }]}>
+            <${A.Form.Item} name="username" label=${zh("用户名", "Username")} rules=${[{ required: true, message: zh("请输入用户名", "Enter a username") }]}>
               <${A.Input} placeholder="alice" />
             </${A.Form.Item}>
-            <${A.Form.Item} name="display_name" label="显示名"><${A.Input} placeholder="Alice (可选)" /></${A.Form.Item}>
-            <${A.Form.Item} name="role" label="角色" initialValue="member">
-              <${A.Select} options=${[{ value: "member", label: "成员" }, { value: "admin", label: "管理员" }]} />
+            <${A.Form.Item} name="display_name" label=${zh("显示名", "Display name")}><${A.Input} placeholder=${zh("Alice (可选)", "Alice (optional)")} /></${A.Form.Item}>
+            <${A.Form.Item} name="role" label=${zh("角色", "Role")} initialValue="member">
+              <${A.Select} options=${[{ value: "member", label: zh("成员", "Member") }, { value: "admin", label: zh("管理员", "Admin") }]} />
             </${A.Form.Item}>
-            <${A.Form.Item} name="password" label="初始密码" extra="留空 → 生成一次性邀请码（无自助注册）">
-              <${A.Input} placeholder="(留空 = 发邀请码)" />
+            <${A.Form.Item} name="password" label=${zh("初始密码", "Initial password")} extra=${zh("留空 → 生成一次性邀请码（无自助注册）", "Leave blank to generate a one-time invite code (no self-signup)")}>
+              <${A.Input} placeholder=${zh("(留空 = 发邀请码)", "(blank = invite code)")} />
             </${A.Form.Item}>
           </${A.Form}>
         </${A.Modal}>
@@ -337,18 +352,18 @@
   function SessionsSection() {
     const { data, loading, error, reload } = useAsync(() => api("/api/admin/sessions"));
     const columns = [
-      { title: "用户名", dataIndex: "username", key: "username", render: (t) => html`<strong>${t}</strong>` },
-      { title: "显示名", dataIndex: "display_name", key: "display_name", responsive: ["md"] },
-      { title: "角色", dataIndex: "role", key: "role", render: (r) => html`<${A.Tag} color=${r === "admin" ? "geekblue" : "default"}>${r === "admin" ? "管理员" : "成员"}</${A.Tag}>` },
-      { title: "登录时间", dataIndex: "created_at", key: "created_at", render: fmtTime },
-      { title: "到期时间", dataIndex: "expires_at", key: "expires_at", responsive: ["md"], render: fmtTime },
+      { title: zh("用户名", "Username"), dataIndex: "username", key: "username", render: (t) => html`<strong>${t}</strong>` },
+      { title: zh("显示名", "Display name"), dataIndex: "display_name", key: "display_name", responsive: ["md"] },
+      { title: zh("角色", "Role"), dataIndex: "role", key: "role", render: (r) => html`<${A.Tag} color=${r === "admin" ? "geekblue" : "default"}>${r === "admin" ? zh("管理员", "Admin") : zh("成员", "Member")}</${A.Tag}>` },
+      { title: zh("登录时间", "Signed in"), dataIndex: "created_at", key: "created_at", render: fmtTime },
+      { title: zh("到期时间", "Expires"), dataIndex: "expires_at", key: "expires_at", responsive: ["md"], render: fmtTime },
     ];
     return html`
       <${F}>
-        <${SectionHeader} title="在线会话" onReload=${reload} loading=${loading} />
+        <${SectionHeader} title=${zh("在线会话", "Online sessions")} onReload=${reload} loading=${loading} />
         ${error
-          ? html`<${A.Alert} type="error" message=${"加载失败: " + error.message} />`
-          : html`<${A.Table} rowKey=${(r) => r.account_id + r.created_at} loading=${loading} columns=${columns} dataSource=${data || []} size="middle" locale=${{ emptyText: "当前没有活跃登录会话" }} pagination=${{ pageSize: 20, hideOnSinglePage: true }} scroll=${{ x: "max-content" }} />`}
+          ? html`<${A.Alert} type="error" message=${zh("加载失败: ", "Load failed: ") + error.message} />`
+          : html`<${A.Table} rowKey=${(r) => r.account_id + r.created_at} loading=${loading} columns=${columns} dataSource=${data || []} size="middle" locale=${{ emptyText: zh("当前没有活跃登录会话", "No active login sessions") }} pagination=${{ pageSize: 20, hideOnSinglePage: true }} scroll=${{ x: "max-content" }} />`}
       </${F}>`;
   }
 
@@ -356,19 +371,19 @@
   function ProcessesSection({ onControl }) {
     const { data, loading, error, reload } = useAsync(() => api("/api/admin/processes"));
     const columns = [
-      { title: "账户", dataIndex: "username", key: "username", render: (t) => html`<strong>${t}</strong>` },
-      { title: "机器", dataIndex: "name", key: "name", render: (t) => t || "—" },
-      { title: "状态", dataIndex: "online", key: "online", render: (o) => html`<${A.Badge} status=${o ? "success" : "default"} text=${o ? "在线" : "离线"} />` },
-      { title: "最后心跳", dataIndex: "last_heartbeat", key: "last_heartbeat", render: fmtTime },
-      { title: "注册时间", dataIndex: "created_at", key: "created_at", responsive: ["lg"], render: fmtTime },
-      { title: "操作", key: "ops", width: 96, render: (_, r) => html`<${A.Tooltip} title=${r.online ? "进入控制台：远程查看会话 / 派发任务 / 审批" : "机器离线，无法控制"}><${A.Button} size="small" type="link" disabled=${!r.online} onClick=${() => onControl && onControl(r.id)}>控制</${A.Button}></${A.Tooltip}>` },
+      { title: zh("账户", "Account"), dataIndex: "username", key: "username", render: (t) => html`<strong>${t}</strong>` },
+      { title: zh("机器", "Machine"), dataIndex: "name", key: "name", render: (t) => t || "—" },
+      { title: zh("状态", "Status"), dataIndex: "online", key: "online", render: (o) => html`<${A.Badge} status=${o ? "success" : "default"} text=${o ? zh("在线", "Online") : zh("离线", "Offline")} />` },
+      { title: zh("最后心跳", "Last heartbeat"), dataIndex: "last_heartbeat", key: "last_heartbeat", render: fmtTime },
+      { title: zh("注册时间", "Registered"), dataIndex: "created_at", key: "created_at", responsive: ["lg"], render: fmtTime },
+      { title: zh("操作", "Actions"), key: "ops", width: 96, render: (_, r) => html`<${A.Tooltip} title=${r.online ? zh("进入控制台：远程查看会话 / 派发任务 / 审批", "Open console: view sessions, dispatch tasks, and approve remotely") : zh("机器离线，无法控制", "Machine is offline")}><${A.Button} size="small" type="link" disabled=${!r.online} onClick=${() => onControl && onControl(r.id)}>${zh("控制", "Control")}</${A.Button}></${A.Tooltip}>` },
     ];
     return html`
       <${F}>
-        <${SectionHeader} title="进程 / 机器" onReload=${reload} loading=${loading} />
+        <${SectionHeader} title=${zh("进程 / 机器", "Processes / machines")} onReload=${reload} loading=${loading} />
         ${error
-          ? html`<${A.Alert} type="error" message=${"加载失败: " + error.message} />`
-          : html`<${A.Table} rowKey="id" loading=${loading} columns=${columns} dataSource=${data || []} size="middle" locale=${{ emptyText: "还没有机器接入" }} pagination=${{ pageSize: 20, hideOnSinglePage: true }} scroll=${{ x: "max-content" }} />`}
+          ? html`<${A.Alert} type="error" message=${zh("加载失败: ", "Load failed: ") + error.message} />`
+          : html`<${A.Table} rowKey="id" loading=${loading} columns=${columns} dataSource=${data || []} size="middle" locale=${{ emptyText: zh("还没有机器接入", "No machines connected yet") }} pagination=${{ pageSize: 20, hideOnSinglePage: true }} scroll=${{ x: "max-content" }} />`}
       </${F}>`;
   }
 
@@ -383,7 +398,7 @@
       try {
         const r = await api("/api/admin/db/" + encodeURIComponent(name) + "?limit=50&offset=" + (offset || 0));
         setPage({ rows: r.rows || [], columns: r.columns || [], total: r.total || 0, loading: false, offset: r.offset || 0, limit: r.limit || 50 });
-      } catch (e) { toast.err("读取失败: " + e.message); setPage((p) => ({ ...p, loading: false })); }
+      } catch (e) { toast.err(zh("读取失败: ", "Read failed: ") + e.message); setPage((p) => ({ ...p, loading: false })); }
     }, []);
     const openTable = (name) => { setActive(name); loadTable(name, 0); };
 
@@ -391,17 +406,17 @@
       try {
         const r = await api("/api/admin/db/maintenance", { method: "POST", body: { action } });
         if (action === "integrity_check") {
-          (r.result === "ok" ? toast.ok : toast.err)("完整性检查: " + r.result);
-        } else { toast.ok("VACUUM 完成"); reload(); }
-      } catch (e) { toast.err("操作失败: " + e.message); }
+          (r.result === "ok" ? toast.ok : toast.err)(zh("完整性检查: ", "Integrity check: ") + r.result);
+        } else { toast.ok(zh("VACUUM 完成", "VACUUM completed")); reload(); }
+      } catch (e) { toast.err(zh("操作失败: ", "Operation failed: ") + e.message); }
     };
 
-    if (error) return html`<${A.Alert} type="error" message=${"加载失败: " + error.message} />`;
+    if (error) return html`<${A.Alert} type="error" message=${zh("加载失败: ", "Load failed: ") + error.message} />`;
     const d = data || {};
 
     const tableCols = [
-      { title: "表", dataIndex: "name", key: "name", render: (t) => html`<a onClick=${() => openTable(t)}>${t}</a>` },
-      { title: "行数", dataIndex: "rows", key: "rows", align: "right", render: (n) => (n < 0 ? "—" : n.toLocaleString()) },
+      { title: zh("表", "Table"), dataIndex: "name", key: "name", render: (t) => html`<a onClick=${() => openTable(t)}>${t}</a>` },
+      { title: zh("行数", "Rows"), dataIndex: "rows", key: "rows", align: "right", render: (n) => (n < 0 ? "—" : n.toLocaleString()) },
     ];
     const rowCols = (page.columns || []).map((c) => ({
       title: c, dataIndex: c, key: c, ellipsis: true,
@@ -410,28 +425,28 @@
 
     return html`
       <${F}>
-        <${SectionHeader} title="数据库管理" onReload=${reload} loading=${loading}
+        <${SectionHeader} title=${zh("数据库管理", "Database management")} onReload=${reload} loading=${loading}
           extra=${html`<${A.Space}>
-            <${A.Popconfirm} title="执行 VACUUM（整理碎片/回收空间）？" onConfirm=${() => maint("vacuum")} okText="执行" cancelText="取消"><${A.Button}>VACUUM</${A.Button}></${A.Popconfirm}>
-            <${A.Button} onClick=${() => maint("integrity_check")}>完整性检查</${A.Button}>
+            <${A.Popconfirm} title=${zh("执行 VACUUM（整理碎片/回收空间）？", "Run VACUUM to reclaim database space?")} onConfirm=${() => maint("vacuum")} okText=${zh("执行", "Run")} cancelText=${zh("取消", "Cancel")}><${A.Button}>VACUUM</${A.Button}></${A.Popconfirm}>
+            <${A.Button} onClick=${() => maint("integrity_check")}>${zh("完整性检查", "Integrity check")}</${A.Button}>
           </${A.Space}>`} />
         <${A.Spin} spinning=${loading}>
           <${A.Descriptions} bordered size="small" column=${{ xs: 1, sm: 3 }} style=${{ marginBottom: 16 }}
             items=${[
-              { key: "size", label: "大小", children: fmtBytes(d.size_bytes) },
+              { key: "size", label: zh("大小", "Size"), children: fmtBytes(d.size_bytes) },
               { key: "ver", label: "Schema", children: String(d.schema_version ?? "—") },
-              { key: "path", label: "路径", children: d.path || "—" },
+              { key: "path", label: zh("路径", "Path"), children: d.path || "—" },
             ]} />
           <${A.Row} gutter=${[16, 16]}>
             <${A.Col} xs=${24} lg=${8}>
-              <${A.Card} size="small" title="数据表" variant="outlined">
+              <${A.Card} size="small" title=${zh("数据表", "Tables")} variant="outlined">
                 <${A.Table} rowKey="name" columns=${tableCols} dataSource=${d.tables || []} size="small" pagination=${false}
                   rowClassName=${(r) => (r.name === active ? "ant-table-row-selected" : "")} />
               </${A.Card}>
             </${A.Col}>
             <${A.Col} xs=${24} lg=${16}>
               <${A.Card} size="small" variant="outlined"
-                title=${active ? "表内容：" + active + "（敏感列已脱敏）" : "选择左侧的表查看内容"}>
+                title=${active ? zh("表内容：", "Table: ") + active + zh("（敏感列已脱敏）", " (sensitive columns redacted)") : zh("选择左侧的表查看内容", "Select a table on the left")}>
                 ${active
                   ? html`<${A.Table} rowKey=${(_, i) => i} loading=${page.loading} columns=${rowCols} dataSource=${page.rows}
                       size="small" scroll=${{ x: "max-content" }}
@@ -439,7 +454,7 @@
                         current: Math.floor(page.offset / page.limit) + 1, pageSize: page.limit, total: page.total,
                         showSizeChanger: false, onChange: (p) => loadTable(active, (p - 1) * page.limit),
                       }} />`
-                  : html`<${A.Empty} description="未选择数据表" />`}
+                  : html`<${A.Empty} description=${zh("未选择数据表", "No table selected")} />`}
               </${A.Card}>
             </${A.Col}>
           </${A.Row}>
@@ -462,43 +477,43 @@
 
     const levelColor = (l) => ({ ERROR: "red", CRITICAL: "volcano", WARNING: "gold", INFO: "blue", DEBUG: "default" }[l] || "default");
     const columns = [
-      { title: "时间", dataIndex: "ts", key: "ts", width: 180, render: fmtTime },
-      { title: "级别", dataIndex: "level", key: "level", width: 100, render: (l) => html`<${A.Tag} color=${levelColor(l)}>${l}</${A.Tag}>` },
-      { title: "来源", dataIndex: "logger", key: "logger", width: 160, responsive: ["lg"], ellipsis: true },
-      { title: "消息", dataIndex: "msg", key: "msg", render: (m) => html`<span style=${{ fontFamily: "monospace", fontSize: 12, wordBreak: "break-all" }}>${m}</span>` },
+      { title: zh("时间", "Time"), dataIndex: "ts", key: "ts", width: 180, render: fmtTime },
+      { title: zh("级别", "Level"), dataIndex: "level", key: "level", width: 100, render: (l) => html`<${A.Tag} color=${levelColor(l)}>${l}</${A.Tag}>` },
+      { title: zh("来源", "Source"), dataIndex: "logger", key: "logger", width: 160, responsive: ["lg"], ellipsis: true },
+      { title: zh("消息", "Message"), dataIndex: "msg", key: "msg", render: (m) => html`<span style=${{ fontFamily: "monospace", fontSize: 12, wordBreak: "break-all" }}>${m}</span>` },
     ];
     const records = (data && data.records) || [];
 
     return html`
       <${F}>
-        <${SectionHeader} title="日志管理" onReload=${reload} loading=${loading}
+        <${SectionHeader} title=${zh("日志管理", "Logs")} onReload=${reload} loading=${loading}
           extra=${html`<${A.Space}>
             <${A.Select} value=${level} style=${{ width: 130 }} onChange=${setLevel}
-              options=${[{ value: "", label: "全部级别" }, { value: "INFO", label: "INFO" }, { value: "WARNING", label: "WARNING" }, { value: "ERROR", label: "ERROR" }]} />
-            <span>自动刷新 <${A.Switch} size="small" checked=${auto} onChange=${setAuto} /></span>
+              options=${[{ value: "", label: zh("全部级别", "All levels") }, { value: "INFO", label: "INFO" }, { value: "WARNING", label: "WARNING" }, { value: "ERROR", label: "ERROR" }]} />
+            <span>${zh("自动刷新", "Auto refresh")} <${A.Switch} size="small" checked=${auto} onChange=${setAuto} /></span>
           </${A.Space}>`} />
         ${error
-          ? html`<${A.Alert} type="error" message=${"加载失败: " + error.message} />`
+          ? html`<${A.Alert} type="error" message=${zh("加载失败: ", "Load failed: ") + error.message} />`
           : html`<${A.Table} rowKey=${(_, i) => i} loading=${loading} columns=${columns} dataSource=${records} size="small"
-              locale=${{ emptyText: "暂无日志（进程重启后清空）" }} pagination=${{ pageSize: 50, hideOnSinglePage: true }} scroll=${{ x: "max-content" }} />`}
+              locale=${{ emptyText: zh("暂无日志（进程重启后清空）", "No logs yet (cleared after process restart)") }} pagination=${{ pageSize: 50, hideOnSinglePage: true }} scroll=${{ x: "max-content" }} />`}
       </${F}>`;
   }
 
   // ── admin console shell ──────────────────────────────────────────────────────────────────
   const SECTIONS = {
-    overview: { label: "概览", icon: "DashboardOutlined", comp: OverviewSection },
-    accounts: { label: "账户", icon: "TeamOutlined", comp: AccountsSection },
-    sessions: { label: "在线会话", icon: "ClockCircleOutlined", comp: SessionsSection },
-    processes: { label: "进程", icon: "ApiOutlined", comp: ProcessesSection },
-    database: { label: "数据库", icon: "DatabaseOutlined", comp: DatabaseSection },
-    logs: { label: "日志", icon: "FileTextOutlined", comp: LogsSection },
+    overview: { label: zh("概览", "Overview"), icon: "DashboardOutlined", comp: OverviewSection },
+    accounts: { label: zh("账户", "Accounts"), icon: "TeamOutlined", comp: AccountsSection },
+    sessions: { label: zh("在线会话", "Online sessions"), icon: "ClockCircleOutlined", comp: SessionsSection },
+    processes: { label: zh("进程", "Processes"), icon: "ApiOutlined", comp: ProcessesSection },
+    database: { label: zh("数据库", "Database"), icon: "DatabaseOutlined", comp: DatabaseSection },
+    logs: { label: zh("日志", "Logs"), icon: "FileTextOutlined", comp: LogsSection },
   };
 
   function ControlView({ onBack }) {
     const ControlRoot = window.ForemanControlApp && window.ForemanControlApp.Root;
     if (!ControlRoot) {
       return html`<div style=${{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
-        <${A.Result} status="error" title="控制台组件未加载" subTitle="请刷新页面后重试。" extra=${html`<${A.Button} type="primary" onClick=${onBack}>返回总控制台</${A.Button}>`} />
+        <${A.Result} status="error" title=${zh("控制台组件未加载", "Console component did not load")} subTitle=${zh("请刷新页面后重试。", "Refresh the page and try again.")} extra=${html`<${A.Button} type="primary" onClick=${onBack}>${zh("返回总控制台", "Back to main console")}</${A.Button}>`} />
       </div>`;
     }
     return html`<${ControlRoot} embedded=${true} onBack=${onBack} />`;
@@ -522,13 +537,13 @@
           <${A.Layout.Header} style=${{ padding: "0 16px", display: "flex", alignItems: "center", background: dark ? "#1f1f1f" : "#fff", borderBottom: dark ? "1px solid #303030" : "1px solid #f0f0f0" }}>
             <${A.Typography.Text} strong style=${{ flex: 1, fontSize: 16 }}>${SECTIONS[key].label}</${A.Typography.Text}>
             <${A.Space} size="middle">
-              <${A.Tooltip} title=${dark ? "切换浅色" : "切换深色"}>
+              <${A.Tooltip} title=${dark ? zh("切换浅色", "Switch to light") : zh("切换深色", "Switch to dark")}>
                 <${A.Button} type="text" icon=${icon(dark ? "BulbOutlined" : "BulbFilled")} onClick=${onToggleTheme} />
               </${A.Tooltip}>
-              <${A.Dropdown} menu=${{ items: [{ key: "logout", icon: icon("LogoutOutlined"), label: "退出登录", danger: true, onClick: onLogout }] }}>
+              <${A.Dropdown} menu=${{ items: [{ key: "logout", icon: icon("LogoutOutlined"), label: zh("退出登录", "Log out"), danger: true, onClick: onLogout }] }}>
                 <${A.Space} style=${{ cursor: "pointer" }}>
                   <${A.Avatar} size="small" style=${{ background: "#1677ff" }}>${(me.display_name || me.username || "?").slice(0, 1).toUpperCase()}</${A.Avatar}>
-                  <span>${me.display_name || me.username} <${A.Tag} color="geekblue" style=${{ marginInlineStart: 4 }}>管理员</${A.Tag}></span>
+                  <span>${me.display_name || me.username} <${A.Tag} color="geekblue" style=${{ marginInlineStart: 4 }}>${zh("管理员", "Admin")}</${A.Tag}></span>
                 </${A.Space}>
               </${A.Dropdown}>
             </${A.Space}>
@@ -562,12 +577,12 @@
         form.resetFields();
         keys.reload();
         ui.modal && ui.modal.info({
-          title: "新的访问密钥（仅显示一次）",
+          title: zh("新的访问密钥（仅显示一次）", "New access key (shown once)"),
           content: html`<${A.Typography.Paragraph} copyable=${{ text: r.key }} style=${{ fontFamily: "monospace", wordBreak: "break-all" }}>${r.key}</${A.Typography.Paragraph}>`,
         });
-      } catch (e) { toast.err("创建失败: " + e.message); }
+      } catch (e) { toast.err(zh("创建失败: ", "Create failed: ") + e.message); }
     };
-    const revoke = async (id) => { try { await api("/api/keys/" + id, { method: "DELETE" }); toast.ok("已吊销"); keys.reload(); } catch (e) { toast.err(e.message); } };
+    const revoke = async (id) => { try { await api("/api/keys/" + id, { method: "DELETE" }); toast.ok(zh("已吊销", "Revoked")); keys.reload(); } catch (e) { toast.err(e.message); } };
 
     // 「控制」入口：仍然先写目标机器和 dashboard token，但渲染留在 /app.html 的同一个
     // React 根应用里，由 Root 切换到控制台视图。
@@ -582,47 +597,47 @@
           <${A.Space}>
             <${A.Button} type="text" icon=${icon(dark ? "BulbOutlined" : "BulbFilled")} onClick=${onToggleTheme} />
             <span>${me.display_name || me.username}</span>
-            <${A.Button} icon=${icon("LogoutOutlined")} onClick=${onLogout}>退出</${A.Button}>
+            <${A.Button} icon=${icon("LogoutOutlined")} onClick=${onLogout}>${zh("退出", "Log out")}</${A.Button}>
           </${A.Space}>
         </${A.Layout.Header}>
         <${A.Layout.Content} style=${{ padding: 16, maxWidth: 900, margin: "0 auto", width: "100%" }}>
-          <${A.Card} title="我的机器" style=${{ marginBottom: 16 }} extra=${html`<${A.Button} size="small" onClick=${procs.reload}>刷新</${A.Button}>`}>
+          <${A.Card} title=${zh("我的机器", "My machines")} style=${{ marginBottom: 16 }} extra=${html`<${A.Button} size="small" onClick=${procs.reload}>${zh("刷新", "Refresh")}</${A.Button}>`}>
             <${A.Table} rowKey="id" loading=${procs.loading} pagination=${false} size="small"
-              locale=${{ emptyText: "还没有机器接入" }}
+              locale=${{ emptyText: zh("还没有机器接入", "No machines connected yet") }}
               columns=${[
-                { title: "机器", dataIndex: "name", render: (t) => t || "—" },
-                { title: "状态", dataIndex: "online", render: (o) => html`<${A.Badge} status=${o ? "success" : "default"} text=${o ? "在线" : "离线"} />` },
-                { title: "最后心跳", dataIndex: "last_heartbeat", render: fmtTime },
-                { title: "操作", key: "ops", width: 96, render: (_, r) => html`<${A.Tooltip} title=${r.online ? "进入控制台：远程查看会话 / 派发任务 / 审批" : "机器离线，无法控制"}><${A.Button} size="small" type="link" disabled=${!r.online} onClick=${() => control(r)}>控制</${A.Button}></${A.Tooltip}>` },
+                { title: zh("机器", "Machine"), dataIndex: "name", render: (t) => t || "—" },
+                { title: zh("状态", "Status"), dataIndex: "online", render: (o) => html`<${A.Badge} status=${o ? "success" : "default"} text=${o ? zh("在线", "Online") : zh("离线", "Offline")} />` },
+                { title: zh("最后心跳", "Last heartbeat"), dataIndex: "last_heartbeat", render: fmtTime },
+                { title: zh("操作", "Actions"), key: "ops", width: 96, render: (_, r) => html`<${A.Tooltip} title=${r.online ? zh("进入控制台：远程查看会话 / 派发任务 / 审批", "Open console: view sessions, dispatch tasks, and approve remotely") : zh("机器离线，无法控制", "Machine is offline")}><${A.Button} size="small" type="link" disabled=${!r.online} onClick=${() => control(r)}>${zh("控制", "Control")}</${A.Button}></${A.Tooltip}>` },
               ]} dataSource=${procs.data || []} />
-            <${A.Typography.Text} type="secondary" style=${{ fontSize: 12 }}>点「控制」进入控制台：可远程查看该机器的会话与卡片；要远程派发任务 / 审批，需先在该机器本地 Foreman 开启「远端执行」。</${A.Typography.Text}>
+            <${A.Typography.Text} type="secondary" style=${{ fontSize: 12 }}>${zh("点「控制」进入控制台：可远程查看该机器的会话与卡片；要远程派发任务 / 审批，需先在该机器本地 Foreman 开启「远端执行」。", "Use Control to open the console for that machine. You can view sessions and cards remotely; remote task dispatch and approvals require Remote execution to be enabled on the local Foreman app.")}</${A.Typography.Text}>
           </${A.Card}>
           <${A.Card} size="small" style=${{ marginBottom: 16 }}>
-            <${A.Typography.Text} type="secondary" style=${{ fontSize: 12 }}>Relay 接入地址 · 复制到本机 Foreman「云端连接设置 → 云端地址」</${A.Typography.Text}>
+            <${A.Typography.Text} type="secondary" style=${{ fontSize: 12 }}>${zh("Relay 接入地址 · 复制到本机 Foreman「云端连接设置 → 云端地址」", "Relay address · copy into local Foreman Cloud connection settings → Cloud URL")}</${A.Typography.Text}>
             <${A.Typography.Paragraph} copyable=${{ text: relayUrl }} style=${{ fontFamily: "monospace", margin: "4px 0 0", wordBreak: "break-all" }}>${relayUrl}</${A.Typography.Paragraph}>
           </${A.Card}>
-          <${A.Card} title="访问密钥" extra=${html`<${A.Button} size="small" type="primary" onClick=${() => setMinting(true)}>新建密钥</${A.Button}>`}>
+          <${A.Card} title=${zh("访问密钥", "Access keys")} extra=${html`<${A.Button} size="small" type="primary" onClick=${() => setMinting(true)}>${zh("新建密钥", "New key")}</${A.Button}>`}>
             <${A.Table} rowKey="id" loading=${keys.loading} pagination=${false} size="small"
-              locale=${{ emptyText: "还没有访问密钥" }}
+              locale=${{ emptyText: zh("还没有访问密钥", "No access keys yet") }}
               columns=${[
-                { title: "标签", dataIndex: "label", render: (t) => t || "(无标签)" },
-                { title: "状态", dataIndex: "status", render: (s) => html`<${A.Tag} color=${s === "active" ? "green" : "red"}>${s}</${A.Tag}>` },
-                { title: "创建时间", dataIndex: "created_at", render: fmtTime },
-                { title: "操作", key: "ops", render: (_, r) => (r.active ? html`<${A.Popconfirm} title="吊销该密钥？" onConfirm=${() => revoke(r.id)} okText="吊销" cancelText="取消"><${A.Button} size="small" danger>吊销</${A.Button}></${A.Popconfirm}>` : null) },
+                { title: zh("标签", "Label"), dataIndex: "label", render: (t) => t || zh("(无标签)", "(no label)") },
+                { title: zh("状态", "Status"), dataIndex: "status", render: (s) => html`<${A.Tag} color=${s === "active" ? "green" : "red"}>${keyStatus(s)}</${A.Tag}>` },
+                { title: zh("创建时间", "Created"), dataIndex: "created_at", render: fmtTime },
+                { title: zh("操作", "Actions"), key: "ops", render: (_, r) => (r.active ? html`<${A.Popconfirm} title=${zh("吊销该密钥？", "Revoke this key?")} onConfirm=${() => revoke(r.id)} okText=${zh("吊销", "Revoke")} cancelText=${zh("取消", "Cancel")}><${A.Button} size="small" danger>${zh("吊销", "Revoke")}</${A.Button}></${A.Popconfirm}>` : null) },
               ]} dataSource=${keys.data || []} />
           </${A.Card}>
-          <${A.Modal} title="新建访问密钥" open=${minting} onCancel=${() => setMinting(false)} onOk=${() => form.submit()} okText="生成" cancelText="取消" destroyOnClose>
+          <${A.Modal} title=${zh("新建访问密钥", "New access key")} open=${minting} onCancel=${() => setMinting(false)} onOk=${() => form.submit()} okText=${zh("生成", "Generate")} cancelText=${zh("取消", "Cancel")} destroyOnClose>
             <${A.Form} form=${form} layout="vertical" onFinish=${onMint} requiredMark=${false} preserve=${false} initialValues=${{ expires_in_days: 0 }}>
-              <${A.Form.Item} name="label" label="标签" rules=${[{ required: true, message: "请给这台机器起个标签，便于日后辨认 / 吊销" }]}>
-                <${A.Input} placeholder="例如：我的台式机" maxLength=${60} autoFocus />
+              <${A.Form.Item} name="label" label=${zh("标签", "Label")} rules=${[{ required: true, message: zh("请给这台机器起个标签，便于日后辨认 / 吊销", "Give this machine a label so you can identify or revoke it later") }]}>
+                <${A.Input} placeholder=${zh("例如：我的台式机", "Example: desktop PC")} maxLength=${60} autoFocus />
               </${A.Form.Item}>
-              <${A.Form.Item} name="expires_in_days" label="有效期" tooltip="到期后该密钥自动失效；选「永久」则永不过期。">
+              <${A.Form.Item} name="expires_in_days" label=${zh("有效期", "Expires in")} tooltip=${zh("到期后该密钥自动失效；选「永久」则永不过期。", "The key expires automatically; choose never to keep it permanent.")}>
                 <${A.Select} options=${[
-                  { value: 0, label: "永久" },
-                  { value: 7, label: "7 天" },
-                  { value: 30, label: "30 天" },
-                  { value: 90, label: "90 天" },
-                  { value: 365, label: "365 天" },
+                  { value: 0, label: zh("永久", "Never") },
+                  { value: 7, label: zh("7 天", "7 days") },
+                  { value: 30, label: zh("30 天", "30 days") },
+                  { value: 90, label: zh("90 天", "90 days") },
+                  { value: 365, label: zh("365 天", "365 days") },
                 ]} />
               </${A.Form.Item}>
             </${A.Form}>

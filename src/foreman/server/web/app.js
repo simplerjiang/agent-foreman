@@ -282,6 +282,15 @@
       readOnlyLog: "Read-only log", workspaceRisk: "This workspace is very broad; confirm that full tool access is intentional.",
     },
   };
+  function normalizeUiLang(value) {
+    return String(value || "").trim().toLowerCase().startsWith("zh") ? "zh" : "en";
+  }
+  function detectedUiLang() {
+    const stored = localStorage.getItem(LANG_KEY);
+    if (stored) return normalizeUiLang(stored);
+    const langs = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ""]);
+    return normalizeUiLang(langs[0]);
+  }
 
   const NAV = [
     { key: "workspace", ico: "◳", label: "navWorkspace" },
@@ -2014,7 +2023,7 @@
   // ===========================================================================
   function Shell({ embedded = false, onBack = null } = {}) {
     const storedLang = localStorage.getItem(LANG_KEY);
-    const [lang, setLangState] = useState(storedLang === "en" ? "en" : "zh");
+    const [lang, setLangState] = useState(detectedUiLang);
     const [languageLoaded, setLanguageLoaded] = useState(Boolean(storedLang));
     const d = I18N[lang];
     const storedTheme = localStorage.getItem(THEME_KEY);
@@ -2108,7 +2117,7 @@
 
     useEffect(() => { document.documentElement.setAttribute("data-theme", theme); }, [theme]);
     const setTheme = (t) => { setThemeState(t); localStorage.setItem(THEME_KEY, t); };
-    const setLang = (l) => setLangState(l);
+    const setLang = (l) => setLangState(normalizeUiLang(l));
     const setSelectedProcessId = (id) => {
       setSelectedProcessIdState(id || "");
       if (id) localStorage.setItem(PROCESS_KEY, id);
@@ -2189,7 +2198,7 @@
         const sid = snap.session_id || ((snap.events[0] && snap.events[0].session_id) || "");
         if (!sid || selectedSessionRef.current === sid) setEvents(snap.events);
       }
-      if (snap && snap.language) setLangState(snap.language === "en" ? "en" : "zh");
+      if (snap && snap.language && localStorage.getItem(LANG_KEY)) setLangState(normalizeUiLang(snap.language));
     }, []);
     const loadRemoteSnapshot = useCallback(async (processId, sessionId = "") => {
       if (!processId) return;
@@ -2227,9 +2236,10 @@
     // boot
     useEffect(() => {
       if (localStorage.getItem(LANG_KEY)) { setLanguageLoaded(true); return; }
-      api("/api/settings/language").then((data) => setLangState(data && data.language === "en" ? "en" : "zh")).catch(() => {}).finally(() => setLanguageLoaded(true));
+      setLangState(detectedUiLang());
+      setLanguageLoaded(true);
     }, []);
-    useEffect(() => { document.documentElement.lang = lang === "zh" ? "zh-CN" : "en"; if (!languageLoaded) return; localStorage.setItem(LANG_KEY, lang); api("/api/settings/language", { method: "POST", body: { language: lang } }).catch(() => {}); }, [lang, languageLoaded]);
+    useEffect(() => { document.documentElement.lang = lang === "zh" ? "zh-CN" : "en"; document.title = lang === "zh" ? "Foreman · 控制台" : "Foreman · Console"; if (!languageLoaded) return; localStorage.setItem(LANG_KEY, lang); api("/api/settings/language", { method: "POST", body: { language: lang } }).catch(() => {}); }, [lang, languageLoaded]);
 
     useEffect(() => {
       if (bootStartedRef.current) return undefined;
