@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PM_TOOLS_MIN_ROUNDS = 1
 PM_TOOLS_DEFAULT_ROUNDS = 6
+PM_TOOLS_MAX_ROUNDS = 999
 
 
 def clamp_pm_tool_rounds(value: Any) -> int:
@@ -24,7 +25,7 @@ def clamp_pm_tool_rounds(value: Any) -> int:
         rounds = int(value)
     except (TypeError, ValueError):
         rounds = PM_TOOLS_DEFAULT_ROUNDS
-    return max(PM_TOOLS_MIN_ROUNDS, rounds)
+    return min(PM_TOOLS_MAX_ROUNDS, max(PM_TOOLS_MIN_ROUNDS, rounds))
 
 
 class Secrets(BaseSettings):

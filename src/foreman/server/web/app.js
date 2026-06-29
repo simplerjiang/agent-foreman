@@ -13,6 +13,7 @@
   const DEFAULT_CONTEXT_TOKENS = 128000;
   const PM_TOOLS_MIN_ROUNDS = 1;
   const PM_TOOLS_DEFAULT_ROUNDS = 6;
+  const PM_TOOLS_MAX_ROUNDS = 999;
   const SERVER_API_PREFIXES = [
     "/api/admin",
     "/api/auth",
@@ -760,7 +761,7 @@
   function clampPmToolRounds(value) {
     const n = Number(value);
     if (!Number.isFinite(n)) return PM_TOOLS_DEFAULT_ROUNDS;
-    return Math.max(PM_TOOLS_MIN_ROUNDS, Math.trunc(n));
+    return Math.min(PM_TOOLS_MAX_ROUNDS, Math.max(PM_TOOLS_MIN_ROUNDS, Math.trunc(n)));
   }
   function normalizeTodoStatus(value) {
     const v = String(value || "pending").toLowerCase();
@@ -1809,7 +1810,7 @@
         </div>
         <div style=${{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
           <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${d.browserHeadless} <${Switch} on=${!!pmTools.browser_headless} onChange=${(v) => updatePmTools({ browser_headless: v })} /></label>
-          <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${d.maxRounds}<input className="input mono" type="number" min=${PM_TOOLS_MIN_ROUNDS} step="1" style=${{ width: 76 }} value=${clampPmToolRounds(pmTools.max_rounds)} onChange=${(e) => updatePmTools({ max_rounds: e.target.value })} /></label>
+          <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${d.maxRounds}<input className="input mono" type="number" min=${PM_TOOLS_MIN_ROUNDS} max=${PM_TOOLS_MAX_ROUNDS} step="1" style=${{ width: 76 }} value=${clampPmToolRounds(pmTools.max_rounds)} onChange=${(e) => updatePmTools({ max_rounds: e.target.value })} /></label>
         </div>
         ${pmToolsStatus ? html`<div className=${`alert ${pmToolsStatus === d.pmToolsSaved ? "ok" : "error"}`} style=${{ marginBottom: 14 }}>${pmToolsStatus}</div>` : null}
         <button className="btn primary" onClick=${savePmTools}>${d.save}</button>

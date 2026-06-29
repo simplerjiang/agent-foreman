@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable
 from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
 from foreman.shared.llm.trace import trace_context
-from foreman.shared.config import PM_TOOLS_DEFAULT_ROUNDS
+from foreman.shared.config import PM_TOOLS_DEFAULT_ROUNDS, clamp_pm_tool_rounds
 
 from .models import EXTERNAL_WEB, ToolCall, ToolResult
 from .runtime import PMToolRuntime
@@ -41,7 +41,7 @@ def submit_plan_tool_spec(
     old token ceiling.
     """
     agents = [agent for agent in (enabled_agents or []) if agent] or list(_DEFAULT_PLAN_AGENTS)
-    item_limit = max(1, int(max_plan_items))
+    item_limit = clamp_pm_tool_rounds(max_plan_items)
     return {
         "name": SUBMIT_PLAN_TOOL,
         "description": "Emit exactly one launch plan for the selected coding agent. Call once.",
@@ -102,7 +102,7 @@ class PMToolLoop:
     ) -> None:
         self.llm = llm
         self.runtime = runtime
-        self.max_rounds = max(1, max_rounds)
+        self.max_rounds = clamp_pm_tool_rounds(max_rounds)
         self.on_tool_event = on_tool_event
         self.on_stream = on_stream
 
@@ -354,7 +354,7 @@ def validate_final_plan(
     effort = str(obj.get("effort") or fallback_plan.get("effort") or "").strip().lower()
     if effort not in {"", "low", "medium", "high"}:
         raise ValueError("final_plan_bad_effort")
-    item_limit = max(1, int(max_plan_items))
+    item_limit = clamp_pm_tool_rounds(max_plan_items)
     # Re-enforce the §5 schema bounds locally: the ws backend isn't guaranteed to enforce the
     # tool input_schema, so clamp the structural limits (maxLength/maxItems) here rather than trust
     # the upstream — these bounds are what replace a raw token ceiling (design §5).

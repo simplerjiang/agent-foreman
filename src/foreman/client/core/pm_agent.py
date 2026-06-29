@@ -15,7 +15,7 @@ from typing import Any
 from foreman.shared.i18n import language_directive, normalize as normalize_lang
 from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
-from foreman.shared.config import PM_TOOLS_DEFAULT_ROUNDS
+from foreman.shared.config import PM_TOOLS_DEFAULT_ROUNDS, clamp_pm_tool_rounds
 
 from .context_budget import LANE_BUDGET_RATIO, char_budget
 from .context_compression import context_pack_to_text, parse_context_pack
@@ -557,7 +557,7 @@ class PMAgent:
             if work_mode_resolver is not None and hasattr(runtime, "set_work_mode_resolver"):
                 runtime.set_work_mode_resolver(work_mode_resolver)
             try:
-                plan_item_limit = max(1, int(getattr(runtime.cfg, "max_rounds", 6)))
+                plan_item_limit = clamp_pm_tool_rounds(getattr(runtime.cfg, "max_rounds", 6))
                 fallback_plan = {
                     "agent": requested_agent or (enabled[0] if enabled else "claude-code"),
                     "model": "",

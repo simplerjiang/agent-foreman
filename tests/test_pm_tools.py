@@ -499,6 +499,9 @@ def test_submit_plan_tool_spec_constrains_agent_enum():
         "codex",
         "copilot-cli",
     ]
+    clamped = submit_plan_tool_spec(["codex"], max_plan_items=9999999)["input_schema"]
+    assert clamped["properties"]["todo"]["maxItems"] == 999
+    assert clamped["properties"]["deliberation"]["maxItems"] == 999
 
 
 class _ScriptedToolLLM:
