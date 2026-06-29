@@ -44,6 +44,17 @@
   <script src="/vendor/ant-design-icons.min.js?v=5.5.2"></script>
   <script src="/vendor/antd.min.js?v=5.22.5"></script>
   <script src="/vendor/htm.umd.js?v=3.1.1"></script>
+  <script>
+    (function () {
+      var stored = localStorage.getItem("foreman.lang") || "";
+      var langs = stored ? [stored] : (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ""]);
+      var zh = String(langs[0] || "").toLowerCase().indexOf("zh") === 0;
+      document.documentElement.lang = zh ? "zh-CN" : "en";
+      document.title = zh ? "Foreman · 控制台" : "Foreman · Console";
+      var boot = document.getElementById("boot");
+      if (boot && boot.lastElementChild) boot.lastElementChild.textContent = zh ? "🦺 Foreman 控制台加载中…" : "🦺 Loading Foreman Console…";
+    })();
+  </script>
   <script src="/app.js?v=__VER__"></script>
   <script src="/admin-app.js?v=__VER__"></script>
 </body>

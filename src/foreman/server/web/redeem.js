@@ -18,12 +18,24 @@ const I18N = {
   },
 };
 
-let lang = localStorage.getItem('foreman.lang') || 'zh';
+const LANG_KEY = 'foreman.lang';
+function normalizeUiLang(value) {
+  return String(value || '').trim().toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+function detectedUiLang() {
+  const stored = localStorage.getItem(LANG_KEY);
+  if (stored) return normalizeUiLang(stored);
+  const langs = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ''];
+  return normalizeUiLang(langs[0]);
+}
+
+let lang = detectedUiLang();
 const t = (k) => (I18N[lang] && I18N[lang][k]) || (I18N.zh[k] || k);
 const $ = (id) => document.getElementById(id);
 
 function applyLang() {
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+  document.title = lang === 'zh' ? 'Foreman · 激活账号' : 'Foreman · Activate account';
   for (const el of document.querySelectorAll('[data-i18n]')) {
     el.textContent = t(el.getAttribute('data-i18n'));
   }
@@ -65,7 +77,7 @@ async function redeem(ev) {
 applyLang();
 $('lang-toggle').addEventListener('click', () => {
   lang = lang === 'zh' ? 'en' : 'zh';
-  localStorage.setItem('foreman.lang', lang);
+  localStorage.setItem(LANG_KEY, lang);
   applyLang();
 });
 $('redeem-form').addEventListener('submit', redeem);

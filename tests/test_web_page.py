@@ -78,6 +78,26 @@ def test_i18n_and_language_sync_wired():
     assert "navWorkspace" in js and "navSettings" in js
 
 
+def test_ui_language_defaults_to_browser_language_when_unset():
+    c = TestClient(create_app(load_config()))
+    app_js = c.get("/app.js").text
+    admin_js = c.get("/admin-app.js").text
+    keys_js = c.get("/keys.js").text
+    redeem_js = c.get("/redeem.js").text
+    html = c.get("/app.html").text
+
+    for js in (app_js, admin_js, keys_js, redeem_js):
+        assert "function detectedUiLang()" in js
+        assert "navigator.languages" in js
+        assert 'localStorage.getItem(LANG_KEY)' in js
+        assert "normalizeUiLang(langs[0])" in js
+
+    assert "setLangState(detectedUiLang())" in app_js
+    assert 'api("/api/settings/language").then((data) => setLangState' not in app_js
+    assert "Loading Foreman Console" in html
+    assert "langs.some" not in app_js + admin_js + keys_js + redeem_js + html
+
+
 def test_friendly_error_maps_backend_codes_and_network_errors():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
