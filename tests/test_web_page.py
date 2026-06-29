@@ -135,7 +135,8 @@ def test_autonomy_dial_wired_in_page():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
     css = c.get("/app.css").text
-    assert "/api/settings/autonomy" in js and "/api/remote/settings/autonomy" in js and "saveAutonomy" in js
+    assert "/api/settings/autonomy" in js and "/api/remote/api" in js and "saveAutonomy" in js
+    assert "/api/remote/settings/autonomy" not in js
     assert "slider-wrap" in js and "autoExec" in js
     assert "自动执行权限" in js
     assert 'const autonomyName = d[`auto${autonomy}`]' in js
@@ -163,7 +164,8 @@ def test_composer_dispatch_with_effort_and_context_meter():
     js = c.get("/app.js").text
     css = c.get("/app.css").text
     assert "function Composer" in js
-    assert "/api/tasks" in js and "/api/dispatch" in js and "body.session_id = sessionRow.id" in js
+    assert "/api/tasks" in js and "body.session_id = sessionRow.id" in js
+    assert 'teamMode ? "/api/dispatch" : "/api/tasks"' not in js
     assert "source: clientSource()" in js
     # Fast/Std/Deep maps to effort low|medium|high in the dispatch body
     assert "effort" in js and 'setEffort("low")' in js and 'setEffort("high")' in js
@@ -196,7 +198,8 @@ def test_remote_control_ui_wires_process_target_and_approve_endpoint():
     assert "/api/processes" in js and "loadProcesses" in js
     assert "selectedProcessId" in js and "process_id" in js
     assert "/api/snapshot" in js and "snapshot_req" not in js  # browser calls REST, server builds frame
-    assert "/api/approve" in js and "card_choice" not in js
+    assert "/api/remote/api" in js and "SERVER_API_PREFIXES" in js
+    assert "card_choice" not in js
     assert "machine_offline" in js and "relay_unavailable" in js
     assert "machine-select" in js and ".m-machine" in css
 
@@ -607,9 +610,32 @@ def test_team_snapshot_drives_dashboard_state_and_decision_count():
     assert "setDefinitions(snap && snap.definitions || [])" in helper
     assert "setWorkspaces(snap.workspaces)" in helper
     assert "setAutonomyState(snap.autonomy.level)" in helper
+    assert "setDebugSettings({ llm_trace: !!snap.debug.llm_trace })" in helper
+    assert "setCloud({ url: c.url || \"\", access_key: \"\"" in helper
+    assert "Array.isArray(snap.events)" in helper
     counts = js[js.index("const counts =") : js.index("const composerProps", js.index("const counts ="))]
     assert "decisions: openCards.length + approvals.length" in counts
     assert "notifications.length" not in counts
+
+
+def test_team_api_wrapper_proxies_local_api_but_not_console_api():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "function shouldRouteLocal" in js
+    assert 'requestJson("/api/remote/api"' in js
+    assert 'path,' in js and 'body: opts.body' in js
+    assert '"/api/auth"' in js and '"/api/processes"' in js and '"/api/notifications"' in js
+    assert '"/api/push"' in js
+
+
+def test_team_session_open_requests_remote_timeline_snapshot():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "const selectedSessionRef = useRef(\"\")" in js
+    assert "if (sessionId) body.session_id = sessionId;" in js
+    assert "loadRemoteSnapshot(processId, sessionId)" in js
+    assert "openTimeline(sessionId, processId)" in js
+    assert "selectedSessionRef.current === sid" in js
 
 
 def test_mobile_drawer_has_session_picker():

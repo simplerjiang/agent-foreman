@@ -1,4 +1,7 @@
-"""Build display-safe snapshots for the subscription-driven relay view.
+"""Build display snapshots for the subscription-driven relay view.
+
+First-screen snapshots are summary-only. Explicit session snapshots include that selected
+session's stored timeline so team mode renders the same thread as the local UI.
 
 In protocol v2 the server no longer stores a display cache. A subscribed PWA asks the local
 process for a one-shot snapshot, then follows live relay events while the browser is online.
@@ -15,6 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from foreman.shared.config import remote_execution_enabled
 from foreman.shared.protocol import KIND_CACHE_SYNC, KIND_SNAPSHOT, Envelope
 from foreman.shared.autonomy import level_label, normalize_level
 from foreman.shared.i18n import normalize as normalize_lang
@@ -103,6 +107,23 @@ def definition_summary(definition) -> dict:
     }
 
 
+def event_summary(event) -> dict:
+    """A stored timeline event in the same JSON shape as the local timeline API."""
+    try:
+        payload = json.loads(getattr(event, "payload_json", "") or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    return {
+        "id": getattr(event, "id", ""),
+        "session_id": getattr(event, "session_id", ""),
+        "task_id": getattr(event, "task_id", None),
+        "type": getattr(event, "type", ""),
+        "source": getattr(event, "source", ""),
+        "payload": payload,
+        "ts": getattr(event, "ts", ""),
+    }
+
+
 def _setting(store: Any, key: str, default: str = "") -> str:
     get = getattr(store, "get_setting", None)
     if callable(get):
@@ -187,6 +208,30 @@ def _llm_settings(store: Any, cfg: Any) -> dict:
     }
 
 
+def _debug_settings(store: Any, cfg: Any) -> dict:
+    raw = _setting(store, "debug.llm_trace", "")
+    if raw.strip():
+        on = raw.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        on = bool(getattr(getattr(cfg, "debug", None), "llm_trace", False))
+    return {"llm_trace": on}
+
+
+def _cloud_settings(store: Any, cfg: Any) -> dict:
+    server = getattr(cfg, "server", None) if cfg is not None else None
+    secrets = getattr(cfg, "secrets", None) if cfg is not None else None
+    return {
+        "available": True,
+        "url": _setting(store, "cloud.url", ""),
+        "access_key_set": bool(str(getattr(secrets, "cloud_access_key", "") or "").strip()),
+        "connected": False,
+        "error": "",
+        "remote_execution_enabled": remote_execution_enabled(
+            store, bool(getattr(server, "remote_execution_enabled", False))
+        ),
+    }
+
+
 def local_state_summary(store: Any = None, cfg: Any = None) -> dict:
     """Display state that must reflect the selected local machine in team mode."""
     ui = getattr(cfg, "ui", None) if cfg is not None else None
@@ -198,6 +243,8 @@ def local_state_summary(store: Any = None, cfg: Any = None) -> dict:
         "agent_settings": _agent_rows(store, cfg),
         "pm_tools": _pm_tools(store, cfg),
         "llm": _llm_settings(store, cfg),
+        "debug": _debug_settings(store, cfg),
+        "cloud": _cloud_settings(store, cfg),
         "autonomy": {"level": level, "label": level_label(level, lang)},
         "language": lang,
     }
@@ -221,10 +268,22 @@ def build_cache_sync(sessions, cards) -> Envelope:
     )
 
 
-def build_snapshot(sessions, cards, *, corr_id: str = "", store: Any = None, cfg: Any = None) -> Envelope:
-    """Assemble an on-demand display-safe snapshot for a subscribed browser."""
+def build_snapshot(
+    sessions,
+    cards,
+    *,
+    corr_id: str = "",
+    store: Any = None,
+    cfg: Any = None,
+    session_id: str = "",
+) -> Envelope:
+    """Assemble an on-demand display snapshot for a subscribed browser."""
     env = build_cache_sync(sessions, cards)
     env.kind = KIND_SNAPSHOT
     env.id = corr_id
     env.payload.update(local_state_summary(store, cfg))
+    selected = str(session_id or "").strip()
+    if selected and store is not None and hasattr(store, "get_events"):
+        env.payload["session_id"] = selected
+        env.payload["events"] = [event_summary(e) for e in store.get_events(selected)]
     return env

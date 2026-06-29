@@ -17,6 +17,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -54,6 +55,19 @@ _CLOUD_KEY_ENV = "FOREMAN_CLOUD_ACCESS_KEY"
 _VALID_AGENT_EFFORTS = frozenset({"", "low", "medium", "high"})
 _VALID_LLM_REASONING_EFFORTS = frozenset({"", "low", "medium", "high", "max"})
 _SUPPORTED_AGENTS = frozenset(default_agents())
+_REMOTE_LOCAL_METHODS = frozenset({"GET", "POST", "PATCH", "DELETE"})
+_REMOTE_LOCAL_DENY_PREFIXES = (
+    "/api/admin",
+    "/api/auth",
+    "/api/keys",
+    "/api/processes",
+    "/api/notifications",
+    "/api/push",
+    "/api/remote",
+    "/api/snapshot",
+    "/api/dispatch",
+    "/api/approve",
+)
 
 
 class _LanguageBody(BaseModel):
@@ -259,6 +273,14 @@ class _RemoteApproveBody(BaseModel):
 
 class _SnapshotBody(BaseModel):
     process_id: str
+    session_id: str = ""
+
+
+class _RemoteApiBody(BaseModel):
+    process_id: str
+    method: str = "GET"
+    path: str
+    body: Any = None
 
 
 class _RemoteAutonomyBody(BaseModel):
@@ -433,6 +455,20 @@ def _is_operational_path(path: str) -> bool:
     if path in _PUBLIC_API_PATHS:
         return False
     return path.startswith("/api/") or path == "/hooks"
+
+
+def _remote_local_path(path: str) -> str:
+    """Validate a browser-requested local API path before routing it to a selected PC."""
+    raw = str(path or "").strip()
+    parsed = urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        raise HTTPException(status_code=400, detail="bad_remote_path")
+    clean = parsed.path or ""
+    if not clean.startswith("/api/"):
+        raise HTTPException(status_code=400, detail="bad_remote_path")
+    if any(clean == prefix or clean.startswith(f"{prefix}/") for prefix in _REMOTE_LOCAL_DENY_PREFIXES):
+        raise HTTPException(status_code=400, detail="bad_remote_path")
+    return clean + (f"?{parsed.query}" if parsed.query else "")
 
 
 def _effective_scheme(request: Request, *, trust_proxy: bool = False) -> str:
@@ -1059,6 +1095,38 @@ def create_app(
         if not _shared_token:
             return True
         return _ct_eq(token or "", _shared_token)
+
+    async def _call_local_api(payload: dict) -> dict:
+        method = str((payload or {}).get("method") or "GET").upper()
+        if method not in _REMOTE_LOCAL_METHODS:
+            return {"ok": True, "status": 405, "data": {"detail": "bad_method"}}
+        try:
+            path = _remote_local_path(str((payload or {}).get("path") or ""))
+        except HTTPException as exc:
+            return {"ok": True, "status": exc.status_code, "data": {"detail": exc.detail}}
+        headers: dict[str, str] = {"x-foreman-internal-remote": "1"}
+        if _shared_token:
+            headers["authorization"] = f"Bearer {_shared_token}"
+        body = (payload or {}).get("body", None)
+        try:
+            import httpx
+
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://foreman.local") as client:
+                res = await client.request(
+                    method,
+                    path,
+                    headers=headers,
+                    json=body if body is not None else None,
+                )
+            content_type = res.headers.get("content-type", "")
+            data = res.json() if "application/json" in content_type else res.text
+            return {"ok": True, "status": res.status_code, "data": data, "content_type": content_type}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)[:160] or "local_api_failed"}
+
+    if cloud is not None and hasattr(cloud, "bind_local_api"):
+        cloud.bind_local_api(_call_local_api)
 
     def _security_headers(response: Response) -> None:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -1921,8 +1989,32 @@ def create_app(
     async def remote_snapshot(body: _SnapshotBody, request: Request) -> dict:
         """Pull the display-safe first-screen snapshot from one online local process."""
         account = require_account(request)
-        env = Envelope(kind=KIND_SNAPSHOT_REQ, id=new_id())
+        env = Envelope(
+            kind=KIND_SNAPSHOT_REQ,
+            id=new_id(),
+            payload={"session_id": body.session_id.strip()} if body.session_id.strip() else {},
+        )
         return await _route_remote_command(account.id, body.process_id, env)
+
+    @app.post("/api/remote/api")
+    async def remote_local_api(body: _RemoteApiBody, request: Request):
+        """Route a logged-in browser's ordinary local API call to the selected PC."""
+        account = require_account(request)
+        method = (body.method or "GET").upper()
+        if method not in _REMOTE_LOCAL_METHODS:
+            raise HTTPException(status_code=405, detail="bad_method")
+        path = _remote_local_path(body.path)
+        res = await _route_remote_command(
+            account.id,
+            body.process_id,
+            command_envelope("local_api", {"method": method, "path": path, "body": body.body}),
+        )
+        status = int(res.get("status") or 200)
+        data = res.get("data")
+        if status >= 400:
+            detail = data.get("detail") if isinstance(data, dict) else data
+            raise HTTPException(status_code=status, detail=detail or "remote_api_failed")
+        return data
 
     @app.post("/api/remote/settings/autonomy")
     async def remote_set_autonomy(body: _RemoteAutonomyBody, request: Request) -> dict:
