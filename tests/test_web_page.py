@@ -517,8 +517,8 @@ def test_pm_tool_settings_frontend_wired():
     assert "pmTools" in js and "savePmTools" in js and "loadPmTools" in js
     assert "allowed_commands" in js and "allowed_origins" in js
     assert "web_search_provider" in js and "browser_headless" in js
-    assert "PM_TOOLS_MIN_ROUNDS = 1" in js and "clampPmToolRounds" in js
-    assert "PM_TOOLS_MAX_ROUNDS" not in js
+    assert "PM_TOOLS_MIN_ROUNDS = 1" in js and "PM_TOOLS_MAX_ROUNDS = 999" in js
+    assert "clampPmToolRounds" in js and "max=${PM_TOOLS_MAX_ROUNDS}" in js
     assert "PM evidence rounds" in js and "PM 取证工具轮次" in js
 
 
