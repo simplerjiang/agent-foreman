@@ -13,6 +13,18 @@
   const DEFAULT_CONTEXT_TOKENS = 128000;
   const PM_TOOLS_MIN_ROUNDS = 1;
   const PM_TOOLS_DEFAULT_ROUNDS = 6;
+  const SERVER_API_PREFIXES = [
+    "/api/admin",
+    "/api/auth",
+    "/api/keys",
+    "/api/processes",
+    "/api/notifications",
+    "/api/push",
+    "/api/remote",
+    "/api/snapshot",
+    "/api/dispatch",
+    "/api/approve",
+  ];
 
   // ---------------------------------------------------------------------------
   // i18n
@@ -317,11 +329,24 @@
   class ApiError extends Error {
     constructor(message, status, data) { super(message); this.status = status; this.data = data || {}; }
   }
-  async function api(path, opts = {}) {
+  function pathnameOf(path) {
+    try { return new URL(path, location.origin).pathname; }
+    catch (e) { return String(path || ""); }
+  }
+  function shouldRouteLocal(path, opts = {}) {
+    if (opts.server || opts.local === false) return false;
+    const token = getToken();
+    const processId = localStorage.getItem(PROCESS_KEY) || "";
+    const name = pathnameOf(path);
+    if (!token || !processId || !name.startsWith("/api/")) return false;
+    return !SERVER_API_PREFIXES.some((prefix) => name === prefix || name.startsWith(`${prefix}/`));
+  }
+  async function requestJson(path, opts = {}) {
+    const { server, local, ...fetchOpts } = opts;
     const headers = new Headers(opts.headers || {});
     let body = opts.body;
     if (body !== undefined && typeof body !== "string") { headers.set("Content-Type", "application/json"); body = JSON.stringify(body); }
-    const res = await fetch(path, { ...opts, headers, body });
+    const res = await fetch(path, { ...fetchOpts, headers, body });
     const ct = res.headers.get("content-type") || "";
     let data = ct.includes("application/json") ? await res.json().catch(() => null) : await res.text().catch(() => "");
     if (!res.ok) {
@@ -329,6 +354,21 @@
       throw new ApiError(detail || res.statusText || `HTTP ${res.status}`, res.status, data);
     }
     return data;
+  }
+  async function api(path, opts = {}) {
+    if (shouldRouteLocal(path, opts)) {
+      return requestJson("/api/remote/api", {
+        method: "POST",
+        server: true,
+        body: {
+          process_id: localStorage.getItem(PROCESS_KEY) || "",
+          method: (opts.method || "GET").toUpperCase(),
+          path,
+          body: opts.body,
+        },
+      });
+    }
+    return requestJson(path, opts);
   }
 
   // ---------------------------------------------------------------------------
@@ -2029,6 +2069,7 @@
     const [toasts, setToasts] = useState([]);
     const accountWsRef = useRef(null);
     const wsRef = useRef(null);
+    const selectedSessionRef = useRef("");
     const fileRef = useRef(null);
     const toastSeq = useRef(0);
     const bootStartedRef = useRef(false);
@@ -2113,11 +2154,23 @@
       if (snap && snap.agent_settings) { setAgentSettings(snap.agent_settings || []); setAgentsLoaded(true); }
       if (snap && snap.pm_tools) setPmTools(snap.pm_tools || {});
       if (snap && snap.llm) setLlm({ ...snap.llm, api_key: "" });
+      if (snap && snap.debug) setDebugSettings({ llm_trace: !!snap.debug.llm_trace });
+      if (snap && snap.cloud) {
+        const c = snap.cloud;
+        setCloud({ url: c.url || "", access_key: "", access_key_set: !!c.access_key_set, connected: !!c.connected, remote_execution_enabled: !!c.remote_execution_enabled });
+        setCloudAvailable(c.available !== false);
+      }
+      if (snap && Array.isArray(snap.events)) {
+        const sid = snap.session_id || ((snap.events[0] && snap.events[0].session_id) || "");
+        if (!sid || selectedSessionRef.current === sid) setEvents(snap.events);
+      }
       if (snap && snap.language) setLangState(snap.language === "en" ? "en" : "zh");
     }, []);
-    const loadRemoteSnapshot = useCallback(async (processId) => {
+    const loadRemoteSnapshot = useCallback(async (processId, sessionId = "") => {
       if (!processId) return;
-      try { applySnapshot(await api("/api/snapshot", { method: "POST", body: { process_id: processId } })); }
+      const body = { process_id: processId };
+      if (sessionId) body.session_id = sessionId;
+      try { applySnapshot(await api("/api/snapshot", { method: "POST", body })); }
       catch (e) { notifyError(e); }
     }, [applySnapshot, notifyError]);
     const loadNotifications = useCallback(async () => {
@@ -2296,7 +2349,7 @@
         if (row) await decideApproval(row.id, decision, row.nonce);
         return;
       }
-      if (sessionId) { openTimeline(sessionId); return; }
+      if (sessionId) { openTimeline(sessionId, processId); return; }
       if (viewName === "decisions" || approvalId) { setView("decisions"); return; }
       if (viewName === "workspace") { setView("workspace"); return; }
     }
@@ -2320,8 +2373,11 @@
       return () => navigator.serviceWorker.removeEventListener("message", onMessage);
     });
 
-    function openTimeline(sessionId) {
+    function openTimeline(sessionId, processIdOverride = "") {
+      selectedSessionRef.current = sessionId;
       setSelectedSession(sessionId); setView("workspace"); setEvents([]);
+      const processId = processIdOverride || selectedProcessId;
+      if (teamMode && processId) loadRemoteSnapshot(processId, sessionId);
       if (wsRef.current) { try { wsRef.current.close(); } catch (e) {} }
       const proto = location.protocol === "https:" ? "wss" : "ws";
       const token = getToken();
@@ -2334,7 +2390,7 @@
       next.addEventListener("error", () => {});
       wsRef.current = next;
     }
-    function newSession() { setSelectedSession(""); setEvents([]); setDispatchStatus(""); setCompactStatus(""); setView("workspace"); }
+    function newSession() { selectedSessionRef.current = ""; setSelectedSession(""); setEvents([]); setDispatchStatus(""); setCompactStatus(""); setView("workspace"); }
 
     const sessionRow = useMemo(() => sessions.find((s) => s.id === selectedSession), [sessions, selectedSession]);
     const dig = useMemo(() => digest(events, d, lang), [events, d, lang]);
@@ -2344,7 +2400,8 @@
 
     function pushEvent(item) {
       if (!item) return;
-      if (selectedSession && item.session_id && item.session_id !== selectedSession) return;
+      const currentSession = selectedSessionRef.current || selectedSession;
+      if (currentSession && item.session_id && item.session_id !== currentSession) return;
       setEvents((prev) => {
         if (item.id && prev.some((r) => r.id === item.id)) return prev;
         return [...prev, item];
@@ -2378,7 +2435,6 @@
       if (!target) { setDispatchStatus(d.dispatchNoWorkspace); setView("settings"); return; }
       setDispatching(true);
       const body = { goal, workspace: target, source: clientSource(), effort };
-      if (teamMode) body.process_id = selectedProcessId;
       if (sessionRow) {
         body.session_id = sessionRow.id;
         body.continue_mode = continueMode === "interrupt" ? "interrupt" : "queue";
@@ -2387,7 +2443,7 @@
       // D4: manually-picked work modes ride along (backend accepts but doesn't consume yet — P1).
       if (selectedWorkModeIds && selectedWorkModeIds.length) body.work_mode_ids = selectedWorkModeIds;
       try {
-        const res = await api(teamMode ? "/api/dispatch" : "/api/tasks", { method: "POST", body });
+        const res = await api("/api/tasks", { method: "POST", body });
         setTask(""); setAttachments([]);
         setDispatchStatus(sessionRow ? d.continued : d.dispatched);
         if (teamMode) await loadRemoteSnapshot(selectedProcessId);
@@ -2403,10 +2459,9 @@
       if (!target) { setDispatchStatus(d.dispatchNoWorkspace); setView("settings"); return; }
       setDispatching(true);
       const body = { goal: row.goal, workspace: target, source: clientSource(), effort };
-      if (teamMode) body.process_id = selectedProcessId;
       if (row.model) body.model = row.model;
       try {
-        const res = await api(teamMode ? "/api/dispatch" : "/api/tasks", { method: "POST", body });
+        const res = await api("/api/tasks", { method: "POST", body });
         setDispatchStatus(d.dispatched);
         if (teamMode) await loadRemoteSnapshot(selectedProcessId);
         else await loadSessions();
@@ -2418,8 +2473,7 @@
       if (!sessionRow) { toast(d.selectSessionHint, "error"); return; }
       if (teamMode && !selectedProcessId) { toast(d.remoteProcessRequired, "error"); return; }
       const body = { goal: text, workspace: sessionRow.workspace || workspace, source: clientSource(), session_id: sessionRow.id, effort, continue_mode: "queue" };
-      if (teamMode) body.process_id = selectedProcessId;
-      api(teamMode ? "/api/dispatch" : "/api/tasks", { method: "POST", body }).then(() => { toast(d.continued, "success"); teamMode ? loadRemoteSnapshot(selectedProcessId) : loadSessions(); }).catch(notifyError);
+      api("/api/tasks", { method: "POST", body }).then(() => { toast(d.continued, "success"); teamMode ? loadRemoteSnapshot(selectedProcessId) : loadSessions(); }).catch(notifyError);
     }
     async function runCompact() {
       if (!selectedSession) { setCompactStatus(d.selectSessionHint); return; }
@@ -2447,6 +2501,7 @@
       try {
         await api(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
         setConfirmSessionDelete(null);
+        selectedSessionRef.current = "";
         setSelectedSession("");
         setEvents([]);
         await loadSessions();
@@ -2457,8 +2512,7 @@
       if (!cardId || !option) return;
       if (teamMode && !selectedProcessId) { toast(d.remoteProcessRequired, "error"); return; }
       try {
-        if (teamMode) await api("/api/approve", { method: "POST", body: { process_id: selectedProcessId, card_id: cardId, option } });
-        else await api(`/api/cards/${encodeURIComponent(cardId)}/choose`, { method: "POST", body: { option } });
+        await api(`/api/cards/${encodeURIComponent(cardId)}/choose`, { method: "POST", body: { option } });
         teamMode ? await loadRemoteSnapshot(selectedProcessId) : await loadCards();
         toast(d.saved, "success");
       }
@@ -2467,8 +2521,7 @@
     async function decideApproval(id, decision, nonce) {
       if (teamMode && !selectedProcessId) { toast(d.remoteProcessRequired, "error"); return; }
       try {
-        if (teamMode) await api("/api/approve", { method: "POST", body: { process_id: selectedProcessId, approval_id: id, decision, nonce: nonce || "" } });
-        else await api(`/api/approvals/${encodeURIComponent(id)}`, { method: "POST", body: { decision, nonce: nonce || "" } });
+        await api(`/api/approvals/${encodeURIComponent(id)}`, { method: "POST", body: { decision, nonce: nonce || "" } });
         teamMode ? await loadRemoteSnapshot(selectedProcessId) : await loadApprovals();
         toast(d.saved, "success");
       }
@@ -2591,10 +2644,8 @@
     async function saveAutonomy(value) {
       setAutonomyState(value);
       try {
-        const path = teamMode ? "/api/remote/settings/autonomy" : "/api/settings/autonomy";
-        const body = teamMode ? { process_id: selectedProcessId, level: value } : { level: value };
         if (teamMode && !selectedProcessId) { toast(d.remoteProcessRequired, "error"); return; }
-        const res = await api(path, { method: "POST", body });
+        const res = await api("/api/settings/autonomy", { method: "POST", body: { level: value } });
         if (typeof res.level === "number") setAutonomyState(res.level);
         if (teamMode) await loadRemoteSnapshot(selectedProcessId);
       }

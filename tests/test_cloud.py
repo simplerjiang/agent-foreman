@@ -10,13 +10,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from foreman.client.core.cloud import CloudManager, normalize_relay_url
 from foreman.client.relay import RelayConnector
+from foreman.client.store.db import Store
+from foreman.client.store.models import Session
 from foreman.server.app import create_app
 from foreman.shared.config import load_config
+from foreman.shared.events import EventBus
 from foreman.shared.protocol import (
     KIND_ACK,
     KIND_COMMAND,
@@ -25,12 +29,14 @@ from foreman.shared.protocol import (
     KIND_SNAPSHOT_REQ,
     Envelope,
     attach_mac,
+    command_envelope,
 )
 
 
 class FakeStore:
     def __init__(self) -> None:
         self._kv: dict[str, str] = {}
+        self.events: list = []
 
     def get_setting(self, key: str):
         return self._kv.get(key)
@@ -43,6 +49,9 @@ class FakeStore:
 
     def get_decision_cards(self, session_id=None):
         return []
+
+    def get_events(self, session_id):
+        return [e for e in self.events if e.session_id == session_id]
 
 
 class _FakeConn:
@@ -204,13 +213,33 @@ def test_cloud_manager_does_not_push_periodic_cache_sync():
 
 async def test_cloud_manager_snapshot_request_is_on_demand():
     cfg = load_config()
-    mgr = CloudManager(store=FakeStore(), cfg=cfg)
-    reply = await mgr._on_frame(Envelope(kind=KIND_SNAPSHOT_REQ, id="corr"))
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    store = FakeStore()
+    store.set_setting("cloud.url", "wss://relay.example/relay")
+    store.set_setting("debug.llm_trace", "1")
+    store.set_setting("cloud.remote_execution_enabled", "1")
+    store.events.append(SimpleNamespace(
+        id="e1",
+        session_id="s1",
+        task_id=None,
+        type="agent_output",
+        source="codex",
+        payload_json='{"text":"local timeline"}',
+        ts="t1",
+    ))
+    mgr = CloudManager(store=store, cfg=cfg)
+    reply = await mgr._on_frame(Envelope(kind=KIND_SNAPSHOT_REQ, id="corr", payload={"session_id": "s1"}))
     assert reply.kind == KIND_SNAPSHOT
     assert reply.id == "corr"
     assert reply.payload["sessions"] == []
     assert reply.payload["cards"] == []
     assert reply.payload["autonomy"]["level"] == cfg.autonomy.level
+    assert reply.payload["debug"] == {"llm_trace": True}
+    assert reply.payload["cloud"]["url"] == "wss://relay.example/relay"
+    assert reply.payload["cloud"]["access_key_set"] is True
+    assert reply.payload["cloud"]["remote_execution_enabled"] is True
+    assert reply.payload["session_id"] == "s1"
+    assert reply.payload["events"][0]["payload"]["text"] == "local timeline"
     assert "workspaces" in reply.payload
 
 
@@ -223,6 +252,44 @@ async def test_cloud_manager_command_disabled_by_default():
     reply = await mgr._on_frame(env)
     assert reply.kind == KIND_ACK
     assert reply.payload == {"ok": False, "error": "disabled"}
+
+
+async def test_cloud_manager_local_api_routes_to_local_app_even_when_remote_exec_off(tmp_path):
+    cfg = load_config(tmp_path / "none.yaml")
+    cfg.secrets.cloud_access_key = "fk_live_test"
+    store = Store(str(tmp_path / "local.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="visible from phone"))
+    mgr = CloudManager(store=store, cfg=cfg)
+    create_app(cfg, store=store, bus=EventBus(), cloud=mgr)
+    mgr.bind_app_loop(asyncio.get_running_loop())
+
+    env = command_envelope("local_api", {"method": "GET", "path": "/api/sessions"})
+    env.seq = 1
+    env.nonce = "n-local"
+    env.ts = 1.0
+    attach_mac(env, hashlib.sha256(b"fk_live_test").hexdigest())
+    reply = await mgr._on_frame(env)
+
+    assert reply.kind == KIND_ACK
+    assert reply.payload["ok"] is True
+    assert reply.payload["status"] == 200
+    assert reply.payload["data"][0]["id"] == "s1"
+
+    write = command_envelope(
+        "local_api",
+        {"method": "POST", "path": "/api/settings/autonomy", "body": {"level": 3}},
+    )
+    write.seq = 2
+    write.nonce = "n-local-write"
+    write.ts = 2.0
+    attach_mac(write, hashlib.sha256(b"fk_live_test").hexdigest())
+    write_reply = await mgr._on_frame(write)
+
+    assert write_reply.payload["ok"] is True
+    assert write_reply.payload["status"] == 200
+    assert write_reply.payload["data"]["level"] == 3
+    assert store.get_setting("autonomy.level") == "3"
 
 
 async def test_cloud_manager_command_enabled_via_config_kv():

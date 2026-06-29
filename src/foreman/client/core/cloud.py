@@ -104,6 +104,7 @@ class CloudManager:
         self._last_seq = 0
         self._ack_cache: dict[str, dict] = {}
         self._outgoing: queue.Queue[Envelope] = queue.Queue(maxsize=1000)
+        self._local_api_handler: Callable[[dict], Any] | None = None
 
     # ── config ────────────────────────────────────────────────────────────────
     def _url(self) -> str:
@@ -161,7 +162,11 @@ class CloudManager:
         if self._bus is not None and self._event_task is None:
             self._event_task = loop.create_task(self._event_pump())
 
-    def _build_snapshot(self, corr_id: str = "") -> Envelope:
+    def bind_local_api(self, handler: Callable[[dict], Any]) -> None:
+        """Bind the in-process FastAPI caller used by team-mode remote API forwarding."""
+        self._local_api_handler = handler
+
+    def _build_snapshot(self, corr_id: str = "", *, session_id: str = "") -> Envelope:
         """Build an on-demand display-safe snapshot. Errors become an empty snapshot."""
         store = self._store
         if store is None or not hasattr(store, "get_sessions") or not hasattr(store, "get_decision_cards"):
@@ -169,13 +174,20 @@ class CloudManager:
         try:
             from foreman.client.cache_sync import build_snapshot
 
-            return build_snapshot(
+            env = build_snapshot(
                 store.get_sessions(),
                 store.get_decision_cards(None),
                 corr_id=corr_id,
                 store=store,
                 cfg=self._cfg,
+                session_id=session_id,
             )
+            cfg_default = bool(getattr(getattr(self._cfg, "server", None), "remote_execution_enabled", False))
+            env.payload["cloud"] = {
+                **self.status(),
+                "remote_execution_enabled": remote_execution_enabled(self._store, cfg_default),
+            }
+            return env
         except Exception:  # noqa: BLE001 — a snapshot failure must not kill the relay link
             return Envelope(kind=KIND_ACK, id=corr_id, payload={"ok": False, "error": "snapshot_failed"})
 
@@ -217,7 +229,8 @@ class CloudManager:
             self._subscribed = False
             return None
         if env.kind == KIND_SNAPSHOT_REQ:
-            return self._build_snapshot(env.id)
+            payload = env.payload if isinstance(env.payload, dict) else {}
+            return self._build_snapshot(env.id, session_id=str(payload.get("session_id") or ""))
         if env.kind != KIND_COMMAND:
             return None
         if not verify_mac(env, self._key_hash()):
@@ -228,10 +241,12 @@ class CloudManager:
         cached = self._ack_cache.get(env.id)
         if cached is not None:
             return Envelope(kind=KIND_ACK, id=env.id, payload=cached)
+        action = str(env.payload.get("action") or "") if isinstance(env.payload, dict) else ""
+        local_api = action == "local_api"
         # Effective breaker: config_kv override (toggled live from 本机 Settings → 云端连接) wins over
         # the cfg baseline. Read per command so the owner can grant/revoke remote control instantly.
         cfg_default = bool(getattr(getattr(self._cfg, "server", None), "remote_execution_enabled", False))
-        if not remote_execution_enabled(self._store, cfg_default):
+        if not local_api and not remote_execution_enabled(self._store, cfg_default):
             return self._ack(env, ok=False, error="disabled")
         try:
             result = await self._run_remote_command(env.payload)
@@ -306,6 +321,15 @@ class CloudManager:
                 else getattr(getattr(self._cfg, "ui", None), "language", "zh")
             )
             return {"ok": True, "level": level, "label": level_label(level, lang)}
+        if action == "local_api":
+            if self._local_api_handler is None:
+                return {"ok": False, "error": "no_local_api"}
+            coro = self._local_api_handler(payload)
+            if self._app_loop is asyncio.get_running_loop():
+                return await coro
+            return await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(coro, self._app_loop)
+            )
         return {"ok": False, "error": "bad_action"}
 
     async def _event_pump(self) -> None:
