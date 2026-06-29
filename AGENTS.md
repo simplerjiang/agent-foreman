@@ -91,6 +91,7 @@ gh issue list --label needs-e2e --state all --limit 50
 - **只改这一处「单一来源」**——`src/foreman/__init__.py` 的 `__version__ = "x.y.z"`。其余全部**自动派生**，不要再手改：
   - `pyproject.toml` 用 `dynamic = ["version"]` + `[tool.setuptools.dynamic] version = {attr = "foreman.__version__"}` 动态读取；
   - `/health`、`/api/*`、PWA 侧栏/启动页全部从 `__version__`（经 `/health`）取值，**前端不得硬编码版本号**。
+- **每次改版本号都必须注明本次更新内容，并能看到历史更新记录**：同步更新 `README.md` 的 `Version Information / 版本信息` 段落、`docs/VERSION_HISTORY.md`，以及 exe 控制台里的「Version / 版本」页面文案。必须写清本版本改了什么，并保留至少最近几个版本的历史记录，不能只显示最新版本。`__version__` 仍是唯一包版本来源；README/页面/历史文件只维护给人看的中英文更新说明。
 - **提交前自查**：相对 `origin/main` 的当前版本**正好 +0.0.1**（含进位）：
   ```bash
   git show origin/main:src/foreman/__init__.py | grep __version__   # 看 main 当前版本
@@ -105,6 +106,7 @@ gh issue list --label needs-e2e --state all --limit 50
 - **不凭印象操作 issue**：领取要看清没被领、关闭/复验通过都要**附证据**（commit SHA / 实测现象 / 截图名）。
 - **一个问题一条 issue**，便于独立认领与关闭。
 - **每个 PR 必须自增版本号**（`+0.0.1`，满 10 进位；**只改 `src/foreman/__init__.py` 的 `__version__` 这一处**，其余自动派生）——合并即触发 Release exe + 部署线上站，详见 §四。
+- **版本号改动必须带更新说明和历史记录**：同 PR 内更新 README、`docs/VERSION_HISTORY.md` 和 exe 内版本页的中英文说明，不能只 bump `__version__`，也不能只展示最新版本而看不到历史版本更新记录。
 - 标题里**禁用半角双引号 `"`**（会破坏 `gh ... --title "…"` 的 shell 解析）——用 `「」`。
 - 开发涉及破坏性操作（删数据、改用户配置、push/merge/deploy）需谨慎并按项目门禁；E2E 测试只用**只读、无害**指令驱动 agent。
 

@@ -113,6 +113,24 @@ foreman create-admin admin --config config.yaml
 foreman version
 ```
 
+### Version Information
+
+Current documented release: `v1.2.1`.
+
+The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
+
+This release adds a bilingual version information page in both the GitHub README and the exe console, adds visible historical update records, and records the rule that every version bump must describe what changed in that release.
+
+Recent history:
+
+| Version | Update |
+|---|---|
+| `v1.2.1` | Bilingual README and exe version pages, visible version history, and stricter version-note rules. |
+| `v1.2.0` | PM context token limits exposed in the product configuration flow. |
+| `v1.1.9` | PM `askQuestion` decision tool. |
+
+Full history: [docs/VERSION_HISTORY.md](docs/VERSION_HISTORY.md).
+
 ### Security Notes
 
 - Do not expose `foreman app` or `foreman serve` publicly without HTTPS and auth.
@@ -249,6 +267,24 @@ foreman dispatch "实现下一个小任务" --workspace /path/to/project
 foreman create-admin admin --config config.yaml
 foreman version
 ```
+
+### 版本信息
+
+当前文档版本：`v1.2.1`。
+
+包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
+
+本次更新增加 GitHub README 与 exe 控制台里的中英文版本信息页，增加可见的历史更新记录，并写入规约：每次修改版本号时，必须注明本次版本改了什么。
+
+最近历史：
+
+| 版本 | 更新 |
+|---|---|
+| `v1.2.1` | 中英文 README 与 exe 版本页、可见版本历史，以及更严格的版本说明规则。 |
+| `v1.2.0` | 在产品配置流程中暴露 PM 上下文 token 上限设置。 |
+| `v1.1.9` | PM `askQuestion` 决策工具。 |
+
+完整历史：[docs/VERSION_HISTORY.md](docs/VERSION_HISTORY.md)。
 
 ### 安全注意
 
