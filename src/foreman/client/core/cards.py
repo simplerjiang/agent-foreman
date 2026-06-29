@@ -19,6 +19,7 @@ through an injectable factory so the diff path is unit-testable without a real g
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -193,6 +194,23 @@ def _card_to_dict(c: DecisionCard) -> dict:
     }
 
 
+def _option_actions(options: list[dict]) -> set[str]:
+    return {
+        str(o.get("action") or "").strip()
+        for o in options
+        if isinstance(o, dict) and str(o.get("action") or "").strip()
+    }
+
+
+def _option_label(options: list[dict], action: str) -> str:
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        if str(option.get("action") or "").strip() == action:
+            return str(option.get("label") or action).strip()
+    return action
+
+
 class CardService:
     """Builds/lists decision cards and assembles the step-detail drill-down (§6.3).
 
@@ -223,6 +241,7 @@ class CardService:
         # execution is deferred (the P2–P4 behaviour), so app.py / tests stay backward-compatible.
         self.executor = executor
         self._clock = clock or utc_now_iso
+        self._choice_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     def build_card(
         self,
@@ -256,31 +275,101 @@ class CardService:
             return []
         return [_card_to_dict(c) for c in self.store.get_decision_cards(session_id)]
 
+    async def ask_question(
+        self,
+        *,
+        session_id: str,
+        question: str,
+        options: list[dict],
+        timeout_s: float = 3600,
+    ) -> dict:
+        """Surface a PM clarification question as a decision card and wait for the chosen option."""
+        clean_options = _clean_question_options(options)
+        if not session_id:
+            return {"ok": False, "error": "missing_session"}
+        if not question.strip():
+            return {"ok": False, "error": "missing_question"}
+        if not clean_options:
+            return {"ok": False, "error": "missing_options"}
+        card = self.build_card(
+            action_id="",
+            session_id=session_id,
+            summary=question.strip()[:1000],
+            audit_note="PM is waiting for your choice before planning continues.",
+            options=clean_options,
+        )
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._choice_waiters[card["id"]] = fut
+        try:
+            return await asyncio.wait_for(fut, timeout=max(0.001, float(timeout_s)))
+        except asyncio.TimeoutError:
+            self._close_unanswered_question(card["id"], "timeout")
+            return {"ok": False, "error": "timeout", "card_id": card["id"]}
+        except asyncio.CancelledError:
+            self._close_unanswered_question(card["id"], "cancelled")
+            raise
+        finally:
+            if self._choice_waiters.get(card["id"]) is fut:
+                self._choice_waiters.pop(card["id"], None)
+
+    def _close_unanswered_question(self, card_id: str, reason: str) -> None:
+        if self.store is None or not hasattr(self.store, "get_decision_card"):
+            return
+        if not hasattr(self.store, "set_card_choice"):
+            return
+        row = self.store.get_decision_card(card_id)
+        if row is None or row.chosen:
+            return
+        self.store.set_card_choice(card_id, chosen=reason, decided_at=self._clock())
+
     async def record_choice(self, card_id: str, option: str) -> dict:
         """Record the human's one-tap decision on a card, run it (if an executor is wired), and emit
         a `card_decided` event (§6.3).
 
         Returns {"ok": True, "id", "chosen"[, "execution"]} or {"ok": False, "error": ...} with
-        error ∈ {bad_option, no_store, not_found}. When a DecisionLoop executor is injected the chosen
-        path actually runs (approve → checkpoint+execute / undo / revise) and the event carries
-        ``execution_deferred=False``; without one the decision is only recorded (the P2–P4 behaviour),
-        so the event carries ``execution_deferred=True`` (Runner two-way control was the deferred bit).
+        error ∈ {bad_option, closed, no_store, not_found}. When a DecisionLoop executor is injected
+        the chosen path actually runs (approve → checkpoint+execute / undo / revise) and the event
+        carries ``execution_deferred=False``; without one the decision is only recorded (the P2–P4
+        behaviour), so the event carries ``execution_deferred=True`` (Runner two-way control was the
+        deferred bit).
         """
-        if option not in self.VALID_OPTIONS:
-            return {"ok": False, "error": "bad_option"}
         if self.store is None or not hasattr(self.store, "set_card_choice"):
             return {"ok": False, "error": "no_store"}
-        row = self.store.set_card_choice(card_id, chosen=option, decided_at=self._clock())
+        if not hasattr(self.store, "get_decision_card"):
+            return {"ok": False, "error": "no_store"}
+        chosen = str(option or "").strip()
+        existing = self.store.get_decision_card(card_id)
+        if existing is None:
+            if chosen not in self.VALID_OPTIONS:
+                return {"ok": False, "error": "bad_option"}
+            return {"ok": False, "error": "not_found"}
+        options = _card_to_dict(existing)["options"]
+        allowed = _option_actions(options) if not existing.action_id else self.VALID_OPTIONS
+        if chosen not in allowed:
+            return {"ok": False, "error": "bad_option"}
+        if not existing.action_id and existing.chosen in {"timeout", "cancelled"}:
+            return {"ok": False, "error": "closed"}
+        row = self.store.set_card_choice(card_id, chosen=chosen, decided_at=self._clock())
         if row is None:
             return {"ok": False, "error": "not_found"}
         exec_result = None
-        if self.executor is not None:
+        if self.executor is not None and row.action_id:
             try:
                 exec_result = await self.executor(row, option)
             except Exception as exc:  # an execution failure must not lose the recorded decision.
                 exec_result = {"ok": False, "error": f"{type(exc).__name__}", "executed": False}
         await self._emit_decided(row, exec_result)
-        out = {"ok": True, "id": card_id, "chosen": option}
+        waiter = self._choice_waiters.get(card_id)
+        if waiter is not None and not waiter.done():
+            answer = {
+                "ok": True,
+                "card_id": card_id,
+                "choice": chosen,
+                "label": _option_label(options, chosen),
+            }
+            waiter.set_result(answer)
+        out = {"ok": True, "id": card_id, "chosen": chosen}
         if exec_result is not None:
             out["execution"] = exec_result
         return out
@@ -405,6 +494,25 @@ def _event_row_to_dict(row) -> dict:
         "payload": json.loads(getattr(row, "payload_json", "") or "{}"),
         "ts": getattr(row, "ts", ""),
     }
+
+
+def _clean_question_options(options: list[dict]) -> list[dict]:
+    clean: list[dict] = []
+    seen: set[str] = set()
+    for idx, option in enumerate(options[:8], start=1):
+        if isinstance(option, str):
+            label = option.strip()
+            action = label or str(idx)
+        elif isinstance(option, dict):
+            label = str(option.get("label") or option.get("text") or "").strip()
+            action = str(option.get("action") or option.get("value") or label or idx).strip()
+        else:
+            continue
+        if not action or action in seen:
+            continue
+        seen.add(action)
+        clean.append({"action": action[:80], "label": (label or action)[:120]})
+    return clean
 
 
 def _default_checkpoint_factory(workspace: str):

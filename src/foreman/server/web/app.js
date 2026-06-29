@@ -1392,8 +1392,9 @@
     if (n.kind === "card") {
       const p = n.payload || {};
       const opts = Array.isArray(p.options) ? p.options : [];
+      const isQuestion = !p.action_id;
       return html`<div className="dcard">
-        <div className="dcard-head"><span>⚠️</span><span className="ttl">${d.decisionNeeded}</span><span className="risk tag amber">${d.riskMedium}</span></div>
+        <div className="dcard-head"><span>${isQuestion ? "PM" : "⚠️"}</span><span className="ttl">${isQuestion ? "PM question" : d.decisionNeeded}</span>${isQuestion ? null : html`<span className="risk tag amber">${d.riskMedium}</span>`}</div>
         <div className="dcard-body">
           <div className="q"><${MD} text=${p.summary || ""} className="markdown-compact" /></div>
           ${p.audit_note ? html`<div className="d"><${MD} text=${p.audit_note} className="markdown-compact" /></div>` : null}
@@ -1581,10 +1582,12 @@
       <div style=${{ fontSize: 13, fontWeight: 800, margin: "0 0 13px", display: "flex", alignItems: "center", gap: 9 }}>${d.decisionCards}${cards.length ? html`<span className="tag amber">${cards.length}</span>` : null}</div>
       <div style=${{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 30 }}>
         ${!cards.length ? html`<${Empty} icon="◉" text=${d.noDecisions} />` :
-          cards.map((c) => html`<div className="dcard" key=${c.id}>
-            <div className="dcard-head"><span>⚠️</span><span className="ttl">${d.decisionNeeded}</span>
+          cards.map((c) => {
+            const isQuestion = !c.action_id;
+            return html`<div className="dcard" key=${c.id}>
+            <div className="dcard-head"><span>${isQuestion ? "PM" : "⚠️"}</span><span className="ttl">${isQuestion ? "PM question" : d.decisionNeeded}</span>
               ${c.session_id ? html`<span className="dcard-link" onClick=${() => onGoSession(c.session_id)}>↗ ${d.fromSession}</span>` : null}
-              <span className="risk tag amber">${d.riskMedium}</span></div>
+              ${isQuestion ? null : html`<span className="risk tag amber">${d.riskMedium}</span>`}</div>
             <div className="dcard-body">
               <div className="q"><${MD} text=${c.summary || ""} className="markdown-compact" /></div>
               ${c.audit_note ? html`<div className="d"><${MD} text=${c.audit_note} className="markdown-compact" /></div>` : null}
@@ -1594,7 +1597,8 @@
                 ${c.action_id ? html`<button className="btn ghost" onClick=${() => openDetail(c.action_id)}>${d.showDiff}</button>` : null}
               </div>
             </div>
-          </div>`)}
+          </div>`;
+          })}
       </div>
       <div style=${{ fontSize: 13, fontWeight: 800, margin: "0 0 13px", display: "flex", alignItems: "center", gap: 9 }}>${d.approvals}${approvals.length ? html`<span className="tag red">${approvals.length}</span>` : null}</div>
       <div style=${{ display: "flex", flexDirection: "column", gap: 11 }}>
