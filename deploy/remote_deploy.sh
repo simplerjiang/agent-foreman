@@ -36,6 +36,9 @@ if [ -z "${CUR_TOKEN:-}" ]; then
   chmod 600 "$APP/.env"
 fi
 
+echo "== harden public server config =="
+python deploy/harden_config.py "$APP/config.yaml"
+
 echo "== restart service =="
 sudo systemctl restart foreman
 sleep 1
