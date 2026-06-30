@@ -67,7 +67,7 @@
       decisionNeeded: "需要你拍板", suggestion: "建议", showDiff: "看 diff",
       riskHigh: "高风险", riskMedium: "中风险", riskLow: "低风险",
       context: "上下文", compact: "压缩上下文", compacting: "压缩中...", compactDone: "上下文已压缩", compactFailed: "压缩失败",
-      attach: "附件", modelPlaceholder: "模型·默认", thinkingLevel: "thinking level", thinkingTrace: "thinking",
+      attach: "附件", modelPlaceholder: "模型·默认", thinkingLevel: "thinking level", thinkingTrace: "思考摘要",
       fast: "快速", std: "标准", deep: "深度", send: "发送", sendHint: "发送",
       guiding: "发送中…", queueing: "发送中…", guide: "发送", queueSend: "发送",
       guideHelp: "停止当前会话后再发送新指令。", queueHelp: "发送：等当前回复结束后继续处理，不等整轮 loop 完成。",
@@ -736,6 +736,11 @@
     }
     return raw;
   }
+  function formatPmReasoningText(text) {
+    return String(text || "")
+      .replace(/([.!?])(\*\*[^*\n]{1,100}\*\*)/g, "$1\n\n$2")
+      .trim();
+  }
   function looksEnglishPmStatus(text) {
     const v = String(text || "").trim();
     if (!v || /[\u3400-\u9fff]/.test(v) || v.length > 180) return false;
@@ -980,7 +985,7 @@
         const sid = p.stream_id || "";
         const gk = `${t}-${e.source || ""}-${sid || "plain"}`;
         const cleaned = cleanPmStreamText(sid ? `${pmStreamBuffers.get(gk) || ""}${rawTxt}` : rawTxt);
-        const txt = t === "pm_reasoning" ? cleaned : displayPmStreamText(cleaned, lang, d);
+        const txt = t === "pm_reasoning" ? formatPmReasoningText(cleaned) : displayPmStreamText(cleaned, lang, d);
         if (sid) pmStreamBuffers.set(gk, `${pmStreamBuffers.get(gk) || ""}${rawTxt}`);
         if (!txt) continue;
         if (p.phase) hidePmStatus(p.phase);
@@ -1457,7 +1462,7 @@
       return html`<div className="pm-note"><div className="pm-avatar">PM</div><div className="body"><${MD} text=${n.text} maxChars=${4000} /></div></div>`;
     }
     if (n.kind === "pm-thinking") {
-      return html`<div className="pm-thinking"><span>${d.thinkingTrace}</span><pre>${n.text}</pre></div>`;
+      return html`<div className="pm-thinking"><span>${d.thinkingTrace}</span><${MD} text=${n.text} maxChars=${4000} /></div>`;
     }
     if (n.kind === "call") {
       const c = dig.calls.get(n.callId);
