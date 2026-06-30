@@ -227,6 +227,17 @@ def test_workspace_chat_thread_and_right_panel_wired():
     assert ".thread" in css and ".ws-right" in css and ".composer-box" in css
 
 
+def test_workspace_user_and_pm_bubbles_have_copy_buttons():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert "function BubbleCopy" in js
+    assert "<${BubbleCopy} text=${n.goal}" in js
+    assert "<${BubbleCopy} text=${n.text}" in js
+    assert "onCopy=${onCopy}" in js and "onCopy=${mainProps.onCopy}" in js
+    assert ".bubble-copy" in css and ".bubble-copy.invert" in css
+
+
 def test_composer_dispatch_with_effort_and_context_meter():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.4
+
+English:
+
+- Added a compact copy icon to user conversation bubbles.
+- Added the same quick-copy control to PM reply bubbles.
+- Reused the existing clipboard and copied-toast path across desktop and mobile session views.
+
+中文：
+
+- 用户会话泡泡底部增加小复制图标。
+- PM 回复泡泡底部增加同样的快速复制入口。
+- 桌面与移动会话视图复用现有剪贴板和“已复制”提示流程。
+
 ## v1.3.3
 
 English:
