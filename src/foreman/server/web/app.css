@@ -322,6 +322,11 @@ a { color: var(--accent-text); }
 .pm-note { display: flex; gap: 12px; }
 .pm-avatar { width: 28px; height: 28px; flex: none; border-radius: 8px; background: var(--violet-soft); color: var(--violet); display: grid; place-items: center; font-size: 11px; font-weight: 700; box-shadow: var(--shadow-sm); }
 .pm-note .body { flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 11px 14px; box-shadow: var(--shadow-sm); font-size: 13.5px; line-height: 1.6; }
+.bubble-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.bubble-copy { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface2); color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; }
+.bubble-copy:hover { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-text); }
+.bubble-copy.invert { border-color: rgba(255, 255, 255, 0.28); background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.88); }
+.bubble-copy.invert:hover { background: rgba(255, 255, 255, 0.24); color: #fff; }
 .pm-thinking { align-self: flex-start; max-width: min(680px, 92%); color: var(--muted); font-family: var(--sans); font-size: 12px; line-height: 1.65; background: transparent; padding-left: 40px; }
 .pm-thinking > span { display: block; margin-bottom: 4px; color: var(--faint); font-family: var(--mono); font-size: 10.5px; }
 .pm-thinking .markdown-body { font-size: 12px; line-height: 1.65; overflow-wrap: break-word; word-break: normal; }

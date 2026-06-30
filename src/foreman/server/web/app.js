@@ -329,6 +329,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.3.4",
+      en: "User and PM conversation bubbles now include compact copy icons for quickly copying message text in desktop and mobile session views.",
+      zh: "用户与 PM 会话泡泡底部增加小复制图标，桌面和移动会话视图都能快速复制消息文本。",
+    },
+    {
       version: "v1.3.3",
       en: "Packaged Windows exe now hides server-side git and diagnostic subprocess windows, preventing transient cmd flashes when switching sessions.",
       zh: "打包 Windows exe 会隐藏服务端 git 与诊断子进程窗口，避免切换会话时闪出临时 cmd 窗口。",
@@ -1425,7 +1430,7 @@
   function Workspace(props) {
     const { d, lang, dig, sessionRow, events, autonomy, openCalls, toggleCall, expandedSub, toggleSub,
       rightTab, setRightTab, onCard, onApproval, openDetail, composer, runCompact, compacting, compactStatus, onBriefing,
-      cards, approvals, onCancelSession, onRetrySession, onDeleteSession, onRenameSession, topControls } = props;
+      cards, approvals, onCancelSession, onRetrySession, onDeleteSession, onRenameSession, topControls, onCopy } = props;
     const threadNodes = threadExtras(dig, cards, approvals, sessionRow);
     const agentType = displayAgent(sessionRow && sessionRow.agent_type, d);
     const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
@@ -1472,7 +1477,7 @@
             <div className="thread">
               <div className="thread-inner">
                 ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
-                  threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${openCalls} toggleCall=${toggleCall} onCard=${onCard} onApproval=${onApproval} openDetail=${openDetail} />`)}
+                  threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${openCalls} toggleCall=${toggleCall} onCard=${onCard} onApproval=${onApproval} openDetail=${openDetail} onCopy=${onCopy} />`)}
               </div>
             </div>
             <${Composer} ...${composer} d=${d} lang=${lang} events=${events} compacting=${compacting} runCompact=${runCompact} compactStatus=${compactStatus} sessionRow=${sessionRow} />
@@ -1502,11 +1507,20 @@
       </div>`;
   }
 
-  function ThreadNode({ n, dig, d, lang, openCalls, toggleCall, onCard, onApproval, openDetail }) {
+  function BubbleCopy({ text, d, onCopy, inverted = false }) {
+    const copyText = String(text || "");
+    if (!copyText.trim() || !onCopy) return null;
+    return html`<div className="bubble-actions">
+      <button type="button" className=${`bubble-copy${inverted ? " invert" : ""}`} aria-label=${d.copy} title=${d.copy} onClick=${(ev) => { ev.stopPropagation(); onCopy(copyText); }}>⧉</button>
+    </div>`;
+  }
+
+  function ThreadNode({ n, dig, d, lang, openCalls, toggleCall, onCard, onApproval, openDetail, onCopy }) {
     if (n.kind === "user") {
       return html`<div className="bubble-user"><div className="body">
         ${n.goal}
         ${n.chips.length ? html`<div className="chips">${n.chips.map((c, i) => html`<span className="chip" key=${i}>${c}</span>`)}</div>` : null}
+        <${BubbleCopy} text=${n.goal} d=${d} onCopy=${onCopy} inverted=${true} />
       </div></div>`;
     }
     if (n.kind === "plan") {
@@ -1536,7 +1550,7 @@
       </details>`;
     }
     if (n.kind === "pm") {
-      return html`<div className="pm-note"><div className="pm-avatar">PM</div><div className="body"><${MD} text=${n.text} maxChars=${4000} /></div></div>`;
+      return html`<div className="pm-note"><div className="pm-avatar">PM</div><div className="body"><${MD} text=${n.text} maxChars=${4000} /><${BubbleCopy} text=${n.text} d=${d} onCopy=${onCopy} /></div></div>`;
     }
     if (n.kind === "pm-thinking") {
       return html`<div className="pm-thinking"><span>${d.thinkingTrace}</span><${MD} text=${n.text} maxChars=${4000} /></div>`;
@@ -2353,7 +2367,7 @@
       </div>` : null}
       <div className="thread" style=${{ padding: 13 }}><div className="thread-inner">
         ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
-          threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${mainProps.openCalls} toggleCall=${mainProps.toggleCall} onCard=${mainProps.onCard} onApproval=${mainProps.onApproval} openDetail=${mainProps.openDetail} />`)}
+          threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${mainProps.openCalls} toggleCall=${mainProps.toggleCall} onCard=${mainProps.onCard} onApproval=${mainProps.onApproval} openDetail=${mainProps.openDetail} onCopy=${mainProps.onCopy} />`)}
       </div></div>
     </div>`;
     if (mTab === "todo") return html`<div style=${{ padding: 13 }}><${TodoPanel} key=${mainProps.sessionRow ? mainProps.sessionRow.id : "none"} d=${d} todos=${dig.todos} onAddStep=${mainProps.composer.onAddStep} /></div>`;
@@ -3246,6 +3260,7 @@
       onRetrySession: retrySession,
       onDeleteSession: deleteSession,
       onRenameSession: openRenameSession,
+      onCopy,
       topControls: html`<${TopCtrls} d=${d} lang=${lang} dark=${theme === "dark"} onToggleTheme=${() => setTheme(theme === "dark" ? "light" : "dark")} onToggleLang=${() => setLang(lang === "zh" ? "en" : "zh")} onPush=${enablePush} />`,
     };
 
@@ -3282,7 +3297,7 @@
             rightTab=${rightTab} setRightTab=${setRightTab} onCard=${onCard} onApproval=${decideApproval} openDetail=${openDetail}
             composer=${composerProps} runCompact=${runCompact} compacting=${compacting} compactStatus=${compactStatus} onBriefing=${runBriefing}
             cards=${openCards} approvals=${approvals} onCancelSession=${cancelSession} onDeleteSession=${deleteSession}
-            onRetrySession=${retrySession} onRenameSession=${openRenameSession}
+            onRetrySession=${retrySession} onRenameSession=${openRenameSession} onCopy=${onCopy}
             topControls=${mainProps.topControls} />`
           : html`<div className="main">
               <div className="page-head">
