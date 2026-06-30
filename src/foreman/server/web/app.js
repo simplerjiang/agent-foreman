@@ -329,6 +329,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.3.6",
+      en: "PM thinking summaries now start collapsed as a transparent generated reasoning-title row, with hover and expanded icon states before revealing the full text.",
+      zh: "PM 思考摘要现在默认折叠为透明的 reasoning 生成标题行，悬浮和展开时都有图标状态变化，点击后再显示完整内容。",
+    },
+    {
       version: "v1.3.5",
       en: "Update dialogs now show the human release notes for every version between the installed exe and the latest available release, falling back to GitHub Release text only if history cannot be loaded.",
       zh: "更新弹窗现在显示已安装 exe 到最新可用版本之间每个版本的人工更新说明；只有版本历史加载失败时才回退到 GitHub Release 文本。",
@@ -810,6 +815,21 @@
     return String(text || "")
       .replace(/([.!?])(\*\*[^*\n]{1,100}\*\*)/g, "$1\n\n$2")
       .trim();
+  }
+  function cleanThinkingTitle(text) {
+    return String(text || "")
+      .replace(/^\s{0,3}#{1,6}\s+/, "")
+      .replace(/^\s*[-*+]\s+/, "")
+      .replace(/[`*_~]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  function pmThinkingTitle(text, fallback) {
+    const raw = String(text || "");
+    const bold = raw.match(/\*\*([^*\n]{1,140})\*\*/);
+    if (bold) return clip(cleanThinkingTitle(bold[1]), 140) || fallback;
+    const firstLine = raw.split(/\r?\n/).map(cleanThinkingTitle).find(Boolean);
+    return clip(firstLine || fallback, 140);
   }
   function looksEnglishPmStatus(text) {
     const v = String(text || "").trim();
@@ -1520,6 +1540,18 @@
     </div>`;
   }
 
+  function ThinkingPanel({ d, text }) {
+    const [open, setOpen] = useState(false);
+    const title = pmThinkingTitle(text, d.thinkingTrace);
+    return html`<div className=${`pm-thinking${open ? " open" : ""}`}>
+      <button type="button" className="pm-thinking-head" aria-expanded=${open} onClick=${() => setOpen((v) => !v)}>
+        <span className="pm-thinking-icon" aria-hidden="true">▸</span>
+        <span>${title}</span>
+      </button>
+      ${open ? html`<div className="pm-thinking-body"><${MD} text=${text} maxChars=${4000} /></div>` : null}
+    </div>`;
+  }
+
   function ThreadNode({ n, dig, d, lang, openCalls, toggleCall, onCard, onApproval, openDetail, onCopy }) {
     if (n.kind === "user") {
       return html`<div className="bubble-user"><div className="body">
@@ -1558,7 +1590,7 @@
       return html`<div className="pm-note"><div className="pm-avatar">PM</div><div className="body"><${MD} text=${n.text} maxChars=${4000} /><${BubbleCopy} text=${n.text} d=${d} onCopy=${onCopy} /></div></div>`;
     }
     if (n.kind === "pm-thinking") {
-      return html`<div className="pm-thinking"><span>${d.thinkingTrace}</span><${MD} text=${n.text} maxChars=${4000} /></div>`;
+      return html`<${ThinkingPanel} d=${d} text=${n.text} />`;
     }
     if (n.kind === "call") {
       const c = dig.calls.get(n.callId);

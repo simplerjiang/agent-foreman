@@ -169,7 +169,7 @@ def test_version_information_page_wired():
     assert 'api("/api/update/status")' in js and 'api("/api/update/cancel"' in js
     assert "VERSION_HISTORY" in js and "Historical update notes" in js
     assert "This release" not in js and "本次更新内容" not in js
-    assert "v1.3.0" in js and "v1.2.9" in js and "v1.2.8" in js and "v1.2.7" in js
+    assert "v1.3.6" in js and "v1.3.5" in js and "v1.3.0" in js and "v1.2.9" in js and "v1.2.8" in js and "v1.2.7" in js
     assert "onCheckUpdate: () => checkAppUpdate(true)" in js
     assert 'api("/api/update/check")' in js
     assert '["briefings", "rules", "settings", "version"].includes(viewName)' in js
@@ -184,7 +184,7 @@ def test_readme_and_agents_require_version_notes():
     history = (ROOT / "docs" / "VERSION_HISTORY.md").read_text(encoding="utf-8")
 
     assert "### Version Information" in readme and "### 版本信息" in readme
-    assert "v1.3.0" in readme and "v1.2.9" in readme and "v1.2.8" in readme
+    assert "v1.3.6" in readme and "v1.3.5" in readme and "v1.3.0" in readme and "v1.2.9" in readme and "v1.2.8" in readme
     assert "Update history:" in readme and "更新历史：" in readme
     assert "This release adds" not in readme and "本次更新" not in readme
     assert "docs/VERSION_HISTORY.md" in readme
@@ -192,7 +192,7 @@ def test_readme_and_agents_require_version_notes():
     assert "v1.2.1" in readme and "v1.2.0" in readme
     assert "最终领取版本号时同步更新 README" in agents
     assert "README.md" in agents and "Version / 版本" in agents and "docs/VERSION_HISTORY.md" in agents
-    assert "## v1.3.0" in history and "## v1.2.9" in history and "## v1.2.8" in history
+    assert "## v1.3.6" in history and "## v1.3.5" in history and "## v1.3.0" in history and "## v1.2.9" in history and "## v1.2.8" in history
     assert "## v1.2.6" in history and "## v1.2.5" in history and "## v1.2.4" in history
     assert "## v1.2.3" in history and "## v1.2.2" in history and "## v1.2.1" in history and "## v1.2.0" in history
     assert "历史更新记录" in agents and "不能只显示最新版本" in agents
@@ -441,6 +441,32 @@ if (buffer !== "I need to submit" || rendered !== "I need to submit") {
     subprocess.run(["node", "-e", script], check=True)
 
 
+def test_pm_thinking_collapsed_title_uses_reasoning_heading():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function clip")
+    end = js.index("function looksEnglishPmStatus", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const boldTitle = pmThinkingTitle("Before body. **Clarifying user request**\n\nI need to inspect the request.", "思考摘要");
+if (boldTitle !== "Clarifying user request") {
+  console.error({ boldTitle });
+  process.exit(1);
+}
+const fallbackTitle = pmThinkingTitle("Plain generated heading\n\nMore reasoning.", "思考摘要");
+if (fallbackTitle !== "Plain generated heading") {
+  console.error({ fallbackTitle });
+  process.exit(2);
+}
+const emptyTitle = pmThinkingTitle("", "思考摘要");
+if (emptyTitle !== "思考摘要") {
+  console.error({ emptyTitle });
+  process.exit(3);
+}
+'''
+    subprocess.run(["node", "-e", script], check=True)
+
+
 def test_tool_stream_and_icon_stop_controls_are_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
@@ -456,9 +482,13 @@ def test_tool_stream_and_icon_stop_controls_are_wired():
     assert 'className="term-input"' in js
     assert ".term-input-row" in css and ".term-input" in css
     assert ".stop-icon" in css and "background: currentColor" in css
-    assert 'className="pm-thinking"' in js
+    assert "function ThinkingPanel" in js
+    assert 'className=${`pm-thinking${open ? " open" : ""}`}' in js
+    assert 'className="pm-thinking-head"' in js and "aria-expanded=${open}" in js
+    assert "const title = pmThinkingTitle(text, d.thinkingTrace)" in js and "<span>${title}</span>" in js
     assert 'const txt = t === "pm_reasoning" ? formatPmReasoningText(cleaned) : displayPmStreamText(cleaned, lang, d);' in js
-    assert '<${MD} text=${n.text} maxChars=${4000} />' in js
+    assert "<${MD} text=${text} maxChars=${4000} />" in js
+    assert ".pm-thinking-head:hover .pm-thinking-icon" in css and ".pm-thinking.open .pm-thinking-icon" in css
     assert ".pm-thinking .markdown-body" in css
     assert ".pm-thinking .markdown-body p" in css and "white-space: normal" in css
 
