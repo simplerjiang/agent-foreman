@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from _fakes import FakeProc, fake_adapter
 
+from foreman.client.agents.base import AgentHandle
 from foreman.client.agents.claude_code import ClaudeCodeAdapter
 from foreman.client.agents.copilot_cli import CopilotCliAdapter
 from foreman.client.agents.runner import Runner
 from foreman.client.store import Store
 from foreman.shared.config import AgentCfg, Config
-from foreman.shared.events import EventBus
+from foreman.shared.events import EventBus, make_event
 
 
 def _store(tmp_path) -> Store:
@@ -25,10 +27,12 @@ async def test_launch_persists_and_publishes(tmp_path):
     store = _store(tmp_path)
     bus = EventBus()
     runner = Runner(Config(), bus, store)
-    proc = FakeProc(stdout_lines=[
-        b'{"type":"assistant","message":{"content":"hi"}}\n',
-        b'{"type":"result","result":"done"}\n',
-    ])
+    proc = FakeProc(
+        stdout_lines=[
+            b'{"type":"assistant","message":{"content":"hi"}}\n',
+            b'{"type":"result","result":"done"}\n',
+        ]
+    )
     runner.adapters["claude-code"] = fake_adapter(
         ClaudeCodeAdapter, AgentCfg(command="claude"), proc
     )
@@ -109,10 +113,13 @@ async def test_send_resumes_session_and_repumps(tmp_path):
     store = _store(tmp_path)
     bus = EventBus()
     runner = Runner(Config(), bus, store)
-    first = FakeProc(pid=1, stdout_lines=[
-        b'{"type":"system","session_id":"sess-abc"}\n',  # native session id captured during stream
-        b'{"type":"result","result":"done"}\n',
-    ])
+    first = FakeProc(
+        pid=1,
+        stdout_lines=[
+            b'{"type":"system","session_id":"sess-abc"}\n',  # native session id captured during stream
+            b'{"type":"result","result":"done"}\n',
+        ],
+    )
     resumed = FakeProc(pid=2, stdout_lines=[b'{"type":"result","result":"resumed"}\n'])
     adapter = _multi_spawn_adapter(ClaudeCodeAdapter, AgentCfg(command="claude"), [first, resumed])
     runner.adapters["claude-code"] = adapter
@@ -142,3 +149,54 @@ async def test_interrupt_terminates_the_process(tmp_path):
     handle = await runner.launch("claude-code", "do x", tmp_path, "s1")
     await runner.interrupt(handle)
     assert proc.terminated is True
+
+
+class _FailingStreamAdapter:
+    name = "codex"
+
+    def __init__(self) -> None:
+        self.stopped = False
+
+    async def start(
+        self,
+        instruction,
+        workspace,
+        session_id,
+        model="",
+        effort="",
+    ):
+        return AgentHandle(id=f"{session_id}:1", session_id=session_id, pid=1, cwd=str(workspace))
+
+    async def stream(self, handle):
+        yield make_event("agent_start", self.name, handle.session_id, payload={"pid": handle.pid})
+        raise ValueError("Separator is not found, and chunk exceed the limit")
+
+    async def send(self, handle, text):
+        return None
+
+    async def interrupt(self, handle):
+        return None
+
+    async def stop(self, handle):
+        self.stopped = True
+
+
+async def test_pump_records_stream_error_and_stops_adapter(tmp_path):
+    store = _store(tmp_path)
+    runner = Runner(Config(), EventBus(), store)
+    adapter = _FailingStreamAdapter()
+    runner.adapters["codex"] = adapter
+
+    handle = await runner.launch("codex", "do x", tmp_path, "s1")
+    with pytest.raises(ValueError, match="Separator is not found"):
+        await runner.wait(handle)
+
+    persisted = store.get_events("s1")
+    assert {e.type for e in persisted} == {"agent_start", "error"}
+    error = next(e for e in persisted if e.type == "error")
+    payload = json.loads(error.payload_json)
+    assert payload["stream_error"] is True
+    assert "ValueError: Separator is not found" in payload["msg"]
+    assert adapter.stopped is True
+    assert handle.id not in runner.handles
+    assert runner.handle_for_session("s1") is None

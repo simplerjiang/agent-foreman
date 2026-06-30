@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.7
+
+English:
+
+- Read local agent stdout in byte chunks and reassemble JSONL records, avoiding asyncio's per-line reader limit for large Codex `exec --json` events.
+- Preserve large command-output events without fixed-size truncation while keeping structured Codex process steps.
+- Record stream reader failures as agent errors and stop the child process so a failed read does not leave the session half-failed.
+
+中文：
+
+- 本地 agent stdout 改为按字节块读取并自行组装 JSONL，避免 Codex `exec --json` 大事件触发 asyncio 单行读取上限。
+- 保留大段命令输出事件，不再用固定大小截断，同时继续保留 Codex 结构化步骤。
+- 读取流异常会记录为 agent 错误并停止子进程，避免会话提前失败后进程残留。
+
 ## v1.3.6
 
 English:
@@ -19,6 +33,7 @@ English:
 - 折叠行使用 reasoning 里第一个加粗生成标题，不再显示固定标签。
 - 鼠标悬浮标题时图标变化，点击后再展开完整思考内容。
 - 标题与展开后的 Markdown 内容继续沿用现有的柔和文字颜色。
+
 
 ## v1.3.5
 

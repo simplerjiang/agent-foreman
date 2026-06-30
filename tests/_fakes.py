@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 class FakeStdout:
-    """Async-iterable mimic of asyncio StreamReader (yields bytes lines)."""
+    """Async-iterable mimic of asyncio StreamReader."""
 
     def __init__(self, lines: list[bytes]) -> None:
         self._lines = list(lines)
@@ -17,10 +17,28 @@ class FakeStdout:
             raise StopAsyncIteration
         return self._lines.pop(0)
 
-    async def read(self) -> bytes:
-        out = b"".join(self._lines)
-        self._lines = []
-        return out
+    async def read(self, n: int = -1) -> bytes:
+        if n is None or n < 0:
+            out = b"".join(self._lines)
+            self._lines = []
+            return out
+        if n == 0:
+            return b""
+        chunks: list[bytes] = []
+        remaining = n
+        while self._lines and remaining > 0:
+            chunk = self._lines[0]
+            if not chunk:
+                self._lines.pop(0)
+                continue
+            take = chunk[:remaining]
+            chunks.append(take)
+            remaining -= len(take)
+            if len(take) == len(chunk):
+                self._lines.pop(0)
+            else:
+                self._lines[0] = chunk[len(take) :]
+        return b"".join(chunks)
 
 
 class FakeProc:

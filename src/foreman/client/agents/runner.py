@@ -12,7 +12,7 @@ import asyncio
 from pathlib import Path
 
 from foreman.shared.config import Config
-from foreman.shared.events import EventBus
+from foreman.shared.events import EventBus, make_event
 
 from .base import AgentAdapter, AgentHandle
 from .claude_code import ClaudeCodeAdapter
@@ -114,9 +114,32 @@ class Runner:
 
     async def _pump(self, adapter: AgentAdapter, handle: AgentHandle) -> None:
         """Persist each streamed event THEN publish it."""
-        async for event in adapter.stream(handle):
+        try:
+            async for event in adapter.stream(handle):
+                self.store.add_event(event)
+                await self.bus.publish(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            event = make_event(
+                "error",
+                getattr(adapter, "name", "agent"),
+                handle.session_id,
+                payload={
+                    "msg": f"{type(exc).__name__}: {str(exc)[:500]}",
+                    "stream_error": True,
+                },
+            )
             self.store.add_event(event)
             await self.bus.publish(event)
+            try:
+                await adapter.stop(handle)
+            finally:
+                self.handles.pop(handle.id, None)
+                self._adapter_by_handle.pop(handle.id, None)
+                if self._handle_by_session.get(handle.session_id) is handle:
+                    self._handle_by_session.pop(handle.session_id, None)
+            raise
 
     async def wait(self, handle: AgentHandle) -> None:
         """Await the background pump for a handle (shutdown / tests)."""

@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.3.6`.
+Current documented release: `v1.3.7`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.3.7` | Codex stdout is now read in chunks and reassembled as JSONL, removing asyncio's per-line limit for large command-output events and cleaning up stream failures. |
 | `v1.3.6` | PM thinking summaries now start as a transparent collapsed row using the generated reasoning title; hover changes the icon and clicking expands the full reasoning text. |
 | `v1.3.5` | Update dialogs now show the human release notes for every version between the installed exe and the latest available release, instead of the automated CI build text. |
 | `v1.3.4` | User and PM conversation bubbles now include a small copy icon for quickly copying message text from desktop and mobile session views. |
@@ -282,7 +283,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.3.6`。
+当前文档版本：`v1.3.7`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -290,6 +291,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.3.7` | Codex stdout 改为分块读取并重组 JSONL，移除大段命令输出触发的 asyncio 单行读取上限，并在读取失败时清理子进程。 |
 | `v1.3.6` | PM 思考摘要现在默认显示为透明折叠行，标题来自 reasoning 里的生成标题；悬浮时图标变化，点击后再展开完整思考内容。 |
 | `v1.3.5` | 更新弹窗现在显示已安装 exe 到最新可用版本之间每个版本的人工更新说明，不再显示自动 CI 构建文本。 |
 | `v1.3.4` | 用户与 PM 会话泡泡底部增加小复制图标，桌面和移动会话视图都能快速复制消息文本。 |

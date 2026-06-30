@@ -5,6 +5,8 @@ Shares the SubprocessCliAdapter base with the Claude adapter; only _build_cmd di
 
 from __future__ import annotations
 
+import json
+
 from _fakes import FakeProc, fake_adapter
 
 from foreman.client.agents.codex import CodexAdapter
@@ -18,11 +20,20 @@ def _cfg(model: str = "") -> AgentCfg:
 def test_build_cmd():
     a = CodexAdapter(_cfg())
     assert a._build_cmd("do Y") == [
-        "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "do Y",
+        "codex",
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "do Y",
     ]
     assert a._build_cmd("do Y", "gpt-5") == [
-        "codex", "exec", "--json", "--model", "gpt-5",
-        "--dangerously-bypass-approvals-and-sandbox", "do Y",
+        "codex",
+        "exec",
+        "--json",
+        "--model",
+        "gpt-5",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "do Y",
     ]
 
 
@@ -35,24 +46,48 @@ def test_build_cmd_with_effort():
     # Codex carries reasoning level as a `-c model_reasoning_effort=` config override.
     a = CodexAdapter(_cfg())
     assert a._build_cmd("do Y", "gpt-5", "high") == [
-        "codex", "exec", "--json", "--model", "gpt-5", "-c", "model_reasoning_effort=high",
-        "--dangerously-bypass-approvals-and-sandbox", "do Y",
+        "codex",
+        "exec",
+        "--json",
+        "--model",
+        "gpt-5",
+        "-c",
+        "model_reasoning_effort=high",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "do Y",
     ]
     assert a._build_cmd("do Y", "", "low") == [
-        "codex", "exec", "--json", "-c", "model_reasoning_effort=low",
-        "--dangerously-bypass-approvals-and-sandbox", "do Y",
+        "codex",
+        "exec",
+        "--json",
+        "-c",
+        "model_reasoning_effort=low",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "do Y",
     ]
 
 
 def test_build_resume_cmd():
     a = CodexAdapter(_cfg())
     assert a._build_resume_cmd("more", "sess-9") == [
-        "codex", "exec", "--json", "resume",
-        "--dangerously-bypass-approvals-and-sandbox", "sess-9", "more",
+        "codex",
+        "exec",
+        "--json",
+        "resume",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "sess-9",
+        "more",
     ]
     assert a._build_resume_cmd("more", "sess-9", "gpt-5") == [
-        "codex", "exec", "--json", "resume", "--model", "gpt-5",
-        "--dangerously-bypass-approvals-and-sandbox", "sess-9", "more",
+        "codex",
+        "exec",
+        "--json",
+        "resume",
+        "--model",
+        "gpt-5",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "sess-9",
+        "more",
     ]
 
 
@@ -63,7 +98,11 @@ async def test_start_registers_and_returns_handle(tmp_path):
     assert h.pid == 999 and h.session_id == "sx" and h.id == "sx:999"
     assert a._procs[h.id] is proc
     assert a.spawned_cmd == [
-        "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "do Y",
+        "codex",
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "do Y",
     ]
     assert a.spawned_cwd == tmp_path
 
@@ -74,8 +113,13 @@ async def test_start_model_override_wins(tmp_path):
     h = await a.start("do Y", tmp_path, "sx", model="run-model")
     assert h.model == "run-model"
     assert a.spawned_cmd == [
-        "codex", "exec", "--json", "--model", "run-model",
-        "--dangerously-bypass-approvals-and-sandbox", "do Y",
+        "codex",
+        "exec",
+        "--json",
+        "--model",
+        "run-model",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "do Y",
     ]
 
 
@@ -90,7 +134,11 @@ async def test_stream_parses_lines(tmp_path):
 
     assert [e.type for e in events] == ["agent_start", "agent_output", "stop"]
     assert events[0].payload["command"] == [
-        "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "x",
+        "codex",
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "x",
     ]
     assert events[1].source == "codex"
     assert events[1].payload == {"text": "plain codex output line"}
@@ -122,6 +170,30 @@ async def test_stream_classifies_nested_reasoning_items(tmp_path):
 
     assert [e.type for e in events] == ["agent_start", "agent_reasoning", "stop"]
     assert events[1].payload["item"]["content"][0]["summary"] == "plan"
+
+
+async def test_stream_parses_large_json_line_split_across_chunks(tmp_path):
+    big_output = "x" * 200_000
+    line = (
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "aggregated_output": big_output,
+                    "exit_code": 0,
+                },
+            }
+        ).encode("utf-8")
+        + b"\n"
+    )
+    chunks = [line[:17], line[17:4096], line[4096:]]
+    a = fake_adapter(CodexAdapter, _cfg(), FakeProc(stdout_lines=chunks))
+    h = await a.start("x", tmp_path, "s")
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_start", "agent_output"]
+    assert events[1].payload["item"]["aggregated_output"] == big_output
 
 
 async def test_stream_reports_nonzero_exit_with_stderr(tmp_path):
