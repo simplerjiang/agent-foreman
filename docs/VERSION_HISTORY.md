@@ -4,6 +4,22 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.2
+
+English:
+
+- Replaced the composer success message with workspace git status.
+- Shows the selected workspace's git worktree and branch when available.
+- Offers an explicit Initialize git repo action for configured workspaces that are not git repositories.
+- Preserves and displays each session's saved workspace after reopening the app or switching sessions.
+
+中文：
+
+- 将会话输入区的成功发送提示替换为工作区 git 状态。
+- 可显示所选工作区的 git worktree 与 branch。
+- 对已配置但还不是 git 仓库的工作区，提供显式「新建 git 仓库」按钮。
+- 重开软件或切换会话后，按会话记录保存的工作区显示与继续发送。
+
 ## v1.3.1
 
 English:

@@ -56,6 +56,7 @@ def test_dispatch_task_creates_session(tmp_path):
     ov = c.get("/api/overview").json()
     row = next(d for d in ov if d["id"] == body["session_id"])
     assert row["goal"] == "refactor auth" and row["events"] >= 1  # the dispatch event
+    assert row["workspace"] == "D:/proj"
 
 
 def test_dispatch_task_accepts_model(tmp_path):

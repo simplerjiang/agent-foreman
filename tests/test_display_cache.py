@@ -165,6 +165,7 @@ def test_build_snapshot_frame_shape_is_display_safe():
         goal = "ship"
         status = "running"
         agent_type = "pm"
+        workspace = "E:/AutoWorkAgent"
         created_at = "c"
         updated_at = "u"
 
@@ -195,7 +196,7 @@ def test_build_snapshot_includes_selected_local_process_state(tmp_path):
     store.set_setting("debug.llm_trace", "1")
     store.set_setting("cloud.url", "wss://relay.example/relay")
     store.set_setting("cloud.remote_execution_enabled", "1")
-    store.add_session(Session(id="s1", goal="sync the thread"))
+    store.add_session(Session(id="s1", goal="sync the thread", workspace="E:/AutoWorkAgent"))
     store.add_event(
         AgentEvent(
             id="e1",
@@ -231,7 +232,7 @@ def test_build_snapshot_includes_selected_local_process_state(tmp_path):
     cfg.secrets.cloud_access_key = "fk_live_secret"
     cfg.secrets.llm_api_key = "sk-local"
 
-    env = build_snapshot([], [], store=store, cfg=cfg, session_id="s1")
+    env = build_snapshot(store.get_sessions(), [], store=store, cfg=cfg, session_id="s1")
 
     assert env.payload["autonomy"]["level"] == 3
     assert env.payload["workspaces"] == [{"path": "E:/AutoWorkAgent", "name": "Foreman"}]
@@ -240,6 +241,7 @@ def test_build_snapshot_includes_selected_local_process_state(tmp_path):
     assert env.payload["cloud"]["access_key_set"] is True
     assert env.payload["cloud"]["remote_execution_enabled"] is True
     assert env.payload["session_id"] == "s1"
+    assert env.payload["sessions"][0]["summary"]["workspace"] == "E:/AutoWorkAgent"
     assert env.payload["events"][0]["payload"]["text"] == "local visible output"
     assert env.payload["approvals"][0]["id"] == "a1"
     assert env.payload["reports"][0]["title"] == "Daily"

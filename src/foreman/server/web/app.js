@@ -109,7 +109,9 @@
       missingDescription: "请填写描述（说明做什么 + 何时用），否则不会进入自动选择。",
       descriptionTooLong: "描述太长了，请控制在 1024 字以内。",
       imported: "已导入", importFailed: "导入失败", exportFailed: "导出失败",
-      workspaces: "工作区", projectPath: "项目路径", displayName: "显示名称", pathHint: "例如 E:\\AutoWorkAgent",
+      workspaces: "工作区", workspaceLabel: "工作区", workspaceWorktree: "worktree", workspaceBranch: "branch",
+      workspaceDetached: "detached", initGitRepo: "新建 git 仓库", initGitRepoBusy: "新建中…", gitInitFailed: "新建 git 仓库失败",
+      projectPath: "项目路径", displayName: "显示名称", pathHint: "例如 E:\\AutoWorkAgent",
       browse: "浏览", addWorkspace: "添加 / 更新工作区", remove: "移除", connected: "已连接",
       refresh: "刷新", folderPickerUnavailable: "当前浏览器不支持选择文件夹，请手动输入路径。",
       localAgents: "本地 Agent", agentEnabled: "启用", agentCommand: "启动命令", agentModel: "模型", agentEffort: "档位", agentFullAccess: "工具全开",
@@ -151,7 +153,7 @@
       pushNotif: "手机通知", pushNotifSub: "决策与审批推到手机", enable: "开启",
       pushEnabled: "通知已开启", pushUnsupported: "此浏览器不支持通知", pushNotConfigured: "服务器未配置推送", pushDenied: "通知权限被拒绝", pushFailed: "开启通知失败",
       stepDetail: "步骤详情", rawReturn: "原始返回", codeDiff: "代码改动", back: "返回", viewDetail: "查看详情",
-      dispatched: "已下发", continued: "已发送到当前会话", dispatchFailed: "下发失败", emptyGoal: "任务不能为空。",
+      dispatchFailed: "下发失败", emptyGoal: "任务不能为空。",
       dispatchNoWorkspace: "未配置工作区：请到设置页添加项目路径。", workspaceEmpty: "没有配置工作区。",
       noDispatcher: "当前服务不是本地 PC 工作台，不能下发任务。", workspaceMissing: "没有可用工作区。",
       ev_stop: "完成", ev_error: "错误", ev_checkpoint: "检查点", ev_gate: "闸门",
@@ -244,7 +246,9 @@
       missingDescription: "Please add a description (what it does + when to use), or it won't be auto-selected.",
       descriptionTooLong: "Description is too long — keep it under 1024 characters.",
       imported: "Imported", importFailed: "Import failed", exportFailed: "Export failed",
-      workspaces: "Workspaces", projectPath: "Project path", displayName: "Name", pathHint: "e.g. E:\\AutoWorkAgent",
+      workspaces: "Workspaces", workspaceLabel: "Workspace", workspaceWorktree: "worktree", workspaceBranch: "branch",
+      workspaceDetached: "detached", initGitRepo: "Initialize git repo", initGitRepoBusy: "Initializing…", gitInitFailed: "Could not initialize git repo",
+      projectPath: "Project path", displayName: "Name", pathHint: "e.g. E:\\AutoWorkAgent",
       browse: "Browse", addWorkspace: "Add / update", remove: "Remove", connected: "connected",
       refresh: "Refresh", folderPickerUnavailable: "This browser cannot open a folder picker. Enter the path manually.",
       localAgents: "Local agents", agentEnabled: "Enabled", agentCommand: "Command", agentModel: "Model", agentEffort: "Level", agentFullAccess: "Full access",
@@ -286,7 +290,7 @@
       pushNotif: "Push notifications", pushNotifSub: "decisions & approvals to your phone", enable: "Enable",
       pushEnabled: "Notifications enabled", pushUnsupported: "Notifications are not supported in this browser", pushNotConfigured: "Push is not configured on the server", pushDenied: "Notification permission was denied", pushFailed: "Could not enable notifications",
       stepDetail: "Step detail", rawReturn: "Raw return", codeDiff: "Code diff", back: "Back", viewDetail: "View detail",
-      dispatched: "Dispatched", continued: "Sent to current session", dispatchFailed: "Dispatch failed", emptyGoal: "Task cannot be empty.",
+      dispatchFailed: "Dispatch failed", emptyGoal: "Task cannot be empty.",
       dispatchNoWorkspace: "No workspace configured. Add a project path in Settings.", workspaceEmpty: "No workspaces configured.",
       noDispatcher: "This service is not the local PC workspace.", workspaceMissing: "No workspace available.",
       ev_stop: "Done", ev_error: "Error", ev_checkpoint: "Checkpoint", ev_gate: "Gate",
@@ -324,6 +328,11 @@
   const KIND_TAGCOLOR = { workflow: "accent", skill: "violet", code_standard: "amber", qa_rubric: "green" };
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
+    {
+      version: "v1.3.2",
+      en: "Composer status now shows workspace git worktree/branch, offers explicit git initialization, and restores the selected session's saved workspace after reopening.",
+      zh: "会话输入区显示工作区 git worktree/branch，提供显式新建 git 仓库入口，并在重开后恢复所选会话保存的工作区。",
+    },
     {
       version: "v1.3.1",
       en: "Preserved leading spaces in PM reasoning stream deltas so English thought summaries render with normal word spacing.",
@@ -529,7 +538,8 @@
       rate_limited: d.remoteRateLimited, auth: d.cloudAuthFailed,
       timeout: d.cloudTimeout, unreachable: d.cloudUnreachable,
       missing_description: d.missingDescription, description_too_long: d.descriptionTooLong,
-      title_too_long: d.sessionTitleTooLong,
+      title_too_long: d.sessionTitleTooLong, git_unavailable: d.gitInitFailed,
+      git_init_failed: d.gitInitFailed, bad_workspace: d.workspaceMissing,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
   }
@@ -1660,12 +1670,54 @@
     </div>`;
   }
 
+  function WorkspaceGitStatus({ d, workspace }) {
+    const [info, setInfo] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const [refresh, setRefresh] = useState(0);
+    useEffect(() => {
+      let cancelled = false;
+      setError("");
+      if (!workspace) { setInfo(null); return () => { cancelled = true; }; }
+      api(`/api/workspaces/git-status?path=${encodeURIComponent(workspace)}`)
+        .then((data) => { if (!cancelled) setInfo(data || null); })
+        .catch(() => { if (!cancelled) setInfo(null); });
+      return () => { cancelled = true; };
+    }, [workspace, refresh]);
+    const initRepo = async () => {
+      if (!workspace || busy) return;
+      setBusy(true); setError("");
+      try {
+        setInfo(await api("/api/workspaces/init-git", { method: "POST", body: { path: workspace } }));
+        setRefresh((n) => n + 1);
+      } catch (e) {
+        setError(friendlyError(e, d) || d.gitInitFailed);
+      } finally {
+        setBusy(false);
+      }
+    };
+    if (!workspace || !info || !info.git_available) return null;
+    const branch = info.branch ? `${d.workspaceBranch}: ${info.detached ? `${d.workspaceDetached} ${info.branch}` : info.branch}` : "";
+    return html`<div className="workspace-status">
+      <span className="workspace-status-label">${d.workspaceLabel}</span>
+      <span className="workspace-status-path mono" title=${workspace}>${shortPath(workspace, d)}</span>
+      ${info.is_git_repo && info.worktree ? html`<span className="workspace-status-chip mono" title=${info.worktree}>${d.workspaceWorktree}: ${shortPath(info.worktree, d)}</span>` : null}
+      ${info.is_git_repo && branch ? html`<span className="workspace-status-chip mono">${branch}</span>` : null}
+      ${!info.is_git_repo && info.can_init ? html`<button type="button" className="btn ghost sm" onClick=${initRepo} disabled=${busy}>${busy ? d.initGitRepoBusy : d.initGitRepo}</button>` : null}
+      ${error ? html`<span className="workspace-status-error">${error}</span>` : null}
+    </div>`;
+  }
+
   function Composer(props) {
     const { d, lang, workspaces, workspace, setWorkspace, task, setTask, model, setModel, modelOptions, llm, effort, setEffort,
       attachments, addAttach, addPastedImages, removeAttach, dispatching, runDispatch, dispatchStatus, sessionRow, events,
       compacting, runCompact, compactStatus, processes, selectedProcessId, setSelectedProcessId, teamMode,
       definitions, selectedWorkModeIds, setSelectedWorkModeIds, onCancelSession } = props;
     const wsOpts = workspaces.length ? workspaces : [];
+    const effectiveWorkspace = (sessionRow && sessionRow.workspace) || workspace;
+    const wsSelectOptions = wsOpts.some((w) => w.path === effectiveWorkspace) || !effectiveWorkspace
+      ? wsOpts
+      : [{ path: effectiveWorkspace, name: shortPath(effectiveWorkspace, d) }, ...wsOpts];
     const procOpts = processes || [];
     const [wmOpen, setWmOpen] = useState(false);
     // Only active definitions are pickable work modes; ignore archived/draft siblings.
@@ -1712,6 +1764,7 @@
         </div>` : null}
         ${compactStatus ? html`<div className=${`alert ${compactStatus.includes(d.compactFailed) ? "error" : "info"}`} style=${{ marginBottom: 9 }}>${compactStatus}</div>` : null}
         ${dispatchStatus ? html`<div className=${`alert ${dispatchStatus.includes(d.dispatchFailed) ? "error" : "ok"}`} style=${{ marginBottom: 9 }}>${dispatchStatus}</div>` : null}
+        <${WorkspaceGitStatus} d=${d} workspace=${effectiveWorkspace} />
         <div className="composer-box">
           ${attachments.length ? html`<div className="composer-attach">${attachments.map((a) => html`<div className="attach-chip" key=${a.id}><span className=${`ic ${a.isImage ? "img" : "file"}`}>${a.isImage ? "🖼" : "📄"}</span><span className="nm">${a.name}</span><span className="rm" onClick=${() => removeAttach(a.id)}>×</span></div>`)}</div>` : null}
           <textarea className="composer-input" rows="2" value=${task} onChange=${(e) => setTask(e.target.value)} onKeyDown=${onKey} onPaste=${onPaste} placeholder=${d.composerPlaceholder}></textarea>
@@ -1721,7 +1774,7 @@
               <option value="">${d.machine}</option>
               ${procOpts.map((p) => html`<option key=${p.id} value=${p.id} disabled=${!p.online}>${p.online ? "●" : "○"} ${p.name || p.id}</option>`)}
             </select>` : null}
-            ${wsOpts.length ? html`<select className="ws-select" value=${workspace} onChange=${(e) => setWorkspace(e.target.value)} disabled=${!!sessionRow}>${wsOpts.map((w) => html`<option key=${w.path} value=${w.path}>📁 ${w.name || shortPath(w.path, d)}</option>`)}</select>` : null}
+            ${wsSelectOptions.length ? html`<select className="ws-select" value=${effectiveWorkspace} onChange=${(e) => setWorkspace(e.target.value)} disabled=${!!sessionRow}>${wsSelectOptions.map((w) => html`<option key=${w.path} value=${w.path}>📁 ${w.name || shortPath(w.path, d)}</option>`)}</select>` : null}
             <select className="ws-select model-pick" value=${model} onChange=${(e) => setModel(e.target.value)} aria-label=${d.model}>
               <option value="">${d.modelPlaceholder}</option>
               ${modelChoices.map((value) => html`<option key=${value} value=${value}>${value}</option>`)}
@@ -2835,7 +2888,7 @@
       try {
         const res = await api("/api/tasks", { method: "POST", body });
         setTask(""); setAttachments([]);
-        setDispatchStatus(sessionRow ? d.continued : d.dispatched);
+        setDispatchStatus("");
         if (teamMode) await loadRemoteSnapshot(selectedProcessId);
         else await loadSessions();
         if (res.session_id) openTimeline(res.session_id);
@@ -2852,7 +2905,7 @@
       if (row.model) body.model = row.model;
       try {
         const res = await api("/api/tasks", { method: "POST", body });
-        setDispatchStatus(d.dispatched);
+        setDispatchStatus("");
         if (teamMode) await loadRemoteSnapshot(selectedProcessId);
         else await loadSessions();
         if (res.session_id) openTimeline(res.session_id);
@@ -2863,7 +2916,7 @@
       if (!sessionRow) { toast(d.selectSessionHint, "error"); return; }
       if (teamMode && !selectedProcessId) { toast(d.remoteProcessRequired, "error"); return; }
       const body = { goal: text, workspace: sessionRow.workspace || workspace, source: clientSource(), session_id: sessionRow.id, effort, continue_mode: "queue" };
-      api("/api/tasks", { method: "POST", body }).then(() => { toast(d.continued, "success"); teamMode ? loadRemoteSnapshot(selectedProcessId) : loadSessions(); }).catch(notifyError);
+      api("/api/tasks", { method: "POST", body }).then(() => { teamMode ? loadRemoteSnapshot(selectedProcessId) : loadSessions(); }).catch(notifyError);
     }
     async function runCompact() {
       if (!selectedSession) { setCompactStatus(d.selectSessionHint); return; }
