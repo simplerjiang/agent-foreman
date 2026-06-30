@@ -58,11 +58,6 @@ def normalize_command(command: str) -> str:
     return re.sub(r"\s+", " ", str(command or "").strip())
 
 
-def command_allowed(command: str, allowed: list[str]) -> bool:
-    norm = normalize_command(command)
-    return bool(norm) and norm in {normalize_command(item) for item in allowed if item}
-
-
 def origin_for(url: str) -> str:
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:

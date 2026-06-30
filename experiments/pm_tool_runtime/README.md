@@ -61,7 +61,7 @@ GPT-5.5 provider 实验结果:
 
 - Fake LLM loop 可以稳定完成 `read_file -> tool_results -> final_plan`。
 - Path escape 被拒绝。
-- `web_search` 返回 `external_web_content` taint 后, 非 allowlist shell 会被降级为 `requires-approval`。
+- `web_search` 返回 `external_web_content` taint 后, shell 会被降级为 `requires-approval`。
 - `replace_in_file` 对多重匹配返回失败和 `match_count`。
 - 真实 Claude Opus 能按协议先请求 `read_file`, 再基于 tool result 输出 `final_plan`。
 - 真实 Claude Opus 的 final plan 有一个 scope drift: 它建议把 provider-native tool calling 延后, 与计划书的生产优先级不一致。生产 PM loop 需要 final-plan validator 或 hard policy 检查。

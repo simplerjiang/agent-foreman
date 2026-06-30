@@ -115,9 +115,9 @@
       agentDisabled: "已禁用", agentNotFound: "未找到命令", agentsSaved: "Agent 设置已保存", noEnabledAgent: "至少要启用一个 Agent。",
       effortDefault: "默认", modelDefaultHint: "留空 = 使用配置默认模型",
       pmBrain: "PM 大脑", pmBrainSub: "给 PM 审阅 / 简报调用的模型。Key 永远留在本地。",
-      pmTools: "PM 工具", pmToolsSub: "PM 运行时工具开关和白名单。只读仓库工具默认开启。",
+      pmTools: "PM 工具", pmToolsSub: "PM 运行时工具开关和浏览器来源规则。只读仓库工具默认开启。",
       fileRead: "读取文件", fileWrite: "写入文件", shellTool: "运行命令", webFetch: "抓取 URL", webSearch: "网页搜索", browserTool: "浏览器",
-      allowedCommands: "允许的命令", allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "PM 取证工具轮次",
+      allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "PM 取证工具轮次",
       pmReviewDiag: "PM 复查诊断",
       pmToolsSaved: "PM 工具设置已保存",
       debug: "调试", debugSub: "排错用的高级开关。默认全关。",
@@ -248,9 +248,9 @@
       agentDisabled: "Disabled", agentNotFound: "Command not found", agentsSaved: "Agent settings saved", noEnabledAgent: "Enable at least one agent.",
       effortDefault: "Default", modelDefaultHint: "blank = configured default model",
       pmBrain: "PM brain", pmBrainSub: "The model the PM uses to review & brief. Your key never leaves this machine.",
-      pmTools: "PM tools", pmToolsSub: "PM runtime tool switches and allowlists. Read-only repo tools are on by default.",
+      pmTools: "PM tools", pmToolsSub: "PM runtime tool switches and browser origin rules. Read-only repo tools are on by default.",
       fileRead: "Read files", fileWrite: "Write files", shellTool: "Run commands", webFetch: "Fetch URL", webSearch: "Web search", browserTool: "Browser",
-      allowedCommands: "Allowed commands", allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "PM evidence rounds",
+      allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "PM evidence rounds",
       pmReviewDiag: "PM review diagnostics",
       pmToolsSaved: "PM tool settings saved",
       debug: "Debug", debugSub: "Advanced switches for troubleshooting. All off by default.",
@@ -1026,22 +1026,39 @@
       } else if (t === "tool_pre") {
         // Hook/operator-driven tool calls (e.g. Claude Code) → process steps, same as stream tool_use.
         const c = ensureCall(e);
-        const key = p.tool_use_id || p.id ? `tp-${p.tool_use_id || p.id}` : "";
-        const cmd = p.command || p.cmd;
+        const key = p.tool_use_id || p.id || p.call_id ? `tp-${p.tool_use_id || p.id || p.call_id}` : "";
+        const cmd = p.command || p.cmd || (p.tool === "run_command" && p.input && p.input.command);
         if (cmd) { const line = commandLine(cmd); mergeStep(c, { key, kind: "cmd", title: line, status: "active" }); terminal.push({ kind: "cmd", text: line, ts: e.ts }); }
         else if (p.tool) mergeStep(c, { key, kind: "tool", title: String(p.tool), status: "active" });
         c.ts = e.ts;
+      } else if (t === "tool_stream") {
+        const c = ensureCall(e);
+        const key = p.tool_use_id || p.id || p.call_id ? `tp-${p.tool_use_id || p.id || p.call_id}` : "";
+        const text = String(p.delta || "");
+        const kind = p.stream === "stderr" ? "err" : "out";
+        if (text) terminal.push({ kind, text, ts: e.ts, agent: e.source });
+        if (key && c.stepKeys.has(key)) {
+          const ex = c.steps[c.stepKeys.get(key)];
+          const next = `${ex.detail ? `${ex.detail}\n` : ""}${text}`.trim();
+          ex.detail = clip(next, 1600);
+          ex.status = "active";
+        }
       } else if (t === "tool_post") {
         const c = ensureCall(e);
-        const out = p.output || p.result || "";
-        const key = p.tool_use_id || p.id ? `tp-${p.tool_use_id || p.id}` : "";
+        const result = p.result && typeof p.result === "object" ? p.result : null;
+        const data = result && result.data && typeof result.data === "object" ? result.data : {};
+        const out = data.stdout || data.stderr || p.output || p.result || "";
+        const key = p.tool_use_id || p.id || p.call_id ? `tp-${p.tool_use_id || p.id || p.call_id}` : "";
         if (key && c.stepKeys.has(key)) {
           const ex = c.steps[c.stepKeys.get(key)];
           ex.status = p.is_error || p.error ? "failed" : "done";
           if (out && !ex.detail) ex.detail = clip(out);
+          if (data.log_path && !ex.detail) ex.detail = `log: ${data.log_path}`;
           if (typeof p.exit_code === "number") ex.exit = p.exit_code;
+          if (typeof data.returncode === "number") ex.exit = data.returncode;
         }
-        if (out) terminal.push({ kind: "out", text: String(out).slice(0, 4000), ts: e.ts, agent: e.source });
+        if (data.log_path) terminal.push({ kind: "out", text: `log: ${data.log_path}`, ts: e.ts, agent: e.source });
+        else if (out) terminal.push({ kind: "out", text: String(out).slice(0, 4000), ts: e.ts, agent: e.source });
       } else if (t === "git_diff") {
         const c = ensureCall(e);
         const file = p.path || p.file || (p.files && p.files[0] && p.files[0].path) || "";
@@ -1385,7 +1402,7 @@
             <span className="name">${autonomyName}</span>
           </div>
           <button className="btn" onClick=${onBriefing}>${d.briefing}</button>
-          ${sessionRow && live ? html`<button className="btn danger" onClick=${() => onCancelSession(sessionRow.id)}>${d.cancelSession}</button>` : null}
+          ${sessionRow && live ? html`<button className="btn danger icon stop-btn" aria-label=${d.cancelSession} title=${d.cancelSession} onClick=${() => onCancelSession(sessionRow.id)}><span className="stop-icon" aria-hidden="true"></span></button>` : null}
           ${sessionRow && terminalFail ? html`<button className="btn primary" onClick=${() => onRetrySession(sessionRow)}>${d.retry}</button>` : null}
           ${sessionRow && !live ? html`<button className="btn" onClick=${() => onDeleteSession(sessionRow.id)}>${d.deleteSession}</button>` : null}
         </div>
@@ -1418,7 +1435,7 @@
             <div className="rp-body">
               ${rightTab === "todo" ? html`<${TodoPanel} key=${sessionRow ? sessionRow.id : "none"} d=${d} todos=${dig.todos} onAddStep=${composer.onAddStep} />` : null}
               ${rightTab === "sub" ? html`<${SubPanel} d=${d} subagents=${dig.subagents} expandedSub=${expandedSub} toggleSub=${toggleSub} />` : null}
-              ${rightTab === "term" ? html`<${TermPanel} d=${d} terminal=${dig.terminal} agentType=${agentType} sessionRow=${sessionRow} />` : null}
+              ${rightTab === "term" ? html`<${TermPanel} d=${d} terminal=${dig.terminal} agentType=${agentType} sessionRow=${sessionRow} onCancelSession=${onCancelSession} />` : null}
             </div>
           </aside>
         </div>
@@ -1561,10 +1578,30 @@
     </div>`;
   }
 
-  function TermPanel({ d, terminal, agentType, sessionRow }) {
+  function TermPanel({ d, terminal, agentType, sessionRow, onCancelSession }) {
     const lines = terminal.slice(-200);
+    const [input, setInput] = useState("");
+    const [echo, setEcho] = useState("");
+    const inputRef = useRef(null);
+    const canInterrupt = !!(sessionRow && sessionRow.id && onCancelSession);
     const prefix = (l) => [l.agent, l.cwd ? shortPath(l.cwd, d) : ""].filter(Boolean).join(" ");
-    return html`<div className="term-full">
+    const interrupt = () => {
+      if (!canInterrupt) return;
+      setEcho("^C");
+      setInput("");
+      onCancelSession(sessionRow.id);
+    };
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && String(e.key || "").toLowerCase() === "c") {
+        e.preventDefault();
+        interrupt();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        setEcho(input ? `$ ${input}` : "");
+        setInput("");
+      }
+    };
+    return html`<div className="term-full" tabIndex="0" onClick=${() => inputRef.current && inputRef.current.focus()} onKeyDown=${onKey}>
       <div className="bar"><span className="lbl">${d.readOnlyLog} · ${shortPath(sessionRow && sessionRow.workspace, d)} · ${agentType}</span></div>
       <div className="lines">
         ${!lines.length ? html`<div className="cmd-dim">${d.selectSessionHint}</div>` :
@@ -1573,6 +1610,8 @@
           </div>`)}
         <div className="cmd-note">›<span className="term-cursor"></span></div>
       </div>
+      ${echo ? html`<div className="term-echo">${echo}</div>` : null}
+      <div className="term-input-row"><span className="cmd-prompt">$</span><input ref=${inputRef} className="term-input" value=${input} onInput=${(e) => setInput(e.target.value)} onKeyDown=${onKey} aria-label="terminal input" spellCheck=${false} /><span className="term-cursor"></span></div>
     </div>`;
   }
 
@@ -1662,7 +1701,7 @@
             <span className="composer-send-hint">⏎ ${d.sendHint}</span>
             ${busy ? html`
               <span className="busy-chip"><span className="spin"></span>${d.pmThinking}</span>
-              <button className="btn danger" title=${d.cancelSession} onClick=${() => onCancelSession && sessionRow && onCancelSession(sessionRow.id)} disabled=${sendBusy || !sessionRow}>${d.cancelSession}</button>
+              <button className="btn danger icon stop-btn" aria-label=${d.cancelSession} title=${d.cancelSession} onClick=${() => onCancelSession && sessionRow && onCancelSession(sessionRow.id)} disabled=${sendBusy || !sessionRow}><span className="stop-icon" aria-hidden="true"></span></button>
               <button className="btn primary" title=${d.queueHelp} onClick=${() => runDispatch("queue")} disabled=${sendBusy || !task.trim()}>${sendBusy ? d.queueing : html`${d.send} ↑`}</button>
             ` : html`<button className="btn primary" onClick=${() => runDispatch()} disabled=${sendBusy}>${sendBusy ? html`<span className="spin"></span>` : null}${d.send} ↑</button>`}
           </div>
@@ -1925,7 +1964,6 @@
           ].map(([key, label]) => html`<label key=${key} style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>${label} <${Switch} on=${key === "file_read" ? pmTools[key] !== false : !!pmTools[key]} onChange=${(v) => updatePmTools({ [key]: v })} /></label>`)}
         </div>
         <div className="row cols2" style=${{ marginBottom: 13 }}>
-          <div className="field"><span className="field-label">${d.allowedCommands}</span><textarea className="input mono" style=${{ minHeight: 92 }} value=${lines(pmTools.allowed_commands)} onChange=${(e) => updatePmTools({ allowed_commands: splitLines(e.target.value) })}></textarea></div>
           <div className="field"><span className="field-label">${d.allowedOrigins}</span><textarea className="input mono" style=${{ minHeight: 92 }} value=${lines(pmTools.allowed_origins)} onChange=${(e) => updatePmTools({ allowed_origins: splitLines(e.target.value) })}></textarea></div>
         </div>
         <div className="row cols2" style=${{ marginBottom: 13 }}>
@@ -2134,7 +2172,7 @@
           ${(mainProps.composer.processes || []).map((p) => html`<option key=${p.id} value=${p.id} disabled=${!p.online}>${p.online ? "●" : "○"} ${p.name || p.id}</option>`)}
         </select>` : null}
         <div className="box"><input value=${mainProps.composer.task} onChange=${(e) => mainProps.composer.setTask(e.target.value)} onPaste=${(e) => { const files = clipboardImageFiles(e); if (files.length) { e.preventDefault(); mainProps.composer.addPastedImages(files); } }} onKeyDown=${(e) => { if (e.key === "@") { e.preventDefault(); mainProps.composer.addAttach(); return; } if (e.key === "Enter") { e.preventDefault(); if (!busy && !mainProps.composer.dispatching) mainProps.composer.runDispatch(); } }} placeholder=${busy ? d.queueHelp : d.mComposerPlaceholder} /></div>
-        ${busy ? html`<button className="btn danger sm" onClick=${() => mainProps.composer.onCancelSession && sessionRow && mainProps.composer.onCancelSession(sessionRow.id)} disabled=${mainProps.composer.dispatching || !sessionRow}>${d.cancelSession}</button><button className="btn primary sm" onClick=${() => mainProps.composer.runDispatch("queue")} disabled=${mainProps.composer.dispatching || !mainProps.composer.task.trim()}>${mainProps.composer.dispatching ? d.queueing : d.send}</button>` : html`<button className="btn primary icon" onClick=${() => mainProps.composer.runDispatch()} disabled=${mainProps.composer.dispatching}>${mainProps.composer.dispatching ? html`<span className="spin"></span>` : "↑"}</button>`}
+        ${busy ? html`<button className="btn danger sm icon stop-btn" aria-label=${d.cancelSession} title=${d.cancelSession} onClick=${() => mainProps.composer.onCancelSession && sessionRow && mainProps.composer.onCancelSession(sessionRow.id)} disabled=${mainProps.composer.dispatching || !sessionRow}><span className="stop-icon" aria-hidden="true"></span></button><button className="btn primary sm" onClick=${() => mainProps.composer.runDispatch("queue")} disabled=${mainProps.composer.dispatching || !mainProps.composer.task.trim()}>${mainProps.composer.dispatching ? d.queueing : d.send}</button>` : html`<button className="btn primary icon" onClick=${() => mainProps.composer.runDispatch()} disabled=${mainProps.composer.dispatching}>${mainProps.composer.dispatching ? html`<span className="spin"></span>` : "↑"}</button>`}
       </div>` : null}
       ${view === "workspace" ? html`<div className="m-bottom">
         <button className=${`m-tab${mTab === "chat" ? " on" : ""}`} onClick=${() => setMTab("chat")}><span className="ic">💬</span>${d.mTabChat}</button>
@@ -2160,7 +2198,7 @@
         <span className=${`tag ${failed ? "red" : done ? "green" : "plain"}`}><span className=${`dot${live ? " live" : ""}`} style=${{ background: failed ? "var(--red)" : done ? "var(--green)" : "var(--faint)" }}></span>${statusText}</span>
         <span className="meta">${shortPath(sessionRow.workspace, d)}</span>
         <span className="spacer"></span>
-        ${live ? html`<button className="btn danger sm" onClick=${() => mainProps.onCancelSession(sessionRow.id)}>${d.cancelSession}</button>` : null}
+        ${live ? html`<button className="btn danger sm icon stop-btn" aria-label=${d.cancelSession} title=${d.cancelSession} onClick=${() => mainProps.onCancelSession(sessionRow.id)}><span className="stop-icon" aria-hidden="true"></span></button>` : null}
         ${failed ? html`<button className="btn primary sm" onClick=${() => mainProps.onRetrySession(sessionRow)}>${d.retry}</button>` : null}
         ${!live ? html`<button className="btn sm" onClick=${() => mainProps.onDeleteSession(sessionRow.id)}>${d.deleteSession}</button>` : null}
       </div>` : null}
@@ -2171,7 +2209,7 @@
     </div>`;
     if (mTab === "todo") return html`<div style=${{ padding: 13 }}><${TodoPanel} key=${mainProps.sessionRow ? mainProps.sessionRow.id : "none"} d=${d} todos=${dig.todos} onAddStep=${mainProps.composer.onAddStep} /></div>`;
     if (mTab === "sub") return html`<div style=${{ padding: 13 }}><${SubPanel} d=${d} subagents=${dig.subagents} expandedSub=${mainProps.expandedSub} toggleSub=${mainProps.toggleSub} /></div>`;
-    return html`<div style=${{ padding: 13 }}><${TermPanel} d=${d} terminal=${dig.terminal} agentType=${displayAgent(mainProps.sessionRow && mainProps.sessionRow.agent_type, d)} sessionRow=${mainProps.sessionRow} /></div>`;
+    return html`<div style=${{ padding: 13 }}><${TermPanel} d=${d} terminal=${dig.terminal} agentType=${displayAgent(mainProps.sessionRow && mainProps.sessionRow.agent_type, d)} sessionRow=${mainProps.sessionRow} onCancelSession=${mainProps.onCancelSession} /></div>`;
   }
 
   // ===========================================================================
@@ -2231,7 +2269,7 @@
     const [llm, setLlm] = useState({ provider: "openai", model: "", base_url: "", transport: "http", request_timeout_s: 300, context_window_tokens: 272000, reasoning_effort: "", api_key_set: true, api_key: "" });
     const [llmStatus, setLlmStatus] = useState("");
     const [agentStatus, setAgentStatus] = useState("");
-    const [pmTools, setPmTools] = useState({ file_read: true, file_write: false, shell: false, web_fetch: false, web_search: false, browser: false, allowed_commands: ["python --version"], allowed_origins: [], web_search_provider: "duckduckgo", searxng_url: "", browser_headless: false, max_rounds: 6 });
+    const [pmTools, setPmTools] = useState({ file_read: true, file_write: false, shell: false, web_fetch: false, web_search: false, browser: false, allowed_origins: [], web_search_provider: "duckduckgo", searxng_url: "", browser_headless: false, max_rounds: 6 });
     const [pmToolsStatus, setPmToolsStatus] = useState("");
     const [debugSettings, setDebugSettings] = useState({ llm_trace: false });
     const [debugStatus, setDebugStatus] = useState("");

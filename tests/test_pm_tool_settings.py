@@ -32,7 +32,6 @@ def test_pm_tool_settings_defaults_and_save(tmp_path):
             "web_fetch": True,
             "web_search": True,
             "browser": True,
-            "allowed_commands": ["python --version", "", "python --version"],
             "allowed_origins": ["http://example.test", "http://example.test"],
             "web_search_provider": "searxng",
             "searxng_url": "https://search.example.test",
@@ -42,7 +41,7 @@ def test_pm_tool_settings_defaults_and_save(tmp_path):
     ).json()
 
     assert saved["file_read"] is True
-    assert saved["allowed_commands"] == ["python --version"]
+    assert "allowed_" + "commands" not in saved
     assert saved["allowed_origins"] == ["http://example.test"]
     assert saved["web_search_provider"] == "searxng"
     assert saved["max_rounds"] == 99

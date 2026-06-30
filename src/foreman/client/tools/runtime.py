@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import html
+import inspect
 import os
-import subprocess
+import signal
+import uuid
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import quote_plus, urlparse
 
 import httpx
@@ -25,12 +27,13 @@ from .models import (
     ToolRuntimeConfig,
     ToolSpec,
 )
-from .policy import PathGuard, ToolPolicyError, command_allowed, normalize_command
+from .policy import PathGuard, ToolPolicyError, normalize_command
 
 if TYPE_CHECKING:
     from .browser import BrowserRuntime
 
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "env", "node_modules", ".pytest_cache"}
+ToolEventSink = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 
 class PMToolRuntime:
@@ -91,7 +94,6 @@ class PMToolRuntime:
                 web_fetch=pm.web_fetch,
                 web_search=pm.web_search,
                 browser=pm.browser,
-                allowed_commands=list(pm.allowed_commands),
                 allowed_origins=list(pm.allowed_origins),
                 web_search_provider=pm.web_search_provider,
                 searxng_url=pm.searxng_url,
@@ -166,7 +168,7 @@ class PMToolRuntime:
             ),
             ToolSpec(
                 "run_command",
-                "Run one settings-allowlisted command in the workspace.",
+                "Run one command in the workspace after Gate/Auditor/user approval checks.",
                 {
                     "type": "object",
                     "properties": {"command": string},
@@ -305,8 +307,11 @@ class PMToolRuntime:
                 "browser": self.cfg.browser,
             },
             "allowed_roots": [str(p) for p in self.cfg.allowed_roots],
-            "allowed_commands": list(self.cfg.allowed_commands),
             "allowed_origins": list(self.cfg.allowed_origins),
+            "shell_rule": (
+                "run_command has no static command list gate; "
+                "Gate, Auditor, and explicit user approval decide risky commands."
+            ),
             "web_search_rule": (
                 "web_search returns leads only; verify facts with fetch_url or local evidence"
             ),
@@ -314,7 +319,11 @@ class PMToolRuntime:
         }
 
     async def call(
-        self, call: ToolCall, *, context_taint: list[str] | None = None
+        self,
+        call: ToolCall,
+        *,
+        context_taint: list[str] | None = None,
+        event_sink: ToolEventSink | None = None,
     ) -> ToolResult:
         args = _unwrap_tool_args(call.arguments if isinstance(call.arguments, dict) else {})
         if args.get("__invalid_args__"):
@@ -331,7 +340,12 @@ class PMToolRuntime:
             if call.name == "replace_in_file":
                 return self._replace_in_file(call.id, args)
             if call.name == "run_command":
-                return await self._run_command(call.id, args, context_taint=context_taint or [])
+                return await self._run_command(
+                    call.id,
+                    args,
+                    context_taint=context_taint or [],
+                    event_sink=event_sink,
+                )
             if call.name == "fetch_url":
                 return await self._fetch_url(call.id, args)
             if call.name == "web_search":
@@ -543,7 +557,12 @@ class PMToolRuntime:
         )
 
     async def _run_command(
-        self, cid: str, args: dict[str, Any], *, context_taint: list[str]
+        self,
+        cid: str,
+        args: dict[str, Any],
+        *,
+        context_taint: list[str],
+        event_sink: ToolEventSink | None = None,
     ) -> ToolResult:
         if not self.cfg.shell:
             return ToolResult(cid, "run_command", False, error="tool_disabled", risk=NEEDS_STRATEGY)
@@ -551,19 +570,27 @@ class PMToolRuntime:
         if not command:
             return ToolResult(cid, "run_command", False, error="missing_command")
         if EXTERNAL_WEB in context_taint:
-            return ToolResult(
-                cid,
-                "run_command",
-                False,
-                error="shell_after_web_requires_approval",
-                risk=REQUIRES_APPROVAL,
-            )
+            approved = await self._request_command_approval(command, "shell_after_web")
+            if not approved:
+                return ToolResult(
+                    cid,
+                    "run_command",
+                    False,
+                    error="shell_after_web_requires_approval",
+                    risk=REQUIRES_APPROVAL,
+                )
         if self.gate is not None and getattr(self.gate, "classify", None):
             risk = self.gate.classify(command)
             if risk == REQUIRES_APPROVAL:
-                return ToolResult(
-                    cid, "run_command", False, error="requires_approval", risk=REQUIRES_APPROVAL
-                )
+                approved = await self._request_command_approval(command, "requires_approval")
+                if not approved:
+                    return ToolResult(
+                        cid,
+                        "run_command",
+                        False,
+                        error="requires_approval",
+                        risk=REQUIRES_APPROVAL,
+                    )
             if risk == NEEDS_STRATEGY:
                 audit_block = await self._audit_gray_command(command)
                 if audit_block is not None:
@@ -579,59 +606,114 @@ class PMToolRuntime:
                             else NEEDS_STRATEGY
                         ),
                     )
-        if not command_allowed(command, self.cfg.allowed_commands):
-            return ToolResult(
-                cid,
-                "run_command",
-                False,
-                error="command_not_allowlisted",
-                risk=NEEDS_STRATEGY,
-            )
+        return await self._run_streaming_command(cid, command, event_sink=event_sink)
+
+    async def _request_command_approval(self, command: str, reason: str) -> bool:
+        if self.cards is None or not hasattr(self.cards, "ask_question") or not self._session_id:
+            return False
+        res = await self.cards.ask_question(
+            session_id=self._session_id,
+            question=f"Approve this shell command?\n\n{command}\n\nReason: {reason}",
+            options=[
+                {"label": "Approve run", "action": "approve"},
+                {"label": "Reject", "action": "reject"},
+            ],
+        )
+        if not res.get("ok"):
+            return False
+        return str(res.get("choice") or res.get("chosen") or "").strip().lower() == "approve"
+
+    async def _run_streaming_command(
+        self,
+        cid: str,
+        command: str,
+        *,
+        event_sink: ToolEventSink | None,
+    ) -> ToolResult:
+        log_dir = self.cfg.workspace / ".foreman" / "tool-logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"run-command-{uuid.uuid4().hex[:12]}.log"
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            kwargs["start_new_session"] = True
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(self.cfg.workspace),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **kwargs,
+        )
+
+        async def drain(pipe: asyncio.StreamReader | None, stream: str) -> None:
+            if pipe is None:
+                return
+            while True:
+                chunk = await pipe.read(4096)
+                if not chunk:
+                    break
+                text = chunk.decode("utf-8", "replace")
+                if stream == "stdout":
+                    stdout_parts.append(text)
+                else:
+                    stderr_parts.append(text)
+                with log_path.open("a", encoding="utf-8", newline="") as fh:
+                    fh.write(f"[{stream}] {text}")
+                await _emit_tool_event(
+                    event_sink,
+                    "tool_stream",
+                    {
+                        "tool": "run_command",
+                        "call_id": cid,
+                        "stream": stream,
+                        "delta": text,
+                        "log_path": str(log_path),
+                        "source": "pm-agent",
+                    },
+                )
 
         try:
-            proc = await asyncio.to_thread(
-                subprocess.run,
-                command,
-                cwd=str(self.cfg.workspace),
-                capture_output=True,
-                text=True,
-                shell=True,
-                timeout=self.cfg.timeout_s,
-            )
-            stdout, out_trunc = _truncate(proc.stdout or "", self.cfg.max_chars)
-            stderr, err_trunc = _truncate(proc.stderr or "", self.cfg.max_chars)
-            return ToolResult(
-                cid,
-                "run_command",
-                True,
+            with log_path.open("w", encoding="utf-8", newline="") as fh:
+                fh.write(f"$ {command}\n")
+            await asyncio.gather(drain(proc.stdout, "stdout"), drain(proc.stderr, "stderr"))
+            returncode = await proc.wait()
+        except asyncio.CancelledError:
+            await _terminate_process(proc)
+            with log_path.open("a", encoding="utf-8", newline="") as fh:
+                fh.write("[system] command cancelled by user\n")
+            await _emit_tool_event(
+                event_sink,
+                "tool_stream",
                 {
-                    "command": command,
-                    "returncode": proc.returncode,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "truncated": out_trunc or err_trunc,
+                    "tool": "run_command",
+                    "call_id": cid,
+                    "stream": "stderr",
+                    "delta": "command cancelled by user\n",
+                    "log_path": str(log_path),
+                    "source": "pm-agent",
                 },
-                truncated=out_trunc or err_trunc,
-                risk=NEEDS_STRATEGY,
             )
-        except subprocess.TimeoutExpired as exc:
-            stdout, out_trunc = _truncate(str(exc.stdout or ""), self.cfg.max_chars)
-            stderr, err_trunc = _truncate(str(exc.stderr or ""), self.cfg.max_chars)
-            return ToolResult(
-                cid,
-                "run_command",
-                False,
-                {
-                    "command": command,
-                    "returncode": -1,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "truncated": out_trunc or err_trunc,
-                },
-                error="timeout",
-                truncated=True,
-                risk=NEEDS_STRATEGY,
-            )
+            raise
+
+        stdout, out_trunc = _truncate("".join(stdout_parts), self.cfg.max_chars)
+        stderr, err_trunc = _truncate("".join(stderr_parts), self.cfg.max_chars)
+        return ToolResult(
+            cid,
+            "run_command",
+            True,
+            {
+                "command": command,
+                "returncode": returncode,
+                "stdout": stdout,
+                "stderr": stderr,
+                "truncated": out_trunc or err_trunc,
+                "log_path": str(log_path),
+            },
+            truncated=out_trunc or err_trunc,
+            risk=NEEDS_STRATEGY,
+            artifact_paths=[str(log_path)],
+        )
 
     async def _audit_gray_command(self, command: str) -> dict[str, Any] | None:
         if self.auditor is None or not getattr(self.auditor, "audit", None):
@@ -640,7 +722,7 @@ class PMToolRuntime:
             command,
             current_step="PM tool runtime run_command",
             writable_paths=", ".join(str(path) for path in self.cfg.allowed_roots),
-            autonomy="PM run_command requires settings allowlist and Gate screening",
+            autonomy="PM run_command is screened by Gate/Auditor and user approval",
         )
         verdict = str(getattr(audit, "verdict", "") or "").strip().lower()
         if verdict == "pass":
@@ -807,6 +889,77 @@ def _unwrap_tool_args(args: dict[str, Any]) -> dict[str, Any]:
             }
             return {**nested, **extras}
     return args
+
+
+async def _emit_tool_event(
+    event_sink: ToolEventSink | None, event_type: str, payload: dict[str, Any]
+) -> None:
+    if event_sink is None:
+        return
+    try:
+        res = event_sink(event_type, payload)
+        if inspect.isawaitable(res):
+            await res
+    except Exception:
+        return
+
+
+async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is not None:
+        return
+    if os.name == "nt":
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(proc.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(killer.wait(), timeout=5)
+        except Exception:  # noqa: BLE001 - fall back to the direct process handle below
+            pass
+        if proc.returncode is not None:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3)
+            return
+        except asyncio.TimeoutError:
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except Exception:  # noqa: BLE001 - fall back to direct process handle below
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3)
+            return
+        except asyncio.TimeoutError:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:  # noqa: BLE001
+                pass
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    except Exception:  # noqa: BLE001 - cancellation cleanup is best-effort
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=3)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            return
+        await proc.wait()
 
 
 class _DDGParser(HTMLParser):

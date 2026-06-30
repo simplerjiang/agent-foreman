@@ -199,7 +199,11 @@ class PMToolLoop:
                 if not call.id:
                     call.id = f"call-{round_no}-{idx}"
                 await self._emit("tool_pre", _call_payload(call, taint))
-                result = await self.runtime.call(call, context_taint=taint)
+                result = await self.runtime.call(
+                    call,
+                    context_taint=taint,
+                    event_sink=self._emit,
+                )
                 if EXTERNAL_WEB in result.taint and EXTERNAL_WEB not in taint:
                     taint.append(EXTERNAL_WEB)
                 if result.name == "web_search" and result.ok:

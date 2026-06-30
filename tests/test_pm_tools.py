@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -107,25 +109,94 @@ async def test_read_search_write_replace_and_path_guard(tmp_path: Path):
     assert unique.ok and "B" in (tmp_path / "src" / "a.txt").read_text(encoding="utf-8")
 
 
-async def test_disabled_write_run_command_allowlist_and_web_taint(tmp_path: Path):
+async def test_disabled_write_run_command_gate_and_web_taint(tmp_path: Path):
     disabled = await _runtime(tmp_path).call(
         ToolCall("w", "write_file", {"path": "x.txt", "text": "x"})
     )
     assert disabled.error == "tool_disabled"
 
-    rt = _runtime(tmp_path, shell=True, allowed_commands=["python --version", "git push"])
+    rt = _runtime(tmp_path, shell=True)
     cmd = await rt.call(ToolCall("cmd", "run_command", {"command": "python --version"}))
     assert cmd.ok and cmd.data["returncode"] == 0
     assert "Python" in (cmd.data["stdout"] + cmd.data["stderr"])
     denied = await rt.call(ToolCall("deny", "run_command", {"command": "git push"}))
     assert denied.error == "requires_approval"
-    blocked = await rt.call(ToolCall("no", "run_command", {"command": "python -V"}))
-    assert blocked.error == "command_not_allowlisted"
+    open_command = await rt.call(ToolCall("open", "run_command", {"command": "python -V"}))
+    assert open_command.ok and open_command.data["returncode"] == 0
     tainted = await rt.call(
         ToolCall("taint", "run_command", {"command": "python --version"}),
         context_taint=[EXTERNAL_WEB],
     )
     assert tainted.error == "shell_after_web_requires_approval"
+
+
+async def test_run_command_streams_to_events_and_ignores_shell_timeout(tmp_path: Path):
+    command = (
+        f'"{sys.executable}" -c "import time; '
+        "print('start', flush=True); time.sleep(1.2); print('done', flush=True)\""
+    )
+    events: list[tuple[str, dict]] = []
+    rt = _runtime(tmp_path, shell=True, timeout_s=1)
+
+    result = await rt.call(
+        ToolCall("cmd", "run_command", {"command": command}),
+        event_sink=lambda t, p: events.append((t, p)),
+    )
+
+    assert result.ok
+    assert result.data["returncode"] == 0
+    assert "start" in result.data["stdout"] and "done" in result.data["stdout"]
+    assert result.data["log_path"].endswith(".log")
+    assert Path(result.data["log_path"]).read_text(encoding="utf-8").startswith("$ ")
+    stream = [p for t, p in events if t == "tool_stream"]
+    assert stream and {p["stream"] for p in stream} == {"stdout"}
+    assert all(p["log_path"] == result.data["log_path"] for p in stream)
+
+
+async def test_run_command_requires_approval_can_continue_after_question(tmp_path: Path):
+    class FakeCards:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def ask_question(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"ok": True, "choice": "approve"}
+
+    cards = FakeCards()
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=tmp_path,
+            allowed_roots=[tmp_path],
+            shell=True,
+        ),
+        gate=Gate(GatesCfg(requires_approval=["python --version"], needs_strategy=[])),
+        cards=cards,
+    )
+    rt.set_decision_context("s1", "t1")
+
+    result = await rt.call(ToolCall("cmd", "run_command", {"command": "python --version"}))
+
+    assert result.ok
+    assert cards.calls and cards.calls[0]["session_id"] == "s1"
+    assert cards.calls[0]["options"][0]["action"] == "approve"
+
+
+async def test_run_command_cancel_stops_child_process_tree(tmp_path: Path):
+    flag = tmp_path / "child-still-ran.txt"
+    child = f"import time, pathlib; time.sleep(2); pathlib.Path(r'{flag}').write_text('alive')"
+    command = f'"{sys.executable}" -c "{child}"'
+    rt = _runtime(tmp_path, shell=True)
+
+    task = asyncio.create_task(rt.call(ToolCall("cmd", "run_command", {"command": command})))
+    await asyncio.sleep(0.3)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    await asyncio.sleep(2.5)
+
+    assert not flag.exists()
 
 
 async def test_run_command_uses_auditor_only_for_gate_gray_area(tmp_path: Path):
@@ -150,7 +221,6 @@ async def test_run_command_uses_auditor_only_for_gate_gray_area(tmp_path: Path):
             workspace=tmp_path,
             allowed_roots=[tmp_path],
             shell=True,
-            allowed_commands=["python --version"],
         ),
         gate=gate,
         auditor=auditor,
@@ -162,6 +232,22 @@ async def test_run_command_uses_auditor_only_for_gate_gray_area(tmp_path: Path):
     assert result.ok is False
     assert result.error == "auditor_revise"
     assert result.data["reasons"] == ["too broad"]
+
+
+async def test_run_command_event_sink_failure_does_not_stop_process(tmp_path: Path):
+    command = f'"{sys.executable}" -c "print(\'event sink should not stop me\')"'
+    rt = _runtime(tmp_path, shell=True)
+
+    def broken_sink(_event_type: str, _payload: dict) -> None:
+        raise RuntimeError("ui stream failed")
+
+    result = await rt.call(
+        ToolCall("cmd", "run_command", {"command": command}),
+        event_sink=broken_sink,
+    )
+
+    assert result.ok
+    assert "event sink should not stop me" in result.data["stdout"]
 
 
 async def test_fetch_url_marks_external_web_content(tmp_path: Path):
@@ -222,7 +308,6 @@ async def test_pm_loop_propagates_external_web_taint_to_next_tool(tmp_path: Path
         tmp_path,
         shell=True,
         web_fetch=True,
-        allowed_commands=["python --version"],
     )
     try:
         outcome = await PMToolLoop(

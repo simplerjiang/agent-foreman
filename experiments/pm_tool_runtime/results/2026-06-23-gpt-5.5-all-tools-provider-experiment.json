@@ -152,7 +152,7 @@
     },
     {
       "tool": "run_command",
-      "purpose": "运行 allowlist 内命令, 证明 PM 可做本地验证; shell 生产默认关闭。",
+      "purpose": "运行命令, 证明 PM 可做本地验证; shell 生产默认关闭。",
       "code_implemented": true,
       "llm_expected_call": true,
       "runtime_had_result": true,

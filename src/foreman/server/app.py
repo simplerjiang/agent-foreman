@@ -150,7 +150,6 @@ class _PMToolsSettingsBody(BaseModel):
     web_fetch: bool | None = None
     web_search: bool | None = None
     browser: bool | None = None
-    allowed_commands: list[str] | None = None
     allowed_origins: list[str] | None = None
     web_search_provider: str | None = None
     searxng_url: str | None = None
@@ -790,7 +789,6 @@ def create_app(
         def flag(name: str, default: bool) -> bool:
             return _bool_setting(raw.get(name), default)
 
-        commands = raw.get("allowed_commands", current.allowed_commands)
         origins = raw.get("allowed_origins", current.allowed_origins)
         provider = str(raw.get("web_search_provider", current.web_search_provider) or "").strip()
         if provider not in {"duckduckgo", "searxng"}:
@@ -803,7 +801,6 @@ def create_app(
             web_fetch=flag("web_fetch", current.web_fetch),
             web_search=flag("web_search", current.web_search),
             browser=flag("browser", current.browser),
-            allowed_commands=_clean_string_list(commands),
             allowed_origins=_clean_string_list(origins),
             web_search_provider=provider,
             searxng_url=str(raw.get("searxng_url", current.searxng_url) or "").strip(),
@@ -1302,7 +1299,7 @@ def create_app(
 
     @app.post("/api/settings/pm-tools")
     async def set_pm_tool_settings(body: _PMToolsSettingsBody) -> dict:
-        """Persist PM tool runtime switches and allowlists."""
+        """Persist PM tool runtime switches and browser origin rules."""
         return _save_pm_tools(body)
 
     @app.get("/api/models")

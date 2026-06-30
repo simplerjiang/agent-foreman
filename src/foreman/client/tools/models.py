@@ -97,7 +97,6 @@ class ToolRuntimeConfig:
     web_fetch: bool = False
     web_search: bool = False
     browser: bool = False
-    allowed_commands: list[str] = field(default_factory=lambda: ["python --version"])
     allowed_origins: list[str] = field(default_factory=list)
     web_search_provider: str = "duckduckgo"
     searxng_url: str = ""

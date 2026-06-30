@@ -28,7 +28,7 @@ TOOL_PURPOSES = {
     "search_repo": "在 workspace 内搜索文本证据。",
     "write_file": "在 workspace 内创建或覆盖文件, 默认生产配置关闭。",
     "replace_in_file": "对 workspace 内文件做唯一匹配替换, 多匹配失败。",
-    "run_command": "运行 allowlist 内命令, 证明 PM 可做本地验证; shell 生产默认关闭。",
+    "run_command": "运行命令, 证明 PM 可做本地验证; shell 生产默认关闭。",
     "fetch_url": "抓取 URL 文本并标记 external_web_content taint。",
     "web_search": "执行 web search; 实验中为 synthetic provider, 结果标记 external_web_content。",
 }

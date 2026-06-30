@@ -101,4 +101,5 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     icon="packaging/foreman.ico",
+    uac_admin=True,
 )
