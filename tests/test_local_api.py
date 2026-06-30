@@ -5,8 +5,11 @@ create_app is injected with a CLIENT store (personal-mode wiring) — proving it
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 
+import pytest
 from fastapi.testclient import TestClient
 
 from foreman.client.core.dispatch_service import DispatchService
@@ -346,6 +349,36 @@ def test_workspace_settings_can_dispatch_without_restart(tmp_path):
 
     assert c.delete("/api/workspaces", params={"path": path}).json() == []
     assert c.get("/api/workspaces").json() == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_workspace_git_status_and_init(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    c = TestClient(create_app(cfg, store, EventBus()))
+    path = tmp_path / "project"
+    path.mkdir()
+
+    c.post("/api/workspaces", json={"path": str(path), "name": "Project"})
+    before = c.get("/api/workspaces/git-status", params={"path": str(path)}).json()
+    assert before["git_available"] is True
+    assert before["is_git_repo"] is False
+    assert before["can_init"] is True
+
+    initialized = c.post("/api/workspaces/init-git", json={"path": str(path)}).json()
+    assert initialized["is_git_repo"] is True
+    assert initialized["worktree"].replace("\\", "/").endswith("/project")
+
+    subprocess.run(
+        ["git", "checkout", "-b", "feature/ws-status"],
+        cwd=str(path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    after = c.get("/api/workspaces/git-status", params={"path": str(path)}).json()
+    assert after["branch"] == "feature/ws-status"
 
 
 # ── /api/settings/llm: switch the PM brain at runtime (§15) ──────────────────────────────────────

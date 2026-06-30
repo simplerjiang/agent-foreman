@@ -190,7 +190,7 @@ def test_readme_and_agents_require_version_notes():
     assert "docs/VERSION_HISTORY.md" in readme
     assert "v1.2.6" in readme and "v1.2.5" in readme and "v1.2.4" in readme
     assert "v1.2.1" in readme and "v1.2.0" in readme
-    assert "每次改版本号都必须注明本次更新内容，并能看到历史更新记录" in agents
+    assert "最终领取版本号时同步更新 README" in agents
     assert "README.md" in agents and "Version / 版本" in agents and "docs/VERSION_HISTORY.md" in agents
     assert "## v1.3.0" in history and "## v1.2.9" in history and "## v1.2.8" in history
     assert "## v1.2.6" in history and "## v1.2.5" in history and "## v1.2.4" in history
@@ -689,6 +689,17 @@ def test_workspace_settings_frontend_wired(tmp_path):
     js = c.get("/app.js").text
     assert "/api/workspaces" in js and "loadWorkspaces" in js
     assert "saveWorkspace" in js and "deleteWorkspace" in js
+
+
+def test_composer_shows_workspace_git_status_instead_of_success_noise():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "已下发" not in js and "已发送到当前" not in js
+    assert "Dispatched" not in js and "Sent to current session" not in js
+    assert "WorkspaceGitStatus" in js
+    assert "/api/workspaces/git-status" in js and "/api/workspaces/init-git" in js
+    assert "const effectiveWorkspace = (sessionRow && sessionRow.workspace) || workspace" in js
+    assert "value=${effectiveWorkspace}" in js
 
 
 def test_llm_key_input_frontend_wired(tmp_path):

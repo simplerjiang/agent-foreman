@@ -32,6 +32,7 @@ def session_summary(session) -> dict:
             "goal": session.goal,
             "status": session.status,
             "agent_type": session.agent_type,
+            "workspace": getattr(session, "workspace", "") or "",
             "created_at": session.created_at,
             "updated_at": session.updated_at,
         },

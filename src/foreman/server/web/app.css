@@ -474,6 +474,11 @@ a { color: var(--accent-text); }
 .ctx-meter { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; font-size: 11px; color: var(--faint); font-family: var(--mono); }
 .ctx-meter .track { flex: 1; max-width: 160px; height: 5px; border-radius: 5px; background: var(--bg2); overflow: hidden; }
 .ctx-meter .track > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--violet)); }
+.workspace-status { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 9px; font-size: 11.5px; color: var(--muted); }
+.workspace-status-label { font-weight: 800; color: var(--text); }
+.workspace-status-path { max-width: min(260px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-text); }
+.workspace-status-chip { max-width: min(240px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 7px; border-radius: 7px; background: var(--bg2); color: var(--muted); }
+.workspace-status-error { color: var(--red); font-weight: 700; }
 .composer-box { border: 1.5px solid var(--border2); border-radius: 11px; background: var(--surface); overflow: hidden; box-shadow: var(--shadow-sm); }
 .composer-box:focus-within { border-color: var(--accent); }
 .composer-attach { display: flex; gap: 8px; flex-wrap: wrap; padding: 11px 13px 2px; }

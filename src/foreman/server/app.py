@@ -129,6 +129,10 @@ class _WorkspaceBody(BaseModel):
     name: str = ""
 
 
+class _WorkspaceGitBody(BaseModel):
+    path: str
+
+
 class _AgentSettingsRow(BaseModel):
     name: str
     enabled: bool = True
@@ -665,6 +669,75 @@ def create_app(
 
     def _workspace_dicts() -> list[dict]:
         return [{"path": w.path, "name": w.name} for w in _effective_workspaces()]
+
+    def _known_workspace_keys() -> set[str]:
+        keys = {_workspace_key(w.path) for w in _effective_workspaces()}
+        if store is not None and hasattr(store, "get_sessions"):
+            for row in store.get_sessions():
+                workspace = str(getattr(row, "workspace", "") or "").strip()
+                if workspace:
+                    keys.add(_workspace_key(workspace))
+        return keys
+
+    def _require_known_workspace(path: str) -> str:
+        value = str(path or "").strip()
+        if not value:
+            raise HTTPException(status_code=400, detail="bad_workspace")
+        if _workspace_key(value) not in _known_workspace_keys():
+            raise HTTPException(status_code=400, detail="workspace_not_allowed")
+        return value
+
+    def _workspace_git_status(path: str) -> dict:
+        value = str(path or "").strip()
+        git = shutil.which("git")
+        out = {
+            "path": value,
+            "git_available": bool(git),
+            "is_git_repo": False,
+            "worktree": "",
+            "branch": "",
+            "detached": False,
+            "can_init": False,
+        }
+        if not git:
+            return out
+        workspace = Path(value).expanduser()
+        if not value or not workspace.exists() or not workspace.is_dir():
+            return out
+        out["can_init"] = True
+
+        def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [git, *args],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=3,
+                check=False,
+            )
+
+        try:
+            inside = run(["rev-parse", "--is-inside-work-tree"])
+            if inside.returncode != 0 or inside.stdout.strip().lower() != "true":
+                return out
+            out["is_git_repo"] = True
+            out["can_init"] = False
+            root = run(["rev-parse", "--show-toplevel"])
+            if root.returncode == 0:
+                out["worktree"] = root.stdout.strip()
+            branch = run(["branch", "--show-current"])
+            current = branch.stdout.strip() if branch.returncode == 0 else ""
+            if current:
+                out["branch"] = current
+            else:
+                head = run(["rev-parse", "--short", "HEAD"])
+                if head.returncode == 0 and head.stdout.strip():
+                    out["branch"] = head.stdout.strip()
+                    out["detached"] = True
+            return out
+        except Exception:  # noqa: BLE001 - git status is display-only
+            return out
 
     def _save_workspaces(rows: list[WorkspaceCfg]) -> list[dict]:
         if store is None or not hasattr(store, "set_setting"):
@@ -1370,6 +1443,37 @@ def create_app(
         if len(next_rows) == len(rows):
             raise HTTPException(status_code=404, detail="workspace_not_found")
         return _save_workspaces(next_rows)
+
+    @app.get("/api/workspaces/git-status")
+    async def workspace_git_status(path: str) -> dict:
+        """Display-only git state for one configured or session-owned workspace."""
+        return _workspace_git_status(_require_known_workspace(path))
+
+    @app.post("/api/workspaces/init-git")
+    async def init_workspace_git(body: _WorkspaceGitBody) -> dict:
+        """Initialize a git repository for a known workspace when the user explicitly asks."""
+        path = _require_known_workspace(body.path)
+        status = _workspace_git_status(path)
+        if not status["git_available"]:
+            raise HTTPException(status_code=503, detail="git_unavailable")
+        if status["is_git_repo"]:
+            return status
+        if not status["can_init"]:
+            raise HTTPException(status_code=400, detail="bad_workspace")
+        git = shutil.which("git")
+        try:
+            subprocess.run(
+                [git or "git", "init"],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                check=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface a stable UI error code
+            raise HTTPException(status_code=400, detail="git_init_failed") from exc
+        return _workspace_git_status(path)
 
     @app.get("/api/sessions")
     async def list_sessions() -> list[dict]:
