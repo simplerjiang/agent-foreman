@@ -350,6 +350,19 @@ class _DefinitionImportBody(BaseModel):
 WEB_DIR = Path(__file__).resolve().parent / "web"  # PWA front-end ships inside server/ (DESIGN §14)
 
 
+def _subprocess_no_window_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    kwargs: dict[str, Any] = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def _web_asset_mtime() -> str:
     try:
         mtimes = [
@@ -371,6 +384,7 @@ def _web_assets_dirty(repo: Path) -> bool:
         out = subprocess.run(
             ["git", "status", "--porcelain", "--", web_path],
             cwd=str(repo), capture_output=True, text=True, timeout=3, check=True,
+            **_subprocess_no_window_kwargs(),
         )
         return bool(out.stdout.strip())
     except Exception:  # noqa: BLE001 - dirty detection is best-effort cache busting
@@ -387,6 +401,7 @@ def _compute_asset_ver() -> str:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=str(repo), capture_output=True, text=True, timeout=3, check=True,
+            **_subprocess_no_window_kwargs(),
         )
         sha = out.stdout.strip()
         if sha:
@@ -715,6 +730,7 @@ def create_app(
                 encoding="utf-8",
                 timeout=3,
                 check=False,
+                **_subprocess_no_window_kwargs(),
             )
 
         try:
@@ -973,6 +989,7 @@ def create_app(
                 text=True,
                 timeout=5,
                 check=False,
+                **_subprocess_no_window_kwargs(),
             )
         except Exception as exc:  # noqa: BLE001 - diagnostics only
             row["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
@@ -1470,6 +1487,7 @@ def create_app(
                 encoding="utf-8",
                 timeout=10,
                 check=True,
+                **_subprocess_no_window_kwargs(),
             )
         except Exception as exc:  # noqa: BLE001 - surface a stable UI error code
             raise HTTPException(status_code=400, detail="git_init_failed") from exc
