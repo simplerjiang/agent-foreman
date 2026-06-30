@@ -384,12 +384,17 @@ def test_pm_review_rendered_in_thread():
 def test_pm_stream_replaces_starting_status():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    css = c.get("/app.css").text
     assert "const hidePmStatus" in js
     assert 'if (p.phase) hidePmStatus(p.phase);' in js
     assert "formatPartialPmJsonObject" in js
+    assert "function formatPmReasoningText" in js
     assert 'kind: t === "pm_reasoning" ? "pm-thinking" : "pm"' in js
     assert 'className="pm-thinking"' in js
-    assert 'const txt = t === "pm_reasoning" ? cleaned : displayPmStreamText(cleaned, lang, d);' in js
+    assert 'const txt = t === "pm_reasoning" ? formatPmReasoningText(cleaned) : displayPmStreamText(cleaned, lang, d);' in js
+    assert '<${MD} text=${n.text} maxChars=${4000} />' in js
+    assert ".pm-thinking .markdown-body" in css
+    assert ".pm-thinking .markdown-body p" in css and "white-space: normal" in css
 
 
 def test_pm_partial_json_stream_text_is_readable():
