@@ -4,6 +4,22 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.6
+
+English:
+
+- PM thinking summaries now render as collapsed transparent rows by default.
+- The collapsed row uses the first generated bold reasoning title instead of a fixed label.
+- Hovering the title changes the disclosure icon, and clicking it expands the complete reasoning text.
+- The existing muted text styling is preserved for the title and expanded Markdown content.
+
+中文：
+
+- PM 思考摘要现在默认渲染为透明背景的折叠行。
+- 折叠行使用 reasoning 里第一个加粗生成标题，不再显示固定标签。
+- 鼠标悬浮标题时图标变化，点击后再展开完整思考内容。
+- 标题与展开后的 Markdown 内容继续沿用现有的柔和文字颜色。
+
 ## v1.3.5
 
 English:
