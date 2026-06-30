@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.3
+
+English:
+
+- Hid server-side git and diagnostic subprocess windows in the packaged Windows exe.
+- Fixed a transient cmd window flash when switching sessions after workspace git status was added.
+- Kept workspace git status, branch display, and explicit git initialization behavior unchanged.
+
+中文：
+
+- 在打包 Windows exe 中隐藏服务端 git 与诊断子进程窗口。
+- 修复工作区 git 状态上线后，切换会话时短暂闪出 cmd 窗口的问题。
+- 保持工作区 git 状态、branch 显示和显式新建 git 仓库行为不变。
+
 ## v1.3.2
 
 English:

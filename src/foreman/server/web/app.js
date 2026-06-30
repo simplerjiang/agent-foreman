@@ -329,6 +329,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.3.3",
+      en: "Packaged Windows exe now hides server-side git and diagnostic subprocess windows, preventing transient cmd flashes when switching sessions.",
+      zh: "打包 Windows exe 会隐藏服务端 git 与诊断子进程窗口，避免切换会话时闪出临时 cmd 窗口。",
+    },
+    {
       version: "v1.3.2",
       en: "Composer status now shows workspace git worktree/branch, offers explicit git initialization, and restores the selected session's saved workspace after reopening.",
       zh: "会话输入区显示工作区 git worktree/branch，提供显式新建 git 仓库入口，并在重开后恢复所选会话保存的工作区。",

@@ -5,6 +5,7 @@ create_app is injected with a CLIENT store (personal-mode wiring) — proving it
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from foreman.client.store import Store
 from foreman.client.store.models import Session
 from foreman.shared.config import AgentCfg, Config, load_config
 from foreman.shared.events import EventBus, make_event
-from foreman.server.app import create_app
+from foreman.server.app import _subprocess_no_window_kwargs, create_app
 
 
 def _app_with_store(tmp_path):
@@ -27,6 +28,15 @@ def _app_with_store(tmp_path):
     store.add_event(make_event("agent_output", "claude-code", "s1", payload={"text": "hi"}))
     store.add_event(make_event("stop", "claude-code", "s1", payload={"result": "done"}))
     return create_app(load_config(), store, EventBus())
+
+
+def test_subprocess_no_window_kwargs_hides_windows_console():
+    kwargs = _subprocess_no_window_kwargs()
+    if os.name == "nt":
+        assert kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
+        assert "startupinfo" in kwargs
+    else:
+        assert kwargs == {}
 
 
 def test_api_sessions(tmp_path):
