@@ -45,6 +45,7 @@ def test_check_offers_when_frozen_and_newer(monkeypatch):
     monkeypatch.setattr(update, "_fetch_latest",
                         lambda timeout=6.0: {"version": "1.0.2", "url": "http://x/f.exe",
                                              "size": 10, "name": "f", "notes": "notes"})
+    monkeypatch.setattr(update, "_fetch_update_changes", lambda current, latest, timeout: [])
     out = update.Updater().check()
     assert out["available"] is True
     assert out["latest"] == "1.0.2"
@@ -85,6 +86,7 @@ def test_begin_apply_reports_progress_and_can_cancel(monkeypatch, tmp_path):
     monkeypatch.setattr(update, "_fetch_latest",
                         lambda timeout=6.0: {"version": "1.0.2", "url": "http://x/f.exe",
                                              "size": 100, "name": "f", "notes": ""})
+    monkeypatch.setattr(update, "_fetch_update_changes", lambda current, latest, timeout: [])
     started = threading.Event()
 
     def fake_download(url, dest, expected_size, on_progress=None, cancel_event=None):
@@ -269,6 +271,7 @@ def test_update_routes_with_injected_updater(monkeypatch):
     monkeypatch.setattr(update, "_fetch_latest",
                         lambda timeout=6.0: {"version": "1.0.2", "url": "http://x/f.exe",
                                              "size": 1, "name": "f", "notes": ""})
+    monkeypatch.setattr(update, "_fetch_update_changes", lambda current, latest, timeout: [])
     up = update.Updater()
     # Don't actually download/relaunch when apply fires.
     monkeypatch.setattr(up, "_apply_worker", lambda info: None)
@@ -292,4 +295,118 @@ def test_check_truncates_notes(monkeypatch, body):
     monkeypatch.setattr(update, "_fetch_latest",
                         lambda timeout=6.0: {"version": "1.0.2", "url": "u", "size": 1,
                                              "name": "n", "notes": body[:4000]})
+    monkeypatch.setattr(update, "_fetch_update_changes", lambda current, latest, timeout: [])
     assert len(update.Updater().check()["notes"]) == 4000
+
+
+def test_version_history_range_selects_versions_between_current_and_latest():
+    history = """
+## v1.3.4
+
+English:
+
+- Too new.
+
+中文：
+
+- 太新。
+
+## v1.3.3
+
+English:
+
+- Third update.
+
+中文：
+
+- 第三次更新。
+
+## v1.3.2
+
+English:
+
+- Second update.
+
+中文：
+
+- 第二次更新。
+
+## v1.3.1
+
+English:
+
+- First update.
+
+中文：
+
+- 第一次更新。
+
+## v1.3.0
+
+English:
+
+- Current update.
+"""
+
+    selected = update._history_for_range(
+        update._parse_version_history(history),
+        current="1.3.0",
+        latest="1.3.3",
+    )
+
+    assert [item["version"] for item in selected] == ["v1.3.1", "v1.3.2", "v1.3.3"]
+    assert selected[0]["en"] == ["First update."]
+    assert selected[0]["zh"] == ["第一次更新。"]
+
+
+def test_check_uses_version_history_range_instead_of_automated_release_body(monkeypatch):
+    history = """
+## v1.3.3
+
+English:
+
+- Hide cmd flashes.
+
+中文：
+
+- 隐藏 cmd 闪窗。
+
+## v1.3.2
+
+English:
+
+- Show workspace git status.
+
+中文：
+
+- 显示工作区 git 状态。
+
+## v1.3.1
+
+English:
+
+- Preserve PM reasoning spaces.
+
+中文：
+
+- 保留 PM 思考空格。
+
+## v1.3.0
+
+English:
+
+- Existing updater modal.
+"""
+    monkeypatch.setattr(update, "is_frozen", lambda: True)
+    monkeypatch.setattr(update, "current_version", lambda: "1.3.0")
+    monkeypatch.setattr(update, "_fetch_latest",
+                        lambda timeout=6.0: {"version": "1.3.3", "url": "u", "size": 1,
+                                             "name": "n", "notes": "Automated build body"})
+    monkeypatch.setattr(update, "_fetch_version_history", lambda timeout=6.0: history)
+
+    out = update.Updater().check()
+
+    assert out["available"] is True
+    assert [item["version"] for item in out["changes"]] == ["v1.3.1", "v1.3.2", "v1.3.3"]
+    assert "v1.3.1" in out["notes"] and "v1.3.3" in out["notes"]
+    assert "v1.3.0" not in out["notes"] and "Automated build body" not in out["notes"]

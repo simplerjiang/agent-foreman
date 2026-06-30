@@ -28,6 +28,7 @@ so ``check()`` reports ``available=False`` and ``begin_apply()`` refuses.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -39,7 +40,9 @@ from typing import Callable
 # named ``foreman-<version>-windows.exe`` on tag ``v<version>`` (AGENTS.md §四) — we match on that.
 REPO = "simplerjiang/agent-foreman"
 _LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
+_HISTORY_URL = f"https://raw.githubusercontent.com/{REPO}/main/docs/VERSION_HISTORY.md"
 _ASSET_SUFFIX = "-windows.exe"
+_HISTORY_HEADING_RE = re.compile(r"^##\s+(v?\d+(?:\.\d+)+)\s*$", re.IGNORECASE)
 
 NEW_EXE = "foreman.new.exe"
 OLD_EXE = "foreman.old.exe"
@@ -146,6 +149,117 @@ def _fetch_latest(timeout: float) -> dict | None:
     }
 
 
+def _fetch_version_history(timeout: float) -> str:
+    """Fetch the human release history from main; callers fall back if this is unavailable."""
+    import httpx
+
+    headers = {"Accept": "text/plain", "User-Agent": "foreman-updater"}
+    r = httpx.get(_HISTORY_URL, headers=headers, timeout=timeout, follow_redirects=True)
+    r.raise_for_status()
+    return r.text
+
+
+def _parse_version_history(markdown: str) -> list[dict[str, object]]:
+    """Parse docs/VERSION_HISTORY.md into structured bilingual release-note entries."""
+    entries: list[dict[str, object]] = []
+    current = ""
+    block: list[str] = []
+
+    def flush() -> None:
+        if not current:
+            return
+        en, zh = _extract_history_bullets(block)
+        if en or zh:
+            entries.append({"version": _version_tag(current), "en": en, "zh": zh})
+
+    for raw in (markdown or "").splitlines():
+        line = raw.strip()
+        match = _HISTORY_HEADING_RE.match(line)
+        if match:
+            flush()
+            current = match.group(1)
+            block = []
+            continue
+        if current:
+            block.append(raw)
+    flush()
+    return entries
+
+
+def _extract_history_bullets(lines: list[str]) -> tuple[list[str], list[str]]:
+    en: list[str] = []
+    zh: list[str] = []
+    section = ""
+    for raw in lines:
+        line = raw.strip()
+        label = line.rstrip(":：").lower()
+        if label == "english":
+            section = "en"
+            continue
+        if line.rstrip(":：") == "中文":
+            section = "zh"
+            continue
+        if not section or not line.startswith("- "):
+            continue
+        text = line[2:].strip()
+        if not text:
+            continue
+        if section == "zh":
+            zh.append(text)
+        else:
+            en.append(text)
+    return en, zh
+
+
+def _version_tag(version: str) -> str:
+    return f"v{str(version or '').strip().lstrip('vV')}"
+
+
+def _history_for_range(
+    entries: list[dict[str, object]],
+    current: str,
+    latest: str,
+) -> list[dict[str, object]]:
+    cur = parse_version(current)
+    top = parse_version(latest)
+    selected = [
+        entry for entry in entries
+        if cur < parse_version(str(entry.get("version") or "")) <= top
+    ]
+    return sorted(selected, key=lambda entry: parse_version(str(entry.get("version") or "")))
+
+
+def _fetch_update_changes(current: str, latest: str, timeout: float) -> list[dict[str, object]]:
+    try:
+        return _history_for_range(_parse_version_history(_fetch_version_history(timeout)), current, latest)
+    except Exception:  # noqa: BLE001 — release history is optional; latest release body is fallback
+        return []
+
+
+def _format_update_changes(changes: list[dict[str, object]]) -> str:
+    parts: list[str] = []
+    for item in changes:
+        lines = [str(item.get("version") or "")]
+        en = _text_list(item.get("en"))
+        zh = _text_list(item.get("zh"))
+        if en:
+            lines.append("English:")
+            lines.extend(f"- {x}" for x in en)
+        if zh:
+            lines.append("中文：")
+            lines.extend(f"- {x}" for x in zh)
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)[:4000]
+
+
+def _text_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
 class Updater:
     """Self-update surface for the local app. Injected (duck-typed) into the server so app.py never
     imports the client (DESIGN §14). ``check()`` is safe to call from source (reports unavailable);
@@ -177,11 +291,17 @@ class Updater:
             return out
         self._latest = latest
         newer = parse_version(latest["version"]) > parse_version(cur)
+        available = bool(newer and is_frozen() and latest["url"])
         out["latest"] = latest["version"]
         out["notes"] = latest["notes"]
         out["size"] = latest["size"]
+        if available:
+            changes = _fetch_update_changes(cur, latest["version"], min(timeout, 3.0))
+            if changes:
+                out["changes"] = changes
+                out["notes"] = _format_update_changes(changes) or latest["notes"]
         # Only *offer* an in-place update when frozen — from source there is no exe to swap.
-        out["available"] = bool(newer and is_frozen() and latest["url"])
+        out["available"] = available
         with self._lock:
             progress = self._status_snapshot_locked()
         if progress.get("applying") or progress.get("phase") in {"failed", "cancelled"}:
