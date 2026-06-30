@@ -8,6 +8,7 @@ subclasses. See docs/DESIGN.zh-CN.md §4.2.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import os
 import shutil
@@ -20,6 +21,9 @@ from foreman.shared.config import AgentCfg
 from foreman.shared.events import AgentEvent, make_event
 
 from .base import AgentHandle
+
+
+_STDOUT_READ_CHUNK_BYTES = 64 * 1024
 
 
 class SubprocessCliAdapter:
@@ -149,31 +153,37 @@ class SubprocessCliAdapter:
             if getattr(proc, "stderr", None) is not None
             else None
         )
-        if proc.stdout is not None:
-            async for raw in proc.stdout:
-                line = raw.decode("utf-8", "replace").strip()
-                if not line:
-                    continue
-                event = self._line_to_event(line, handle.session_id)
-                if not handle.native_session_id:
-                    sid = event.payload.get("session_id")
-                    if sid:
-                        handle.native_session_id = sid
-                yield event
+        try:
+            if proc.stdout is not None:
+                async for raw in _iter_pipe_lines(proc.stdout):
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line:
+                        continue
+                    event = self._line_to_event(line, handle.session_id)
+                    if not handle.native_session_id:
+                        sid = event.payload.get("session_id")
+                        if sid:
+                            handle.native_session_id = sid
+                    yield event
 
-        returncode = await proc.wait()
-        stderr_text = await stderr_task if stderr_task is not None else ""
-        if returncode:
-            yield make_event(
-                "error",
-                self.name,
-                handle.session_id,
-                payload={
-                    "msg": _process_error_message(self.name, returncode, stderr_text),
-                    "returncode": returncode,
-                    "stderr": stderr_text[-4000:],
-                },
-            )
+            returncode = await proc.wait()
+            stderr_text = await stderr_task if stderr_task is not None else ""
+            if returncode:
+                yield make_event(
+                    "error",
+                    self.name,
+                    handle.session_id,
+                    payload={
+                        "msg": _process_error_message(self.name, returncode, stderr_text),
+                        "returncode": returncode,
+                        "stderr": stderr_text[-4000:],
+                    },
+                )
+        finally:
+            if stderr_task is not None and not stderr_task.done():
+                stderr_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await stderr_task
 
     def _line_to_event(self, line: str, session_id: str) -> AgentEvent:
         """Map one output line to an AgentEvent; non-JSON / non-object → raw agent_output.
@@ -313,6 +323,31 @@ async def _read_pipe_text(pipe) -> str:
     if isinstance(data, str):
         return data.strip()
     return (data or b"").decode("utf-8", "replace").strip()
+
+
+async def _iter_pipe_lines(
+    pipe,
+    *,
+    chunk_size: int = _STDOUT_READ_CHUNK_BYTES,
+) -> AsyncIterator[bytes]:
+    """Yield newline-delimited records without StreamReader's readline limit."""
+    pending = bytearray()
+    while True:
+        chunk = await pipe.read(chunk_size)
+        if not chunk:
+            break
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8", "replace")
+        pending.extend(chunk)
+        while True:
+            newline = pending.find(b"\n")
+            if newline < 0:
+                break
+            line = bytes(pending[:newline])
+            del pending[: newline + 1]
+            yield line
+    if pending:
+        yield bytes(pending)
 
 
 def _process_error_message(name: str, returncode: int, stderr_text: str) -> str:

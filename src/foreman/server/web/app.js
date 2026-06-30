@@ -329,6 +329,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.3.7",
+      en: "Codex stdout is now read in chunks and reassembled as JSONL, avoiding asyncio's per-line reader limit for large command-output events and cleaning up stream failures.",
+      zh: "Codex stdout 改为分块读取并重组 JSONL，移除大段命令输出触发的 asyncio 单行读取上限，并在读取失败时清理子进程。",
+    },
+    {
       version: "v1.3.6",
       en: "PM thinking summaries now start collapsed as a transparent generated reasoning-title row, with hover and expanded icon states before revealing the full text.",
       zh: "PM 思考摘要现在默认折叠为透明的 reasoning 生成标题行，悬浮和展开时都有图标状态变化，点击后再显示完整内容。",
