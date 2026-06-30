@@ -329,6 +329,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.3.5",
+      en: "Update dialogs now show the human release notes for every version between the installed exe and the latest available release, falling back to GitHub Release text only if history cannot be loaded.",
+      zh: "更新弹窗现在显示已安装 exe 到最新可用版本之间每个版本的人工更新说明；只有版本历史加载失败时才回退到 GitHub Release 文本。",
+    },
+    {
       version: "v1.3.4",
       en: "User and PM conversation bubbles now include compact copy icons for quickly copying message text in desktop and mobile session views.",
       zh: "用户与 PM 会话泡泡底部增加小复制图标，桌面和移动会话视图都能快速复制消息文本。",
@@ -2180,7 +2185,24 @@
     return d.updateStarting;
   }
 
-  function UpdateModal({ d, update, status, updating, updateError, cancelingUpdate, onApply, onCancel, onClose }) {
+  function updateChangeLines(item, lang) {
+    const primary = item && item[lang === "zh" ? "zh" : "en"];
+    const fallback = item && item[lang === "zh" ? "en" : "zh"];
+    const value = Array.isArray(primary) && primary.length ? primary : fallback;
+    if (Array.isArray(value)) return value.filter(Boolean).map((line) => `- ${line}`);
+    return value ? [`- ${value}`] : [];
+  }
+
+  function formatUpdateNotes(update, lang) {
+    const changes = Array.isArray(update && update.changes) ? update.changes : [];
+    if (!changes.length) return (update && update.notes) || "";
+    return changes.map((item) => {
+      const lines = updateChangeLines(item, lang);
+      return [item.version || "", ...lines].filter(Boolean).join("\n");
+    }).filter(Boolean).join("\n\n");
+  }
+
+  function UpdateModal({ d, lang, update, status, updating, updateError, cancelingUpdate, onApply, onCancel, onClose }) {
     const s = status || {};
     const applying = !!(updating || s.applying);
     const cancelPending = !!(cancelingUpdate || s.cancel_requested);
@@ -2192,12 +2214,13 @@
     const width = knownTotal ? percent : (applying ? 36 : 0);
     const pctText = knownTotal ? `${Math.round(percent)}%` : d.updateSizeUnknown;
     const bytesText = knownTotal ? `${formatBytes(downloaded, d)} / ${formatBytes(total, d)}` : formatBytes(update.size, d);
+    const notes = formatUpdateNotes(update, lang);
     return html`<${Modal} title=${`${d.appUpdateReady} · v${update.version}`} onClose=${applying ? undefined : onClose} closeDisabled=${applying} footer=${applying
       ? html`<button className="btn danger" onClick=${onCancel} disabled=${cancelPending}>${cancelPending ? html`<span className="spin"></span>` : null}${d.updateCancel}</button>`
       : [html`<button key="l" className="btn" onClick=${onClose}>${d.later}</button>`, html`<button key="u" className="btn primary" onClick=${onApply}>${d.updateNow}</button>`]}>
       <div className="update-modal-status">
         <div className="update-modal-title">${updatePhaseLabel(d, s, updateError, cancelPending, applying)}</div>
-        ${update.notes ? html`<div className="update-modal-notes">${update.notes}</div>` : null}
+        ${notes ? html`<div className="update-modal-notes">${notes}</div>` : null}
       </div>
       ${(applying || updateError) ? html`<div className="update-progress">
         <div className="update-progress-head"><span>${d.updateDownloadProgress}</span><span className="mono">${pctText}</span></div>
@@ -2400,7 +2423,7 @@
     const [updateVersion, setUpdateVersion] = useState("");
     // Packaged-exe self-update (便携版一键自更新): /api/update/check reports a newer GitHub Release;
     // "立即更新" POSTs /api/update/apply → the exe downloads, swaps in place and relaunches.
-    const [appUpdate, setAppUpdate] = useState(null); // {version, notes} when an in-place update is offered
+    const [appUpdate, setAppUpdate] = useState(null); // {version, notes, changes} when an update is offered
     const [updating, setUpdating] = useState(false);
     const [updateStatus, setUpdateStatus] = useState(null);
     const [cancelingUpdate, setCancelingUpdate] = useState(false);
@@ -2700,7 +2723,13 @@
       }
       return api("/api/update/check").then((u) => {
         if (u && u.available) {
-          setAppUpdate({ version: u.latest, notes: u.notes || "", size: u.size || 0 });
+          setAppUpdate({
+            version: u.latest,
+            current: u.current || "",
+            notes: u.notes || "",
+            changes: Array.isArray(u.changes) ? u.changes : [],
+            size: u.size || 0,
+          });
           setUpdateStatus(u);
           if (manual) setUpdateCheckStatus(`${d.appUpdateReady} · v${u.latest}`);
         } else if (manual) {
@@ -3278,6 +3307,7 @@
 
       ${appUpdate ? html`<${UpdateModal}
         d=${d}
+        lang=${lang}
         update=${appUpdate}
         status=${updateStatus}
         updating=${updating}

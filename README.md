@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.3.4`.
+Current documented release: `v1.3.5`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.3.5` | Update dialogs now show the human release notes for every version between the installed exe and the latest available release, instead of the automated CI build text. |
 | `v1.3.4` | User and PM conversation bubbles now include a small copy icon for quickly copying message text from desktop and mobile session views. |
 | `v1.3.3` | Packaged Windows exe now hides server-side git and diagnostic subprocess windows so switching sessions no longer flashes a transient cmd window. |
 | `v1.3.2` | Composer status now shows the selected workspace's git worktree and branch, offers explicit git initialization when needed, and restores each session's saved workspace after reopening. |
@@ -280,7 +281,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.3.4`。
+当前文档版本：`v1.3.5`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -288,6 +289,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.3.5` | 更新弹窗现在显示已安装 exe 到最新可用版本之间每个版本的人工更新说明，不再显示自动 CI 构建文本。 |
 | `v1.3.4` | 用户与 PM 会话泡泡底部增加小复制图标，桌面和移动会话视图都能快速复制消息文本。 |
 | `v1.3.3` | 打包 Windows exe 会隐藏服务端 git 与诊断子进程窗口，切换会话时不再闪出临时 cmd 窗口。 |
 | `v1.3.2` | 会话输入区改为显示所选工作区的 git worktree 与 branch，必要时提供显式新建 git 仓库按钮，并在重开后恢复每个会话保存的工作区。 |

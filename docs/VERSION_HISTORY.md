@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.5
+
+English:
+
+- Update checks now fetch the human-readable version history from `docs/VERSION_HISTORY.md`.
+- The update dialog shows every release note between the installed exe version and the latest available release.
+- The automated GitHub Release build text is kept only as a fallback when the version history cannot be loaded.
+
+中文：
+
+- 更新检查现在会读取 `docs/VERSION_HISTORY.md` 中给人看的版本历史。
+- 更新弹窗会显示已安装 exe 版本到最新可用版本之间每个版本的更新说明。
+- 自动 GitHub Release 构建文本只在版本历史加载失败时作为兜底显示。
+
 ## v1.3.4
 
 English:
