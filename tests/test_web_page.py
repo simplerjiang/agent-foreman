@@ -165,14 +165,17 @@ def test_version_information_page_wired():
     assert "Check for updates" in js and "检查更新" in js
     assert "Version-page update check button" in js
     assert "版本页增加检查更新按钮" in js
+    assert "function UpdateModal" in js and "updateDownloadProgress" in js
+    assert 'api("/api/update/status")' in js and 'api("/api/update/cancel"' in js
     assert "VERSION_HISTORY" in js and "Historical update notes" in js
     assert "This release" not in js and "本次更新内容" not in js
-    assert "v1.2.9" in js and "v1.2.8" in js and "v1.2.7" in js and "v1.2.6" in js
+    assert "v1.3.0" in js and "v1.2.9" in js and "v1.2.8" in js and "v1.2.7" in js
     assert "onCheckUpdate: () => checkAppUpdate(true)" in js
     assert 'api("/api/update/check")' in js
     assert '["briefings", "rules", "settings", "version"].includes(viewName)' in js
     assert ".version-number" in css and ".version-path" in css and ".version-history" in css
     assert ".version-actions" in css and ".version-check-status" in css and ".version-meta-grid" in css
+    assert ".update-progress" in css and ".update-modal-notes" in css
 
 
 def test_readme_and_agents_require_version_notes():
@@ -181,7 +184,7 @@ def test_readme_and_agents_require_version_notes():
     history = (ROOT / "docs" / "VERSION_HISTORY.md").read_text(encoding="utf-8")
 
     assert "### Version Information" in readme and "### 版本信息" in readme
-    assert "v1.2.9" in readme and "v1.2.8" in readme and "v1.2.7" in readme
+    assert "v1.3.0" in readme and "v1.2.9" in readme and "v1.2.8" in readme
     assert "Update history:" in readme and "更新历史：" in readme
     assert "This release adds" not in readme and "本次更新" not in readme
     assert "docs/VERSION_HISTORY.md" in readme
@@ -189,7 +192,7 @@ def test_readme_and_agents_require_version_notes():
     assert "v1.2.1" in readme and "v1.2.0" in readme
     assert "每次改版本号都必须注明本次更新内容，并能看到历史更新记录" in agents
     assert "README.md" in agents and "Version / 版本" in agents and "docs/VERSION_HISTORY.md" in agents
-    assert "## v1.2.9" in history and "## v1.2.8" in history and "## v1.2.7" in history
+    assert "## v1.3.0" in history and "## v1.2.9" in history and "## v1.2.8" in history
     assert "## v1.2.6" in history and "## v1.2.5" in history and "## v1.2.4" in history
     assert "## v1.2.3" in history and "## v1.2.2" in history and "## v1.2.1" in history and "## v1.2.0" in history
     assert "历史更新记录" in agents and "不能只显示最新版本" in agents

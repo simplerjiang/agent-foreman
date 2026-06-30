@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.0
+
+English:
+
+- Changed packaged exe self-update from a top banner to a modal dialog.
+- Added live download progress from the local updater state endpoint.
+- Added a cancel button that aborts the download before the restart/swap phase begins.
+
+中文：
+
+- 将打包 exe 自更新从顶部提示改为弹窗模式。
+- 从本地 updater 状态接口显示实时下载进度。
+- 增加取消按钮，可在进入重启/替换阶段前中止下载。
+
 ## v1.2.9
 
 English:

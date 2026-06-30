@@ -109,6 +109,7 @@ a { color: var(--accent-text); }
 @keyframes fdshim { from { transform: translateX(-120%); } to { transform: translateX(220%); } }
 @keyframes fdorbit { from { transform: rotate(0) translateX(34px) rotate(0); } to { transform: rotate(360deg) translateX(34px) rotate(-360deg); } }
 @keyframes fdfade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fdmodal { from { transform: translateY(4px) scale(0.992); } to { transform: translateY(0) scale(1); } }
 
 /* ---------- boot splash (pre-JS) + launch overlay ---------- */
 .boot {
@@ -620,14 +621,23 @@ a { color: var(--accent-text); }
 }
 
 /* ---------- modal ---------- */
-.modal-mask { position: fixed; inset: 0; z-index: 120; background: rgba(20, 18, 12, 0.45); display: grid; place-items: center; padding: 20px; animation: fdfade 0.2s; }
-.modal { width: min(760px, 100%); max-height: 86vh; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); }
+.modal-mask { position: fixed; inset: 0; z-index: 120; background: rgba(20, 18, 12, 0.45); display: grid; place-items: center; padding: 20px; }
+.modal { width: min(760px, 100%); max-height: 86vh; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); animation: fdmodal 0.16s ease-out; }
 .modal.wide { width: min(900px, 100%); }
 .modal-head { display: flex; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .modal-head .t { font-size: 15px; font-weight: 700; }
 .modal-head .x { margin-left: auto; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; }
 .modal-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 9px; padding: 14px 20px; border-top: 1px solid var(--border); }
+.update-modal-status { display: grid; gap: 8px; }
+.update-modal-title { font-size: 13px; font-weight: 700; color: var(--accent-text); }
+.update-modal-notes { max-height: 150px; overflow: auto; padding: 10px 12px; border-radius: 8px; background: var(--bg2); color: var(--muted); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.update-progress { display: grid; gap: 8px; }
+.update-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.update-progress .track { height: 8px; border-radius: 8px; background: var(--bg2); border: 1px solid var(--border); overflow: hidden; position: relative; }
+.update-progress .track > span { display: block; height: 100%; min-width: 0; border-radius: 8px; background: linear-gradient(90deg, var(--accent), var(--green)); transition: width 0.2s ease; }
+.update-progress .track.indeterminate > span { width: 36%; animation: fdbar 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+.update-bytes { color: var(--faint); font-size: 11.5px; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
 .tabs .t { padding: 8px 13px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tabs .t.on { color: var(--accent-text); border-bottom-color: var(--accent); }

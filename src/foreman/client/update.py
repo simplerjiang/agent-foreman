@@ -57,6 +57,10 @@ _STALE_TARGET_PROCESS_TERMINATE_WAIT = 10.0
 _shutdown_hook: Callable[[], None] | None = None
 
 
+class UpdateCancelled(Exception):
+    """Raised when the user cancels an in-progress exe download."""
+
+
 def register_shutdown_hook(fn: Callable[[], None]) -> None:
     """Register how to shut the app down for a restart (the desktop wires window.destroy())."""
     global _shutdown_hook
@@ -150,8 +154,10 @@ class Updater:
     def __init__(self) -> None:
         self._latest: dict | None = None
         self._applying = False
+        self._cancel_event: threading.Event | None = None
         self._lock = threading.Lock()
         self._error: str = ""
+        self._status: dict = self._idle_status()
 
     def is_frozen(self) -> bool:
         return is_frozen()
@@ -176,11 +182,26 @@ class Updater:
         out["size"] = latest["size"]
         # Only *offer* an in-place update when frozen — from source there is no exe to swap.
         out["available"] = bool(newer and is_frozen() and latest["url"])
-        if self._applying:
-            out["applying"] = True
+        with self._lock:
+            progress = self._status_snapshot_locked()
+        if progress.get("applying") or progress.get("phase") in {"failed", "cancelled"}:
+            out.update(progress)
         if self._error:
             out["apply_error"] = self._error
         return out
+
+    def status(self) -> dict:
+        """Current apply/download state for the UI progress dialog."""
+        with self._lock:
+            out = {
+                "current": current_version(),
+                "frozen": is_frozen(),
+            }
+            out.update(self._status_snapshot_locked())
+            if self._latest:
+                out["latest"] = self._latest.get("version") or ""
+                out["size"] = self._latest.get("size") or 0
+            return out
 
     # -- apply ---------------------------------------------------------------
     def begin_apply(self) -> dict:
@@ -204,24 +225,86 @@ class Updater:
             if not info.get("url"):
                 return {"ok": False, "reason": "no_asset"}
             self._applying = True
+            self._cancel_event = threading.Event()
             self._error = ""
+            self._status = self._idle_status()
+            self._status.update({
+                "phase": "starting",
+                "version": info["version"],
+                "total": int(info.get("size") or 0),
+            })
         threading.Thread(target=self._apply_worker, args=(info,), daemon=True).start()
         return {"ok": True, "started": True, "version": info["version"]}
+
+    def cancel_apply(self) -> dict:
+        """Request cancellation while the update is still downloading."""
+        with self._lock:
+            status = self._status_snapshot_locked()
+            if not self._applying:
+                return {"ok": True, "cancelled": False, "status": status}
+            phase = str(self._status.get("phase") or "")
+            if phase not in {"starting", "downloading"}:
+                return {"ok": False, "reason": "too_late", "status": status}
+            if self._cancel_event is not None:
+                self._cancel_event.set()
+            self._status["cancel_requested"] = True
+            return {"ok": True, "cancelled": True, "status": self._status_snapshot_locked()}
 
     def _apply_worker(self, info: dict) -> None:
         exe = exe_path()
         new_exe = exe.with_name(NEW_EXE)
+        cancel_event = self._cancel_event
+
+        def progress(written: int, total: int) -> None:
+            with self._lock:
+                self._status.update({
+                    "phase": "downloading",
+                    "downloaded": int(written),
+                    "total": int(total or self._status.get("total") or 0),
+                })
+
         try:
-            _download(info["url"], new_exe, int(info.get("size") or 0))
-        except Exception as exc:  # noqa: BLE001 — surface to the UI on the next check()
-            self._error = f"download failed: {type(exc).__name__}"
-            self._applying = False
+            progress(0, int(info.get("size") or 0))
+            _download(
+                info["url"],
+                new_exe,
+                int(info.get("size") or 0),
+                on_progress=progress,
+                cancel_event=cancel_event,
+            )
+            if cancel_event is not None and cancel_event.is_set():
+                raise UpdateCancelled()
+        except UpdateCancelled:
+            with self._lock:
+                self._status.update({
+                    "phase": "cancelled",
+                    "downloaded": 0,
+                    "error": "",
+                    "cancel_requested": False,
+                })
+                self._applying = False
+                self._cancel_event = None
             try:
                 if new_exe.exists():
                     new_exe.unlink()
             except OSError:
                 pass
             return
+        except Exception as exc:  # noqa: BLE001 — surface to the UI on the next check()
+            self._error = f"download failed: {type(exc).__name__}"
+            with self._lock:
+                self._status.update({"phase": "failed", "error": self._error})
+                self._applying = False
+                self._cancel_event = None
+            try:
+                if new_exe.exists():
+                    new_exe.unlink()
+            except OSError:
+                pass
+            return
+        with self._lock:
+            total = int(info.get("size") or self._status.get("total") or 0)
+            self._status.update({"phase": "swapping", "downloaded": total, "total": total})
         # Hand off to the freshly downloaded binary: it waits for *us* to exit, then renames itself
         # into place and relaunches. cwd = the exe folder so it (and the relaunched app) keep finding
         # the sibling data files.
@@ -235,14 +318,45 @@ class Updater:
             )
         except Exception as exc:  # noqa: BLE001
             self._error = f"swap launch failed: {type(exc).__name__}"
-            self._applying = False
+            with self._lock:
+                self._status.update({"phase": "failed", "error": self._error})
+                self._applying = False
+                self._cancel_event = None
             return
         # Give the response a moment to flush, then bring the app down so the swap can replace the exe.
         time.sleep(0.6)
         _do_shutdown()
 
+    @staticmethod
+    def _idle_status() -> dict:
+        return {
+            "phase": "idle",
+            "version": "",
+            "downloaded": 0,
+            "total": 0,
+            "percent": None,
+            "error": "",
+            "cancel_requested": False,
+        }
 
-def _download(url: str, dest: Path, expected_size: int) -> None:
+    def _status_snapshot_locked(self) -> dict:
+        out = dict(self._status)
+        out["applying"] = bool(self._applying)
+        total = int(out.get("total") or 0)
+        downloaded = max(0, int(out.get("downloaded") or 0))
+        out["downloaded"] = downloaded
+        out["total"] = total
+        out["percent"] = round(min(100.0, (downloaded / total) * 100.0), 1) if total else None
+        return out
+
+
+def _download(
+    url: str,
+    dest: Path,
+    expected_size: int,
+    on_progress: Callable[[int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> None:
     """Stream ``url`` to ``dest`` atomically (write .part → fsync → rename). Verifies the byte count
     against the release asset size when known, so a truncated download never gets swapped in."""
     import httpx
@@ -254,22 +368,44 @@ def _download(url: str, dest: Path, expected_size: int) -> None:
     except OSError:
         pass
     written = 0
-    with httpx.stream("GET", url, follow_redirects=True, timeout=60.0,
-                      headers={"User-Agent": "foreman-updater"}) as r:
-        r.raise_for_status()
-        with open(part, "wb") as f:
-            for chunk in r.iter_bytes(1024 * 256):
-                f.write(chunk)
-                written += len(chunk)
-            f.flush()
-            os.fsync(f.fileno())
-    if expected_size and written != expected_size:
+    total = int(expected_size or 0)
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise UpdateCancelled()
+        with httpx.stream("GET", url, follow_redirects=True, timeout=60.0,
+                          headers={"User-Agent": "foreman-updater"}) as r:
+            r.raise_for_status()
+            if not total:
+                try:
+                    total = int(r.headers.get("content-length") or 0)
+                except (TypeError, ValueError):
+                    total = 0
+            if on_progress is not None:
+                on_progress(written, total)
+            with open(part, "wb") as f:
+                for chunk in r.iter_bytes(1024 * 256):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise UpdateCancelled()
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    written += len(chunk)
+                    if on_progress is not None:
+                        on_progress(written, total)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise UpdateCancelled()
+                f.flush()
+                os.fsync(f.fileno())
+        if expected_size and written != expected_size:
+            raise OSError(f"size mismatch: got {written}, expected {expected_size}")
+        os.replace(part, dest)
+    except Exception:
         try:
-            part.unlink()
+            if part.exists():
+                part.unlink()
         except OSError:
             pass
-        raise OSError(f"size mismatch: got {written}, expected {expected_size}")
-    os.replace(part, dest)
+        raise
 
 
 # ---------------------------------------------------------------------------
