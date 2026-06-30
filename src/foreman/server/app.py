@@ -1267,6 +1267,27 @@ def create_app(
             raise HTTPException(status_code=409, detail=res.get("reason") or "cannot apply update")
         return res
 
+    @app.get("/api/update/status")
+    async def update_status() -> dict:
+        """Download/apply progress for the packaged exe self-updater."""
+        if updater is None:
+            return {"current": __version__, "frozen": False, "applying": False, "phase": "idle"}
+        from starlette.concurrency import run_in_threadpool
+
+        return await run_in_threadpool(updater.status)
+
+    @app.post("/api/update/cancel")
+    async def update_cancel() -> dict:
+        """Cancel an in-progress exe update while it is still downloading."""
+        if updater is None or not getattr(updater, "is_frozen", lambda: False)():
+            raise HTTPException(status_code=400, detail="self-update only available in the packaged exe")
+        from starlette.concurrency import run_in_threadpool
+
+        res = await run_in_threadpool(updater.cancel_apply)
+        if not res.get("ok"):
+            raise HTTPException(status_code=409, detail=res.get("reason") or "cannot cancel update")
+        return res
+
     @app.get("/api/agents")
     async def list_agents() -> list[dict]:
         """Enabled CLI agents + their configured model/effort defaults — the dispatch form's pickers

@@ -34,8 +34,10 @@
     zh: {
       productSubtitle: "本地工作台",
       newVersionReady: "新版本已发布", refreshNow: "刷新", later: "稍后",
-      appUpdateReady: "发现新版本", updateNow: "立即更新", updating: "正在下载更新，应用将自动重启…",
-      updateFailed: "更新失败，请稍后重试或手动下载",
+      appUpdateReady: "发现新版本", updateNow: "立即更新", updating: "正在下载更新",
+      updateFailed: "更新失败，请稍后重试或手动下载", updateDownloadProgress: "下载进度",
+      updateStarting: "准备下载…", updateDownloading: "正在下载…", updateSwapping: "下载完成，正在重启…",
+      updateCancel: "取消下载", updateCancelling: "正在取消…", updateSizeUnknown: "大小未知",
       navWorkspace: "工作台", navDecisions: "决策", navBriefings: "简报", navRules: "工作方式", navSettings: "设置", navVersion: "版本",
       workspaceSubtitle: "选择工作区，给本机 agent 下发任务。",
       decisionsSubtitle: "处理需要你确认的卡片和审批。",
@@ -167,8 +169,10 @@
     en: {
       productSubtitle: "Local workbench",
       newVersionReady: "A new version is available", refreshNow: "Refresh", later: "Later",
-      appUpdateReady: "Update available", updateNow: "Update now", updating: "Downloading update — the app will restart automatically…",
-      updateFailed: "Update failed — try again later or download manually",
+      appUpdateReady: "Update available", updateNow: "Update now", updating: "Downloading update",
+      updateFailed: "Update failed — try again later or download manually", updateDownloadProgress: "Download progress",
+      updateStarting: "Preparing download...", updateDownloading: "Downloading...", updateSwapping: "Download complete, restarting...",
+      updateCancel: "Cancel download", updateCancelling: "Canceling...", updateSizeUnknown: "Size unknown",
       navWorkspace: "Workspace", navDecisions: "Decisions", navBriefings: "Briefings", navRules: "Playbook", navSettings: "Settings", navVersion: "Version",
       workspaceSubtitle: "Pick a workspace and dispatch work to the local agent.",
       decisionsSubtitle: "Handle the cards and approvals that need you.",
@@ -320,6 +324,11 @@
   const KIND_TAGCOLOR = { workflow: "accent", skill: "violet", code_standard: "amber", qa_rubric: "green" };
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
+    {
+      version: "v1.3.0",
+      en: "Changed packaged exe self-update into a dialog with live download progress and a cancel button before restart.",
+      zh: "将打包 exe 自更新改为弹窗模式，增加实时下载进度，并在重启前提供取消下载按钮。",
+    },
     {
       version: "v1.2.9",
       en: "Added a Version-page update check button and reworked release notes into one historical list that includes the current release.",
@@ -2060,14 +2069,60 @@
   // ===========================================================================
   // Modals
   // ===========================================================================
-  function Modal({ title, onClose, children, footer, wide }) {
+  function Modal({ title, onClose, children, footer, wide, closeDisabled }) {
     return html`<div className="modal-mask" onClick=${onClose}>
       <div className=${`modal${wide ? " wide" : ""}`} onClick=${(e) => e.stopPropagation()}>
-        <div className="modal-head"><span className="t">${title}</span><span className="x" onClick=${onClose}>×</span></div>
+        <div className="modal-head"><span className="t">${title}</span>${closeDisabled ? null : html`<span className="x" onClick=${onClose}>×</span>`}</div>
         <div className="modal-body">${children}</div>
         ${footer ? html`<div className="modal-foot">${footer}</div>` : null}
       </div>
     </div>`;
+  }
+
+  function formatBytes(n, d) {
+    const bytes = Number(n || 0);
+    if (!bytes) return d.updateSizeUnknown;
+    if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${bytes} B`;
+  }
+
+  function updatePhaseLabel(d, status, updateError, cancelingUpdate, applying) {
+    if (cancelingUpdate) return d.updateCancelling;
+    if (updateError) return d.updateFailed;
+    if (!applying) return d.appUpdateReady;
+    const phase = status && status.phase;
+    if (phase === "downloading") return d.updateDownloading;
+    if (phase === "swapping") return d.updateSwapping;
+    return d.updateStarting;
+  }
+
+  function UpdateModal({ d, update, status, updating, updateError, cancelingUpdate, onApply, onCancel, onClose }) {
+    const s = status || {};
+    const applying = !!(updating || s.applying);
+    const cancelPending = !!(cancelingUpdate || s.cancel_requested);
+    const total = Number(s.total || update.size || 0);
+    const downloaded = Number(s.downloaded || 0);
+    const knownTotal = total > 0;
+    const rawPercent = Number(s.percent != null ? s.percent : (knownTotal ? (downloaded / total) * 100 : 0));
+    const percent = Math.max(0, Math.min(100, rawPercent || 0));
+    const width = knownTotal ? percent : (applying ? 36 : 0);
+    const pctText = knownTotal ? `${Math.round(percent)}%` : d.updateSizeUnknown;
+    const bytesText = knownTotal ? `${formatBytes(downloaded, d)} / ${formatBytes(total, d)}` : formatBytes(update.size, d);
+    return html`<${Modal} title=${`${d.appUpdateReady} · v${update.version}`} onClose=${applying ? undefined : onClose} closeDisabled=${applying} footer=${applying
+      ? html`<button className="btn danger" onClick=${onCancel} disabled=${cancelPending}>${cancelPending ? html`<span className="spin"></span>` : null}${d.updateCancel}</button>`
+      : [html`<button key="l" className="btn" onClick=${onClose}>${d.later}</button>`, html`<button key="u" className="btn primary" onClick=${onApply}>${d.updateNow}</button>`]}>
+      <div className="update-modal-status">
+        <div className="update-modal-title">${updatePhaseLabel(d, s, updateError, cancelPending, applying)}</div>
+        ${update.notes ? html`<div className="update-modal-notes">${update.notes}</div>` : null}
+      </div>
+      ${(applying || updateError) ? html`<div className="update-progress">
+        <div className="update-progress-head"><span>${d.updateDownloadProgress}</span><span className="mono">${pctText}</span></div>
+        <div className=${`track${knownTotal ? "" : " indeterminate"}`}><span style=${{ width: `${width}%` }}></span></div>
+        <div className="update-bytes mono">${bytesText}</div>
+      </div>` : null}
+      ${updateError ? html`<div className="alert error">${d.updateFailed}</div>` : null}
+    </${Modal}>`;
   }
 
   function SessionTitleModal({ d, title, saving, error, setTitle, onClose, onSave }) {
@@ -2264,6 +2319,8 @@
     // "立即更新" POSTs /api/update/apply → the exe downloads, swaps in place and relaunches.
     const [appUpdate, setAppUpdate] = useState(null); // {version, notes} when an in-place update is offered
     const [updating, setUpdating] = useState(false);
+    const [updateStatus, setUpdateStatus] = useState(null);
+    const [cancelingUpdate, setCancelingUpdate] = useState(false);
     const [updateError, setUpdateError] = useState(false);
     const [checkingUpdate, setCheckingUpdate] = useState(false);
     const [updateCheckStatus, setUpdateCheckStatus] = useState("");
@@ -2556,10 +2613,12 @@
         setCheckingUpdate(true);
         setUpdateCheckStatus("");
         setUpdateError(false);
+        setUpdateStatus(null);
       }
       return api("/api/update/check").then((u) => {
         if (u && u.available) {
-          setAppUpdate({ version: u.latest, notes: u.notes || "" });
+          setAppUpdate({ version: u.latest, notes: u.notes || "", size: u.size || 0 });
+          setUpdateStatus(u);
           if (manual) setUpdateCheckStatus(`${d.appUpdateReady} · v${u.latest}`);
         } else if (manual) {
           setUpdateCheckStatus(d.versionNoUpdate);
@@ -2578,15 +2637,56 @@
       return () => { clearTimeout(t); clearInterval(id); };
     }, [checkAppUpdate]);
 
+    const pollAppUpdateStatus = useCallback(() => {
+      return api("/api/update/status").then((s) => {
+        setUpdateStatus(s || null);
+        if (s && s.phase === "failed") {
+          setUpdating(false);
+          setUpdateError(true);
+        }
+        if (s && s.phase === "cancelled") {
+          setUpdating(false);
+          setCancelingUpdate(false);
+          setUpdateError(false);
+          setAppUpdate(null);
+          setUpdateStatus(null);
+        }
+        return s;
+      }).catch(() => null);
+    }, []);
+
+    useEffect(() => {
+      const active = updating || !!(updateStatus && updateStatus.applying);
+      if (!active) return undefined;
+      pollAppUpdateStatus();
+      const id = setInterval(pollAppUpdateStatus, 800);
+      return () => clearInterval(id);
+    }, [updating, updateStatus && updateStatus.applying, pollAppUpdateStatus]);
+
     const applyAppUpdate = useCallback(() => {
       setUpdateError(false);
+      setCancelingUpdate(false);
       setUpdating(true);
+      setUpdateStatus((s) => ({ ...(s || {}), applying: true, phase: "starting", version: (appUpdate && appUpdate.version) || "", total: (appUpdate && appUpdate.size) || 0, downloaded: 0 }));
       api("/api/update/apply", { method: "POST" }).then((r) => {
         if (!r || !r.ok) { setUpdating(false); setUpdateError(true); }
+        else pollAppUpdateStatus();
         // On success the app goes down and relaunches on the new version — keep the "updating…"
-        // banner up; the page dies with the server, then the new exe serves a fresh page.
+        // dialog up; the page dies with the server, then the new exe serves a fresh page.
       }).catch(() => { setUpdating(false); setUpdateError(true); });
-    }, []);
+    }, [appUpdate, pollAppUpdateStatus]);
+
+    const cancelAppUpdate = useCallback(() => {
+      setCancelingUpdate(true);
+      api("/api/update/cancel", { method: "POST" }).then((r) => {
+        if (!r || !r.ok) setUpdateError(true);
+        return pollAppUpdateStatus();
+      }).catch(() => {
+        setUpdateError(true);
+      }).finally(() => {
+        setCancelingUpdate(false);
+      });
+    }, [pollAppUpdateStatus]);
 
     useEffect(() => {
       if (teamMode && selectedProcessId) loadRemoteSnapshot(selectedProcessId);
@@ -3092,11 +3192,17 @@
         <button className="btn sm ghost" onClick=${() => setUpdateVersion("")}>${d.later}</button>
       </div>` : null}
 
-      ${appUpdate ? html`<div className="update-banner">
-        <span className="ub-msg">${updating ? d.updating : (updateError ? d.updateFailed : `${d.appUpdateReady} · v${appUpdate.version}`)}</span>
-        ${updating ? null : html`<button className="btn primary sm" onClick=${applyAppUpdate}>${d.updateNow}</button>`}
-        ${updating ? null : html`<button className="btn sm ghost" onClick=${() => setAppUpdate(null)}>${d.later}</button>`}
-      </div>` : null}
+      ${appUpdate ? html`<${UpdateModal}
+        d=${d}
+        update=${appUpdate}
+        status=${updateStatus}
+        updating=${updating}
+        updateError=${updateError}
+        cancelingUpdate=${cancelingUpdate}
+        onApply=${applyAppUpdate}
+        onCancel=${cancelAppUpdate}
+        onClose=${() => { setAppUpdate(null); setUpdateStatus(null); setUpdateError(false); }}
+      />` : null}
 
       <!-- desktop -->
       <div className="app desktop">

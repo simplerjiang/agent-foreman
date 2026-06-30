@@ -7,6 +7,9 @@ the (stand-in) data files are left untouched.
 
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from foreman.client import update
@@ -73,6 +76,48 @@ def test_begin_apply_refused_from_source(monkeypatch):
     res = update.Updater().begin_apply()
     assert res["ok"] is False
     assert res["reason"] == "not_frozen"
+
+
+def test_begin_apply_reports_progress_and_can_cancel(monkeypatch, tmp_path):
+    monkeypatch.setattr(update, "is_frozen", lambda: True)
+    monkeypatch.setattr(update, "current_version", lambda: "1.0.1")
+    monkeypatch.setattr(update, "exe_path", lambda: tmp_path / "foreman.exe")
+    monkeypatch.setattr(update, "_fetch_latest",
+                        lambda timeout=6.0: {"version": "1.0.2", "url": "http://x/f.exe",
+                                             "size": 100, "name": "f", "notes": ""})
+    started = threading.Event()
+
+    def fake_download(url, dest, expected_size, on_progress=None, cancel_event=None):
+        assert expected_size == 100
+        assert cancel_event is not None
+        if on_progress is not None:
+            on_progress(25, 100)
+        started.set()
+        while not cancel_event.is_set():
+            time.sleep(0.01)
+        raise update.UpdateCancelled()
+
+    monkeypatch.setattr(update, "_download", fake_download)
+    up = update.Updater()
+    assert up.check()["available"] is True
+    assert up.begin_apply()["ok"] is True
+    assert started.wait(1.0)
+
+    status = up.status()
+    assert status["applying"] is True
+    assert status["phase"] == "downloading"
+    assert status["downloaded"] == 25
+    assert status["total"] == 100
+    assert status["percent"] == 25.0
+
+    assert up.cancel_apply()["ok"] is True
+    for _ in range(100):
+        status = up.status()
+        if status["phase"] == "cancelled":
+            break
+        time.sleep(0.01)
+    assert status["phase"] == "cancelled"
+    assert status["applying"] is False
 
 
 def test_parse_kv():
@@ -206,7 +251,10 @@ def test_update_routes_without_updater():
     c = TestClient(create_app(load_config()))
     chk = c.get("/api/update/check").json()
     assert chk["available"] is False and chk["frozen"] is False and "current" in chk
+    status = c.get("/api/update/status").json()
+    assert status["applying"] is False and status["phase"] == "idle"
     assert c.post("/api/update/apply").status_code == 400
+    assert c.post("/api/update/cancel").status_code == 400
 
 
 def test_update_routes_with_injected_updater(monkeypatch):
@@ -230,6 +278,10 @@ def test_update_routes_with_injected_updater(monkeypatch):
     assert chk["available"] is True and chk["latest"] == "1.0.2"
     res = c.post("/api/update/apply").json()
     assert res["ok"] is True and res["started"] is True
+    status = c.get("/api/update/status").json()
+    assert status["applying"] is True and status["phase"] == "starting"
+    cancel = c.post("/api/update/cancel").json()
+    assert cancel["ok"] is True and cancel["cancelled"] is True
 
 
 @pytest.mark.parametrize("body", ["x" * 5000])
