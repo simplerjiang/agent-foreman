@@ -4,6 +4,50 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.2.9
+
+English:
+
+- Added a Check for updates button to the Version page.
+- Reworked the Version page and README version sections around one historical update list.
+- Moved the current release notes into that same history list.
+
+中文：
+
+- 在版本页增加检查更新按钮。
+- 将版本页与 README 的版本说明重构为一个历史更新列表。
+- 将当前版本更新说明一并放入同一个历史更新列表。
+
+## v1.2.8
+
+English:
+
+- Streamed PM `run_command` stdout and stderr into live `tool_stream` events and `.foreman/tool-logs/*.log` artifacts.
+- Removed the static PM shell command allowlist; Gate, Auditor, and explicit user approval now govern command execution.
+- Removed PM shell execution timeouts and made cancellation terminate the process tree.
+- Required admin elevation for PyInstaller-built `foreman.exe`.
+
+中文：
+
+- 将 PM `run_command` 的 stdout 和 stderr 流式写入实时 `tool_stream` 事件与 `.foreman/tool-logs/*.log` 文件。
+- 移除 PM shell 静态命令允许列表，命令执行改由 Gate、Auditor 和用户显式审批约束。
+- 移除 PM shell 执行超时，并让取消操作终止整个进程树。
+- PyInstaller 构建的 `foreman.exe` 要求管理员权限启动。
+
+## v1.2.7
+
+English:
+
+- Rendered PM reasoning summaries through the existing Markdown renderer instead of a tiny monospace pre block.
+- Added light formatting so concatenated reasoning headings get readable paragraph breaks.
+- Localized the Chinese PM reasoning label to `思考摘要`.
+
+中文：
+
+- 将 PM 思考摘要改为通过现有 Markdown 渲染器显示，不再使用过小的等宽预格式块。
+- 增加轻量格式化，让拼接在一起的 reasoning 标题拥有可读段落间距。
+- 将中文 PM reasoning 标签本地化为 `思考摘要`。
+
 ## v1.2.6
 
 English:
@@ -21,6 +65,32 @@ English:
 - 将任务输入区的模型和 thinking level 控件改成下拉框。
 - 支持 Ctrl+V 粘贴图片并显示为附件 chip。
 - 将 PM reasoning chunk 用灰色小字流式显示，并覆盖 OpenAI 兼容 HTTP tool-call 流。
+
+## v1.2.5
+
+English:
+
+- Added a PM recovery decision step after fatal local coding-agent failures.
+- Excluded failed agents from recovery candidates and stopped only when all enabled local agents were unavailable.
+- Relaunched the PM-selected replacement agent through the Foreman runtime with fresh work-mode injection and cursor tracking.
+
+中文：
+
+- 在本地编码 agent 致命失败后增加 PM 恢复决策步骤。
+- 从恢复候选里排除失败 agent，仅在所有已启用本地 agent 都不可用时停止。
+- 通过 Foreman runtime 重新启动 PM 选择的替代 agent，并注入新的工作方式上下文与游标跟踪。
+
+## v1.2.4
+
+English:
+
+- Set `COPILOT_PROVIDER_WIRE_API=responses` when Foreman launches Copilot CLI with GPT-5 series models.
+- Kept non-GPT-5 Copilot launches unchanged.
+
+中文：
+
+- Foreman 使用 GPT-5 系列模型启动 Copilot CLI 时设置 `COPILOT_PROVIDER_WIRE_API=responses`。
+- 非 GPT-5 的 Copilot 启动行为保持不变。
 
 ## v1.2.3
 

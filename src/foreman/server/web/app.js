@@ -42,7 +42,7 @@
       briefingsSubtitle: "把当前进展整理成可读状态。",
       rulesSubtitle: "维护工作流、技能、代码规范和验收标准 —— PM 规划时按相关性选用，干活时按需取用。",
       settingsSubtitle: "配置工作区、PM 大脑和界面偏好。",
-      versionSubtitle: "查看当前版本、版本来源和本次更新内容。",
+      versionSubtitle: "查看当前版本、历史更新说明，并手动检查可用更新。",
       sessions: "会话", newSession: "新会话",
       editSessionTitle: "修改会话标题", sessionTitle: "会话标题", sessionTitleHint: "输入新的会话标题",
       sessionTitleEmpty: "会话标题不能为空。", sessionTitleTooLong: "会话标题太长了，请控制在 300 字以内。", sessionTitleUpdated: "会话标题已更新",
@@ -159,10 +159,10 @@
       readOnlyLog: "只读日志", workspaceRisk: "当前工作区范围很大；工具全开时请确认这是你想授权的路径。",
       versionCurrent: "当前运行版本", versionUnavailable: "等待 /health 返回版本",
       versionSource: "版本来源", versionSourceText: "Foreman 的包版本只从 src/foreman/__init__.py 的 __version__ 读取；exe、/health、PWA 与 README 的版本说明都必须跟随这个版本更新。",
-      versionUpdates: "本次更新内容", versionReleaseNoteTitle: "会话控制与 PM thinking 流",
-      versionReleaseNoteBody: "本次更新在运行中的会话里增加停止入口，合并继续发送按钮，模型与 thinking level 改为下拉选择，并把 PM reasoning 以灰色小字流式显示。",
-      versionHistory: "历史更新记录",
-      versionMaint: "维护要求", versionMaintText: "每次改 __version__ 时，同步更新 README.md 的 Version Information / 版本信息、docs/VERSION_HISTORY.md，以及 exe 控制台的版本页文案；必须保留历史记录，不能只显示最新版本。",
+      versionCheckUpdate: "检查更新", versionCheckingUpdate: "检查中...", versionNoUpdate: "没有可安装更新", versionCheckFailed: "检查更新失败",
+      versionCurrentTag: "当前",
+      versionHistory: "历史更新说明",
+      versionMaint: "维护要求", versionMaintText: "每次改 __version__ 时，同步更新 README.md 的 Version Information / 版本信息、docs/VERSION_HISTORY.md，以及 exe 控制台的版本页文案；当前版本说明也必须进入同一个历史更新说明列表。",
     },
     en: {
       productSubtitle: "Local workbench",
@@ -175,7 +175,7 @@
       briefingsSubtitle: "Turn current progress into readable status.",
       rulesSubtitle: "Maintain workflows, skills, code standards & QA rubrics — selected by relevance and pulled in on demand.",
       settingsSubtitle: "Configure workspaces, the PM brain, and UI preferences.",
-      versionSubtitle: "Review the current version, version source, and this release's changes.",
+      versionSubtitle: "Review the current version, update history, and check for available updates.",
       sessions: "Sessions", newSession: "New session",
       editSessionTitle: "Edit session title", sessionTitle: "Session title", sessionTitleHint: "Enter a new session title",
       sessionTitleEmpty: "Session title cannot be empty.", sessionTitleTooLong: "Session title is too long; keep it under 300 characters.", sessionTitleUpdated: "Session title updated",
@@ -292,10 +292,10 @@
       readOnlyLog: "Read-only log", workspaceRisk: "This workspace is very broad; confirm that full tool access is intentional.",
       versionCurrent: "Current runtime version", versionUnavailable: "Waiting for /health version",
       versionSource: "Version source", versionSourceText: "Foreman's package version is read only from __version__ in src/foreman/__init__.py; the exe, /health, PWA, and README version notes must follow that release.",
-      versionUpdates: "This release", versionReleaseNoteTitle: "Session controls and PM thinking stream",
-      versionReleaseNoteBody: "This update adds an in-session stop action, merges follow-up sending into one button, switches model and thinking-level controls to dropdowns, and streams PM reasoning as small gray text.",
-      versionHistory: "Historical update records",
-      versionMaint: "Maintenance rule", versionMaintText: "Whenever __version__ changes, update README.md's Version Information / 版本信息 section, docs/VERSION_HISTORY.md, and the exe console's Version page copy. Keep visible history; do not show only the latest version.",
+      versionCheckUpdate: "Check for updates", versionCheckingUpdate: "Checking...", versionNoUpdate: "No installable update found", versionCheckFailed: "Update check failed",
+      versionCurrentTag: "Current",
+      versionHistory: "Historical update notes",
+      versionMaint: "Maintenance rule", versionMaintText: "Whenever __version__ changes, update README.md's Version Information / 版本信息 section, docs/VERSION_HISTORY.md, and the exe console's Version page copy. The current release notes must live in the same historical update list.",
     },
   };
   function normalizeUiLang(value) {
@@ -321,9 +321,34 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.2.9",
+      en: "Added a Version-page update check button and reworked release notes into one historical list that includes the current release.",
+      zh: "版本页增加检查更新按钮，并把当前版本说明与历史版本说明合并为同一个历史更新列表。",
+    },
+    {
+      version: "v1.2.8",
+      en: "Opened PM shell runtime controls with live command output, durable tool logs, approval-governed execution, process-tree cancellation, and admin elevation for packaged exe builds.",
+      zh: "开放 PM shell 运行控制：实时命令输出、工具日志落盘、审批约束执行、进程树取消，以及打包 exe 管理员权限启动。",
+    },
+    {
+      version: "v1.2.7",
+      en: "Rendered PM reasoning summaries through Markdown, improved paragraph spacing, and localized the Chinese reasoning label.",
+      zh: "用 Markdown 渲染 PM 思考摘要，改善段落间距，并将中文标签本地化为思考摘要。",
+    },
+    {
       version: "v1.2.6",
       en: "Session stop control, single follow-up send button, dropdown model/thinking controls, image paste chips, and visible PM reasoning stream.",
       zh: "增加会话停止入口、合并继续发送按钮、模型与 thinking level 下拉、图片粘贴附件，以及可见 PM reasoning 流。",
+    },
+    {
+      version: "v1.2.5",
+      en: "Let the PM recover from fatal local agent failures by excluding failed agents and relaunching a selected replacement.",
+      zh: "PM 可在本地 agent 致命失败后排除失败 agent，并选择替代 agent 重新启动执行。",
+    },
+    {
+      version: "v1.2.4",
+      en: "Set Copilot BYOK GPT-5 launches to the Responses wire API while keeping non-GPT-5 launches unchanged.",
+      zh: "Copilot BYOK 使用 GPT-5 系列模型时切换到 Responses wire API，非 GPT-5 启动行为保持不变。",
     },
     {
       version: "v1.2.3",
@@ -2092,40 +2117,40 @@
     </${Modal}>`;
   }
 
-  function VersionInfo({ d, lang, version }) {
+  function VersionInfo({ d, lang, version, onCheckUpdate, checkingUpdate, updateCheckStatus }) {
     const current = version || d.versionUnavailable;
+    const currentTag = current && !String(current).startsWith("v") ? `v${current}` : String(current || "");
     return html`<div className="page-narrow version-page">
       <div className="card version-hero">
-        <div>
+        <div className="version-hero-main">
           <div className="card-title">${d.versionCurrent}</div>
           <div className="version-number">${current}</div>
         </div>
-        <span className="tag green">/health</span>
-      </div>
-      <div className="card">
-        <div className="card-title">${d.versionUpdates}</div>
-        <div className="version-note">
-          <div className="t">${d.versionReleaseNoteTitle}</div>
-          <div className="h">${d.versionReleaseNoteBody}</div>
+        <div className="version-actions">
+          <span className="tag green">/health</span>
+          <button className="btn primary sm" disabled=${checkingUpdate} onClick=${onCheckUpdate}>${checkingUpdate ? d.versionCheckingUpdate : d.versionCheckUpdate}</button>
+          ${updateCheckStatus ? html`<div className="version-check-status">${updateCheckStatus}</div>` : null}
         </div>
       </div>
       <div className="card">
         <div className="card-title">${d.versionHistory}</div>
         <div className="version-history">
-          ${VERSION_HISTORY.map((item) => html`<div className="version-row" key=${item.version}>
-            <div className="version-tag mono">${item.version}</div>
+          ${VERSION_HISTORY.map((item) => html`<div className=${`version-row ${item.version === currentTag ? "current" : ""}`} key=${item.version}>
+            <div className="version-tag mono">${item.version}${item.version === currentTag ? html`<span>${d.versionCurrentTag}</span>` : null}</div>
             <div className="version-copy">${lang === "zh" ? item.zh : item.en}</div>
           </div>`)}
         </div>
       </div>
-      <div className="card">
-        <div className="card-title">${d.versionSource}</div>
-        <div className="card-sub">${d.versionSourceText}</div>
-        <div className="version-path mono">src/foreman/__init__.py::__version__</div>
-      </div>
-      <div className="card">
-        <div className="card-title">${d.versionMaint}</div>
-        <div className="card-sub">${d.versionMaintText}</div>
+      <div className="version-meta-grid">
+        <div className="card">
+          <div className="card-title">${d.versionSource}</div>
+          <div className="card-sub">${d.versionSourceText}</div>
+          <div className="version-path mono">src/foreman/__init__.py::__version__</div>
+        </div>
+        <div className="card">
+          <div className="card-title">${d.versionMaint}</div>
+          <div className="card-sub">${d.versionMaintText}</div>
+        </div>
       </div>
     </div>`;
   }
@@ -2135,7 +2160,7 @@
   // ===========================================================================
   function MobileShell(props) {
     const { d, lang, view, setView, mTab, setMTab, drawerOpen, setDrawerOpen, counts, sessionRow,
-      dig, mainProps, sessions, selected, onSelect, onNew, onRename } = props;
+      dig, mainProps, versionInfoProps, sessions, selected, onSelect, onNew, onRename } = props;
     const titles = { workspace: sessionRow ? (sessionRow.goal || d.navWorkspace) : d.navWorkspace, decisions: d.navDecisions, briefings: d.navBriefings, rules: d.navRules, settings: d.navSettings, version: d.navVersion };
     const live = sessionRow && (sessionRow.status || "").toLowerCase().match(/run|active/);
     const sessionStatus = String((sessionRow && sessionRow.status) || "").toLowerCase().replace(/[\s-]+/g, "_");
@@ -2163,7 +2188,7 @@
         ${view === "briefings" ? html`<div style=${{ padding: 13 }}>${mainProps.briefingsTop}<${Briefings} ...${mainProps.briefings} /></div>` : null}
         ${view === "rules" ? html`<div style=${{ padding: 13 }}><${Playbook} ...${mainProps.playbook} /></div>` : null}
         ${view === "settings" ? html`<div style=${{ padding: 13 }}><${Settings} ...${mainProps.settings} /></div>` : null}
-        ${view === "version" ? html`<div style=${{ padding: 13 }}><${VersionInfo} d=${d} lang=${lang} version=${mainProps.version} /></div>` : null}
+        ${view === "version" ? html`<div style=${{ padding: 13 }}><${VersionInfo} ...${versionInfoProps} /></div>` : null}
       </div>
       ${view === "workspace" && mTab === "chat" ? html`<div className="m-composer">
         <button className="burger" onClick=${mainProps.composer.addAttach}>📎</button>
@@ -2240,6 +2265,8 @@
     const [appUpdate, setAppUpdate] = useState(null); // {version, notes} when an in-place update is offered
     const [updating, setUpdating] = useState(false);
     const [updateError, setUpdateError] = useState(false);
+    const [checkingUpdate, setCheckingUpdate] = useState(false);
+    const [updateCheckStatus, setUpdateCheckStatus] = useState("");
     const [workspaces, setWorkspaces] = useState([]);
     const [agentsLoaded, setAgentsLoaded] = useState(false);
     const [agentSettings, setAgentSettings] = useState([]);
@@ -2524,11 +2551,27 @@
     // Packaged-exe self-update watcher (便携版一键自更新): ask the local server whether a newer
     // GitHub Release exists for THIS exe. Only the frozen exe reports available=true (from source
     // there's nothing to swap). Check shortly after boot, then every 6h. Never auto-applies.
-    const checkAppUpdate = useCallback(() => {
-      api("/api/update/check").then((u) => {
-        if (u && u.available) setAppUpdate({ version: u.latest, notes: u.notes || "" });
-      }).catch(() => {});
-    }, []);
+    const checkAppUpdate = useCallback((manual = false) => {
+      if (manual) {
+        setCheckingUpdate(true);
+        setUpdateCheckStatus("");
+        setUpdateError(false);
+      }
+      return api("/api/update/check").then((u) => {
+        if (u && u.available) {
+          setAppUpdate({ version: u.latest, notes: u.notes || "" });
+          if (manual) setUpdateCheckStatus(`${d.appUpdateReady} · v${u.latest}`);
+        } else if (manual) {
+          setUpdateCheckStatus(d.versionNoUpdate);
+        }
+        return u;
+      }).catch(() => {
+        if (manual) setUpdateCheckStatus(d.versionCheckFailed);
+        return null;
+      }).finally(() => {
+        if (manual) setCheckingUpdate(false);
+      });
+    }, [d]);
     useEffect(() => {
       const t = setTimeout(checkAppUpdate, 5000);
       const id = setInterval(checkAppUpdate, 6 * 60 * 60 * 1000);
@@ -3017,12 +3060,17 @@
     const playbookProps = { d, lang, definitions, filter: defnFilter, setFilter: setDefnFilter, onNew: () => { setDefnDraft({ kind: defnFilter || "workflow", scope_json: "{}", body: "", activate: true }); setDefnOpen(true); }, onEdit: (row) => { let desc = ""; try { desc = (JSON.parse(row.metadata_json || "{}") || {}).description || ""; } catch (e) {} setDefnDraft({ ...row, description: desc, activate: !!row.is_active }); setDefnOpen(true); }, onActivate: activateDefinition, onDelete: deleteDefinition, onExport: exportDefinitions, onImportClick: () => fileRef.current && fileRef.current.click(), fileRef, onImport: importDefinitions, onStartWorkflow: startWorkflowRun };
 
     const launchSteps = { engine: status.online, agents: agentsLoaded, data: booted, pct: booted ? 100 : (status.online ? 60 : 25), version: status.version };
+    const versionInfoProps = {
+      d, lang, version: status.version,
+      onCheckUpdate: () => checkAppUpdate(true),
+      checkingUpdate,
+      updateCheckStatus,
+    };
 
     const mainProps = {
       decisions: decisionsProps, briefings: briefingsProps,
       briefingsTop: html`<button className="btn primary block" style=${{ marginBottom: 13 }} onClick=${runBriefing}>✦ ${d.generate}</button>`,
       playbook: playbookProps, settings: settingsProps, composer: composerProps,
-      version: status.version,
       openCalls, toggleCall, expandedSub, toggleSub, onCard, onApproval: decideApproval, openDetail, sessionRow,
       cards: openCards, approvals,
       onCancelSession: cancelSession,
@@ -3073,7 +3121,7 @@
                 ${view === "briefings" ? html`<${Briefings} ...${briefingsProps} />` : null}
                 ${view === "rules" ? html`<${Playbook} ...${playbookProps} />` : null}
                 ${view === "settings" ? html`<${Settings} ...${settingsProps} />` : null}
-                ${view === "version" ? html`<${VersionInfo} d=${d} lang=${lang} version=${status.version} />` : null}
+                ${view === "version" ? html`<${VersionInfo} ...${versionInfoProps} />` : null}
               </div>
             </div>`}
       </div>
@@ -3081,7 +3129,7 @@
       <!-- mobile -->
       <${MobileShell} d=${d} lang=${lang} view=${view} setView=${setView} mTab=${mTab} setMTab=${setMTab}
         drawerOpen=${drawerOpen} setDrawerOpen=${setDrawerOpen} counts=${counts} sessionRow=${sessionRow}
-        dig=${dig} mainProps=${mainProps} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} onRename=${openRenameSession} />
+        dig=${dig} mainProps=${mainProps} versionInfoProps=${versionInfoProps} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} onRename=${openRenameSession} />
 
       ${detailOpen ? html`<${DetailModal} d=${d} lang=${lang} detail=${detail} onClose=${() => setDetailOpen(false)} />` : null}
       ${renameSession ? html`<${SessionTitleModal} d=${d} title=${renameTitle} saving=${renamingSession} error=${renameError} setTitle=${setRenameTitle} onClose=${() => { setRenameSession(null); setRenameError(""); }} onSave=${saveSessionTitle} />` : null}

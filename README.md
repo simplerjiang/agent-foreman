@@ -115,17 +115,20 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.2.6`.
+Current documented release: `v1.2.9`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
-This release adds an in-session stop action, merges follow-up sending into one button, switches the task composer model and thinking-level controls to dropdowns, supports pasted image chips, and shows PM reasoning as a small gray stream.
-
-Recent history:
+Update history:
 
 | Version | Update |
 |---|---|
+| `v1.2.9` | Version page check-for-updates button, plus one historical update list that includes the current release notes. |
+| `v1.2.8` | PM shell runtime controls with live command output, durable tool logs, approval-governed execution, process-tree cancellation, and admin elevation for packaged exe builds. |
+| `v1.2.7` | Markdown rendering and spacing improvements for PM reasoning summaries, plus localized Chinese reasoning labeling. |
 | `v1.2.6` | Session stop control, single follow-up send button, dropdown model/thinking controls, image paste chips, and visible PM reasoning stream. |
+| `v1.2.5` | PM recovery after fatal local agent failure by excluding failed agents and launching a replacement agent. |
+| `v1.2.4` | Copilot BYOK GPT-5 launches use the Responses wire API while non-GPT-5 launches stay unchanged. |
 | `v1.2.3` | Removed redundant auto-agent explanatory copy while keeping PM-driven agent selection unchanged. |
 | `v1.2.2` | Removed the PM provider max output token setting and stopped sending OpenAI-compatible output caps. |
 | `v1.2.1` | Bilingual README and exe version pages, visible version history, and stricter version-note rules. |
@@ -272,17 +275,20 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.2.6`。
+当前文档版本：`v1.2.9`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
-本次更新在运行中的会话里增加停止入口，合并继续发送按钮，把任务输入区的模型和 thinking level 改成下拉选择，支持粘贴图片附件，并用灰色小字流式显示 PM reasoning。
-
-最近历史：
+更新历史：
 
 | 版本 | 更新 |
 |---|---|
+| `v1.2.9` | 版本页增加检查更新按钮，并把当前版本说明与历史版本说明合并为同一个历史更新列表。 |
+| `v1.2.8` | PM shell 运行控制支持实时命令输出、工具日志落盘、审批约束执行、进程树取消，以及打包 exe 管理员权限启动。 |
+| `v1.2.7` | PM 思考摘要改用 Markdown 渲染并改善间距，同时本地化中文标签。 |
 | `v1.2.6` | 增加会话停止入口、合并继续发送按钮、模型与 thinking level 下拉、图片粘贴附件，以及可见 PM reasoning 流。 |
+| `v1.2.5` | 本地 agent 致命失败后，PM 可排除失败 agent 并启动替代 agent 继续恢复。 |
+| `v1.2.4` | Copilot BYOK 使用 GPT-5 系列模型时切换到 Responses wire API，非 GPT-5 启动保持不变。 |
 | `v1.2.3` | 移除冗余的自动执行 agent 说明文案，PM 自动选择行为不变。 |
 | `v1.2.2` | 移除 PM Provider 最大输出 token 设置，并停止发送 OpenAI 兼容输出上限。 |
 | `v1.2.1` | 中英文 README 与 exe 版本页、可见版本历史，以及更严格的版本说明规则。 |
