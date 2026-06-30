@@ -206,7 +206,6 @@ class PMToolsCfg(BaseModel):
     web_fetch: bool = False
     web_search: bool = False
     browser: bool = False
-    allowed_commands: list[str] = Field(default_factory=lambda: ["python --version"])
     allowed_origins: list[str] = Field(default_factory=list)
     web_search_provider: str = "duckduckgo"  # duckduckgo | searxng
     searxng_url: str = ""

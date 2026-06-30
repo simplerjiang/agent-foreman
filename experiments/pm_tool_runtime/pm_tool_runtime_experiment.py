@@ -36,8 +36,6 @@ class RuntimeConfig:
     web_fetch: bool = False
     web_search: bool = False
     max_output_chars: int = 4000
-    command_timeout_s: int = 10
-    command_allowlist: tuple[str, ...] = ("python --version", "git status")
 
 
 class MiniPMToolRuntime:
@@ -180,7 +178,7 @@ class MiniPMToolRuntime:
             return ToolResult(
                 cid, "run_command", False, error="requires_approval", risk=REQUIRES_APPROVAL
             )
-        if EXTERNAL_WEB in context_taint and command not in self.cfg.command_allowlist:
+        if EXTERNAL_WEB in context_taint:
             return ToolResult(
                 cid,
                 "run_command",
@@ -189,14 +187,11 @@ class MiniPMToolRuntime:
                 error="requires_approval_after_external_web",
                 risk=REQUIRES_APPROVAL,
             )
-        if command not in self.cfg.command_allowlist:
-            return ToolResult(cid, "run_command", False, error="command_not_allowlisted")
         proc = subprocess.run(
             command.split(),
             cwd=self.workspace,
             text=True,
             capture_output=True,
-            timeout=self.cfg.command_timeout_s,
         )
         stdout, out_truncated = self._truncate(proc.stdout or "")
         stderr, err_truncated = self._truncate(proc.stderr or "")
@@ -259,7 +254,7 @@ class MiniPMToolRuntime:
         url = str(args.get("url") or "")
         if not url.startswith(("http://", "https://")):
             return ToolResult(cid, "fetch_url", False, error="unsupported_scheme", risk=NEEDS_STRATEGY)
-        timeout = int(args.get("timeout_s") or self.cfg.command_timeout_s)
+        timeout = int(args.get("timeout_s") or 10)
         with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - experiment tool
             content_type = response.headers.get("content-type", "")
             raw = response.read(self.cfg.max_output_chars + 1)

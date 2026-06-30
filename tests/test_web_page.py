@@ -384,12 +384,28 @@ def test_pm_review_rendered_in_thread():
 def test_pm_stream_replaces_starting_status():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
-    css = c.get("/app.css").text
     assert "const hidePmStatus" in js
     assert 'if (p.phase) hidePmStatus(p.phase);' in js
     assert "formatPartialPmJsonObject" in js
     assert "function formatPmReasoningText" in js
     assert 'kind: t === "pm_reasoning" ? "pm-thinking" : "pm"' in js
+
+
+def test_tool_stream_and_icon_stop_controls_are_wired():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert 't === "tool_stream"' in js
+    assert 'p.stream === "stderr" ? "err" : "out"' in js
+    assert 'p.tool === "run_command" && p.input && p.input.command' in js
+    assert 'className="btn danger icon stop-btn"' in js
+    assert 'aria-label=${d.cancelSession}' in js
+    assert "function TermPanel({ d, terminal, agentType, sessionRow, onCancelSession })" in js
+    assert 'String(e.key || "").toLowerCase() === "c"' in js
+    assert "onCancelSession(sessionRow.id)" in js
+    assert 'className="term-input"' in js
+    assert ".term-input-row" in css and ".term-input" in css
+    assert ".stop-icon" in css and "background: currentColor" in css
     assert 'className="pm-thinking"' in js
     assert 'const txt = t === "pm_reasoning" ? formatPmReasoningText(cleaned) : displayPmStreamText(cleaned, lang, d);' in js
     assert '<${MD} text=${n.text} maxChars=${4000} />' in js
@@ -600,7 +616,7 @@ def test_pm_tool_settings_frontend_wired():
     js = c.get("/app.js").text
     assert "/api/settings/pm-tools" in js
     assert "pmTools" in js and "savePmTools" in js and "loadPmTools" in js
-    assert "allowed_commands" in js and "allowed_origins" in js
+    assert "allowed_" + "commands" not in js and "allowed_origins" in js
     assert "web_search_provider" in js and "browser_headless" in js
     assert "PM_TOOLS_MIN_ROUNDS = 1" in js and "PM_TOOLS_MAX_ROUNDS = 999" in js
     assert "clampPmToolRounds" in js and "max=${PM_TOOLS_MAX_ROUNDS}" in js

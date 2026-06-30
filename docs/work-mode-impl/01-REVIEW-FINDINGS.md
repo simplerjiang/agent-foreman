@@ -219,7 +219,7 @@ ws transport 的 `tool_complete()`（`client.py:206-208`）内部再调 `self.co
 
 **P4 细节**
 
-24. **check 命令门禁策略**（B1 安全相关）：走 `gate.classify`（动态分类）还是要求命中 `command_allowed` allowlist（静态白名单，更安全但可能挡掉合法 `pytest`）。**文档建议默认 `gate.classify` + config 开关。** 【已定：P4 硬门推迟 V2，本问题暂不需决策（D2）】【已拍板 2026-06-24】
+24. **check 命令门禁策略**：走 `gate.classify` + Auditor + 用户审批；P4 硬门推迟 V2，本阶段暂不需决策。
 25. **P1 是否把「选中工作方式集合」连同 `metadata_json`/body 透传进 `_pm_launch`**：P4 依赖此取 check 命令与 rubric body；若 P1 只透传 L0 索引（name+description），P4 需先补 resolver 保留 Definition 行。**建议 P1 落地时即把选中集合约定为含 metadata 的完整行。**
 26. **多条 qa_rubric 同时选中的拼接/优先级**：全部拼进 review（受 6000 截断）还是按 priority 取 top-N。
 
