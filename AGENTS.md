@@ -82,21 +82,25 @@ gh issue list --label needs-e2e --state all --limit 50
 
 ---
 
-## 四、开发 agent：每个 PR 自增版本号（已进入 Prod，从 v1.0.0 起）
+## 四、开发 agent：版本号按 PR 实际合并顺序领取（已进入 Prod，从 v1.0.0 起）
 
-项目已是**生产版本**。**每个 PR 都必须把版本号自增一格**——两个 PR 不允许共用同一版本号。
+项目已是**生产版本**。**每个合并进 `main` 的 PR 都必须把版本号自增一格**，但版本号不在 PR 刚创建时长期预占，而是在**准备合并前**按最新 `origin/main` 领取。并发 PR 的版本顺序以**实际 merge 进 `main` 的顺序**为准：谁先完成门禁并准备合并，谁先拿 `main +0.0.1`；后合并的 PR 必须重新基于最新 `origin/main` 计算下一个版本。
 
 - **自增规则**：`+0.0.1`（patch 加一），**每位满 10 进一位**（每位取值 0–9，到 10 即归 0 并向高位进一）：
   `1.0.0 → 1.0.1 → … → 1.0.9 → 1.1.0 → … → 1.9.9 → 2.0.0`。
 - **只改这一处「单一来源」**——`src/foreman/__init__.py` 的 `__version__ = "x.y.z"`。其余全部**自动派生**，不要再手改：
   - `pyproject.toml` 用 `dynamic = ["version"]` + `[tool.setuptools.dynamic] version = {attr = "foreman.__version__"}` 动态读取；
   - `/health`、`/api/*`、PWA 侧栏/启动页全部从 `__version__`（经 `/health`）取值，**前端不得硬编码版本号**。
-- **每次改版本号都必须注明本次更新内容，并能看到历史更新记录**：同步更新 `README.md` 的 `Version Information / 版本信息` 段落、`docs/VERSION_HISTORY.md`，以及 exe 控制台里的「Version / 版本」页面文案。必须写清本版本改了什么，并保留至少最近几个版本的历史记录，不能只显示最新版本。`__version__` 仍是唯一包版本来源；README/页面/历史文件只维护给人看的中英文更新说明。
-- **提交前自查**：相对 `origin/main` 的当前版本**正好 +0.0.1**（含进位）：
+- **开发 / Draft PR 阶段不要长期预占版本号**：普通功能提交可以先不改 `__version__` 和版本历史；只有当 PR 进入“准备合并 / 发布”阶段时，才执行版本领取。如果一个 PR 已经提前写了版本号，合并前仍必须按下面的合并门禁重新校准，不能直接沿用旧号。
+- **合并前版本门禁（必须在最终 push 前执行）**：
   ```bash
-  git show origin/main:src/foreman/__init__.py | grep __version__   # 看 main 当前版本
-  grep -n '__version__' src/foreman/__init__.py                     # 你的新版本（应 = main + 0.0.1）
+  git fetch origin main
+  git rebase origin/main                                           # 或按当前分支策略合并最新 main
+  git show origin/main:src/foreman/__init__.py | grep __version__   # 看最新 main 当前版本
+  grep -n '__version__' src/foreman/__init__.py                     # 你的新版本必须 = 最新 main + 0.0.1
   ```
+  如果在 PR 等待 CI / review / merge 期间又有其它 PR 先合并，必须重复本门禁：重新 fetch/rebase，重新计算版本号，重新更新版本说明，并重新跑相关验证。
+- **每次最终领取版本号都必须注明本次更新内容，并能看到历史更新记录**：同步更新 `README.md` 的 `Version Information / 版本信息` 段落、`docs/VERSION_HISTORY.md`，以及 exe 控制台里的「Version / 版本」页面文案。必须写清本版本改了什么，并保留至少最近几个版本的历史记录，不能只显示最新版本。`__version__` 仍是唯一包版本来源；README/页面/历史文件只维护给人看的中英文更新说明。
 - **PR 合并即发布**：合并到 `main` 后，CI（`.github/workflows/deploy.yml`）在测试门禁通过后**并行**做两件事——① `release` job 构建 Windows exe、发 `v<__version__>` 的 GitHub Release（已存在则跳过）；② `deploy` job 把该 commit 部署到 `foreman.kongsites.com`。已连着的 PWA 会轮询 `/health` 检测到新版本并提示刷新。所以**版本号不递增 = 不会发新 Release**（release job 按 tag 幂等跳过）。
 
 ---
@@ -105,8 +109,8 @@ gh issue list --label needs-e2e --state all --limit 50
 - **二次修复不许裸关**：被 E2E 打回过（reopen / 复验不通过）的 issue，再修时**必须当场跑 `foreman-e2e` 复验通过**（附 🖱️实测证据）才能 `close`；没当场验过只能留 open + `needs-e2e`，**禁止再次「裸关闭甩给异步复验」**。详见 §二。
 - **不凭印象操作 issue**：领取要看清没被领、关闭/复验通过都要**附证据**（commit SHA / 实测现象 / 截图名）。
 - **一个问题一条 issue**，便于独立认领与关闭。
-- **每个 PR 必须自增版本号**（`+0.0.1`，满 10 进位；**只改 `src/foreman/__init__.py` 的 `__version__` 这一处**，其余自动派生）——合并即触发 Release exe + 部署线上站，详见 §四。
-- **版本号改动必须带更新说明和历史记录**：同 PR 内更新 README、`docs/VERSION_HISTORY.md` 和 exe 内版本页的中英文说明，不能只 bump `__version__`，也不能只展示最新版本而看不到历史版本更新记录。
+- **每个合并进 `main` 的 PR 必须按实际 merge 顺序领取版本号**（合并前基于最新 `origin/main` 做 `+0.0.1`，满 10 进位；**只改 `src/foreman/__init__.py` 的 `__version__` 这一处**，其余自动派生）——合并即触发 Release exe + 部署线上站，详见 §四。
+- **版本号改动必须带更新说明和历史记录**：最终领取版本号时同步更新 README、`docs/VERSION_HISTORY.md` 和 exe 内版本页的中英文说明，不能只 bump `__version__`，也不能只展示最新版本而看不到历史版本更新记录。
 - 标题里**禁用半角双引号 `"`**（会破坏 `gh ... --title "…"` 的 shell 解析）——用 `「」`。
 - 开发涉及破坏性操作（删数据、改用户配置、push/merge/deploy）需谨慎并按项目门禁；E2E 测试只用**只读、无害**指令驱动 agent。
 
