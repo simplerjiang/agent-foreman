@@ -402,6 +402,34 @@ def test_pm_stream_replaces_starting_status():
     assert 'kind: t === "pm_reasoning" ? "pm-thinking" : "pm"' in js
 
 
+def test_pm_stream_preserves_delta_boundary_spaces():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function extractTextParts")
+    end = js.index("function terminalText", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const chunks = [
+  { delta: "I" },
+  { delta: " need" },
+  { delta: " to" },
+  { delta: " submit" },
+];
+let buffer = "";
+let rendered = "";
+for (const chunk of chunks) {
+  const rawTxt = extractStreamText(chunk);
+  rendered = cleanPmStreamText(`${buffer}${rawTxt}`);
+  buffer = `${buffer}${rawTxt}`;
+}
+if (buffer !== "I need to submit" || rendered !== "I need to submit") {
+  console.error({ buffer, rendered });
+  process.exit(1);
+}
+'''
+    subprocess.run(["node", "-e", script], check=True)
+
+
 def test_tool_stream_and_icon_stop_controls_are_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

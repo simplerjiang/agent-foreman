@@ -4,6 +4,18 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.1
+
+English:
+
+- Preserved the raw leading spaces on PM reasoning stream deltas.
+- Fixed English thought summaries rendering as glued-together words during streaming.
+
+中文：
+
+- 保留 PM 思考流 delta 片段里的原始前导空格。
+- 修复英文思考摘要在流式显示时单词粘连的问题。
+
 ## v1.3.0
 
 English:

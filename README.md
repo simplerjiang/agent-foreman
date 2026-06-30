@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.3.0`.
+Current documented release: `v1.3.1`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.3.1` | PM reasoning stream deltas now keep leading spaces, so English thought summaries render with normal word spacing. |
 | `v1.3.0` | Packaged exe self-update now opens a dialog with live download progress and a cancel button before restart. |
 | `v1.2.9` | Version page check-for-updates button, plus one historical update list that includes the current release notes. |
 | `v1.2.8` | PM shell runtime controls with live command output, durable tool logs, approval-governed execution, process-tree cancellation, and admin elevation for packaged exe builds. |
@@ -276,7 +277,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.3.0`。
+当前文档版本：`v1.3.1`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -284,6 +285,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.3.1` | PM 思考流 delta 片段会保留前导空格，英文思考摘要不再单词粘连显示。 |
 | `v1.3.0` | 打包 exe 自更新改为弹窗模式，增加实时下载进度，并在重启前提供取消下载按钮。 |
 | `v1.2.9` | 版本页增加检查更新按钮，并把当前版本说明与历史版本说明合并为同一个历史更新列表。 |
 | `v1.2.8` | PM shell 运行控制支持实时命令输出、工具日志落盘、审批约束执行、进程树取消，以及打包 exe 管理员权限启动。 |

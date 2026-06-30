@@ -325,6 +325,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.3.1",
+      en: "Preserved leading spaces in PM reasoning stream deltas so English thought summaries render with normal word spacing.",
+      zh: "保留 PM 思考流 delta 片段的前导空格，修复英文思考摘要单词粘连显示。",
+    },
+    {
       version: "v1.3.0",
       en: "Changed packaged exe self-update into a dialog with live download progress and a cancel button before restart.",
       zh: "将打包 exe 自更新改为弹窗模式，增加实时下载进度，并在重启前提供取消下载按钮。",
@@ -617,6 +622,12 @@
     return [...parts, ...contentParts].filter(Boolean);
   }
   function extractAgentText(payload) { return extractTextParts(payload).join("\n").trim(); }
+  function extractStreamText(payload) {
+    if (payload && typeof payload === "object" && typeof payload.delta === "string") {
+      return payload.delta;
+    }
+    return extractAgentText(payload);
+  }
   function shellQuote(value) {
     const text = String(value || "");
     return /\s|["']/.test(text) ? `"${text.replace(/"/g, '\\"')}"` : text;
@@ -1001,7 +1012,7 @@
         if (p.done) hidePmStatus();
         nodes.push({ kind: "pm-review", id: e.id || `pr-${nodes.length}`, ts: e.ts, status, summary: p.summary || "", reason: p.reason || "", followUp: p.follow_up || "", done: !!p.done });
       } else if (t === "pm_output" || t === "pm_reasoning") {
-        const rawTxt = extractAgentText(p);
+        const rawTxt = extractStreamText(p);
         if (!rawTxt) continue;
         if (p.event_type === "status" || p.status === "working") {
           const key = p.phase || p.stream_id || "pm";
