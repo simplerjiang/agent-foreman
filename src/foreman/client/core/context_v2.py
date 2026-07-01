@@ -570,6 +570,8 @@ def extract_runtime_state(
             }
             _merge_runtime_collections(state, payload)
             _merge_runtime_collections(state, stop_payload)
+        elif frame.type == "file_change":
+            _merge_changed_files(state, payload)
         elif frame.type in {"agent_output", "command_result", "tool_result", "test_result"} and frame.agent_id:
             agent = agents.setdefault(frame.agent_id, _new_agent(frame.agent_id))
             if frame.event_ts >= _text(agent.get("last_seen_at")):
@@ -579,8 +581,6 @@ def extract_runtime_state(
             state.last_commands.append(_command_state(payload))
         if frame.type == "test_result":
             state.last_tests.append(payload)
-        if frame.type == "file_change":
-            _merge_changed_files(state, payload)
         for path in _as_list(payload.get("changed_files") or payload.get("files")):
             text = _text(path)
             if text and text not in state.changed_files:

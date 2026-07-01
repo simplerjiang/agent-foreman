@@ -158,13 +158,39 @@ def test_file_change_updates_runtime_changed_files(tmp_path):
     session = store.add_session(Session(id="s1", goal="goal"))
     _add_event(
         store,
-        _event("e1", "file_change", {"changed_files": ["src/app.py", "tests/test_app.py"]}),
+        _event("e1", "file_change", {"changed_files": ["src/app.py", "src/app.py", "tests/test_app.py"]}),
     )
 
     frames = ContextManager(store).materialize_session("s1")
     state = extract_runtime_state(session, frames)
 
     assert state.changed_files == ["src/app.py", "tests/test_app.py"]
+
+
+def test_git_file_change_events_update_runtime_changed_files(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal"))
+    _add_event(store, _event("e1", "git_diff", {"changed_files": ["src/app.py"]}))
+    _add_event(store, _event("e2", "diff_stat", {"paths": ["docs/context.md"]}))
+    _add_event(store, _event("e3", "git_status", {"files": ["tests/test_app.py"]}))
+
+    frames = ContextManager(store).materialize_session("s1")
+    assert [frame.type for frame in frames] == ["file_change", "file_change", "file_change"]
+    state = extract_runtime_state(session, frames)
+
+    assert state.changed_files == ["src/app.py", "docs/context.md", "tests/test_app.py"]
+
+
+def test_runtime_changed_files_deduplicates_across_file_change_frames(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal"))
+    _add_event(store, _event("e1", "file_change", {"changed_files": ["src/app.py"]}))
+    _add_event(store, _event("e2", "git_status", {"files": ["src/app.py", "README.md"]}))
+
+    frames = ContextManager(store).materialize_session("s1")
+    state = extract_runtime_state(session, frames)
+
+    assert state.changed_files == ["src/app.py", "README.md"]
 
 
 def test_runtime_last_tests_includes_test_result_frame(tmp_path):
