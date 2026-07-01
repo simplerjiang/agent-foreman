@@ -12,6 +12,7 @@ from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
 from foreman.shared.llm.trace import trace_context
 from foreman.shared.config import PM_TOOLS_DEFAULT_ROUNDS, clamp_pm_tool_rounds
+from foreman.client.core.pm_contract import PlanContract
 
 from .models import EXTERNAL_WEB, ToolCall, ToolResult
 from .runtime import PMToolRuntime
@@ -25,7 +26,6 @@ StreamSink = Callable[[dict[str, Any]], Awaitable[None] | None]
 # complete tool_use block, not on parsing free text that a stalled model may repeat (#39).
 SUBMIT_PLAN_TOOL = "submit_plan"
 _SUBMIT_PLAN_CHOICE = {"type": "function", "name": SUBMIT_PLAN_TOOL}
-_DEFAULT_PLAN_AGENTS = ("claude-code", "codex", "copilot-cli")
 
 
 def submit_plan_tool_spec(
@@ -40,47 +40,10 @@ def submit_plan_tool_spec(
     a regex-sliced text blob. ``maxItems``/``maxLength`` are the structural bounds that replace the
     old token ceiling.
     """
-    agents = [agent for agent in (enabled_agents or []) if agent] or list(_DEFAULT_PLAN_AGENTS)
-    item_limit = clamp_pm_tool_rounds(max_plan_items)
-    return {
-        "name": SUBMIT_PLAN_TOOL,
-        "description": "Emit exactly one launch plan for the selected coding agent. Call once.",
-        "input_schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": [
-                "summary", "agent", "effort", "instruction", "todo", "deliberation", "ready",
-            ],
-            "properties": {
-                "summary": {"type": "string", "maxLength": 600},
-                "agent": {"type": "string", "enum": agents},
-                "model": {"type": "string", "maxLength": 80},
-                "effort": {"type": "string", "enum": ["low", "medium", "high", ""]},
-                "instruction": {"type": "string", "maxLength": 6000},
-                "workspace": {
-                    "type": "string",
-                    "maxLength": 500,
-                    "description": (
-                        "Optional existing workspace/worktree path where the coding agent must "
-                        "launch. Leave empty unless verified from runtime tool output."
-                    ),
-                },
-                "kind": {"type": "string", "enum": ["agent_task", "direct_reply", "blocked", "error"]},
-                "reply": {"type": "string", "maxLength": 2000},
-                "todo": {
-                    "type": "array",
-                    "maxItems": item_limit,
-                    "items": {"type": "string", "maxLength": 200},
-                },
-                "deliberation": {
-                    "type": "array",
-                    "maxItems": item_limit,
-                    "items": {"type": "string", "maxLength": 300},
-                },
-                "ready": {"type": "boolean"},
-            },
-        },
-    }
+    return PlanContract(
+        enabled_agents=enabled_agents,
+        max_plan_items=max_plan_items,
+    ).tool_spec()
 
 
 def _submit_plan_args(calls: list[ToolCall]) -> dict[str, Any] | None:
@@ -168,6 +131,14 @@ class PMToolLoop:
                         max_plan_items=self.max_rounds,
                     )
                 except ValueError as exc:
+                    await self._emit(
+                        "pm_validation_error",
+                        {
+                            "error": str(exc),
+                            "round": round_no,
+                            "arguments": PlanContract.redact_arguments(plan_args),
+                        },
+                    )
                     transcript.append(
                         Message(
                             "user",
@@ -364,35 +335,11 @@ def validate_final_plan(
     fallback_plan: dict[str, Any],
     max_plan_items: int = PM_TOOLS_DEFAULT_ROUNDS,
 ) -> dict[str, Any]:
-    if not isinstance(obj, dict):
-        raise ValueError("final_plan_not_object")
-    allowed = [agent for agent in enabled_agents if agent] or [str(fallback_plan.get("agent") or "")]
-    agent = str(obj.get("agent") or "").strip()
-    if agent not in allowed:
-        raise ValueError("final_plan_bad_agent")
-    instruction = str(obj.get("instruction") or "").strip()
-    if not instruction:
-        raise ValueError("final_plan_missing_instruction")
-    effort = str(obj.get("effort") or fallback_plan.get("effort") or "").strip().lower()
-    if effort not in {"", "low", "medium", "high"}:
-        raise ValueError("final_plan_bad_effort")
-    item_limit = clamp_pm_tool_rounds(max_plan_items)
-    # Re-enforce the §5 schema bounds locally: the ws backend isn't guaranteed to enforce the
-    # tool input_schema, so clamp the structural limits (maxLength/maxItems) here rather than trust
-    # the upstream — these bounds are what replace a raw token ceiling (design §5).
-    return {
-        "summary": str(obj.get("summary") or "").strip()[:600],
-        "agent": agent,
-        "model": str(obj.get("model") or "").strip()[:80],
-        "effort": effort,
-        "workspace": str(obj.get("workspace") or "").strip()[:500],
-        "instruction": instruction[:6000],
-        "kind": str(obj.get("kind") or "agent_task").strip()[:40],
-        "reply": str(obj.get("reply") or "").strip()[:2000],
-        "todo": _str_list(obj.get("todo"), max_items=item_limit, max_len=200),
-        "deliberation": _str_list(obj.get("deliberation"), max_items=item_limit, max_len=300),
-        "ready": bool(obj.get("ready", True)),
-    }
+    return PlanContract(
+        enabled_agents=enabled_agents,
+        fallback_agent=str(fallback_plan.get("agent") or ""),
+        max_plan_items=max_plan_items,
+    ).validate(obj)
 
 
 def _extract_json_object(raw: str) -> dict[str, Any] | None:
@@ -461,18 +408,3 @@ def _verifies_search_leads(result: ToolResult) -> bool:
         "search_repo",
         "run_command",
     }
-
-
-def _str_list(
-    value: object,
-    *,
-    max_items: int = PM_TOOLS_DEFAULT_ROUNDS,
-    max_len: int = 200,
-) -> list[str]:
-    if isinstance(value, str):
-        items = [value]
-    elif isinstance(value, list):
-        items = value
-    else:
-        items = []
-    return [str(item).strip()[:max_len] for item in items if str(item or "").strip()][:max_items]

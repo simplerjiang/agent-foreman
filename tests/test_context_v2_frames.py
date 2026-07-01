@@ -278,6 +278,19 @@ def test_context_compact_event_becomes_context_compaction_frame():
     assert _payload(frames[0])["payload"]["checkpoint_id"] == "cp1"
 
 
+def test_pm_validation_error_becomes_previous_validation_error_frame():
+    frames = materialize_event(
+        _event(
+            "e1",
+            "pm_validation_error",
+            {"error": "final_plan_missing_reply", "round": 1, "arguments": {"kind": "direct_reply"}},
+        )
+    )
+
+    assert [frame.type for frame in frames] == ["previous_validation_error"]
+    assert _payload(frames[0])["payload"]["error"] == "final_plan_missing_reply"
+
+
 def test_unknown_event_does_not_crash_materializer():
     frames = materialize_event(_event("e1", "unknown_future_event", {"x": "future"}))
 
