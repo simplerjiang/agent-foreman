@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.4.3",
+      en: "Pytest maintenance now folds repetitive table-style checks into compact table-driven tests, removes a redundant client import smoke test, and keeps the same behavior coverage with fewer collected pytest nodes.",
+      zh: "Pytest 维护整理将重复的表格型断言合并为更紧凑的表驱动测试，移除冗余的 client import smoke test，并在保留相同行为覆盖的同时减少 pytest 收集节点。",
+    },
+    {
       version: "v1.4.2",
       en: "PM plans can now carry a verified target workspace/worktree; Foreman updates the session workspace and launches the coding agent from that worktree instead of only mentioning Set-Location in the prompt.",
       zh: "PM 计划现在可以携带已验证的目标 workspace/worktree；Foreman 会同步更新会话 workspace，并从该 worktree 启动编码代理，不再只把 Set-Location 写进提示词。",

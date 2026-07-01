@@ -10,8 +10,6 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
-
 from foreman.client import update
 
 
@@ -287,8 +285,8 @@ def test_update_routes_with_injected_updater(monkeypatch):
     assert cancel["ok"] is True and cancel["cancelled"] is True
 
 
-@pytest.mark.parametrize("body", ["x" * 5000])
-def test_check_truncates_notes(monkeypatch, body):
+def test_check_truncates_notes(monkeypatch):
+    body = "x" * 5000
     monkeypatch.setattr(update, "is_frozen", lambda: True)
     monkeypatch.setattr(update, "current_version", lambda: "1.0.1")
     # _fetch_latest itself truncates to 4000; simulate that contract holds end-to-end.

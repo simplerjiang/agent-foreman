@@ -37,38 +37,28 @@ def test_normalize_level_defaults_and_clamps():
 
 
 # ── decide_disposition: the full level × class matrix ────────────────────────────────────────
-def test_level0_reports_everything():
-    for cls in ("safe", "needs-strategy", "requires-approval"):
-        assert decide_disposition(cls, 0) == REPORT
-
-
-def test_level1_cards_everything():
-    for cls in ("safe", "needs-strategy", "requires-approval"):
-        assert decide_disposition(cls, 1) == CARD
-
-
-def test_level2_auto_safe_card_rest():
-    assert decide_disposition("safe", 2) == AUTO
-    assert decide_disposition("needs-strategy", 2) == CARD
-    assert decide_disposition("requires-approval", 2) == CARD
-
-
-def test_level3_auto_reversible_card_irreversible():
-    assert decide_disposition("safe", 3) == AUTO
-    assert decide_disposition("needs-strategy", 3) == AUTO
-    assert decide_disposition("requires-approval", 3) == CARD  # red line, never auto
-
-
-def test_irreversible_never_auto_at_any_level():
-    for lvl in (1, 2, 3):
-        assert decide_disposition("requires-approval", lvl) != AUTO
-
-
-def test_unknown_class_fails_closed_to_card():
-    # An unknown/garbled classification must be treated as irreversible, never auto.
-    assert decide_disposition("???", 3) == CARD
-    assert decide_disposition("", 2) == CARD
-    assert decide_disposition("SAFE", 2) == AUTO  # case-insensitive
+def test_decide_disposition_matrix():
+    cases = [
+        ("safe", 0, REPORT),
+        ("needs-strategy", 0, REPORT),
+        ("requires-approval", 0, REPORT),
+        ("safe", 1, CARD),
+        ("needs-strategy", 1, CARD),
+        ("requires-approval", 1, CARD),
+        ("safe", 2, AUTO),
+        ("needs-strategy", 2, CARD),
+        ("requires-approval", 2, CARD),
+        ("safe", 3, AUTO),
+        ("needs-strategy", 3, AUTO),
+        ("requires-approval", 3, CARD),
+        ("???", 3, CARD),
+        ("", 2, CARD),
+        ("SAFE", 2, AUTO),
+    ]
+    for classification, level, expected in cases:
+        assert decide_disposition(classification, level) == expected
+        if classification == "requires-approval" and level > 0:
+            assert expected != AUTO
 
 
 # ── level_label ──────────────────────────────────────────────────────────────────────────────

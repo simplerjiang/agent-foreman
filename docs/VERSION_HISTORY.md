@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.3
+
+English:
+
+- Pytest maintenance now folds repetitive table-style checks into compact table-driven tests.
+- A redundant client import smoke test was removed because the stronger fresh-interpreter client import boundary test already covers the same surface.
+- The full suite keeps the same behavior coverage with fewer collected pytest nodes.
+
+中文：
+
+- Pytest 维护整理将重复的表格型断言合并为更紧凑的表驱动测试。
+- 移除冗余的 client import smoke test，因为更强的新解释器 client import 边界测试已经覆盖同一范围。
+- 全量测试继续保留相同行为覆盖，同时减少 pytest 收集节点。
+
 ## v1.4.2
 
 English:

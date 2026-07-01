@@ -48,9 +48,8 @@ def _personal_app(tmp_path, *, token: str = TOKEN):
 
 
 # ── P0: operational endpoints fail closed without the token ────────────────────────────────────
-@pytest.mark.parametrize(
-    "method,path",
-    [
+def test_operational_endpoints_401_without_token(tmp_path):
+    endpoints = [
         ("get", "/api/sessions"),
         ("get", "/api/sessions/s1/events"),
         ("get", "/api/overview"),
@@ -68,13 +67,12 @@ def _personal_app(tmp_path, *, token: str = TOKEN):
         ("post", "/api/sessions/s1/cancel"),
         ("delete", "/api/sessions/s1"),
         ("post", "/hooks"),
-    ],
-)
-def test_operational_endpoints_401_without_token(tmp_path, method, path):
+    ]
     c = TestClient(_personal_app(tmp_path))
-    r = c.request(method.upper(), path, json={})
-    assert r.status_code == 401, f"{method} {path} was reachable unauthenticated"
-    assert r.headers.get("WWW-Authenticate") == "Bearer"
+    for method, path in endpoints:
+        r = c.request(method.upper(), path, json={})
+        assert r.status_code == 401, f"{method} {path} was reachable unauthenticated"
+        assert r.headers.get("WWW-Authenticate") == "Bearer"
 
 
 def test_operational_endpoint_ok_with_token(tmp_path):
