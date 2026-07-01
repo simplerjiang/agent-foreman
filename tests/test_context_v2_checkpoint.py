@@ -5,9 +5,12 @@ import json
 import pytest
 
 from foreman.client.core import context_v2
+from foreman.client.core import dispatch_service
+from foreman.client.core.dispatch_service import DispatchService
 from foreman.client.core.context_v2 import ContextCompactError, ContextManager
 from foreman.client.store import Store
-from foreman.client.store.models import Event, Session
+from foreman.client.store.models import ContextCheckpoint, Event, Session
+from foreman.shared.config import AgentCfg, Config, WorkspaceCfg
 
 
 def _store(tmp_path) -> Store:
@@ -69,6 +72,33 @@ class _UnsupportedLLM:
         raise RuntimeError("unsupported")
 
 
+class _EncryptedLLM:
+    provider = "openai"
+
+    async def responses_compact(self, *args, **kwargs):
+        return {
+            "object": "response.compaction",
+            "output": [
+                {"type": "message", "content": "readable provider message"},
+                {"type": "compaction_summary", "encrypted_content": "SECRET_ENCRYPTED_BLOB"},
+            ],
+        }
+
+
+class _FailingLLM:
+    provider = "openai"
+
+    async def responses_compact(self, *args, **kwargs):
+        raise RuntimeError("remote down")
+
+
+def _cfg(tmp_path) -> Config:
+    cfg = Config()
+    cfg.agents = {"codex": AgentCfg(command="codex", enabled=True)}
+    cfg.workspaces = [WorkspaceCfg(path=str(tmp_path))]
+    return cfg
+
+
 async def test_remote_compact_mock_200_writes_context_checkpoint(tmp_path):
     store = _store(tmp_path)
     _seed(store)
@@ -87,6 +117,23 @@ async def test_remote_compact_mock_200_writes_context_checkpoint(tmp_path):
     assert "remote compact summary" in session.plan
     assert event_payloads[-1]["status"] == "completed"
     assert event_payloads[-1]["checkpoint_id"] == checkpoint.id
+
+
+async def test_compact_now_does_not_call_events_to_text(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _seed(store)
+
+    def fail_events_to_text(*args, **kwargs):
+        raise AssertionError("legacy events_to_text used")
+
+    monkeypatch.setattr(dispatch_service, "events_to_text", fail_events_to_text)
+    svc = DispatchService(_cfg(tmp_path), store, pm_agent=None)
+
+    result = await svc.compact("s1", window_tokens=1000)
+
+    assert result["ok"] is True
+    assert result["checkpoint_id"]
+    assert store.get_context_checkpoints("s1")
 
 
 async def test_remote_compact_unsupported_falls_back_local(tmp_path):
@@ -147,6 +194,74 @@ async def test_empty_replacement_history_prevents_checkpoint_install(tmp_path, m
     assert store.get_context_checkpoints("s1") == []
     failed = [json.loads(e.payload_json) for e in store.get_events("s1") if e.type == "context_compact"]
     assert failed[-1]["status"] == "failed"
+
+
+async def test_compact_failure_is_atomic(tmp_path):
+    store = _store(tmp_path)
+    _seed(store)
+    old_checkpoint = ContextCheckpoint(
+        id="old_ctxcp",
+        session_id="s1",
+        trigger="manual",
+        reason="old",
+        source_cursor_json=json.dumps({"end": {"event_ts": "2026-07-01T00:00:00Z", "event_id": "e1"}}),
+        summary_json=json.dumps({"summary": "old summary"}),
+        replacement_history_json=json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "old",
+                        "role": "system",
+                        "kind": "checkpoint_summary",
+                        "content": "old summary",
+                        "source_refs": ["event:e1"],
+                    }
+                ]
+            }
+        ),
+        runtime_state_json="{}",
+        token_usage_json="{}",
+        created_at="2026-07-01T00:00:02Z",
+    )
+    store.add_context_checkpoint(old_checkpoint)
+    store.set_latest_context_checkpoint("s1", "old_ctxcp", plan_summary="old plan")
+
+    async def fail_local(active_context):
+        raise RuntimeError("local down")
+
+    with pytest.raises(RuntimeError):
+        await ContextManager(store, llm=_FailingLLM(), local_compactor=fail_local).compact_now(
+            "s1",
+            trigger="manual",
+            reason="atomic",
+            window_tokens=1000,
+        )
+
+    session = store.get_session("s1")
+    assert session.latest_context_checkpoint_id == "old_ctxcp"
+    assert session.plan == "old plan"
+    assert [cp.id for cp in store.get_context_checkpoints("s1") if cp.id != "old_ctxcp"] == []
+    failed = [json.loads(e.payload_json) for e in store.get_events("s1") if e.type == "context_compact"]
+    assert failed[-1]["status"] == "failed"
+    assert ContextManager(store).build_active_context("s1", purpose="pm_plan").degraded is False
+
+
+async def test_remote_compact_encrypted_content_not_used_as_summary(tmp_path):
+    store = _store(tmp_path)
+    _seed(store)
+
+    checkpoint = await ContextManager(store, llm=_EncryptedLLM()).compact_now(
+        "s1",
+        trigger="manual",
+        reason="encrypted",
+        window_tokens=1000,
+    )
+
+    history = json.loads(checkpoint.replacement_history_json)
+    summary = json.loads(checkpoint.summary_json)
+    assert "SECRET_ENCRYPTED_BLOB" in json.dumps(history["provider_payload"])
+    assert summary.get("summary") != "SECRET_ENCRYPTED_BLOB"
+    assert "SECRET_ENCRYPTED_BLOB" not in store.get_session("s1").plan
 
 
 async def test_replacement_history_json_round_trips_and_passes_validation(tmp_path):

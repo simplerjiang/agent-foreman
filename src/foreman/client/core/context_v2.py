@@ -242,6 +242,7 @@ class ContextManager:
                 token_usage["remote_error"] = remote_error
             if provider_payload:
                 summary_json["provider_payload"] = _compact_payload(provider_payload)
+                replacement_history["provider_payload"] = _compact_payload(provider_payload)
             snapshot_id = self._store_compat_snapshot(session_id, active, summary_text, summary_json)
             checkpoint = ContextCheckpoint(
                 id=f"ctxcp_{uuid.uuid4().hex}",
@@ -1097,11 +1098,12 @@ def frames_to_replacement_history(
             )
     for idx, frame in enumerate(_anchor_frames(frames)[:12]):
         payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
-        content = _anchor_content(frame, payload)
+        content = _anchor_content(frame, payload, frames)
         if not content:
             continue
-        frame_id = _text(frame.get("id"))
+        frame_ids = _paired_frame_ids(frame, frames)
         refs = _as_list(frame.get("source_refs"))
+        refs.extend(_paired_source_refs(frame, frames))
         if _text(frame.get("event_id")):
             refs.append(f"event:{_text(frame.get('event_id'))}")
         items.append(
@@ -1110,7 +1112,7 @@ def frames_to_replacement_history(
                 "role": _text(frame.get("role")) or "system",
                 "kind": _text(frame.get("type")) or "frame_anchor",
                 "content": content,
-                "frame_ids": [frame_id] if frame_id else [],
+                "frame_ids": frame_ids,
                 "source_refs": _dedupe(refs),
             }
         )
@@ -1239,8 +1241,14 @@ def _anchor_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [frame for frame in frames if _text(frame.get("type")) in wanted]
 
 
-def _anchor_content(frame: dict[str, Any], payload: dict[str, Any]) -> str:
+def _anchor_content(frame: dict[str, Any], payload: dict[str, Any], frames: list[dict[str, Any]] | None = None) -> str:
     frame_type = _text(frame.get("type"))
+    payload = dict(payload)
+    if frame_type == "command_result" and not _text(payload.get("command")):
+        paired = _paired_command_payload(frame, frames or [])
+        for key in ("command", "cwd"):
+            if paired.get(key) and not payload.get(key):
+                payload[key] = paired[key]
     keys = {
         "command_result": ("command", "exit_code", "cwd", "important_lines", "stdout_summary", "stderr_summary"),
         "test_result": ("command", "status", "passed", "failed", "exit_code", "failures", "important_lines"),
@@ -1254,11 +1262,60 @@ def _anchor_content(frame: dict[str, Any], payload: dict[str, Any]) -> str:
     return _summarize_text(json.dumps(picked, ensure_ascii=False, sort_keys=True), max_chars=900)
 
 
+def _paired_frame_ids(frame: dict[str, Any], frames: list[dict[str, Any]]) -> list[str]:
+    ids = [_text(frame.get("id"))]
+    payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    call_id = _text(payload.get("call_id") or payload.get("tool_call_id"))
+    if call_id:
+        for candidate in frames:
+            if candidate is frame:
+                continue
+            candidate_payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+            if _text(candidate_payload.get("call_id") or candidate_payload.get("tool_call_id")) == call_id:
+                ids.append(_text(candidate.get("id")))
+    return _dedupe(ids)
+
+
+def _paired_source_refs(frame: dict[str, Any], frames: list[dict[str, Any]]) -> list[str]:
+    refs: list[str] = []
+    payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    call_id = _text(payload.get("call_id") or payload.get("tool_call_id"))
+    if not call_id:
+        return refs
+    for candidate in frames:
+        candidate_payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+        if _text(candidate_payload.get("call_id") or candidate_payload.get("tool_call_id")) != call_id:
+            continue
+        refs.extend(_as_list(candidate.get("source_refs")))
+        event_id = _text(candidate.get("event_id"))
+        if event_id:
+            refs.append(f"event:{event_id}")
+    return _dedupe(refs)
+
+
+def _paired_command_payload(frame: dict[str, Any], frames: list[dict[str, Any]]) -> dict[str, Any]:
+    payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    call_id = _text(payload.get("call_id") or payload.get("tool_call_id"))
+    if not call_id:
+        return {}
+    for candidate in frames:
+        candidate_payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+        if _text(candidate_payload.get("call_id") or candidate_payload.get("tool_call_id")) != call_id:
+            continue
+        if _text(candidate.get("type")) not in {"command_call", "tool_call"}:
+            continue
+        command = _text(candidate_payload.get("command"))
+        cwd = _text(candidate_payload.get("cwd"))
+        if command or cwd:
+            return {"command": command, "cwd": cwd}
+    return {}
+
+
 def _recent_frame_summary(frames: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for frame in _anchor_frames(frames)[-8:]:
         payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
-        content = _anchor_content(frame, payload)
+        content = _anchor_content(frame, payload, frames)
         if content:
             parts.append(f"{_text(frame.get('type'))}: {content}")
     return "\n".join(parts)

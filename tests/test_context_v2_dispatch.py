@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from foreman.client.core.context_v2 import ActiveContext
+from foreman.client.core.context_v2 import ActiveContext, ContextManager
 from foreman.client.core.dispatch_service import (
     DispatchService,
     _advance_reviewed_event_id_from_active_context,
@@ -83,6 +83,66 @@ class _Runner:
         self.sent.append(text)
 
 
+async def test_direct_answer_active_context_does_not_dispatch_agent(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="what is pytest?", workspace=str(tmp_path), plan="prior context"))
+    store.add_task(Task(id="t1", session_id="s1", instruction="what is pytest?"))
+    active = ActiveContext(
+        session_id="s1",
+        purpose="pm_plan",
+        envelope={"task": {"user_intent_type": "direct_answer"}},
+        rendered_text='{"task": {"user_intent_type": "direct_answer"}, "context": {}}',
+    )
+
+    class Runner(_Runner):
+        async def launch(self, *args, **kwargs):
+            raise AssertionError("direct answer should not launch a coding agent")
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        def __init__(self):
+            self.context = ""
+            self.active_context = None
+
+        async def plan(self, goal, *, active_context=None, **kw):
+            self.context = kw["context"]
+            self.active_context = active_context
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="low",
+                instruction="direct reply only",
+                kind="direct_reply",
+                reply="pytest is a Python test runner.",
+            )
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("direct reply should not review")
+
+    pm = PM()
+    svc = DispatchService(
+        _cfg(tmp_path),
+        store,
+        runner=Runner(store),
+        pm_agent=pm,
+        context_manager=_FakeContextManager(review_context=active),
+    )
+    svc.context_manager.by_purpose["pm_plan"] = active
+
+    await svc._pm_launch("s1", "t1", "what is pytest?", str(tmp_path), "codex", "", "low")
+
+    assert pm.context == active.rendered_text
+    assert pm.active_context is active
+    assert store.get_session("s1").status == "done"
+    event_types = [event.type for event in store.get_events("s1")]
+    assert "pm_reply" in event_types
+    assert "pm_plan" not in event_types
+    assert "agent_start" not in event_types
+    assert "agent_input" not in event_types
+
+
 async def test_pm_plan_uses_context_manager(tmp_path):
     store = _store(tmp_path)
     _seed(store, tmp_path)
@@ -149,7 +209,10 @@ async def test_pm_plan_falls_back_to_legacy_context_on_context_manager_failure(t
 
     assert pm.context == "LEGACY_CONTEXT"
     notifications = [json.loads(row.payload_json) for row in store.get_events("s1") if row.type == "notification"]
-    assert any(item["kind"] == "context_restore_failed" for item in notifications)
+    matching = [item for item in notifications if item["kind"] == "context_restore_failed"]
+    assert len(matching) == 1
+    assert matching[0]["purpose"] == "pm_plan"
+    assert matching[0]["fallback"] == "legacy_session_context"
 
 
 async def test_pm_plan_passes_active_context_when_supported(tmp_path):
@@ -310,6 +373,51 @@ async def test_pm_review_no_new_frames_returns_no_new_output(tmp_path):
     await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
 
     assert pm.timeline == "(no new agent output captured)"
+    assert pm.timeline != "FULL ACTIVE CONTEXT"
+
+
+async def test_pm_review_lane7_noise_returns_no_new_output(tmp_path):
+    store = _store(tmp_path)
+    _seed(store, tmp_path)
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        def __init__(self):
+            self.timeline = ""
+            self.context = ""
+
+        async def plan(self, goal, **kw):
+            return PMPlan(agent="codex", model="", effort="low", instruction="run", todo=["check"])
+
+        async def review(self, goal, plan, timeline, *, context="", **kw):
+            self.timeline = timeline
+            self.context = context
+            return PMReview(done=True, summary="done")
+
+    pm = PM()
+    svc = DispatchService(
+        _cfg(tmp_path),
+        store,
+        runner=_Runner(store),
+        pm_agent=pm,
+        context_manager=_FakeContextManager(
+            review_context=ActiveContext(
+                session_id="s1",
+                purpose="pm_review",
+                rendered_text="FULL ACTIVE CONTEXT",
+                frames_after_checkpoint=[
+                    {"event_id": "", "type": "pm_reasoning", "lane": 7, "payload": {"text": "noise"}}
+                ],
+            )
+        ),
+    )
+
+    await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
+
+    assert pm.context == "FULL ACTIVE CONTEXT"
+    assert pm.timeline == "(no new agent output captured)"
 
 
 async def test_pm_review_falls_back_to_legacy_timeline_on_context_failure(tmp_path):
@@ -358,6 +466,49 @@ def test_reviewed_cursor_advances_from_checkpoint_source_cursor():
     assert _advance_reviewed_event_id_from_active_context(rows, "e1", missing) == "e1"
 
 
+def test_review_cursor_with_same_timestamp_text_event_ids():
+    rows = [
+        Event(id="evt_a", session_id="s1", type="dispatch", source="test", ts="2026-07-01T00:00:00Z"),
+        Event(id="evt_b", session_id="s1", type="pm_plan", source="test", ts="2026-07-01T00:00:00Z"),
+        Event(id="evt_c", session_id="s1", type="stop", source="test", ts="2026-07-01T00:00:01Z"),
+    ]
+    active = ActiveContext(
+        source_cursor={"end": {"event_ts": "2026-07-01T00:00:00Z", "event_id": "evt_b"}},
+        frames_after_checkpoint=[
+            {
+                "event_id": "evt_a",
+                "type": "agent_stop",
+                "lane": 6,
+                "payload": {"summary": "covered a"},
+                "source_refs": ["event:evt_a"],
+            },
+            {
+                "event_id": "evt_b",
+                "type": "agent_stop",
+                "lane": 6,
+                "payload": {"summary": "covered b"},
+                "source_refs": ["event:evt_b"],
+            },
+            {
+                "event_id": "evt_c",
+                "type": "command_result",
+                "lane": 6,
+                "payload": {"command": "pytest", "exit_code": 0},
+                "source_refs": ["event:evt_c"],
+            },
+        ],
+    )
+
+    reviewed = _advance_reviewed_event_id_from_active_context(rows, "evt_a", active)
+    timeline = _review_timeline_from_active_context(active, rows, reviewed)
+
+    assert reviewed == "evt_b"
+    assert "evt_c" in timeline
+    assert "pytest" in timeline
+    assert "covered a" not in timeline
+    assert "covered b" not in timeline
+
+
 def test_pm_review_checkpoint_cursor_does_not_duplicate_covered_frames():
     rows = [
         Event(id="e1", session_id="s1", type="dispatch", source="test"),
@@ -399,3 +550,62 @@ def test_pm_review_checkpoint_cursor_does_not_duplicate_covered_frames():
     assert "e3" in timeline
     assert "old dispatch" not in timeline
     assert "covered" not in timeline
+
+
+async def test_previous_validation_error_is_visible_in_next_pm_plan_context(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="answer directly", workspace=str(tmp_path)))
+    store.add_task(Task(id="t1", session_id="s1", instruction="answer directly"))
+    store.add_event(
+        make_event(
+            "pm_validation_error",
+            "pm-agent",
+            "s1",
+            task_id="t1",
+            payload={
+                "error": "final_plan_missing_reply",
+                "round": 1,
+                "arguments": {
+                    "kind": "direct_reply",
+                    "instruction": "direct reply only",
+                    "reply": "",
+                },
+            },
+        )
+    )
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        def __init__(self):
+            self.context = ""
+
+        async def plan(self, goal, **kw):
+            self.context = kw["context"]
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="low",
+                instruction="direct reply only",
+                kind="direct_reply",
+                reply="fixed",
+            )
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("direct reply should not review")
+
+    pm = PM()
+    svc = DispatchService(
+        _cfg(tmp_path),
+        store,
+        runner=_Runner(store),
+        pm_agent=pm,
+        context_manager=ContextManager(store),
+    )
+
+    await svc._pm_launch("s1", "t1", "answer directly", str(tmp_path), "codex", "", "low")
+
+    assert "previous_validation_error" in pm.context
+    assert "final_plan_missing_reply" in pm.context
+    assert "frames_after_checkpoint" in pm.context
