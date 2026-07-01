@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from foreman.client.core.dispatch_service import DispatchService
 from foreman.client.store import Store
 from foreman.client.store.models import Session
-from foreman.shared.config import AgentCfg, Config, load_config
+from foreman.shared.config import AgentCfg, Config, WorkspaceCfg, load_config
 from foreman.shared.events import EventBus, make_event
 from foreman.server.app import _subprocess_no_window_kwargs, create_app
 
@@ -401,6 +401,42 @@ def test_followup_without_workspace_falls_back_to_session_main_workspace(tmp_pat
     assert follow.status_code == 200
     assert follow.json()["continued"] is True
     assert follow.json()["workspace"] == str(main)
+
+
+def test_workspace_file_read_and_open_are_scoped(tmp_path, monkeypatch):
+    ws = tmp_path / "project"
+    docs = ws / "docs"
+    docs.mkdir(parents=True)
+    target = docs / "note.md"
+    target.write_text("# 标题\n正文\n", encoding="utf-8")
+    outside = tmp_path / "secret.md"
+    outside.write_text("secret", encoding="utf-8")
+    cfg = Config(workspaces=[WorkspaceCfg(path=str(ws), name="Project")])
+    c = TestClient(create_app(cfg))
+
+    read = c.get(
+        "/api/workspace-file/read",
+        params={"workspace": str(ws), "path": "docs/note.md:2"},
+    )
+    assert read.status_code == 200
+    assert read.json()["relative_path"] == "docs/note.md"
+    assert "标题" in read.json()["content"]
+
+    opened = []
+    monkeypatch.setattr("foreman.server.app._open_file_with_system", lambda path: opened.append(path))
+    res = c.post(
+        "/api/workspace-file/open",
+        json={"workspace": str(ws), "path": "docs/note.md"},
+    )
+    assert res.status_code == 200
+    assert opened == [target.resolve()]
+
+    escaped = c.get(
+        "/api/workspace-file/read",
+        params={"workspace": str(ws), "path": "../secret.md"},
+    )
+    assert escaped.status_code == 400
+    assert escaped.json()["detail"] == "file_outside_workspace"
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")

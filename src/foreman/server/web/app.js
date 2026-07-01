@@ -105,6 +105,8 @@
       sessionNotFound: "没有找到这个会话，请刷新后重试。",
       requestDeclined: "操作未被执行，请检查当前状态后重试。",
       networkError: "网络异常，请检查连接后重试。",
+      fileViewer: "文件预览", fileOpened: "已打开文件", fileOpenFailed: "无法打开文件",
+      fileNotFound: "文件不存在。", fileTooLarge: "文件太大，无法预览。", fileNotText: "不是文本文件，无法预览。",
       badScopeJson: "适用范围必须是 JSON 对象，例如 {\"lang\":\"py\"}。",
       missingDescription: "请填写描述（说明做什么 + 何时用），否则不会进入自动选择。",
       descriptionTooLong: "描述太长了，请控制在 1024 字以内。",
@@ -243,6 +245,8 @@
       sessionNotFound: "This session was not found. Refresh and try again.",
       requestDeclined: "The operation was not completed. Check the current state and try again.",
       networkError: "Network error. Check the connection and try again.",
+      fileViewer: "File preview", fileOpened: "File opened", fileOpenFailed: "Could not open file",
+      fileNotFound: "File not found.", fileTooLarge: "File is too large to preview.", fileNotText: "This is not a text file.",
       badScopeJson: "Scope must be a JSON object, for example {\"lang\":\"py\"}.",
       missingDescription: "Please add a description (what it does + when to use), or it won't be auto-selected.",
       descriptionTooLong: "Description is too long — keep it under 1024 characters.",
@@ -330,6 +334,11 @@
   const KIND_TAGCOLOR = { workflow: "accent", skill: "violet", code_standard: "amber", qa_rubric: "green" };
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
+    {
+      version: "v1.4.0",
+      en: "Subagent cards now show replies, commands, reasoning, and explicit final results in one chronological timeline, keep agent identity separate from model output, preserve Windows CJK CLI text, and make workspace file references clickable.",
+      zh: "子代理卡片现在按同一条时间线展示回复、命令、思考和明确的最终结果，把 agent 身份与模型输出分开，保留 Windows 中文 CLI 输出，并让工作区文件引用可点击。",
+    },
     {
       version: "v1.3.9",
       en: "Session workspace status now records the original main workspace, falls back when PM worktrees disappear, shows no worktree for new chats, and offers guarded local branch switching.",
@@ -577,6 +586,8 @@
       not_configured: d.cloudNotConfigured, cloud_unavailable: d.cloudUnavailable,
       session_busy: d.sessionBusy, no_context: d.noContext, no_store: d.noStore,
       session_not_found: d.sessionNotFound, decline: d.requestDeclined,
+      file_not_found: d.fileNotFound, file_too_large: d.fileTooLarge, file_not_text: d.fileNotText,
+      file_open_failed: d.fileOpenFailed, file_outside_workspace: d.workspaceMissing, not_file: d.fileNotText,
       machine_offline: d.machineOffline, relay_unavailable: d.relayUnavailable,
       disabled: d.remoteDisabled, process_required: d.remoteProcessRequired,
       rate_limited: d.remoteRateLimited, auth: d.cloudAuthFailed,
@@ -1043,6 +1054,10 @@
     const lines = String(text || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
     return (lines.find((line) => !isOpeningMetaLine(line)) || lines[0] || "").slice(0, 60);
   }
+  function latestStepLine(steps) {
+    const last = steps && steps.length ? steps[steps.length - 1] : null;
+    return last ? (firstSubstantiveLine(last.title || "") || last.kind || "") : "";
+  }
 
   // ---- markdown (ported, minimal-safe) ----
   const INLINE_RE = /(\[[^\]\n]{1,200}\]\(([^)\s]+)(?:\s+"[^"]*")?\)|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*)/g;
@@ -1054,6 +1069,25 @@
     if (v.startsWith("/") && !v.startsWith("//")) return v;
     return "";
   }
+  function isMobileViewport() {
+    return !!(window.matchMedia && window.matchMedia("(max-width: 760px)").matches);
+  }
+  function isLocalFileRef(value) {
+    const v = String(value || "").trim();
+    if (!v || v.length > 280 || /[\r\n]/.test(v)) return false;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(v) && !/^[A-Za-z]:[\\/]/.test(v)) return false;
+    const hasPathShape = v.includes("/") || v.includes("\\") || v.startsWith(".") || /^[A-Za-z]:[\\/]/.test(v);
+    return hasPathShape && /(?:^|[\\/])[^\\/]+\.[A-Za-z0-9_-]{1,16}(?::\d+)?$/.test(v);
+  }
+  function openLocalFileRef(path) {
+    let ev;
+    if (typeof CustomEvent === "function") ev = new CustomEvent("foreman:file-ref", { detail: { path } });
+    else {
+      ev = document.createEvent("CustomEvent");
+      ev.initCustomEvent("foreman:file-ref", false, false, { path });
+    }
+    window.dispatchEvent(ev);
+  }
   function renderInline(text, keyPrefix) {
     const value = String(text || "");
     const re = new RegExp(INLINE_RE.source, "g");
@@ -1064,7 +1098,12 @@
       const tok = m[0];
       if (m.index > last) pushText(value.slice(last, m.index));
       const key = `${keyPrefix}-in-${nodes.length}`;
-      if (tok.startsWith("`")) nodes.push(html`<code key=${key}>${tok.slice(1, -1)}</code>`);
+      if (tok.startsWith("`")) {
+        const code = tok.slice(1, -1);
+        nodes.push(isLocalFileRef(code)
+          ? html`<button key=${key} type="button" className="inline-file-ref" title=${code} onClick=${(ev) => { ev.preventDefault(); ev.stopPropagation(); openLocalFileRef(code); }}><code>${code}</code></button>`
+          : html`<code key=${key}>${code}</code>`);
+      }
       else if (tok.startsWith("**")) nodes.push(html`<strong key=${key}>${renderInline(tok.slice(2, -2), key)}</strong>`);
       else if (tok.startsWith("~~")) nodes.push(html`<del key=${key}>${renderInline(tok.slice(2, -2), key)}</del>`);
       else if (tok.startsWith("*")) nodes.push(html`<em key=${key}>${renderInline(tok.slice(1, -1), key)}</em>`);
@@ -1180,7 +1219,8 @@
       if (!calls.has(k)) {
         calls.set(k, {
           id: k, agent: e.source || (e.payload && e.payload.agent) || "agent",
-          status: "active", reply: "", commands: [], diffs: [], steps: [], stepKeys: new Map(),
+          status: "active", reply: "", lastReply: "", commands: [], diffs: [],
+          steps: [], stepKeys: new Map(), timeline: [], timelineKeys: new Map(),
           ts: e.ts, started: e.ts,
         });
       }
@@ -1215,6 +1255,67 @@
       }
       c.steps.push(s);
       if (s.key) c.stepKeys.set(s.key, c.steps.length - 1);
+    };
+    const cleanTimelineStep = (s) => {
+      const out = { ...(s || {}) };
+      delete out.update;
+      return out;
+    };
+    const pushCallTimeline = (c, item) => {
+      if (!c || !item) return;
+      const key = item.key || "";
+      if (key && c.timelineKeys.has(key)) {
+        const idx = c.timelineKeys.get(key);
+        const prev = c.timeline[idx] || {};
+        if (prev.kind === "step" && item.kind === "step") {
+          const prevStep = prev.step || {};
+          const nextStep = item.step || {};
+          c.timeline[idx] = {
+            ...prev, ...item, ts: prev.ts || item.ts,
+            step: {
+              ...prevStep, ...nextStep,
+              title: nextStep.title || prevStep.title,
+              detail: nextStep.detail || prevStep.detail,
+              todos: nextStep.todos || prevStep.todos,
+            },
+          };
+        } else {
+          c.timeline[idx] = { ...prev, ...item, ts: prev.ts || item.ts };
+        }
+        return;
+      }
+      c.timeline.push(item);
+      if (key) c.timelineKeys.set(key, c.timeline.length - 1);
+    };
+    const updateTimelineStep = (c, key, patch) => {
+      if (!c || !key || !c.timelineKeys.has(key)) return;
+      const idx = c.timelineKeys.get(key);
+      const item = c.timeline[idx];
+      if (!item || item.kind !== "step") return;
+      item.step = { ...(item.step || {}), ...(patch || {}) };
+    };
+    const pushCallStep = (c, s, ts) => {
+      if (!s) return;
+      mergeStep(c, s);
+      if (s.update) {
+        if (s.key) updateTimelineStep(c, s.key, cleanTimelineStep(s));
+        return;
+      }
+      if (!s.title && !s.todos) return;
+      const step = s.key && c.stepKeys.has(s.key) ? c.steps[c.stepKeys.get(s.key)] : s;
+      pushCallTimeline(c, { kind: "step", key: s.key || "", ts, step: cleanTimelineStep(step) });
+    };
+    const pushCallReply = (c, text, ts, final = false) => {
+      const value = String(text || "").trim();
+      if (!c || !value) return;
+      c.lastReply = value;
+      if (final) c.reply = value;
+      const last = c.timeline[c.timeline.length - 1];
+      if (final && last && last.kind === "reply" && String(last.text || "").trim() === value) {
+        last.final = true;
+        return;
+      }
+      pushCallTimeline(c, { kind: "reply", ts, text: value, final });
     };
     const upsertPmActivityPre = (e, p) => {
       const key = pmToolKey(p) || `pm-tool-${e.id || nodes.length}`;
@@ -1313,6 +1414,7 @@
         const cwd = p.cwd || "";
         if (cmd) {
           c.commands.push(cmd);
+          pushCallTimeline(c, { kind: "cmd", ts: e.ts, command: cmd, launch: true });
           terminal.push({ kind: "cmd", text: cmd, ts: e.ts, agent: e.source, cwd });
         }
         c.ts = e.ts;
@@ -1322,11 +1424,11 @@
         if (t === "agent_reasoning") {
           // Reasoning is a process step (💭), not part of the final answer — keep it out of the reply.
           const rtxt = extractAgentText(p);
-          if (rtxt) mergeStep(c, { kind: "think", title: clip(rtxt, 280) });
+          if (rtxt) pushCallStep(c, { kind: "think", title: clip(rtxt, 280) }, e.ts);
         } else {
-          for (const s of stepsFromAgentPayload(p)) mergeStep(c, s);
+          for (const s of stepsFromAgentPayload(p)) pushCallStep(c, s, e.ts);
           const txt = replyText(p);
-          if (txt) c.reply = c.reply ? `${c.reply}\n${txt}` : txt;
+          if (txt) pushCallReply(c, txt, e.ts);
           const rawTxt = extractAgentText(p);
           if (rawTxt) terminal.push({ kind: "out", text: rawTxt, ts: e.ts, agent: e.source });
         }
@@ -1341,8 +1443,8 @@
         const c = ensureCall(e);
         const key = p.tool_use_id || p.id || p.call_id ? `tp-${p.tool_use_id || p.id || p.call_id}` : "";
         const cmd = p.command || p.cmd || (p.tool === "run_command" && p.input && p.input.command);
-        if (cmd) { const line = commandLine(cmd); mergeStep(c, { key, kind: "cmd", title: line, status: "active" }); terminal.push({ kind: "cmd", text: line, ts: e.ts }); }
-        else if (p.tool) mergeStep(c, { key, kind: "tool", title: String(p.tool), status: "active" });
+        if (cmd) { const line = commandLine(cmd); pushCallStep(c, { key, kind: "cmd", title: line, status: "active" }, e.ts); terminal.push({ kind: "cmd", text: line, ts: e.ts }); }
+        else if (p.tool) pushCallStep(c, { key, kind: "tool", title: String(p.tool), status: "active" }, e.ts);
         c.ts = e.ts;
       } else if (t === "tool_stream") {
         if (isPmToolEvent(e, p)) {
@@ -1362,6 +1464,7 @@
           const next = `${ex.detail ? `${ex.detail}\n` : ""}${text}`.trim();
           ex.detail = clip(next, 1600);
           ex.status = "active";
+          updateTimelineStep(c, key, { detail: ex.detail, status: "active" });
         }
       } else if (t === "tool_post") {
         if (isPmToolEvent(e, p)) {
@@ -1385,6 +1488,7 @@
           if (data.log_path && !ex.detail) ex.detail = `log: ${data.log_path}`;
           if (typeof p.exit_code === "number") ex.exit = p.exit_code;
           if (typeof data.returncode === "number") ex.exit = data.returncode;
+          updateTimelineStep(c, key, { status: ex.status, detail: ex.detail, exit: ex.exit });
         }
         if (data.log_path) terminal.push({ kind: "out", text: `log: ${data.log_path}`, ts: e.ts, agent: e.source });
         else if (out) terminal.push({ kind: "out", text: String(out).slice(0, 4000), ts: e.ts, agent: e.source });
@@ -1407,9 +1511,12 @@
         const target = calls.get(callKey(e)) || (calls.size === 1 ? calls.values().next().value : null);
         for (const c of calls.values()) {
           if (c.status === "active") c.status = "done";
-          for (const s of c.steps) if (s.status === "active") s.status = "done";
+          for (const s of c.steps) if (s.status === "active") {
+            s.status = "done";
+            if (s.key) updateTimelineStep(c, s.key, { status: "done" });
+          }
         }
-        if (out && target) target.reply = out;
+        if (out && target) pushCallReply(target, out, e.ts, true);
         if (out) terminal.push({ kind: "out", text: out, ts: e.ts, agent: e.source });
         nodes.push({ kind: "system", id: e.id || `s-${nodes.length}`, ts: e.ts, label: d.ev_stop, tone: "green", text: "" });
       } else if (t === "error") {
@@ -1434,12 +1541,14 @@
 
     // subagents from calls — the activity line is the latest process step, falling back to the reply.
     const subagents = Array.from(calls.values()).map((c) => {
-      const lastStep = c.steps.length ? c.steps[c.steps.length - 1] : null;
+      const visibleReply = c.reply || c.lastReply || "";
+      const replyLine = firstSubstantiveLine(visibleReply);
+      const stepLine = latestStepLine(c.steps);
       return {
-        id: c.id, name: c.reply ? firstSubstantiveLine(c.reply) : c.agent,
+        id: c.id, name: c.agent,
         agent: c.agent, status: c.status,
-        act: lastStep ? (lastStep.title || lastStep.kind) : (c.reply ? firstSubstantiveLine(c.reply) : ""),
-        detail: c.reply || "",
+        act: stepLine || replyLine,
+        detail: visibleReply,
       };
     });
 
@@ -1489,25 +1598,59 @@
     </div>`;
   }
 
-  // Subagent execution card — reads chronologically top→bottom as a 3-stage stepper:
-  //   ① 执行的命令 (the launch invocation) → ② 执行过程 (the real step timeline the CLI streams:
-  //   commands, edits, reads, searches, tool calls, reasoning, plan updates + line diffs) → ③ 最终回复.
-  // While the call is live it animates so a running subagent reads as visibly working, not frozen:
-  // a shimmering header bar, a pulsing live dot + self-ticking elapsed timer, a spinning badge on the
-  // frontier stage, a "正在执行" progress bar in the process stage, and a typing-dots "等待结果"
-  // placeholder where the reply will land. A finished call snaps to a calm ✓-stepped record.
+  // Subagent execution card: one chronological timeline. Ordinary agent_output stays in-place as
+  // a reply item; only an explicit stop/result payload is labeled as the final reply.
+  function callTimelineItems(c, running) {
+    const items = Array.isArray(c.timeline) && c.timeline.length ? [...c.timeline] : [];
+    if (!items.length) {
+      for (const cmd of c.commands || []) items.push({ kind: "cmd", command: cmd, launch: true });
+      for (const step of c.steps || []) items.push({ kind: "step", step });
+      if (c.reply) items.push({ kind: "reply", text: c.reply, final: true });
+    }
+    const hasActive = items.some((item) => item.kind === "step" && item.step && item.step.status === "active");
+    if (running && !hasActive) items.push({ kind: "live", status: "active" });
+    return items;
+  }
+
+  function timelineLabel(item, d) {
+    if (item.kind === "cmd") return d.commandsRun;
+    if (item.kind === "reply") return item.final ? d.finalReply : d.reply;
+    if (item.kind === "live") return d.processLabel;
+    if (item.kind === "step") {
+      const meta = STEP_META[(item.step && item.step.kind) || "tool"] || STEP_META.tool;
+      return d[meta.k] || d.processLabel;
+    }
+    return d.processLabel;
+  }
+
+  function CallTimelineItem({ item, i, d }) {
+    const step = item.step || {};
+    const stepKind = item.kind === "step" ? (step.kind || "tool") : item.kind;
+    const active = item.kind === "live" || item.status === "active" || (item.kind === "step" && step.status === "active");
+    const failed = item.status === "failed" || (item.kind === "step" && step.status === "failed");
+    const badge = failed
+      ? html`<span className="stage-badge failed">!</span>`
+      : active ? html`<span className="stage-badge active"><span className="stage-spin"></span></span>`
+      : html`<span className="stage-badge done">✓</span>`;
+    return html`<div className=${`call-stage timeline-${item.kind} st-${stepKind}`} key=${i}>
+      ${badge}
+      <div className="stage-body">
+        <div className="stage-name">${timelineLabel(item, d)}</div>
+        ${item.kind === "cmd" ? html`<div className="term-block"><div className=${item.launch ? "cmd-launch" : ""}><span className="cmd-prompt">$</span> ${item.command || ""}</div></div>` : null}
+        ${item.kind === "step" ? html`<div className="proc-steps single"><${StepRow} s=${step} d=${d} /></div>` : null}
+        ${item.kind === "reply" ? html`<div className=${`stage-reply${item.final ? " final" : ""}`}><${MD} text=${item.text || ""} maxChars=${item.final ? 6000 : 2400} /></div>` : null}
+        ${item.kind === "live" ? html`<div className="proc-live"><span className="proc-bar"><span></span></span><span className="proc-txt">${d.executing}...</span></div>` : null}
+      </div>
+    </div>`;
+  }
+
   function CallCard({ c, d, lang, open, onToggle }) {
     const running = c.status === "active";
     const avatarColor = c.agent && c.agent.toLowerCase().includes("codex") ? "var(--violet)" : "var(--accent)";
     const avatar = (c.agent || "A").slice(0, 1).toUpperCase();
-    // Stage badge state: a number until reached, a spinner on the live frontier, ✓ once settled.
-    const s1 = c.commands.length ? "done" : (running ? "active" : "wait");
-    const s2 = running ? "active" : "done";
-    const s3 = c.reply ? "done" : "wait"; // pending (calm numbered badge) until the answer lands
-    const badge = (state, num) =>
-      state === "done" ? html`<span className="stage-badge done">✓</span>`
-      : state === "active" ? html`<span className="stage-badge active"><span className="stage-spin"></span></span>`
-      : html`<span className="stage-badge">${num}</span>`;
+    const timeline = callTimelineItems(c, running);
+    const visibleReply = c.reply || c.lastReply || "";
+    const replySummary = firstSubstantiveLine(visibleReply);
     return html`<div className=${`call${open ? " open" : ""}${running ? " running" : ""}`}>
       <div className="call-head" onClick=${() => onToggle(c.id)}>
         <span className="call-avatar" style=${{ background: avatarColor }}>${avatar}</span>
@@ -1519,40 +1662,14 @@
               : html`<span className="tag green">${d.done}</span>`}
             ${running && c.started ? html`<${PmElapsed} start=${c.started} lang=${lang} />` : null}
           </div>
-          <div className="call-summary">${c.steps.length} ${d.stepsWord}${c.diffs.length ? ` · ${c.diffs.length} diff` : ""}${c.reply ? ` · ${firstSubstantiveLine(c.reply).slice(0, 42)}` : ""}</div>
+          <div className="call-summary">${Math.max(0, timeline.length - (running ? 1 : 0))} ${d.stepsWord}${c.diffs.length ? ` · ${c.diffs.length} diff` : ""}${replySummary ? ` · ${replySummary.slice(0, 42)}` : ""}</div>
         </div>
         <span className="call-toggle">${open ? d.hide : d.open}${open ? " ▾" : " ▸"}</span>
       </div>
       ${running ? html`<div className="call-progress"><span></span></div>` : null}
-      ${open ? html`<div className="call-detail stepped">
-        <div className=${`call-stage st-${s1}`}>
-          ${badge(s1, 1)}
-          <div className="stage-body">
-            <div className="stage-name">${d.commandsRun}</div>
-            ${c.commands.length
-              ? html`<div className="term-block">${c.commands.map((cmd, i) => html`<div key=${i} className=${i === 0 ? "cmd-launch" : ""}><span className="cmd-prompt">$</span> ${cmd}</div>`)}</div>`
-              : html`<div className="stage-muted">${running ? "…" : "—"}</div>`}
-          </div>
-        </div>
-        <div className=${`call-stage st-${s2}`}>
-          ${badge(s2, 2)}
-          <div className="stage-body">
-            <div className="stage-name">${d.processLabel}</div>
-            ${running ? html`<div className="proc-live"><span className="proc-bar"><span></span></span><span className="proc-txt">${d.executing}…</span></div>` : null}
-            ${c.steps.length ? html`<div className="proc-steps">${c.steps.map((s, i) => html`<${StepRow} key=${i} s=${s} d=${d} />`)}</div>` : null}
-            ${c.diffs.length ? html`<div className="proc-diffs"><div className="step-sub">${d.changeDetail}</div>${c.diffs.map((df, i) => html`<div className="diff-file" key=${i}><div className="fhead"><span className="muted" style=${{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${df.file}</span><span className="stat">${df.stat}</span></div>${(df.lines || []).slice(0, 30).map((l, j) => html`<div className=${`diff-line ${l.kind === "add" ? "add" : l.kind === "del" ? "del" : ""}`} key=${j}>${l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}${l.text || ""}</div>`)}</div>`)}</div>` : null}
-            ${!c.steps.length && !c.diffs.length && !running ? html`<div className="stage-muted">${d.noSteps}</div>` : null}
-          </div>
-        </div>
-        <div className=${`call-stage st-${s3}`}>
-          ${badge(s3, 3)}
-          <div className="stage-body">
-            <div className="stage-name">${d.finalReply}</div>
-            ${c.reply
-              ? html`<div className="stage-reply"><${MD} text=${c.reply} maxChars=${6000} /></div>`
-              : html`<div className="reply-wait">${running ? d.waitingResult : "—"}${running ? html`<span className="typing"><i></i><i></i><i></i></span>` : null}</div>`}
-          </div>
-        </div>
+      ${open ? html`<div className="call-detail timeline">
+        ${timeline.length ? timeline.map((item, i) => html`<${CallTimelineItem} key=${i} item=${item} i=${i} d=${d} />`) : html`<div className="stage-muted">${d.noSteps}</div>`}
+        ${c.diffs.length ? html`<div className="proc-diffs"><div className="step-sub">${d.changeDetail}</div>${c.diffs.map((df, i) => html`<div className="diff-file" key=${i}><div className="fhead"><span className="muted" style=${{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${df.file}</span><span className="stat">${df.stat}</span></div>${(df.lines || []).slice(0, 30).map((l, j) => html`<div className=${`diff-line ${l.kind === "add" ? "add" : l.kind === "del" ? "del" : ""}`} key=${j}>${l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}${l.text || ""}</div>`)}</div>`)}</div>` : null}
       </div>` : null}
     </div>`;
   }
@@ -2485,6 +2602,14 @@
     </div>`;
   }
 
+  function FileViewerModal({ d, file, onClose }) {
+    const name = (file && (file.relative_path || file.name || file.path)) || "";
+    return html`<${Modal} title=${`${d.fileViewer}: ${name}`} wide onClose=${onClose} footer=${html`<button className="btn" onClick=${onClose}>${d.back}</button>`}>
+      <div className="file-viewer-meta">${name}${file && file.bytes ? ` · ${formatBytes(file.bytes, d)}` : ""}</div>
+      <pre className="file-viewer-pre"><code>${(file && file.content) || ""}</code></pre>
+    </${Modal}>`;
+  }
+
   function formatBytes(n, d) {
     const bytes = Number(n || 0);
     if (!bytes) return d.updateSizeUnknown;
@@ -2791,6 +2916,7 @@
     const [autonomy, setAutonomyState] = useState(1);
     const [detailOpen, setDetailOpen] = useState(false);
     const [detail, setDetail] = useState({ raw: [], diff: { files: [] } });
+    const [fileViewer, setFileViewer] = useState(null);
     const [defnOpen, setDefnOpen] = useState(false);
     const [defnDraft, setDefnDraft] = useState(null);
     const [confirmDefnDelete, setConfirmDefnDelete] = useState(null);
@@ -3206,6 +3332,27 @@
     // Only undecided cards are actionable — a card with `chosen` set is history (it still lives in
     // /api/cards), so it must not keep showing live approve/reject buttons in the thread or count.
     const openCards = useMemo(() => (cards || []).filter((c) => !c.chosen), [cards]);
+    const openFileReference = useCallback(async (path) => {
+      const targetWorkspace = (sessionRow && sessionRow.workspace) || workspace;
+      if (!targetWorkspace) { toast(d.workspaceMissing, "error"); return; }
+      try {
+        if (isMobileViewport()) {
+          const data = await api(`/api/workspace-file/read?workspace=${encodeURIComponent(targetWorkspace)}&path=${encodeURIComponent(path)}`);
+          setFileViewer(data);
+        } else {
+          await api("/api/workspace-file/open", { method: "POST", body: { workspace: targetWorkspace, path } });
+          toast(d.fileOpened, "success");
+        }
+      } catch (e) {
+        notifyError(e);
+      }
+    }, [sessionRow, workspace, d, toast, notifyError]);
+
+    useEffect(() => {
+      const onFileRef = (ev) => openFileReference(ev.detail && ev.detail.path);
+      window.addEventListener("foreman:file-ref", onFileRef);
+      return () => window.removeEventListener("foreman:file-ref", onFileRef);
+    }, [openFileReference]);
 
     function pushEvent(item) {
       if (!item) return;
@@ -3670,6 +3817,7 @@
         dig=${dig} mainProps=${mainProps} versionInfoProps=${versionInfoProps} sessions=${sessions} selected=${selectedSession} onSelect=${openTimeline} onNew=${newSession} onRename=${openRenameSession} />
 
       ${detailOpen ? html`<${DetailModal} d=${d} lang=${lang} detail=${detail} onClose=${() => setDetailOpen(false)} />` : null}
+      ${fileViewer ? html`<${FileViewerModal} d=${d} file=${fileViewer} onClose=${() => setFileViewer(null)} />` : null}
       ${renameSession ? html`<${SessionTitleModal} d=${d} title=${renameTitle} saving=${renamingSession} error=${renameError} setTitle=${setRenameTitle} onClose=${() => { setRenameSession(null); setRenameError(""); }} onSave=${saveSessionTitle} />` : null}
       ${defnOpen ? html`<${Modal} title=${defnDraft && defnDraft.id ? d.edit : d.newBtn} onClose=${() => setDefnOpen(false)} footer=${[html`<button key="c" className="btn" onClick=${() => setDefnOpen(false)}>${d.cancel}</button>`, html`<button key="s" className="btn primary" onClick=${saveDefinition}>${d.save}</button>`]}>
         <${DefinitionEditor} d=${d} draft=${defnDraft} setDraft=${setDefnDraft} />

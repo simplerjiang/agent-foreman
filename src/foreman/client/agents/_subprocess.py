@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import json
+import locale
 import os
 import shutil
 import subprocess
@@ -156,7 +157,7 @@ class SubprocessCliAdapter:
         try:
             if proc.stdout is not None:
                 async for raw in _iter_pipe_lines(proc.stdout):
-                    line = raw.decode("utf-8", "replace").strip()
+                    line = _decode_cli_text(raw).strip()
                     if not line:
                         continue
                     event = self._line_to_event(line, handle.session_id)
@@ -312,7 +313,7 @@ def _is_reasoning_payload(obj: dict) -> bool:
 
 
 async def _read_pipe_text(pipe) -> str:
-    """Drain a subprocess pipe and decode it as UTF-8."""
+    """Drain a subprocess pipe and decode text without lossy replacement."""
     try:
         data = await pipe.read()
     except AttributeError:
@@ -322,7 +323,25 @@ async def _read_pipe_text(pipe) -> str:
         data = b"".join(chunks)
     if isinstance(data, str):
         return data.strip()
-    return (data or b"").decode("utf-8", "replace").strip()
+    return _decode_cli_text(data or b"").strip()
+
+
+def _decode_cli_text(data: bytes) -> str:
+    """Decode CLI output bytes, accepting UTF-8 plus common Windows console encodings."""
+    candidates = ["utf-8-sig", locale.getpreferredencoding(False), "gb18030"]
+    if _is_windows():
+        candidates.append("cp1252")
+    seen: set[str] = set()
+    for enc in candidates:
+        key = (enc or "").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        try:
+            return data.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", "replace")
 
 
 async def _iter_pipe_lines(
