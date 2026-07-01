@@ -36,7 +36,7 @@ def _store(tmp_path) -> Store:
 def test_schema_version_recorded(tmp_path):
     st = _store(tmp_path)
     with st.session() as s:
-        sv = s.get(SchemaVersion, 2)
+        sv = s.get(SchemaVersion, 3)
     assert sv is not None and sv.applied_at
 
 

@@ -32,6 +32,11 @@
 5. compact 从 `Session.plan + ContextSnapshot` 升级为 `ContextCheckpoint.replacement_history_json`，优先 remote `/responses/compact`，失败 fallback local compact。
 6. 后续再补 PM tool surface、runtime state、Context API/UI 和真实 DB 验证。
 
+## Commit 1 addendum
+
+- 当前 `CLIENT_MIGRATIONS` 最高版本是 v2，所以 `Session.latest_context_checkpoint_id` 必须作为 v3 migration 添加。
+- 当前 `context_budget` 已有 70% auto compact 和 every-8-run compact，但还没有 hard threshold，也没有 `ContextUsage` / per-lane telemetry。
+
 ## 基线测试
 
 命令：
@@ -45,4 +50,3 @@ python -m pytest tests/test_context_compression.py tests/test_context_p1b.py tes
 
 - `128 passed`
 - `1 warning`: FastAPI/TestClient 的既有 `StarletteDeprecationWarning`
-

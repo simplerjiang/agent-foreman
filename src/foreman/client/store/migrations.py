@@ -15,6 +15,8 @@ History:
   ledgered migration so an upgrade of an old client DB picks it up exactly once.
 - v2 — session.main_workspace. Session.workspace can move to a PM-created worktree; this keeps
   the original main workspace available for fallback when that worktree disappears.
+- v3 — session.latest_context_checkpoint_id. Context v2 stores the latest recoverable active
+  context checkpoint pointer on the session while keeping Session.plan as display/compat summary.
 """
 
 from __future__ import annotations
@@ -41,7 +43,16 @@ def _v2_session_main_workspace(conn) -> None:
         )
 
 
+def _v3_session_latest_context_checkpoint_id(conn) -> None:
+    add_column(conn, "session", "latest_context_checkpoint_id", "TEXT NOT NULL DEFAULT ''")
+
+
 CLIENT_MIGRATIONS: list[Migration] = [
     Migration(1, "decisioncard.diff_stat (📎 changes line, §6.3)", _v1_decisioncard_diff_stat),
     Migration(2, "session.main_workspace fallback for PM worktrees", _v2_session_main_workspace),
+    Migration(
+        3,
+        "session.latest_context_checkpoint_id for Context v2 restore",
+        _v3_session_latest_context_checkpoint_id,
+    ),
 ]

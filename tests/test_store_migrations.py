@@ -27,14 +27,14 @@ def _exec(engine, sql):
 
 
 # ── client ───────────────────────────────────────────────────────────────────────────────────
-def test_client_init_is_idempotent_and_at_v2(tmp_path):
+def test_client_init_is_idempotent_and_at_v3(tmp_path):
     st = Store(str(tmp_path / "c.db"))
     st.init()
     st.init()  # re-run must not duplicate ledger rows or raise
-    assert st.schema_version() == 2
+    assert st.schema_version() == 3
     with st.engine.connect() as conn:  # client ledger table is `schemaversion` (see migrations)
         rows = conn.execute(text(f"SELECT version FROM {CLIENT_VERSION_TABLE}")).fetchall()
-    assert sorted(r[0] for r in rows) == [1, 2]
+    assert sorted(r[0] for r in rows) == [1, 2, 3]
 
 
 def test_client_migration_adds_diff_stat_to_legacy_decisioncard(tmp_path):
@@ -45,10 +45,11 @@ def test_client_migration_adds_diff_stat_to_legacy_decisioncard(tmp_path):
         assert not column_exists(conn, "decisioncard", "diff_stat")
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
-    assert applied == [1, 2]
+    assert applied == [1, 2, 3]
     with engine.connect() as conn:
         assert column_exists(conn, "decisioncard", "diff_stat")
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 2
+        assert column_exists(conn, "session", "latest_context_checkpoint_id") is False
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 3
 
 
 def test_client_migration_adds_session_main_workspace_and_backfills(tmp_path):
@@ -62,12 +63,13 @@ def test_client_migration_adds_session_main_workspace_and_backfills(tmp_path):
         assert not column_exists(conn, "session", "main_workspace")
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
-    assert applied == [2]
+    assert applied == [2, 3]
     with engine.connect() as conn:
         assert column_exists(conn, "session", "main_workspace")
+        assert column_exists(conn, "session", "latest_context_checkpoint_id")
         row = conn.execute(text("SELECT workspace, main_workspace FROM session WHERE id='s1'")).first()
         assert row == ("E:/AutoWorkAgent", "E:/AutoWorkAgent")
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 2
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 3
 
 
 def test_client_migration_main_workspace_backfill_tolerates_null_workspace(tmp_path):
@@ -79,11 +81,43 @@ def test_client_migration_main_workspace_backfill_tolerates_null_workspace(tmp_p
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
 
-    assert applied == [2]
+    assert applied == [2, 3]
     with engine.connect() as conn:
         row = conn.execute(text("SELECT workspace, main_workspace FROM session WHERE id='s1'")).first()
         assert row == (None, "")
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 2
+        assert column_exists(conn, "session", "latest_context_checkpoint_id")
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 3
+
+
+def test_client_migration_v3_adds_latest_context_checkpoint_id(tmp_path):
+    engine = _engine(tmp_path / "legacy-context-v2.db")
+    _exec(
+        engine,
+        "CREATE TABLE session ("
+        "id TEXT PRIMARY KEY, goal TEXT, workspace TEXT, main_workspace TEXT"
+        ")",
+    )
+    _exec(
+        engine,
+        "INSERT INTO session (id, goal, workspace, main_workspace) "
+        "VALUES ('s1', 'g', '/w', '/w')",
+    )
+    _exec(engine, f"CREATE TABLE {CLIENT_VERSION_TABLE} (version INTEGER PRIMARY KEY, applied_at TEXT)")
+    _exec(engine, f"INSERT INTO {CLIENT_VERSION_TABLE} (version, applied_at) VALUES (1, '2020-01-01')")
+    _exec(engine, f"INSERT INTO {CLIENT_VERSION_TABLE} (version, applied_at) VALUES (2, '2020-01-02')")
+    with engine.connect() as conn:
+        assert not column_exists(conn, "session", "latest_context_checkpoint_id")
+
+    applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
+
+    assert applied == [3]
+    with engine.connect() as conn:
+        assert column_exists(conn, "session", "latest_context_checkpoint_id")
+        value = conn.execute(
+            text("SELECT latest_context_checkpoint_id FROM session WHERE id='s1'")
+        ).scalar_one()
+        assert value == ""
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 3
 
 
 # ── server ───────────────────────────────────────────────────────────────────────────────────
