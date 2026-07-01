@@ -41,6 +41,7 @@ from .context_budget import (
     should_auto_compact,
 )
 from .context_compression import extract_json_object, memory_items_from_pack
+from .context_v2 import ActiveContext, ContextManager
 from .pm_agent import PMPlan, events_to_text
 from .supervisor import ERRORED, classify_tail
 from .work_mode_context import (
@@ -124,6 +125,7 @@ class DispatchService:
         injector=None,
         embedder=None,
         workflow_engine=None,
+        context_manager=None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -143,6 +145,9 @@ class DispatchService:
         self.workflow_engine = workflow_engine
         self.language_getter = language_getter
         self._clock = clock or utc_now_iso
+        self.context_manager = context_manager
+        if self.context_manager is None and self.store is not None:
+            self.context_manager = ContextManager(self.store, runner=runner, clock=self._clock)
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
         self._session_tasks: dict[str, set[asyncio.Task]] = {}
         self._session_queue_tails: dict[str, asyncio.Future[None]] = {}
@@ -862,16 +867,24 @@ class DispatchService:
             for name, cfg in sorted(self.cfg.agents.items())
             if cfg.enabled
         ] or [{"name": agent, "model": "", "effort": effort, "full_access": True}]
-        context = self._session_context(session_id)
         # Resolve the PM model window ONCE per dispatch (§8B.8; never per-loop — it can hit /models).
         window_tokens = await self._resolve_window_tokens(pm_model)
+        context, active_context = await self._pm_context_text(
+            session_id,
+            purpose="pm_plan",
+            window_tokens=window_tokens,
+        )
         # Pre-plan auto-compact: if the carried session memory alone is already near the window,
         # compact before planning so the plan call doesn't start over budget.
         if should_auto_compact(
             _ctx_approx_tokens(context), 0, 0, window_tokens=window_tokens, run_count=0
         ):
             await self._safe_compact(session_id, window_tokens)
-            context = self._session_context(session_id)
+            context, active_context = await self._pm_context_text(
+                session_id,
+                purpose="pm_plan",
+                window_tokens=window_tokens,
+            )
         await self._emit_pm_status(
             session_id,
             task_id,
@@ -916,6 +929,8 @@ class DispatchService:
             plan_kwargs["session_id"] = session_id
         if _accepts_keyword(self.pm_agent.plan, "task_id"):
             plan_kwargs["task_id"] = task_id
+        if active_context is not None and _accepts_keyword(self.pm_agent.plan, "active_context"):
+            plan_kwargs["active_context"] = active_context
         with trace_context(session_id=session_id, task_id=task_id, phase="plan"):
             plan = await self.pm_agent.plan(goal, **plan_kwargs)
         # Telemetry: one work_mode event per dispatch (after plan, so pulls/body_tokens are counted).
@@ -1009,11 +1024,23 @@ class DispatchService:
                 return
         while True:
             rows = self.store.get_events(session_id)
-            timeline = events_to_text(_events_after(rows, reviewed_event_id))
+            review_context, review_active_context = await self._pm_context_text(
+                session_id,
+                purpose="pm_review",
+                window_tokens=window_tokens,
+            )
+            reviewed_event_id = _advance_reviewed_event_id_from_active_context(
+                rows,
+                reviewed_event_id,
+                review_active_context,
+            )
+            timeline = review_context if review_active_context is not None else events_to_text(
+                _events_after(rows, reviewed_event_id)
+            )
             review_cutoff_id = _last_event_id(rows)
             review_kwargs = {
                 "run_count": run_count,
-                "context": context,
+                "context": review_context,
                 "pm_model": pm_model,
             }
             if _accepts_keyword(self.pm_agent.review, "review_state"):
@@ -1026,6 +1053,8 @@ class DispatchService:
                 )
             if _accepts_keyword(self.pm_agent.review, "state_key"):
                 review_kwargs["state_key"] = review_state_key
+            if review_active_context is not None and _accepts_keyword(self.pm_agent.review, "active_context"):
+                review_kwargs["active_context"] = review_active_context
             if rubric_fed:
                 review_kwargs["qa_rubric"] = review_guidance
             with trace_context(
@@ -1081,7 +1110,11 @@ class DispatchService:
                 run_count=run_count,
             ):
                 await self._safe_compact(session_id, window_tokens)
-                context = self._session_context(session_id)
+                context, active_context = await self._pm_context_text(
+                    session_id,
+                    purpose="pm_plan",
+                    window_tokens=window_tokens,
+                )
                 reviewed_event_id = _last_event_id(self.store.get_events(session_id))
             agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
             await self.runner.send(handle, review.follow_up)
@@ -1527,6 +1560,53 @@ class DispatchService:
             return ""
         session = self.store.get_session(session_id)
         return (session.plan or "").strip()[:MAX_CONTEXT_CHARS] if session else ""
+
+    async def _build_pm_active_context(
+        self,
+        session_id: str,
+        *,
+        purpose: str,
+        window_tokens: int,
+    ) -> ActiveContext | None:
+        if self.context_manager is None:
+            return None
+        try:
+            return self.context_manager.build_active_context(
+                session_id,
+                purpose=purpose,
+                window_tokens=window_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 - active-context restore is a soft dependency.
+            await self._persist_then_publish(
+                make_event(
+                    "notification",
+                    "pm-agent",
+                    session_id,
+                    payload={
+                        "kind": "context_restore_failed",
+                        "purpose": purpose,
+                        "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                        "fallback": "legacy_session_context",
+                    },
+                )
+            )
+            return None
+
+    async def _pm_context_text(
+        self,
+        session_id: str,
+        *,
+        purpose: str,
+        window_tokens: int,
+    ) -> tuple[str, ActiveContext | None]:
+        active_context = await self._build_pm_active_context(
+            session_id,
+            purpose=purpose,
+            window_tokens=window_tokens,
+        )
+        if active_context is not None and (active_context.rendered_text or "").strip():
+            return active_context.rendered_text, active_context
+        return self._session_context(session_id), None
 
     def _mark_session(self, session_id: str, status: str) -> None:
         if self.store is not None and hasattr(self.store, "update_session"):
@@ -2007,6 +2087,30 @@ def _events_after(rows: list[Any], event_id: str) -> list[Any]:
         if _event_id(row) == marker:
             return rows[idx + 1:]
     return rows
+
+
+def _advance_reviewed_event_id_from_active_context(
+    rows: list[Any],
+    reviewed_event_id: str,
+    active_context: ActiveContext | None,
+) -> str:
+    if active_context is None:
+        return reviewed_event_id
+    cursor = active_context.source_cursor or {}
+    end = cursor.get("end") if isinstance(cursor.get("end"), dict) else cursor
+    checkpoint_event_id = str(
+        end.get("event_id") or end.get("id") or cursor.get("end_event_id") or ""
+    ).strip()
+    if not checkpoint_event_id:
+        return reviewed_event_id
+    order = {_event_id(row): idx for idx, row in enumerate(rows) if _event_id(row)}
+    checkpoint_idx = order.get(checkpoint_event_id)
+    if checkpoint_idx is None:
+        return reviewed_event_id
+    reviewed_idx = order.get((reviewed_event_id or "").strip())
+    if reviewed_idx is None:
+        return checkpoint_event_id
+    return checkpoint_event_id if checkpoint_idx > reviewed_idx else reviewed_event_id
 
 
 def _last_event_id(rows: list[Any]) -> str:

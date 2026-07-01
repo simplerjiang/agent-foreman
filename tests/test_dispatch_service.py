@@ -866,7 +866,7 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
                         {"title": "test", "status": "in_progress"},
                     ],
                 )
-            assert "first" not in timeline
+            assert "frames_after_checkpoint" in timeline
             assert "PM follow-up" in timeline
             assert "prior_reviews" in review_state
             return PMReview(done=True, summary="done")

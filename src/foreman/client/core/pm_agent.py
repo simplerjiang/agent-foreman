@@ -696,6 +696,7 @@ class PMAgent:
         work_mode_resolver: Any = None,
         session_id: str = "",
         task_id: str = "",
+        active_context: Any = None,
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
         enabled = [_as_str(a.get("name")) for a in available_agents]
@@ -862,6 +863,7 @@ class PMAgent:
         on_stream=None,
         state_key: str = "",
         qa_rubric: str = "",
+        active_context: Any = None,
     ) -> PMReview:
         system = REVIEW_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_review_prompt(
