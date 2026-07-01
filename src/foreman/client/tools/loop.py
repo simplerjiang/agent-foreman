@@ -302,7 +302,14 @@ def build_tool_prompt_context(runtime: PMToolRuntime) -> str:
                 "tool_call": {
                     "type": "tool_calls",
                     "tool_calls": [
-                        {"id": "call_id", "name": "read_file", "arguments": {"path": "README.md"}}
+                        {
+                            "id": "call_id",
+                            "name": "read_file",
+                            "arguments": {
+                                "path": "README.md",
+                                "public_note": "Reading README.md for the user-visible activity log",
+                            },
+                        }
                     ],
                 },
                 "final_plan": {
@@ -321,7 +328,9 @@ def build_tool_prompt_context(runtime: PMToolRuntime) -> str:
                 "rule": (
                     "Only runtime-generated tool_results are evidence. To finish, call the "
                     "submit_plan tool with the plan fields (preferred); the final_plan JSON above "
-                    "is a legacy fallback for transports without native tool calls."
+                    "is a legacy fallback for transports without native tool calls. "
+                    "Tool arguments may include public_note or purpose for the visible activity log; "
+                    "omit it if you do not have a concise user-facing sentence."
                 ),
             },
         },

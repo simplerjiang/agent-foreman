@@ -46,6 +46,16 @@ def _runtime(tmp_path: Path, *, cards=None, **kwargs) -> PMToolRuntime:
     return PMToolRuntime(cfg, gate=Gate(Config().gates), cards=cards)
 
 
+def test_pm_tool_schemas_allow_public_activity_note():
+    spec = next(item for item in PMToolRuntime.specs() if item.name == "read_file")
+    native_props = spec.to_native()["input_schema"]["properties"]
+    prompt_props = spec.to_prompt()["input_schema"]["properties"]
+    assert native_props["public_note"]["type"] == "string"
+    assert native_props["purpose"]["type"] == "string"
+    assert prompt_props["public_note"]["maxLength"] == 200
+    assert spec.input_schema["additionalProperties"] is False
+
+
 async def test_pm_tool_loop_forwards_llm_stream_chunks(tmp_path: Path):
     chunks: list[dict] = []
 
