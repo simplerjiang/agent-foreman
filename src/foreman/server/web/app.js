@@ -329,6 +329,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.3.8",
+      en: "PM tool activity now appears as a public timeline with tool-start labels, result summaries, collapsible details, optional public notes, and polished PM thinking expansion.",
+      zh: "PM 工具活动现在进入公开时间线，显示工具开始、结果摘要、可折叠详情和可选公开说明；PM 思考展开时也不再重复标题。",
+    },
+    {
       version: "v1.3.7",
       en: "Codex stdout is now read in chunks and reassembled as JSONL, avoiding asyncio's per-line reader limit for large command-output events and cleaning up stream failures.",
       zh: "Codex stdout 改为分块读取并重组 JSONL，移除大段命令输出触发的 asyncio 单行读取上限，并在读取失败时清理子进程。",
@@ -830,11 +835,167 @@
       .trim();
   }
   function pmThinkingTitle(text, fallback) {
-    const raw = String(text || "");
+    return pmThinkingParts(text, fallback).title;
+  }
+  function pmThinkingParts(text, fallback) {
+    const raw = formatPmReasoningText(text);
+    if (!raw) return { title: fallback, body: "" };
     const bold = raw.match(/\*\*([^*\n]{1,140})\*\*/);
-    if (bold) return clip(cleanThinkingTitle(bold[1]), 140) || fallback;
-    const firstLine = raw.split(/\r?\n/).map(cleanThinkingTitle).find(Boolean);
-    return clip(firstLine || fallback, 140);
+    if (bold) {
+      const before = raw.slice(0, bold.index).trim();
+      const after = raw.slice(bold.index + bold[0].length).trim();
+      const body = [before, after].filter(Boolean).join("\n\n");
+      return { title: clip(cleanThinkingTitle(bold[1]) || fallback, 140), body };
+    }
+    const lines = raw.split(/\r?\n/);
+    const idx = lines.findIndex((line) => cleanThinkingTitle(line));
+    if (idx < 0) return { title: fallback, body: raw };
+    const title = cleanThinkingTitle(lines[idx]) || fallback;
+    const body = lines.filter((_, i) => i !== idx).join("\n").trim();
+    return { title: clip(title, 140), body };
+  }
+  function isPmToolEvent(e, p) {
+    return (e && e.source === "pm-agent") || (p && p.source === "pm-agent");
+  }
+  function pmToolKey(p) {
+    return p && (p.tool_use_id || p.id || p.call_id || "");
+  }
+  function pmToolInput(p) {
+    return p && p.input && typeof p.input === "object" ? p.input : {};
+  }
+  function pmToolResult(p) {
+    if (p && p.result && typeof p.result === "object") return p.result;
+    if (p && typeof p.output === "string") {
+      try { const obj = JSON.parse(p.output); if (obj && typeof obj === "object") return obj; } catch (e) {}
+    }
+    return {};
+  }
+  function pmToolData(p) {
+    const result = pmToolResult(p);
+    return result && result.data && typeof result.data === "object" ? result.data : {};
+  }
+  function pmPublicNote(p) {
+    const input = pmToolInput(p);
+    return String((p && p.public_note) || input.public_note || input.purpose || "").trim();
+  }
+  function pmVisibleInput(input) {
+    const out = {};
+    for (const [key, value] of Object.entries(input || {})) {
+      if (key !== "public_note" && key !== "purpose") out[key] = value;
+    }
+    return out;
+  }
+  function pmToolKind(tool) {
+    const name = String(tool || "");
+    if (name === "read_file" || name === "list_files" || name === "work_mode_get") return "read";
+    if (name === "search_repo" || name === "work_mode_search") return "find";
+    if (name === "web_search" || name === "fetch_url" || name.startsWith("browser_")) return "web";
+    if (name === "write_file" || name === "replace_in_file") return "edit";
+    if (name === "run_command") return "cmd";
+    return "tool";
+  }
+  function pmToolTarget(tool, input) {
+    const name = String(tool || "");
+    if (name === "run_command") return commandLine(input.command);
+    if (name === "search_repo" || name === "web_search") return String(input.query || "").trim();
+    if (name === "fetch_url" || name === "browser_open") return String(input.url || "").trim();
+    if (name === "work_mode_get") return String(input.name || "").trim();
+    if (name === "browser_click" || name === "browser_type") return String(input.ref || "").trim();
+    return String(input.path || input.name || input.file_path || "").trim();
+  }
+  function pmToolPreTitle(p, lang) {
+    const note = pmPublicNote(p);
+    if (note) return clip(note, 180);
+    const tool = String((p && p.tool) || "tool");
+    const input = pmToolInput(p);
+    const target = pmToolTarget(tool, input);
+    const named = target ? ` ${target}` : "";
+    if (lang === "zh") {
+      if (tool === "read_file") return `我先读取${named}`;
+      if (tool === "list_files") return `我先列出${named || "文件"}`;
+      if (tool === "search_repo") return `我先检索${named}`;
+      if (tool === "run_command") return `我先运行${named}`;
+      if (tool === "fetch_url") return `我先抓取${named}`;
+      if (tool === "web_search") return `我先联网搜索${named}`;
+      if (tool === "write_file") return `我准备写入${named}`;
+      if (tool === "replace_in_file") return `我准备修改${named}`;
+      if (tool === "ask_question") return "我需要确认一个选择";
+      if (tool === "work_mode_search") return "我先查找适用工作方式";
+      if (tool === "work_mode_get") return `我先读取工作方式${named}`;
+      if (tool.startsWith("browser_")) return `我操作浏览器${named}`;
+      return `我调用工具 ${tool}${named}`;
+    }
+    if (tool === "read_file") return `Reading${named}`;
+    if (tool === "list_files") return `Listing${named || " files"}`;
+    if (tool === "search_repo") return `Searching${named}`;
+    if (tool === "run_command") return `Running${named}`;
+    if (tool === "fetch_url") return `Fetching${named}`;
+    if (tool === "web_search") return `Searching the web${named}`;
+    if (tool === "write_file") return `Writing${named}`;
+    if (tool === "replace_in_file") return `Editing${named}`;
+    if (tool === "ask_question") return "Asking for a decision";
+    if (tool === "work_mode_search") return "Searching playbook";
+    if (tool === "work_mode_get") return `Reading playbook item${named}`;
+    if (tool.startsWith("browser_")) return `Using browser${named}`;
+    return `Using ${tool}${named}`;
+  }
+  function pmToolOk(p) {
+    const result = pmToolResult(p);
+    return !(p && p.ok === false) && !(result && result.ok === false) && !(p && p.error) && !(result && result.error);
+  }
+  function pmToolError(p) {
+    const result = pmToolResult(p);
+    return String((p && (p.error || p.msg)) || (result && result.error) || "").trim();
+  }
+  function pmToolPostTitle(p, previous, lang) {
+    const tool = String((p && p.tool) || (previous && previous.tool) || "tool");
+    const data = pmToolData(p);
+    const ok = pmToolOk(p);
+    if (!ok) {
+      const err = pmToolError(p);
+      return lang === "zh" ? `${tool} 失败${err ? `：${err}` : ""}` : `${tool} failed${err ? `: ${err}` : ""}`;
+    }
+    if (tool === "read_file") {
+      const lines = String(data.text || "").split(/\r?\n/).filter((_, i, arr) => i < arr.length - 1 || arr[i]).length;
+      return lang === "zh" ? `读取完成，返回 ${lines} 行` : `Read complete, returned ${lines} lines`;
+    }
+    if (tool === "list_files") {
+      const count = Array.isArray(data.files) ? data.files.length : 0;
+      return lang === "zh" ? `列出完成，返回 ${count} 个文件` : `List complete, returned ${count} files`;
+    }
+    if (tool === "search_repo") {
+      const count = Array.isArray(data.matches) ? data.matches.length : 0;
+      return lang === "zh" ? `检索命中 ${count} 处` : `Search matched ${count} results`;
+    }
+    if (tool === "run_command") {
+      const code = data.returncode != null ? data.returncode : "";
+      return lang === "zh" ? `命令完成，exit ${code}` : `Command complete, exit ${code}`;
+    }
+    if (tool === "fetch_url") {
+      return lang === "zh" ? `抓取完成，HTTP ${data.status_code || ""}` : `Fetch complete, HTTP ${data.status_code || ""}`;
+    }
+    if (tool === "web_search") {
+      const count = Array.isArray(data.results) ? data.results.length : 0;
+      return lang === "zh" ? `联网搜索返回 ${count} 条线索` : `Web search returned ${count} leads`;
+    }
+    if (tool === "write_file") return lang === "zh" ? `写入完成，${data.bytes || 0} bytes` : `Write complete, ${data.bytes || 0} bytes`;
+    if (tool === "replace_in_file") return lang === "zh" ? `修改完成，替换 ${data.match_count || 0} 处` : `Edit complete, replaced ${data.match_count || 0}`;
+    if (tool === "work_mode_search") {
+      const count = Array.isArray(data.modes) ? data.modes.length : 0;
+      return lang === "zh" ? `工作方式命中 ${count} 条` : `Playbook search matched ${count}`;
+    }
+    if (tool === "work_mode_get") return lang === "zh" ? `工作方式已读取：${data.name || ""}` : `Playbook item read: ${data.name || ""}`;
+    return lang === "zh" ? `${tool} 完成` : `${tool} complete`;
+  }
+  function pmToolActivityDetail(p, previous) {
+    const input = pmVisibleInput(previous && previous.input ? previous.input : pmToolInput(p));
+    const result = pmToolResult(p);
+    const lines = [];
+    if (Object.keys(input).length) lines.push(`input\n${clip(JSON.stringify(input, null, 2), 1800)}`);
+    if (result && Object.keys(result).length) lines.push(`result\n${clip(JSON.stringify(result, null, 2), 2400)}`);
+    const logPath = (p && p.log_path) || (result && Array.isArray(result.artifact_paths) && result.artifact_paths[0]) || (result && result.data && result.data.log_path) || "";
+    if (logPath) lines.push(`log\n${logPath}`);
+    return lines.join("\n\n");
   }
   function looksEnglishPmStatus(text) {
     const v = String(text || "").trim();
@@ -988,6 +1149,7 @@
     const streamGroups = new Map(); // key -> nodeIndex for pm streams
     const pmStreamBuffers = new Map(); // key -> raw text buffer
     const statusNodes = new Map(); // phase -> nodeIndex
+    const pmActivityNodes = new Map(); // PM tool call id -> nodeIndex
 
     const callKey = (e) => e.task_id || `${e.source || "agent"}-${e.session_id || ""}`;
     const hidePmStatus = (phase = "") => {
@@ -1038,6 +1200,43 @@
       }
       c.steps.push(s);
       if (s.key) c.stepKeys.set(s.key, c.steps.length - 1);
+    };
+    const upsertPmActivityPre = (e, p) => {
+      const key = pmToolKey(p) || `pm-tool-${e.id || nodes.length}`;
+      const input = pmToolInput(p);
+      const node = {
+        kind: "pm-activity", id: e.id || key, key, ts: e.ts,
+        tool: p.tool || "tool", stepKind: pmToolKind(p.tool),
+        status: "active", input,
+        title: pmToolPreTitle(p, lang),
+        detail: pmToolActivityDetail(p, { input }),
+      };
+      if (pmActivityNodes.has(key) && nodes[pmActivityNodes.get(key)]) nodes[pmActivityNodes.get(key)] = { ...nodes[pmActivityNodes.get(key)], ...node };
+      else { pmActivityNodes.set(key, nodes.length); nodes.push(node); }
+    };
+    const upsertPmActivityPost = (e, p) => {
+      const key = pmToolKey(p) || `pm-tool-${e.id || nodes.length}`;
+      const idx = pmActivityNodes.has(key) ? pmActivityNodes.get(key) : -1;
+      const previous = idx >= 0 ? nodes[idx] : null;
+      const node = {
+        kind: "pm-activity", id: previous ? previous.id : (e.id || key), key, ts: e.ts,
+        tool: p.tool || (previous && previous.tool) || "tool",
+        stepKind: pmToolKind(p.tool || (previous && previous.tool)),
+        status: pmToolOk(p) ? "done" : "failed",
+        input: previous && previous.input ? previous.input : pmToolInput(p),
+        title: pmToolPostTitle(p, previous, lang),
+        detail: pmToolActivityDetail(p, previous),
+      };
+      if (idx >= 0 && nodes[idx]) nodes[idx] = { ...previous, ...node };
+      else { pmActivityNodes.set(key, nodes.length); nodes.push(node); }
+    };
+    const rememberPmActivityLog = (p) => {
+      const key = pmToolKey(p);
+      if (!key || !pmActivityNodes.has(key) || !p.log_path) return;
+      const node = nodes[pmActivityNodes.get(key)];
+      if (!node) return;
+      const line = `log\n${p.log_path}`;
+      if (!String(node.detail || "").includes(line)) node.detail = [node.detail, line].filter(Boolean).join("\n\n");
     };
 
     for (const e of events) {
@@ -1119,6 +1318,10 @@
         c.ts = e.ts;
         if (!nodes.some((n) => n.kind === "call" && n.callId === c.id)) nodes.push({ kind: "call", id: `call-${c.id}`, callId: c.id, ts: e.ts });
       } else if (t === "tool_pre") {
+        if (isPmToolEvent(e, p)) {
+          upsertPmActivityPre(e, p);
+          continue;
+        }
         // Hook/operator-driven tool calls (e.g. Claude Code) → process steps, same as stream tool_use.
         const c = ensureCall(e);
         const key = p.tool_use_id || p.id || p.call_id ? `tp-${p.tool_use_id || p.id || p.call_id}` : "";
@@ -1127,6 +1330,13 @@
         else if (p.tool) mergeStep(c, { key, kind: "tool", title: String(p.tool), status: "active" });
         c.ts = e.ts;
       } else if (t === "tool_stream") {
+        if (isPmToolEvent(e, p)) {
+          const text = String(p.delta || "");
+          const kind = p.stream === "stderr" ? "err" : "out";
+          if (text) terminal.push({ kind, text, ts: e.ts, agent: e.source });
+          rememberPmActivityLog(p);
+          continue;
+        }
         const c = ensureCall(e);
         const key = p.tool_use_id || p.id || p.call_id ? `tp-${p.tool_use_id || p.id || p.call_id}` : "";
         const text = String(p.delta || "");
@@ -1139,6 +1349,15 @@
           ex.status = "active";
         }
       } else if (t === "tool_post") {
+        if (isPmToolEvent(e, p)) {
+          upsertPmActivityPost(e, p);
+          const result = p.result && typeof p.result === "object" ? p.result : null;
+          const data = result && result.data && typeof result.data === "object" ? result.data : {};
+          const out = data.stdout || data.stderr || p.output || p.result || "";
+          if (data.log_path) terminal.push({ kind: "out", text: `log: ${data.log_path}`, ts: e.ts, agent: e.source });
+          else if (out) terminal.push({ kind: "out", text: String(out).slice(0, 4000), ts: e.ts, agent: e.source });
+          continue;
+        }
         const c = ensureCall(e);
         const result = p.result && typeof p.result === "object" ? p.result : null;
         const data = result && result.data && typeof result.data === "object" ? result.data : {};
@@ -1547,14 +1766,29 @@
 
   function ThinkingPanel({ d, text }) {
     const [open, setOpen] = useState(false);
-    const title = pmThinkingTitle(text, d.thinkingTrace);
+    const parts = pmThinkingParts(text, d.thinkingTrace);
     return html`<div className=${`pm-thinking${open ? " open" : ""}`}>
       <button type="button" className="pm-thinking-head" aria-expanded=${open} onClick=${() => setOpen((v) => !v)}>
         <span className="pm-thinking-icon" aria-hidden="true">▸</span>
-        <span>${title}</span>
+        <span className="pm-thinking-title">${parts.title}</span>
       </button>
-      ${open ? html`<div className="pm-thinking-body"><${MD} text=${text} maxChars=${4000} /></div>` : null}
+      ${open && parts.body ? html`<div className="pm-thinking-body"><${MD} text=${parts.body} maxChars=${4000} /></div>` : null}
     </div>`;
+  }
+
+  function PmActivity({ n, d }) {
+    const meta = STEP_META[n.stepKind] || STEP_META.tool;
+    const active = n.status === "active";
+    const failed = n.status === "failed";
+    return html`<details className=${`pm-activity ${meta.cls}${active ? " active" : ""}${failed ? " failed" : ""}`}>
+      <summary>
+        <span className="pm-activity-icon" aria-hidden="true">▸</span>
+        <span className="step-chip">${d[meta.k]}</span>
+        <span className="pm-activity-title">${n.title}</span>
+        ${active ? html`<span className="step-spin"></span>` : failed ? html`<span className="step-x">!</span>` : null}
+      </summary>
+      ${n.detail ? html`<pre className="pm-activity-body">${n.detail}</pre>` : null}
+    </details>`;
   }
 
   function ThreadNode({ n, dig, d, lang, openCalls, toggleCall, onCard, onApproval, openDetail, onCopy }) {
@@ -1596,6 +1830,9 @@
     }
     if (n.kind === "pm-thinking") {
       return html`<${ThinkingPanel} d=${d} text=${n.text} />`;
+    }
+    if (n.kind === "pm-activity") {
+      return html`<${PmActivity} n=${n} d=${d} />`;
     }
     if (n.kind === "call") {
       const c = dig.calls.get(n.callId);

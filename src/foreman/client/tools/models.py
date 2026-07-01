@@ -13,6 +13,31 @@ REQUIRES_APPROVAL: Risk = "requires-approval"
 EXTERNAL_WEB = "external_web_content"
 
 
+def _with_public_note(schema: dict[str, Any]) -> dict[str, Any]:
+    if schema.get("type") != "object":
+        return schema
+    out = dict(schema)
+    props = dict(out.get("properties") or {})
+    props.setdefault(
+        "public_note",
+        {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Optional short user-facing activity sentence in the selected UI language.",
+        },
+    )
+    props.setdefault(
+        "purpose",
+        {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Optional alias for public_note.",
+        },
+    )
+    out["properties"] = props
+    return out
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -24,7 +49,7 @@ class ToolSpec:
         return {
             "name": self.name,
             "description": self.description,
-            "input_schema": self.input_schema,
+            "input_schema": _with_public_note(self.input_schema),
             "risk": self.risk,
         }
 
@@ -32,7 +57,7 @@ class ToolSpec:
         return {
             "name": self.name,
             "description": self.description,
-            "input_schema": self.input_schema,
+            "input_schema": _with_public_note(self.input_schema),
         }
 
 

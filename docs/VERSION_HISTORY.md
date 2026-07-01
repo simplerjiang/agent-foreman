@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.8
+
+English:
+
+- PM tool activity now appears as a public timeline with tool-start labels, result summaries, and collapsible details.
+- PM tools can provide optional `public_note` or `purpose` text for natural user-facing activity notes.
+- PM thinking expansion no longer repeats the generated title inside the expanded body.
+
+中文：
+
+- PM 工具活动现在进入公开时间线，显示工具开始、结果摘要和可折叠详情。
+- PM 工具可以提供可选的 `public_note` 或 `purpose`，用于展示更自然的用户可见活动说明。
+- PM 思考展开后不再在正文里重复生成标题。
+
 ## v1.3.7
 
 English:

@@ -453,6 +453,11 @@ if (boldTitle !== "Clarifying user request") {
   console.error({ boldTitle });
   process.exit(1);
 }
+const parts = pmThinkingParts("Before body. **Clarifying user request**\n\nI need to inspect the request.", "思考摘要");
+if (parts.title !== "Clarifying user request" || parts.body.includes("Clarifying user request") || !parts.body.includes("I need to inspect")) {
+  console.error({ parts });
+  process.exit(4);
+}
 const fallbackTitle = pmThinkingTitle("Plain generated heading\n\nMore reasoning.", "思考摘要");
 if (fallbackTitle !== "Plain generated heading") {
   console.error({ fallbackTitle });
@@ -464,7 +469,64 @@ if (emptyTitle !== "思考摘要") {
   process.exit(3);
 }
 '''
-    subprocess.run(["node", "-e", script], check=True)
+    subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
+
+
+def test_pm_tool_activity_helpers_make_public_timeline_labels():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function shellQuote")
+    end = js.index("function looksEnglishPmStatus", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const must = (cond, label, value) => { if (!cond) { console.error(label, value); process.exit(1); } };
+const readPre = { tool: "read_file", call_id: "r1", input: { path: "README.md" } };
+must(pmToolKind("read_file") === "read", "read kind");
+must(pmToolPreTitle(readPre, "zh") === "我先读取 README.md", "read pre", pmToolPreTitle(readPre, "zh"));
+const searchPre = { tool: "search_repo", call_id: "s0", input: { query: "PM activity" } };
+must(pmToolPreTitle(searchPre, "zh") === "我先检索 PM activity", "search pre", pmToolPreTitle(searchPre, "zh"));
+const noted = { tool: "search_repo", call_id: "s1", input: { query: "PM", public_note: "我先查 PM 事件" } };
+must(pmToolPreTitle(noted, "zh") === "我先查 PM 事件", "public note wins");
+must(!pmToolActivityDetail(noted, { input: noted.input }).includes("public_note"), "detail hides public_note");
+const readPost = { tool: "read_file", call_id: "r1", result: { ok: true, data: { text: "a\nb\n" } } };
+must(pmToolPostTitle(readPost, null, "zh") === "读取完成，返回 2 行", "read post", pmToolPostTitle(readPost, null, "zh"));
+const cmdPost = { tool: "run_command", call_id: "c1", result: { ok: true, data: { returncode: 0, stdout: "ok", log_path: "run.log" } } };
+must(pmToolPostTitle(cmdPost, null, "zh") === "命令完成，exit 0", "cmd post");
+must(pmToolActivityDetail(cmdPost, null).includes("run.log"), "log detail");
+const searchPost = { tool: "search_repo", call_id: "s1", result: { ok: true, data: { matches: [{}, {}, {}] } } };
+must(pmToolPostTitle(searchPost, null, "zh") === "检索命中 3 处", "search post");
+const failed = { tool: "read_file", call_id: "f1", result: { ok: false, error: "not_file" } };
+must(pmToolPostTitle(failed, null, "en") === "read_file failed: not_file", "failed post");
+'''
+    subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
+
+
+def test_pm_tool_events_digest_to_public_activity_timeline():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function shellQuote")
+    end = js.index("function Empty", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const must = (cond, label, value) => { if (!cond) { console.error(label, value); process.exit(1); } };
+const events = [
+  { id: "pre", type: "tool_pre", source: "pm-agent", session_id: "s1", task_id: "t1", ts: "2026-01-01T00:00:00Z",
+    payload: { source: "pm-agent", tool: "run_command", call_id: "c1", input: { command: "echo ok" } } },
+  { id: "stream", type: "tool_stream", source: "pm-agent", session_id: "s1", task_id: "t1", ts: "2026-01-01T00:00:01Z",
+    payload: { source: "pm-agent", tool: "run_command", call_id: "c1", stream: "stdout", delta: "ok\n", log_path: "run.log" } },
+  { id: "post", type: "tool_post", source: "pm-agent", session_id: "s1", task_id: "t1", ts: "2026-01-01T00:00:02Z",
+    payload: { source: "pm-agent", tool: "run_command", call_id: "c1", ok: true,
+      result: { ok: true, data: { returncode: 0, stdout: "ok\n", log_path: "run.log" }, artifact_paths: ["run.log"] } } },
+];
+const dig = digest(events, {}, "zh");
+must(dig.nodes.length === 1, "one public node", dig.nodes);
+must(dig.nodes[0].kind === "pm-activity" && dig.nodes[0].status === "done", "activity node", dig.nodes[0]);
+must(dig.nodes[0].title === "命令完成，exit 0", "post summary", dig.nodes[0].title);
+must(dig.nodes[0].detail.includes("echo ok") && dig.nodes[0].detail.includes("run.log"), "expanded detail", dig.nodes[0].detail);
+must(dig.terminal.length === 2, "stream/post stay terminal", dig.terminal);
+must(dig.calls.size === 0 && dig.subagents.length === 0, "pm tools are not subagent calls", dig.subagents);
+'''
+    subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
 
 
 def test_tool_stream_and_icon_stop_controls_are_wired():
@@ -485,12 +547,15 @@ def test_tool_stream_and_icon_stop_controls_are_wired():
     assert "function ThinkingPanel" in js
     assert 'className=${`pm-thinking${open ? " open" : ""}`}' in js
     assert 'className="pm-thinking-head"' in js and "aria-expanded=${open}" in js
-    assert "const title = pmThinkingTitle(text, d.thinkingTrace)" in js and "<span>${title}</span>" in js
+    assert "const parts = pmThinkingParts(text, d.thinkingTrace)" in js and 'className="pm-thinking-title"' in js
     assert 'const txt = t === "pm_reasoning" ? formatPmReasoningText(cleaned) : displayPmStreamText(cleaned, lang, d);' in js
-    assert "<${MD} text=${text} maxChars=${4000} />" in js
+    assert "<${MD} text=${parts.body} maxChars=${4000} />" in js
     assert ".pm-thinking-head:hover .pm-thinking-icon" in css and ".pm-thinking.open .pm-thinking-icon" in css
     assert ".pm-thinking .markdown-body" in css
     assert ".pm-thinking .markdown-body p" in css and "white-space: normal" in css
+    assert "function PmActivity" in js and 'kind: "pm-activity"' in js
+    assert "isPmToolEvent(e, p)" in js and "upsertPmActivityPost(e, p)" in js
+    assert ".pm-activity" in css and ".pm-activity-body" in css
 
 
 def test_pm_partial_json_stream_text_is_readable():
