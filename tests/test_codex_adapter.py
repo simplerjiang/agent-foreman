@@ -145,6 +145,22 @@ async def test_stream_parses_lines(tmp_path):
     assert events[2].payload["result"] == "ok"
 
 
+async def test_stream_decodes_windows_console_cjk_bytes(tmp_path):
+    line = (
+        json.dumps(
+            {"type": "result", "result": "中文总结"},
+            ensure_ascii=False,
+        ).encode("gb18030")
+        + b"\n"
+    )
+    a = fake_adapter(CodexAdapter, _cfg(), FakeProc(stdout_lines=[line]))
+    h = await a.start("x", tmp_path, "s")
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_start", "stop"]
+    assert events[1].payload["result"] == "中文总结"
+
+
 async def test_stream_classifies_reasoning_json_lines(tmp_path):
     lines = [
         b'{"type":"reasoning","delta":"thinking"}\n',

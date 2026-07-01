@@ -645,7 +645,48 @@ must(replyText({ type: "assistant", message: { content: [{ type: "text", text: "
 // A no-tool claude message is the genuine final answer.
 must(replyText({ type: "assistant", message: { content: [{ type: "text", text: "done" }] } }) === "done", "claude final text is reply");
 '''
-    subprocess.run(["node", "-e", script], check=True)
+    subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
+
+
+def test_subagent_digest_keeps_running_replies_in_chronological_timeline():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function extractTextParts")
+    end = js.index("function Empty", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const must = (cond, label, value) => { if (!cond) { console.error(label, value); process.exit(1); } };
+const d = { ev_stop: "Done" };
+const events = [
+  { id: "start", type: "agent_start", source: "codex", session_id: "s1", task_id: "call1", ts: "2026-01-01T00:00:00Z",
+    payload: { command: ["codex", "exec", "--json", "fix UI"] } },
+  { id: "say1", type: "agent_output", source: "codex", session_id: "s1", task_id: "call1", ts: "2026-01-01T00:00:01Z",
+    payload: { text: "I will inspect the UI first." } },
+  { id: "cmd1", type: "agent_output", source: "codex", session_id: "s1", task_id: "call1", ts: "2026-01-01T00:00:02Z",
+    payload: { type: "item.completed", item: { id: "c1", type: "command_execution", command: "Get-Content app.js", status: "completed", exit_code: 0 } } },
+  { id: "say2", type: "agent_output", source: "codex", session_id: "s1", task_id: "call1", ts: "2026-01-01T00:00:03Z",
+    payload: { type: "item.completed", item: { id: "m1", type: "agent_message", text: "我会按顺序继续检查界面。" } } },
+  { id: "cmd2", type: "agent_output", source: "codex", session_id: "s1", task_id: "call1", ts: "2026-01-01T00:00:04Z",
+    payload: { type: "item.completed", item: { id: "c2", type: "command_execution", command: "Select-String finalReply app.js", status: "completed", exit_code: 0 } } },
+];
+const running = digest(events, d, "en");
+const call = Array.from(running.calls.values())[0];
+must(call.reply === "", "running output is not final reply", call.reply);
+must(call.lastReply === "我会按顺序继续检查界面。", "last running reply tracked", call.lastReply);
+must(call.timeline.map((x) => x.kind).join(">") === "cmd>reply>step>reply>step", "timeline order", call.timeline);
+must(call.timeline.filter((x) => x.kind === "reply").every((x) => !x.final), "no synthetic final reply", call.timeline);
+
+const done = digest([...events, { id: "stop", type: "stop", source: "codex", session_id: "s1", task_id: "call1", ts: "2026-01-01T00:00:05Z", payload: { result: "最终总结" } }], d, "en");
+const doneCall = Array.from(done.calls.values())[0];
+must(doneCall.reply === "最终总结", "stop result becomes final", doneCall.reply);
+const last = doneCall.timeline[doneCall.timeline.length - 1];
+must(last.kind === "reply" && last.final && last.text === "最终总结", "final reply is last timeline item", doneCall.timeline);
+const sub = done.subagents[0];
+must(sub.name === "codex", "subagent title stays agent identity", sub);
+must(sub.act === "Select-String finalReply app.js", "activity uses latest step", sub);
+must(sub.detail === "最终总结", "subagent detail preserves final text", sub);
+'''
+    subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
 
 
 def test_first_substantive_line_skips_common_opening_meta_text():
@@ -850,6 +891,29 @@ def test_markdown_rendering_wired_safely(tmp_path):
     assert ".innerHTML" not in js
     assert "dangerouslySetInnerHTML" not in js
     assert ".markdown-body" in css and ".markdown-table-wrap" in css
+
+
+def test_markdown_file_references_open_or_preview_from_workspace():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert "foreman:file-ref" in js
+    assert "/api/workspace-file/read" in js and "/api/workspace-file/open" in js
+    assert 'matchMedia("(max-width: 760px)")' in js
+    assert ".inline-file-ref" in css and ".file-viewer-pre" in css
+
+    start = js.index("function isMobileViewport")
+    end = js.index("function renderInline", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const must = (cond, label) => { if (!cond) { console.error(label); process.exit(1); } };
+must(isLocalFileRef("docs/WHOLE_COMPUTER_CONTROL.zh-CN.md"), "relative md path");
+must(isLocalFileRef("src/foreman/server/web/app.js:12"), "relative source path with line");
+must(isLocalFileRef("C:\\Users\\me\\project\\README.md"), "absolute windows path");
+must(!isLocalFileRef("print('hello')"), "ordinary code stays code");
+must(!isLocalFileRef("https://example.com/a.md"), "url is not a local file ref");
+'''
+    subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
 
 
 def test_cloud_connection_frontend_wired(tmp_path):

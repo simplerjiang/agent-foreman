@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import locale
 import os
 import secrets as _secrets
 import shutil
 import subprocess
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -57,6 +59,7 @@ _VALID_LLM_REASONING_EFFORTS = frozenset({"", "low", "medium", "high", "max"})
 _SUPPORTED_AGENTS = frozenset(default_agents())
 _MIN_TOKEN_LIMIT = 1_000
 _MAX_TOKEN_LIMIT = 2_000_000
+_WORKSPACE_FILE_MAX_BYTES = 2_000_000
 _REMOTE_LOCAL_METHODS = frozenset({"GET", "POST", "PATCH", "DELETE"})
 _REMOTE_LOCAL_DENY_PREFIXES = (
     "/api/admin",
@@ -136,6 +139,11 @@ class _WorkspaceGitBody(BaseModel):
 class _WorkspaceCheckoutBody(BaseModel):
     path: str
     branch: str
+
+
+class _WorkspaceFileBody(BaseModel):
+    workspace: str
+    path: str
 
 
 class _AgentSettingsRow(BaseModel):
@@ -378,6 +386,36 @@ def _web_asset_mtime() -> str:
     except OSError:
         mtimes = []
     return str(int(max(mtimes))) if mtimes else ""
+
+
+def _decode_workspace_text(raw: bytes) -> str:
+    candidates = ["utf-8-sig", locale.getpreferredencoding(False)]
+    if os.name == "nt":
+        candidates.append("gb18030")
+    seen: set[str] = set()
+    for enc in candidates:
+        key = (enc or "").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        try:
+            return raw.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    raise HTTPException(status_code=415, detail="file_not_text")
+
+
+def _open_file_with_system(path: Path) -> None:
+    if os.name == "nt":
+        os.startfile(str(path))  # type: ignore[attr-defined]
+        return
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    subprocess.Popen(  # noqa: S603 - fixed opener argv, user path is not passed through a shell
+        [opener, str(path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **_subprocess_no_window_kwargs(),
+    )
 
 
 def _web_assets_dirty(repo: Path) -> bool:
@@ -773,6 +811,28 @@ def create_app(
             return out
         except Exception:  # noqa: BLE001 - git status is display-only
             return out
+
+    def _workspace_file_target(workspace: str, requested: str) -> tuple[Path, Path]:
+        base = Path(_require_known_workspace(workspace)).expanduser().resolve(strict=False)
+        if not base.exists() or not base.is_dir():
+            raise HTTPException(status_code=400, detail="bad_workspace")
+        raw = str(requested or "").strip().strip("\"'")
+        if not raw:
+            raise HTTPException(status_code=400, detail="bad_file_path")
+        head, sep, tail = raw.rpartition(":")
+        if sep and tail.isdigit() and head:
+            raw = head
+        path = Path(raw).expanduser()
+        target = path.resolve(strict=False) if path.is_absolute() else (base / path).resolve(strict=False)
+        try:
+            target.relative_to(base)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="file_outside_workspace") from None
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="file_not_found")
+        if not target.is_file():
+            raise HTTPException(status_code=400, detail="not_file")
+        return base, target
 
     def _save_workspaces(rows: list[WorkspaceCfg]) -> list[dict]:
         if store is None or not hasattr(store, "set_setting"):
@@ -1551,6 +1611,37 @@ def create_app(
         if switched.returncode != 0:
             raise HTTPException(status_code=400, detail="git_checkout_failed")
         return _workspace_git_status(path)
+
+    @app.get("/api/workspace-file/read")
+    async def read_workspace_file(workspace: str, path: str) -> dict:
+        """Read a text file under a known workspace for mobile/browser preview."""
+        base, target = _workspace_file_target(workspace, path)
+        try:
+            raw = target.read_bytes()
+        except OSError as exc:
+            raise HTTPException(status_code=404, detail="file_not_found") from exc
+        if len(raw) > _WORKSPACE_FILE_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="file_too_large")
+        if b"\x00" in raw[:4096]:
+            raise HTTPException(status_code=415, detail="file_not_text")
+        rel = target.relative_to(base).as_posix()
+        return {
+            "path": str(target),
+            "relative_path": rel,
+            "name": target.name,
+            "bytes": len(raw),
+            "content": _decode_workspace_text(raw),
+        }
+
+    @app.post("/api/workspace-file/open")
+    async def open_workspace_file(body: _WorkspaceFileBody) -> dict:
+        """Open a known-workspace file with the desktop OS file association."""
+        base, target = _workspace_file_target(body.workspace, body.path)
+        try:
+            _open_file_with_system(target)
+        except Exception as exc:  # noqa: BLE001 - UI only needs a stable failure code
+            raise HTTPException(status_code=500, detail="file_open_failed") from exc
+        return {"ok": True, "path": str(target), "relative_path": target.relative_to(base).as_posix()}
 
     @app.get("/api/sessions")
     async def list_sessions() -> list[dict]:

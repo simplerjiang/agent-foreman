@@ -4,6 +4,24 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.0
+
+English:
+
+- Subagent cards now use a single chronological timeline for worker replies, launch commands, streamed command/tool steps, reasoning, and explicit final results.
+- In-progress Codex output is shown as a normal reply at its event position instead of being mislabeled as the final reply.
+- The Final reply label is only used for an explicit stop/result payload; runs without a detectable final answer no longer show a synthetic final section.
+- Subagent titles now stay as the agent identity instead of borrowing model output, and Windows console output decoding preserves CJK text where the CLI emits local-encoded bytes.
+- Inline workspace file references such as `docs/example.md` now open with the desktop file association or use an in-app text preview on mobile.
+
+中文：
+
+- 子代理卡片现在用同一条时间线展示 worker 回复、启动命令、流式命令/工具步骤、思考和明确的最终结果。
+- Codex 运行中的输出会作为普通回复显示在事件发生位置，不再被误标为「最终回复」。
+- 「最终回复」只用于明确的 stop/result 结果；无法判定最终答复的运行不再显示虚假的最终板块。
+- 子代理标题现在固定为 agent 身份，不再借用模型输出；Windows 控制台输出按 UTF-8 和本地编码解码，保留 CLI 发出的中文文本。
+- `docs/example.md` 这类工作区文件引用现在可点击：桌面按系统文件关联打开，手机使用内置文本预览。
+
 ## v1.3.9
 
 English:
