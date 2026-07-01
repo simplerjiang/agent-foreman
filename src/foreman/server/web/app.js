@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.4.2",
+      en: "PM plans can now carry a verified target workspace/worktree; Foreman updates the session workspace and launches the coding agent from that worktree instead of only mentioning Set-Location in the prompt.",
+      zh: "PM 计划现在可以携带已验证的目标 workspace/worktree；Foreman 会同步更新会话 workspace，并从该 worktree 启动编码代理，不再只把 Set-Location 写进提示词。",
+    },
+    {
       version: "v1.4.1",
       en: "Context compression now renders as a collapsed transparent ContextPack row with parsed pretty JSON on expand, and the composer context meter follows the next provider-bound context before and after compaction.",
       zh: "上下文压缩现在显示为透明折叠 ContextPack 行，展开后展示解析并格式化后的 JSON；输入区上下文仪表盘会按压缩前后下一次真正发给 provider 的上下文计数。",

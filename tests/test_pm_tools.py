@@ -531,6 +531,7 @@ def test_validate_final_plan_clamps_schema_bounds():
         "instruction": "i" * 7000,
         "summary": "s" * 800,
         "model": "m" * 120,
+        "workspace": "w" * 700,
         "todo": ["t" * 400 for _ in range(20)],
         "deliberation": ["d" * 400 for _ in range(20)],
         "ready": True,
@@ -543,6 +544,7 @@ def test_validate_final_plan_clamps_schema_bounds():
     )
     assert len(plan["summary"]) == 600
     assert len(plan["model"]) == 80
+    assert len(plan["workspace"]) == 500
     assert len(plan["instruction"]) == 6000
     assert len(plan["todo"]) == 15 and all(len(x) <= 200 for x in plan["todo"])
     assert len(plan["deliberation"]) == 15 and all(len(x) <= 300 for x in plan["deliberation"])
@@ -586,6 +588,7 @@ def test_submit_plan_tool_spec_constrains_agent_enum():
     schema = spec["input_schema"]
     assert schema["additionalProperties"] is False
     assert schema["properties"]["agent"]["enum"] == ["codex"]
+    assert schema["properties"]["workspace"]["maxLength"] == 500
     assert schema["properties"]["todo"]["maxItems"] == 17
     assert schema["properties"]["deliberation"]["maxItems"] == 17
     # Empty/None enabled set falls back to all supported planning agents.

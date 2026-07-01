@@ -57,6 +57,14 @@ def submit_plan_tool_spec(
                 "model": {"type": "string", "maxLength": 80},
                 "effort": {"type": "string", "enum": ["low", "medium", "high", ""]},
                 "instruction": {"type": "string", "maxLength": 6000},
+                "workspace": {
+                    "type": "string",
+                    "maxLength": 500,
+                    "description": (
+                        "Optional existing workspace/worktree path where the coding agent must "
+                        "launch. Leave empty unless verified from runtime tool output."
+                    ),
+                },
                 "kind": {"type": "string", "enum": ["agent_task", "direct_reply", "blocked", "error"]},
                 "reply": {"type": "string", "maxLength": 2000},
                 "todo": {
@@ -318,6 +326,7 @@ def build_tool_prompt_context(runtime: PMToolRuntime) -> str:
                     "agent": "<enabled-agent-name>",
                     "model": "",
                     "effort": "high",
+                    "workspace": "",
                     "instruction": "agent instruction",
                     "kind": "agent_task",
                     "reply": "",
@@ -376,6 +385,7 @@ def validate_final_plan(
         "agent": agent,
         "model": str(obj.get("model") or "").strip()[:80],
         "effort": effort,
+        "workspace": str(obj.get("workspace") or "").strip()[:500],
         "instruction": instruction[:6000],
         "kind": str(obj.get("kind") or "agent_task").strip()[:40],
         "reply": str(obj.get("reply") or "").strip()[:2000],

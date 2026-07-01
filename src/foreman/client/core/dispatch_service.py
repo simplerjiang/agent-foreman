@@ -21,6 +21,7 @@ import hashlib
 import inspect
 import json
 import re
+import subprocess
 import uuid
 from collections.abc import Awaitable
 from pathlib import Path
@@ -609,6 +610,56 @@ class DispatchService:
             return workspace
         return (getattr(session, "main_workspace", "") or workspace).strip()
 
+    def _resolve_plan_workspace(self, requested: str, current: str) -> tuple[str, str]:
+        """Accept a PM-selected workspace only when it is an allowed root or git worktree."""
+        candidate = str(requested or "").strip()
+        if not candidate:
+            return current, ""
+        try:
+            candidate_path = Path(candidate).expanduser()
+            if not candidate_path.is_dir():
+                return current, "PM selected workspace does not exist."
+            current_path = Path(current).expanduser()
+            candidate_resolved = candidate_path.resolve(strict=False)
+            current_resolved = current_path.resolve(strict=False)
+        except (OSError, ValueError):
+            return current, "PM selected workspace is not a valid path."
+        if candidate_resolved == current_resolved:
+            return current, ""
+        roots = [w.path for w in self.cfg.workspaces]
+        if roots and _within_any(str(candidate_resolved), roots):
+            return str(candidate_path), ""
+        if self._is_git_worktree_of(str(candidate_resolved), str(current_resolved)):
+            return str(candidate_path), ""
+        return current, "PM selected workspace is outside the configured workspace roots."
+
+    def _is_git_worktree_of(self, candidate: str, main_workspace: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["git", "-C", main_workspace, "worktree", "list", "--porcelain"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode != 0:
+            return False
+        try:
+            candidate_path = Path(candidate).resolve(strict=False)
+            for line in result.stdout.splitlines():
+                if not line.startswith("worktree "):
+                    continue
+                worktree = Path(line[len("worktree "):].strip()).expanduser()
+                if worktree.resolve(strict=False) == candidate_path:
+                    return True
+        except (OSError, ValueError):
+            return False
+        return False
+
     async def _emit_dispatch(
         self,
         session_id: str,
@@ -885,6 +936,18 @@ class DispatchService:
         if plan.kind in {"blocked", "error"}:
             await self._emit_pm_error(session_id, task_id, _terminal_plan_text(plan, language))
             return
+        plan_workspace, workspace_error = self._resolve_plan_workspace(plan.workspace, workspace)
+        if workspace_error:
+            await self._emit_pm_error(session_id, task_id, workspace_error)
+            return
+        if plan_workspace != workspace:
+            workspace = plan_workspace
+            if self.store is not None and hasattr(self.store, "update_session"):
+                self.store.update_session(
+                    session_id,
+                    workspace=workspace,
+                    updated_at=self._clock(),
+                )
         todo_status = _initial_todo_status(plan.todo)
         await self._emit_pm_plan(session_id, task_id, plan, todo_status=todo_status)
         await self._emit_pm_status(
@@ -1074,6 +1137,7 @@ class DispatchService:
             model=cfg_model,
             effort=plan.effort,
             instruction=plan.instruction,
+            workspace=plan.workspace,
             kind=plan.kind,
             reply=plan.reply,
             summary=plan.summary,
