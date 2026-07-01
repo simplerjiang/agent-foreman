@@ -27,14 +27,14 @@ def _exec(engine, sql):
 
 
 # ── client ───────────────────────────────────────────────────────────────────────────────────
-def test_client_init_is_idempotent_and_at_v1(tmp_path):
+def test_client_init_is_idempotent_and_at_v2(tmp_path):
     st = Store(str(tmp_path / "c.db"))
     st.init()
     st.init()  # re-run must not duplicate ledger rows or raise
-    assert st.schema_version() == 1
+    assert st.schema_version() == 2
     with st.engine.connect() as conn:  # client ledger table is `schemaversion` (see migrations)
         rows = conn.execute(text(f"SELECT version FROM {CLIENT_VERSION_TABLE}")).fetchall()
-    assert sorted(r[0] for r in rows) == [1]
+    assert sorted(r[0] for r in rows) == [1, 2]
 
 
 def test_client_migration_adds_diff_stat_to_legacy_decisioncard(tmp_path):
@@ -45,10 +45,45 @@ def test_client_migration_adds_diff_stat_to_legacy_decisioncard(tmp_path):
         assert not column_exists(conn, "decisioncard", "diff_stat")
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
-    assert applied == [1]
+    assert applied == [1, 2]
     with engine.connect() as conn:
         assert column_exists(conn, "decisioncard", "diff_stat")
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 1
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 2
+
+
+def test_client_migration_adds_session_main_workspace_and_backfills(tmp_path):
+    """A pre-main_workspace session table keeps the original workspace as its fallback root."""
+    engine = _engine(tmp_path / "legacy-main-workspace.db")
+    _exec(engine, "CREATE TABLE session (id TEXT PRIMARY KEY, goal TEXT, workspace TEXT)")
+    _exec(engine, "INSERT INTO session (id, goal, workspace) VALUES ('s1', 'g', 'E:/AutoWorkAgent')")
+    _exec(engine, f"CREATE TABLE {CLIENT_VERSION_TABLE} (version INTEGER PRIMARY KEY, applied_at TEXT)")
+    _exec(engine, f"INSERT INTO {CLIENT_VERSION_TABLE} (version, applied_at) VALUES (1, '2020-01-01')")
+    with engine.connect() as conn:
+        assert not column_exists(conn, "session", "main_workspace")
+
+    applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
+    assert applied == [2]
+    with engine.connect() as conn:
+        assert column_exists(conn, "session", "main_workspace")
+        row = conn.execute(text("SELECT workspace, main_workspace FROM session WHERE id='s1'")).first()
+        assert row == ("E:/AutoWorkAgent", "E:/AutoWorkAgent")
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 2
+
+
+def test_client_migration_main_workspace_backfill_tolerates_null_workspace(tmp_path):
+    engine = _engine(tmp_path / "legacy-null-workspace.db")
+    _exec(engine, "CREATE TABLE session (id TEXT PRIMARY KEY, goal TEXT, workspace TEXT)")
+    _exec(engine, "INSERT INTO session (id, goal, workspace) VALUES ('s1', 'g', NULL)")
+    _exec(engine, f"CREATE TABLE {CLIENT_VERSION_TABLE} (version INTEGER PRIMARY KEY, applied_at TEXT)")
+    _exec(engine, f"INSERT INTO {CLIENT_VERSION_TABLE} (version, applied_at) VALUES (1, '2020-01-01')")
+
+    applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
+
+    assert applied == [2]
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT workspace, main_workspace FROM session WHERE id='s1'")).first()
+        assert row == (None, "")
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 2
 
 
 # ── server ───────────────────────────────────────────────────────────────────────────────────

@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.3.9
+
+English:
+
+- Sessions now persist their original main workspace separately from the current session workspace.
+- Follow-up dispatches use the live session worktree when it still exists and fall back to the recorded main workspace when the worktree is gone.
+- The composer shows `worktree: none` for a new chat, and selected sessions can switch among existing local branches from a guarded dropdown that refuses dirty worktrees.
+
+中文：
+
+- 会话现在会把原始 main workspace 和当前会话 workspace 分开保存。
+- 继续会话时，如果当前 session worktree 仍存在就继续使用；如果 worktree 已消失，则回退到记录下来的 main workspace。
+- 输入区新对话会显示 `worktree: 无`；已选会话可通过受保护的下拉框切换已有本地分支，工作树有未提交改动时会拒绝切换。
+
 ## v1.3.8
 
 English:

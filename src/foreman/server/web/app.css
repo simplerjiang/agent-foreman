@@ -500,6 +500,8 @@ a { color: var(--accent-text); }
 .workspace-status-label { font-weight: 800; color: var(--text); }
 .workspace-status-path { max-width: min(260px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-text); }
 .workspace-status-chip { max-width: min(240px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 7px; border-radius: 7px; background: var(--bg2); color: var(--muted); }
+.workspace-branch-select { display: inline-flex; align-items: center; gap: 5px; max-width: min(260px, 100%); padding: 2px 6px; border-radius: 7px; background: var(--bg2); color: var(--muted); }
+.workspace-branch-select select { min-width: 72px; max-width: 170px; height: 22px; border: 0; outline: none; background: transparent; color: var(--muted); font: inherit; }
 .workspace-status-error { color: var(--red); font-weight: 700; }
 .composer-box { border: 1.5px solid var(--border2); border-radius: 11px; background: var(--surface); overflow: hidden; box-shadow: var(--shadow-sm); }
 .composer-box:focus-within { border-color: var(--accent); }

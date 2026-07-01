@@ -16,6 +16,7 @@ The full diff / raw return stays on the machine.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from foreman.shared.config import remote_execution_enabled
@@ -26,13 +27,17 @@ from foreman.shared.i18n import normalize as normalize_lang
 
 def session_summary(session) -> dict:
     """A display-safe summary of one local session (no diffs/raw output — §8.3)."""
+    workspace = getattr(session, "workspace", "") or ""
+    main_workspace = getattr(session, "main_workspace", "") or workspace
     return {
         "session_id": session.id,
         "summary": {
             "goal": session.goal,
             "status": session.status,
             "agent_type": session.agent_type,
-            "workspace": getattr(session, "workspace", "") or "",
+            "workspace": workspace,
+            "main_workspace": main_workspace,
+            "workspace_exists": bool(workspace and Path(workspace).expanduser().is_dir()),
             "created_at": session.created_at,
             "updated_at": session.updated_at,
         },

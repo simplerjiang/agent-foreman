@@ -36,17 +36,25 @@ def _store(tmp_path) -> Store:
 def test_schema_version_recorded(tmp_path):
     st = _store(tmp_path)
     with st.session() as s:
-        sv = s.get(SchemaVersion, 1)
+        sv = s.get(SchemaVersion, 2)
     assert sv is not None and sv.applied_at
 
 
 def test_session_and_task_roundtrip(tmp_path):
     st = _store(tmp_path)
-    st.add_session(Session(id="s1", goal="do X", workspace="/w", agent_type="claude-code"))
+    st.add_session(
+        Session(id="s1", goal="do X", workspace="/w", main_workspace="/main", agent_type="claude-code")
+    )
     st.add_task(Task(id="t1", session_id="s1", instruction="do X"))
     sessions = st.get_sessions()
     assert [s.id for s in sessions] == ["s1"]
     assert sessions[0].goal == "do X"
+    assert sessions[0].main_workspace == "/main"
+
+    st.update_session("s1", workspace="/tmp/worktree")
+    updated = st.get_session("s1")
+    assert updated.workspace == "/tmp/worktree"
+    assert updated.main_workspace == "/main"
 
 
 def test_event_roundtrip_serializes_payload(tmp_path):

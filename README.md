@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.3.8`.
+Current documented release: `v1.3.9`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.3.9` | Session workspace status now records the original main workspace, falls back when a PM worktree disappears, shows no worktree for new chats, and exposes a guarded local branch switcher. |
 | `v1.3.8` | PM tool activity now appears as a public timeline with tool starts, result summaries, collapsible details, optional public notes, and no hidden reasoning exposure. |
 | `v1.3.7` | Codex stdout is now read in chunks and reassembled as JSONL, removing asyncio's per-line limit for large command-output events and cleaning up stream failures. |
 | `v1.3.6` | PM thinking summaries now start as a transparent collapsed row using the generated reasoning title; hover changes the icon and clicking expands the full reasoning text. |
@@ -284,7 +285,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.3.8`。
+当前文档版本：`v1.3.9`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -292,6 +293,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.3.9` | 会话工作区状态现在记录原始 main workspace，PM worktree 消失时回退 main，新对话显示无 worktree，并提供受保护的本地分支切换下拉框。 |
 | `v1.3.8` | PM 工具活动现在进入公开时间线，显示工具开始、结果摘要、可折叠详情和可选公开说明，同时不暴露隐藏思维链。 |
 | `v1.3.7` | Codex stdout 改为分块读取并重组 JSONL，移除大段命令输出触发的 asyncio 单行读取上限，并在读取失败时清理子进程。 |
 | `v1.3.6` | PM 思考摘要现在默认显示为透明折叠行，标题来自 reasoning 里的生成标题；悬浮时图标变化，点击后再展开完整思考内容。 |
