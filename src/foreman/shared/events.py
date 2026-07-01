@@ -21,7 +21,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "briefing", "error", "dispatch", "health", "stall", "recover",
         # PM-agent dispatch orchestration: plan before launch, review after each CLI run.
         "pm_plan", "pm_review", "pm_reply", "pm_output", "pm_reasoning", "context_compact",
-        "agent_reasoning",
+        "agent_reasoning", "pm_validation_error",
         # decision-loop execution (P4 acceptance, §6.2): an action ran / was rolled back.
         "action_executed", "action_undone",
         # hybrid workflow engine (P5/T5.2, §11.2): a workflow run started / advanced a step / finished.

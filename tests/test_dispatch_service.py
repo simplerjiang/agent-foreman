@@ -12,6 +12,7 @@ import subprocess
 
 import pytest
 
+from foreman.client.core.context_v2 import ContextManager
 from foreman.client.core.dispatch_service import DispatchService, _explicit_agent_targets
 from foreman.client.core.pm_agent import (
     PMAgent,
@@ -26,6 +27,7 @@ from foreman.client.store.models import (
     Approval,
     DecisionCard,
     Session,
+    Task,
 )
 from foreman.client.tools import PMToolRuntime
 from foreman.shared.config import AgentCfg, Config, WorkspaceCfg
@@ -1494,6 +1496,48 @@ async def test_pm_agent_tool_loop_persists_tool_events_before_launch(tmp_path):
     assert [e.type for e in rows].index("tool_post") < [e.type for e in rows].index("pm_plan")
     pm_streams = [json.loads(e.payload_json) for e in rows if e.type == "pm_output"]
     assert any(p.get("delta") == "tool-loop-stream" for p in pm_streams)
+
+
+async def test_pm_tool_event_sink_persists_pm_validation_error(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    store.add_task(Task(id="t1", session_id="s1", instruction="plan"))
+    svc = DispatchService(_cfg(workspaces=[WorkspaceCfg(path=str(tmp_path))]), store, bus=EventBus())
+    sink = svc._pm_tool_event_sink("s1", "t1")
+
+    await sink(
+        "pm_validation_error",
+        {
+            "error": "final_plan_missing_reply",
+            "round": 1,
+            "arguments": {"kind": "direct_reply", "reply": ""},
+        },
+    )
+
+    rows = store.get_events("s1")
+    validation_events = [event for event in rows if event.type == "pm_validation_error"]
+    assert len(validation_events) == 1
+    assert validation_events[0].source == "pm-agent"
+    assert validation_events[0].task_id == "t1"
+    payload = json.loads(validation_events[0].payload_json)
+    assert payload["error"] == "final_plan_missing_reply"
+
+    frames = ContextManager(store).materialize_session("s1")
+    validation_frames = [frame for frame in frames if frame.type == "previous_validation_error"]
+    assert len(validation_frames) == 1
+    frame_payload = json.loads(validation_frames[0].payload_json)
+    assert frame_payload["payload"]["error"] == "final_plan_missing_reply"
+
+
+async def test_pm_tool_event_sink_still_ignores_unknown_events(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    svc = DispatchService(_cfg(workspaces=[WorkspaceCfg(path=str(tmp_path))]), store, bus=EventBus())
+    sink = svc._pm_tool_event_sink("s1", "t1")
+
+    await sink("unexpected_event", {"x": 1})
+
+    assert store.get_events("s1") == []
 
 
 async def test_pm_agent_plan_prompt_requires_selected_language(tmp_path):

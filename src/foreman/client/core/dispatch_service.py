@@ -1492,7 +1492,7 @@ class DispatchService:
 
     def _pm_tool_event_sink(self, session_id: str, task_id: str | None):
         async def emit(event_type: str, payload: dict[str, Any]) -> None:
-            if event_type not in {"tool_pre", "tool_post", "tool_stream"}:
+            if event_type not in {"tool_pre", "tool_post", "tool_stream", "pm_validation_error"}:
                 return
             await self._persist_then_publish(
                 make_event(
