@@ -13,7 +13,8 @@ from typing import Any
 
 from foreman.shared.events import utc_now_iso
 
-from ..store.models import ContextFrame, Event, Session
+from .pm_contract import PlanContract
+from ..store.models import ContextCheckpoint, ContextFrame, ContextSnapshot, Event, Session
 
 LANE_SYSTEM = 1
 LANE_TASK = 2
@@ -140,6 +141,112 @@ class ContextManager:
         runner: Any = None,
     ) -> RuntimeState:
         return extract_runtime_state(session, frames or [], runner=runner or self.runner)
+
+    def build_active_context(
+        self,
+        session_id: str,
+        *,
+        purpose: str,
+        window_tokens: int = 0,
+    ) -> ActiveContext:
+        return self.restore_from_latest_checkpoint(
+            session_id,
+            purpose=purpose,
+            window_tokens=window_tokens,
+        )
+
+    def restore_from_latest_checkpoint(
+        self,
+        session_id: str,
+        *,
+        purpose: str = "pm_plan",
+        window_tokens: int = 0,
+    ) -> ActiveContext:
+        self.materialize_session(session_id)
+        session = self.store.get_session(session_id) if hasattr(self.store, "get_session") else None
+        if session is None:
+            return ActiveContext(session_id=session_id, purpose=purpose, degraded=True)
+        frames = (
+            self.store.get_context_frames(session_id)
+            if hasattr(self.store, "get_context_frames")
+            else []
+        )
+        runtime = self.extract_runtime_state(session, frames)
+        runtime_dict = runtime_state_dict(runtime)
+        checkpoint = (
+            self.store.get_latest_context_checkpoint(session_id)
+            if hasattr(self.store, "get_latest_context_checkpoint")
+            else None
+        )
+        warnings: list[dict[str, Any]] = []
+        degraded = False
+        restore_mode = "raw_frames"
+        replacement_history: list[dict[str, Any]] = []
+        source_cursor: dict[str, Any] = {}
+        frames_after = list(frames)
+        stable_prefix = _stable_prefix(session, runtime_dict, purpose)
+
+        if checkpoint is not None:
+            parsed = _parse_checkpoint(checkpoint)
+            if parsed["corrupted"]:
+                degraded = True
+                restore_mode = "raw_frames_degraded"
+                warnings.append({"code": "corrupted_checkpoint", "message": "Latest context checkpoint JSON is corrupted."})
+                frames_after = list(frames)
+            else:
+                restore_mode = "checkpoint"
+                replacement_history = parsed["replacement_history"]
+                source_cursor = parsed["source_cursor"]
+                frames_after = _frames_after_cursor(frames, _cursor_end(source_cursor))
+        else:
+            legacy_summary = _legacy_summary(self.store, session)
+            if legacy_summary:
+                restore_mode = "legacy_summary"
+                stable_prefix.append(
+                    {
+                        "type": "legacy_summary",
+                        "content": _summarize_text(legacy_summary),
+                        "source": "session.plan" if _text(getattr(session, "plan", "")) else "context_snapshot",
+                    }
+                )
+                warnings.append({"code": "legacy_summary", "message": "Using legacy context summary."})
+
+        frame_dicts = [_frame_to_context_item(frame) for frame in frames_after if _frame_model_visible(frame)]
+        contract = PlanContract()
+        envelope = build_pm_envelope(
+            session,
+            purpose=purpose,
+            goal=_text(getattr(session, "goal", "")),
+            user_intent_type=classify_user_intent(_text(getattr(session, "goal", ""))),
+            runtime_state=runtime_dict,
+            available_agents=[],
+            tool_schema=[],
+            output_contract=contract.output_contract(),
+            validator_rules=contract.validator_rules(),
+            stable_prefix=stable_prefix,
+            replacement_history=replacement_history,
+            frames_after_checkpoint=frame_dicts,
+            warnings=warnings,
+        )
+        envelope["context"]["restore_mode"] = restore_mode
+        if checkpoint is not None and not degraded:
+            envelope["context"]["checkpoint_id"] = checkpoint.id
+            envelope["context"]["source_cursor"] = source_cursor
+        active = ActiveContext(
+            session_id=session_id,
+            purpose=purpose,
+            envelope=envelope,
+            stable_prefix=stable_prefix,
+            replacement_history=replacement_history,
+            frames_after_checkpoint=frame_dicts,
+            runtime_state=runtime_dict,
+            source_cursor=source_cursor,
+            token_usage={"window_tokens": window_tokens},
+            degraded=degraded,
+            warnings=warnings,
+        )
+        active.rendered_text = render_active_context(active)
+        return active
 
 
 def make_frame_id(session_id: str, event_id: str, frame_type: str, payload: dict[str, Any]) -> str:
@@ -599,6 +706,254 @@ def runtime_state_dict(state: RuntimeState) -> dict[str, Any]:
     return asdict(state)
 
 
+def classify_user_intent(
+    goal: str,
+    *,
+    explicit_agent: bool = False,
+    workspace: str = "",
+    context: dict | None = None,
+) -> str:
+    if explicit_agent:
+        return "code_change"
+    text = _text(goal).lower()
+    if not text:
+        return "planning_only"
+    if any(marker in text for marker in ("http://", "https://", "browser", "webpage", "screenshot", "网页", "浏览器", "截图")):
+        return "browser_task"
+    if any(marker in text for marker in (
+        "fix", "implement", "test", "refactor", "modify", "patch", "bug",
+        "修复", "修改", "实现", "测试", "改代码",
+    )):
+        return "code_change"
+    if any(marker in text for marker in (
+        "explain code", "inspect repo", "find file", "search repo", "read code",
+        "看仓库", "解释代码", "找文件", "阅读代码",
+    )):
+        return "repo_inspection"
+    if any(marker in text for marker in (
+        "hello", "hi", "what is", "explain concept", "你好", "是什么", "解释一个",
+    )):
+        return "direct_answer"
+    return "planning_only"
+
+
+def build_pm_envelope(
+    session,
+    *,
+    purpose,
+    goal,
+    user_intent_type,
+    runtime_state,
+    available_agents,
+    tool_schema,
+    output_contract,
+    validator_rules,
+    stable_prefix,
+    replacement_history,
+    frames_after_checkpoint,
+    warnings,
+) -> dict[str, Any]:
+    runtime = runtime_state if isinstance(runtime_state, dict) else asdict(runtime_state)
+    return {
+        "task": {
+            "user_intent_type": user_intent_type,
+            "original_user_request": _text(getattr(session, "goal", "")),
+            "current_goal": _text(goal),
+            "task_constraints": [],
+            "purpose": _text(purpose),
+        },
+        "environment": {
+            "cwd": _text(runtime.get("cwd")),
+            "workspace": _text(runtime.get("workspace")),
+            "worktree": _text(runtime.get("worktree")),
+            "branch": _text(runtime.get("branch")),
+            "base_ref": _text(runtime.get("base_ref")),
+            "runtime_policy": {},
+        },
+        "agents": {
+            "available": list(available_agents or []),
+            "active": list(runtime.get("active_agents") or []),
+        },
+        "context": {
+            "stable_prefix": list(stable_prefix or []),
+            "checkpoint_replacement_history": list(replacement_history or []),
+            "frames_after_checkpoint": list(frames_after_checkpoint or []),
+            "runtime_state": runtime,
+        },
+        "tools": {
+            "available": _tool_names(tool_schema),
+            "schemas": _compact_payload(tool_schema or []),
+        },
+        "output_contract": dict(output_contract or {}),
+        "validator_rules": dict(validator_rules or {}),
+        "warnings": list(warnings or []),
+    }
+
+
+def render_active_context(active_context: ActiveContext) -> str:
+    envelope = dict(active_context.envelope or {})
+    envelope["degraded"] = bool(active_context.degraded)
+    if active_context.source_cursor:
+        envelope.setdefault("context", {})["source_cursor"] = active_context.source_cursor
+    ordered = {
+        "task": envelope.get("task", {}),
+        "environment": envelope.get("environment", {}),
+        "agents": envelope.get("agents", {}),
+        "context": envelope.get("context", {}),
+        "output_contract": envelope.get("output_contract", {}),
+        "validator_rules": envelope.get("validator_rules", {}),
+        "tools": envelope.get("tools", {}),
+        "warnings": envelope.get("warnings", []),
+        "degraded": envelope.get("degraded", False),
+    }
+    text = json.dumps(_compact_payload(ordered), ensure_ascii=False, indent=2)
+    return _summarize_text(text, max_chars=8000)
+
+
+def _stable_prefix(session: Session, runtime: dict[str, Any], purpose: str) -> list[dict[str, Any]]:
+    prefix = [
+        {
+            "type": "task",
+            "purpose": _text(purpose),
+            "goal": _text(getattr(session, "goal", "")),
+        }
+    ]
+    env = {
+        key: _text(runtime.get(key))
+        for key in ("cwd", "workspace", "worktree", "branch", "base_ref", "head_sha")
+        if _text(runtime.get(key))
+    }
+    if env:
+        prefix.append({"type": "environment", "payload": env})
+    return prefix
+
+
+def _legacy_summary(store: Any, session: Session) -> str:
+    plan = _text(getattr(session, "plan", ""))
+    if plan:
+        return plan
+    if not hasattr(store, "get_context_snapshots"):
+        return ""
+    snapshots = store.get_context_snapshots(_text(getattr(session, "id", "")))
+    if not snapshots:
+        return ""
+    return _snapshot_summary(snapshots[0])
+
+
+def _snapshot_summary(snapshot: ContextSnapshot) -> str:
+    raw = _loads_or_none(snapshot.summary_json)
+    if raw is None:
+        return _text(getattr(snapshot, "summary_json", ""))
+    for key in ("text", "summary", "content"):
+        value = _text(raw.get(key))
+        if value:
+            return value
+    return _summarize_text(json.dumps(raw, ensure_ascii=False, sort_keys=True))
+
+
+def _parse_checkpoint(checkpoint: ContextCheckpoint) -> dict[str, Any]:
+    corrupted = False
+    replacement_raw = _loads_or_none(checkpoint.replacement_history_json)
+    cursor_raw = _loads_or_none(checkpoint.source_cursor_json)
+    summary_raw = _loads_or_none(checkpoint.summary_json)
+    runtime_raw = _loads_or_none(checkpoint.runtime_state_json)
+    for value in (replacement_raw, cursor_raw, summary_raw, runtime_raw):
+        if value is None:
+            corrupted = True
+    replacement_history: list[dict[str, Any]] = []
+    if isinstance(replacement_raw, dict):
+        items = replacement_raw.get("items")
+        if isinstance(items, list):
+            replacement_history = [_compact_payload(item) for item in items if isinstance(item, dict)]
+    return {
+        "corrupted": corrupted,
+        "replacement_history": replacement_history,
+        "source_cursor": cursor_raw if isinstance(cursor_raw, dict) else {},
+    }
+
+
+def _loads_or_none(raw: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _cursor_end(cursor: dict[str, Any]) -> dict[str, Any]:
+    end = cursor.get("end") if isinstance(cursor.get("end"), dict) else cursor
+    return {
+        "event_ts": _text(
+            end.get("event_ts")
+            or end.get("ts")
+            or cursor.get("end_event_ts")
+            or cursor.get("source_end_event_ts")
+        ),
+        "event_id": _text(
+            end.get("event_id")
+            or end.get("id")
+            or cursor.get("end_event_id")
+            or cursor.get("source_end_event_id")
+        ),
+    }
+
+
+def _frames_after_cursor(frames: list[ContextFrame], cursor: dict[str, Any]) -> list[ContextFrame]:
+    event_ts = _text(cursor.get("event_ts"))
+    event_id = _text(cursor.get("event_id"))
+    if not event_ts:
+        return list(frames)
+    out: list[ContextFrame] = []
+    matched = not event_id
+    for frame in frames:
+        if frame.event_ts > event_ts or (frame.event_ts == event_ts and event_id and frame.event_id > event_id):
+            out.append(frame)
+        if event_id and frame.event_ts == event_ts and frame.event_id == event_id:
+            matched = True
+    return out if matched else list(frames)
+
+
+def _frame_model_visible(frame: ContextFrame) -> bool:
+    if frame.lane == LANE_NOISE:
+        return False
+    payload = _loads(frame.payload_json)
+    return payload.get("model_visible", True) is not False
+
+
+def _frame_to_context_item(frame: ContextFrame) -> dict[str, Any]:
+    return {
+        "id": frame.id,
+        "event_id": frame.event_id,
+        "event_ts": frame.event_ts,
+        "type": frame.type,
+        "role": frame.role,
+        "lane": frame.lane,
+        "agent_id": frame.agent_id,
+        "payload": _compact_payload(_loads(frame.payload_json)),
+        "source_refs": _as_list(_loads_json(frame.source_refs_json)),
+    }
+
+
+def _loads_json(raw: str) -> Any:
+    try:
+        return json.loads(raw or "null")
+    except (TypeError, ValueError):
+        return None
+
+
+def _tool_names(tool_schema: Any) -> list[str]:
+    out: list[str] = []
+    for item in tool_schema or []:
+        name = ""
+        if isinstance(item, dict):
+            name = _text(item.get("name"))
+        else:
+            name = _text(getattr(item, "name", ""))
+        if name:
+            out.append(name)
+    return out
+
+
 def _frame(
     session_id: str,
     event_id: str,
@@ -1035,10 +1390,13 @@ __all__ = [
     "LANE_TASK",
     "ReplacementHistoryItem",
     "RuntimeState",
+    "build_pm_envelope",
+    "classify_user_intent",
     "extract_runtime_state",
     "make_frame_id",
     "materialize_event",
     "materialize_session",
     "record_event",
+    "render_active_context",
     "runtime_state_dict",
 ]

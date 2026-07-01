@@ -37,6 +37,15 @@ class PlanContract:
         "blocked": ("agent", "summary"),
         "error": ("agent", "summary"),
     }
+    ERROR_CODES = (
+        "final_plan_not_object",
+        "final_plan_bad_kind",
+        "final_plan_bad_agent",
+        "final_plan_bad_effort",
+        "final_plan_missing_instruction",
+        "final_plan_missing_reply",
+        "final_plan_missing_summary",
+    )
 
     def __init__(
         self,
@@ -100,6 +109,33 @@ class PlanContract:
                 },
                 "ready": {"type": "boolean"},
             },
+        }
+
+    def output_contract(self) -> dict[str, Any]:
+        return {
+            "protocol": "submit_plan_required",
+            "allowed_kinds": list(self.ALLOWED_KINDS),
+            "direct_reply_instruction_required": "instruction" in self.NON_EMPTY_BY_KIND["direct_reply"],
+            "direct_reply_reply_required": "reply" in self.NON_EMPTY_BY_KIND["direct_reply"],
+            "agent_task_instruction_required": "instruction" in self.NON_EMPTY_BY_KIND["agent_task"],
+            "blocked_summary_or_reply_required": "summary" in self.NON_EMPTY_BY_KIND["blocked"]
+            or "reply" in self.NON_EMPTY_BY_KIND["blocked"],
+            "error_summary_or_reply_required": "summary" in self.NON_EMPTY_BY_KIND["error"]
+            or "reply" in self.NON_EMPTY_BY_KIND["error"],
+        }
+
+    def validator_rules(self) -> dict[str, Any]:
+        return {
+            "required_fields": list(self.COMMON_REQUIRED),
+            "non_empty_by_kind": {
+                kind: list(fields) for kind, fields in self.NON_EMPTY_BY_KIND.items()
+            },
+            "allowed_values": {
+                "kind": list(self.ALLOWED_KINDS),
+                "agent": list(self.allowed_agents),
+                "effort": list(self.ALLOWED_EFFORTS),
+            },
+            "error_codes": list(self.ERROR_CODES),
         }
 
     def validate(self, obj: dict[str, Any]) -> dict[str, Any]:

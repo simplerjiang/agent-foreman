@@ -47,6 +47,21 @@ def test_submit_plan_schema_comes_from_plan_contract():
     assert "user-visible answer" in schema["properties"]["reply"]["description"]
 
 
+def test_plan_contract_exposes_output_contract_and_validator_rules():
+    contract = PlanContract(enabled_agents=["codex"], max_plan_items=17)
+    output_contract = contract.output_contract()
+    validator_rules = contract.validator_rules()
+
+    assert output_contract["allowed_kinds"] == list(PlanContract.ALLOWED_KINDS)
+    assert output_contract["direct_reply_instruction_required"] is True
+    assert output_contract["direct_reply_reply_required"] is True
+    assert validator_rules["non_empty_by_kind"] == {
+        kind: list(fields) for kind, fields in PlanContract.NON_EMPTY_BY_KIND.items()
+    }
+    assert validator_rules["allowed_values"]["agent"] == ["codex"]
+    assert "final_plan_missing_reply" in validator_rules["error_codes"]
+
+
 def test_plan_contract_validator_error_codes_are_stable():
     _raises(_plan(kind="direct_reply", reply="", instruction="direct reply only"), "final_plan_missing_reply")
     _raises(_plan(kind="direct_reply", reply="hello", instruction=""), "final_plan_missing_instruction")
