@@ -24,6 +24,7 @@ def build_session_task(store: Store, task: str, workspace: str, agent: str) -> t
         id=uuid.uuid4().hex,
         goal=task,
         workspace=str(workspace),
+        main_workspace=str(workspace),
         agent_type=agent,
         status="running",
         created_at=now,

@@ -12,6 +12,7 @@ class Session(SQLModel, table=True):
     # planning|running|idle|blocked|waiting_approval|done|failed|stalled|cancelled|paused
     status: str = "planning"
     workspace: str = ""
+    main_workspace: str = ""
     agent_type: str = ""  # claude-code|codex
     created_at: str = ""
     updated_at: str = ""

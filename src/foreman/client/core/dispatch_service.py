@@ -197,9 +197,10 @@ class DispatchService:
         )
         if err:
             return {"ok": False, "error": err}
-        ws, err = self._resolve_workspace(
-            workspace or (existing_session.workspace if existing_session else "")
+        requested_workspace = workspace or (
+            self._effective_session_workspace(existing_session) if existing_session else ""
         )
+        ws, err = self._resolve_workspace(requested_workspace, session=existing_session)
         if err:
             return {"ok": False, "error": err}
         direct_agents: list[str] = [resolved_agent] if pm_enabled and explicit_agent else []
@@ -553,7 +554,7 @@ class DispatchService:
         cfg_effort = (getattr(cfg, "effort", "") if cfg else "").strip().lower()
         return cfg_effort if cfg_effort in VALID_EFFORTS else ""
 
-    def _resolve_workspace(self, workspace: str | None) -> tuple[str, str]:
+    def _resolve_workspace(self, workspace: str | None, *, session=None) -> tuple[str, str]:
         """Resolve the workspace; an explicit one must sit inside an approved root (§6.6 白名单).
 
         Fail closed (issue #1 P2): with an allowlist, a path outside every approved root is
@@ -564,6 +565,8 @@ class DispatchService:
         allow_unlisted = getattr(self.cfg, "allow_unlisted_workspaces_for_dev", False)
         if workspace and str(workspace).strip():
             ws = str(workspace).strip()
+            if self._is_recorded_session_workspace(ws, session):
+                return ws, ""
             if roots:
                 return ("", "workspace_not_allowed") if not _within_any(ws, roots) else (ws, "")
             # No allowlist: accept the explicit path ONLY in dev; otherwise fail closed.
@@ -571,6 +574,40 @@ class DispatchService:
         if roots:
             return roots[0], ""
         return "", "no_workspace"
+
+    def _is_recorded_session_workspace(self, workspace: str, session) -> bool:
+        """Allow a session-owned worktree even when it is outside the main workspace allowlist."""
+        if session is None:
+            return False
+        try:
+            workspace_path = Path(workspace).expanduser()
+            if not workspace_path.is_dir():
+                return False
+            ws = workspace_path.resolve(strict=False)
+        except (OSError, ValueError):
+            return False
+        for value in (
+            getattr(session, "workspace", "") or "",
+            getattr(session, "main_workspace", "") or "",
+        ):
+            if not value:
+                continue
+            try:
+                recorded = Path(str(value)).expanduser()
+                if recorded.is_dir() and ws == recorded.resolve(strict=False):
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+
+    def _effective_session_workspace(self, session) -> str:
+        """Use the live session worktree when it exists; otherwise return the recorded main root."""
+        if session is None:
+            return ""
+        workspace = (getattr(session, "workspace", "") or "").strip()
+        if workspace and Path(workspace).expanduser().is_dir():
+            return workspace
+        return (getattr(session, "main_workspace", "") or workspace).strip()
 
     async def _emit_dispatch(
         self,

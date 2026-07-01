@@ -804,7 +804,12 @@ def test_composer_shows_workspace_git_status_instead_of_success_noise():
     assert "Dispatched" not in js and "Sent to current session" not in js
     assert "WorkspaceGitStatus" in js
     assert "/api/workspaces/git-status" in js and "/api/workspaces/init-git" in js
-    assert "const effectiveWorkspace = (sessionRow && sessionRow.workspace) || workspace" in js
+    assert "/api/workspaces/checkout-branch" in js
+    assert "function effectiveSessionWorkspace(row, fallback)" in js
+    assert "const effectiveWorkspace = effectiveSessionWorkspace(sessionRow, workspace)" in js
+    assert "row.workspace_exists !== false" in js
+    assert "workspaceNoWorktree" in js and "hasSession=${!!sessionRow}" in js
+    assert "${d.workspaceWorktree}: ${shortPath(workspace, d)}" in js
     assert "value=${effectiveWorkspace}" in js
 
 

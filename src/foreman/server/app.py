@@ -133,6 +133,11 @@ class _WorkspaceGitBody(BaseModel):
     path: str
 
 
+class _WorkspaceCheckoutBody(BaseModel):
+    path: str
+    branch: str
+
+
 class _AgentSettingsRow(BaseModel):
     name: str
     enabled: bool = True
@@ -419,8 +424,12 @@ ASSET_VER = _compute_asset_ver()
 
 
 def _session_to_dict(s) -> dict:
+    workspace = getattr(s, "workspace", "") or ""
+    main_workspace = getattr(s, "main_workspace", "") or workspace
     return {
-        "id": s.id, "goal": s.goal, "status": s.status, "workspace": s.workspace,
+        "id": s.id, "goal": s.goal, "status": s.status, "workspace": workspace,
+        "main_workspace": main_workspace,
+        "workspace_exists": bool(workspace and Path(workspace).expanduser().is_dir()),
         "agent_type": s.agent_type, "created_at": s.created_at, "updated_at": s.updated_at,
     }
 
@@ -692,6 +701,9 @@ def create_app(
                 workspace = str(getattr(row, "workspace", "") or "").strip()
                 if workspace:
                     keys.add(_workspace_key(workspace))
+                main_workspace = str(getattr(row, "main_workspace", "") or "").strip()
+                if main_workspace:
+                    keys.add(_workspace_key(main_workspace))
         return keys
 
     def _require_known_workspace(path: str) -> str:
@@ -711,6 +723,7 @@ def create_app(
             "is_git_repo": False,
             "worktree": "",
             "branch": "",
+            "branches": [],
             "detached": False,
             "can_init": False,
         }
@@ -751,6 +764,12 @@ def create_app(
                 if head.returncode == 0 and head.stdout.strip():
                     out["branch"] = head.stdout.strip()
                     out["detached"] = True
+            branches = run(["branch", "--format=%(refname:short)"])
+            if branches.returncode == 0:
+                names = [line.strip() for line in branches.stdout.splitlines() if line.strip()]
+                if current and current not in names:
+                    names.insert(0, current)
+                out["branches"] = names
             return out
         except Exception:  # noqa: BLE001 - git status is display-only
             return out
@@ -1491,6 +1510,46 @@ def create_app(
             )
         except Exception as exc:  # noqa: BLE001 - surface a stable UI error code
             raise HTTPException(status_code=400, detail="git_init_failed") from exc
+        return _workspace_git_status(path)
+
+    @app.post("/api/workspaces/checkout-branch")
+    async def checkout_workspace_branch(body: _WorkspaceCheckoutBody) -> dict:
+        """Switch one known workspace to an existing local branch when the tree is clean."""
+        path = _require_known_workspace(body.path)
+        branch = str(body.branch or "").strip()
+        if not branch:
+            raise HTTPException(status_code=400, detail="bad_branch")
+        status = _workspace_git_status(path)
+        if not status["git_available"]:
+            raise HTTPException(status_code=503, detail="git_unavailable")
+        if not status["is_git_repo"]:
+            raise HTTPException(status_code=400, detail="bad_workspace")
+        if branch == status.get("branch") and not status.get("detached"):
+            return status
+        if branch not in set(status.get("branches") or []):
+            raise HTTPException(status_code=400, detail="bad_branch")
+        git = shutil.which("git") or "git"
+
+        def run(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [git, *args],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout,
+                check=False,
+                **_subprocess_no_window_kwargs(),
+            )
+
+        dirty = run(["status", "--porcelain"], timeout=5)
+        if dirty.returncode != 0:
+            raise HTTPException(status_code=400, detail="git_checkout_failed")
+        if dirty.stdout.strip():
+            raise HTTPException(status_code=409, detail="workspace_dirty")
+        switched = run(["switch", "--", branch], timeout=20)
+        if switched.returncode != 0:
+            raise HTTPException(status_code=400, detail="git_checkout_failed")
         return _workspace_git_status(path)
 
     @app.get("/api/sessions")

@@ -90,6 +90,8 @@ class Store:
         *,
         goal: str | None = None,
         plan: str | None = None,
+        workspace: str | None = None,
+        main_workspace: str | None = None,
         status: str | None = None,
         updated_at: str | None = None,
     ) -> Session | None:
@@ -101,6 +103,10 @@ class Store:
                 row.goal = goal
             if plan is not None:
                 row.plan = plan
+            if workspace is not None:
+                row.workspace = workspace
+            if main_workspace is not None:
+                row.main_workspace = main_workspace
             if status is not None:
                 row.status = status
             if updated_at is not None:

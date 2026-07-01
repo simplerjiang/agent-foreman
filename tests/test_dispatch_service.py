@@ -1709,6 +1709,47 @@ async def test_workspace_outside_allowlist_rejected(tmp_path):
     assert res["error"] == "workspace_not_allowed"
 
 
+async def test_existing_session_allows_recorded_worktree_outside_allowlist(tmp_path):
+    store = _store(tmp_path)
+    main = tmp_path / "main"
+    worktree = tmp_path / "pm-worktree"
+    main.mkdir()
+    worktree.mkdir()
+    cfg = _cfg(workspaces=[WorkspaceCfg(path=str(main))])
+    svc = DispatchService(cfg, store)
+
+    first = await svc.create("do x", workspace=str(main))
+    store.update_session(first["session_id"], workspace=str(worktree))
+    follow = await svc.create(
+        "do y",
+        workspace=str(worktree),
+        session_id=first["session_id"],
+    )
+
+    assert follow["ok"] is True
+    assert follow["continued"] is True
+    assert follow["workspace"] == str(worktree)
+
+
+async def test_existing_session_rejects_missing_recorded_worktree_outside_allowlist(tmp_path):
+    store = _store(tmp_path)
+    main = tmp_path / "main"
+    missing = tmp_path / "missing-worktree"
+    main.mkdir()
+    cfg = _cfg(workspaces=[WorkspaceCfg(path=str(main))])
+    svc = DispatchService(cfg, store)
+
+    first = await svc.create("do x", workspace=str(main))
+    store.update_session(first["session_id"], workspace=str(missing))
+    follow = await svc.create(
+        "do y",
+        workspace=str(missing),
+        session_id=first["session_id"],
+    )
+
+    assert follow["error"] == "workspace_not_allowed"
+
+
 async def test_explicit_workspace_rejected_when_no_allowlist(tmp_path):
     # No workspaces configured → fail closed: an explicit path is rejected, not run in an arbitrary
     # cwd (issue #1 P2). Previously this failed open and accepted the path as-is.

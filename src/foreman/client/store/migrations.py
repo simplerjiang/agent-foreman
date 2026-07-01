@@ -13,11 +13,15 @@ History:
 - v1 — decisioncard.diff_stat. The 📎 changes line (§6.3) was retrofitted onto `decisioncard`
   after its first release; this formalizes the old `_ensure_columns` stop-gap into a real,
   ledgered migration so an upgrade of an old client DB picks it up exactly once.
+- v2 — session.main_workspace. Session.workspace can move to a PM-created worktree; this keeps
+  the original main workspace available for fallback when that worktree disappears.
 """
 
 from __future__ import annotations
 
-from foreman.shared.migrations import Migration, add_column
+from sqlalchemy import text
+
+from foreman.shared.migrations import Migration, add_column, column_exists, table_exists
 
 # The client's ledger table is named `schemaversion` (the SQLModel default for the local
 # `SchemaVersion` model), kept for backward-compat with existing local DBs. The server's is
@@ -29,6 +33,15 @@ def _v1_decisioncard_diff_stat(conn) -> None:
     add_column(conn, "decisioncard", "diff_stat", "TEXT NOT NULL DEFAULT ''")
 
 
+def _v2_session_main_workspace(conn) -> None:
+    add_column(conn, "session", "main_workspace", "TEXT NOT NULL DEFAULT ''")
+    if table_exists(conn, "session") and column_exists(conn, "session", "main_workspace"):
+        conn.execute(
+            text("UPDATE session SET main_workspace = COALESCE(workspace, '') WHERE main_workspace = ''")
+        )
+
+
 CLIENT_MIGRATIONS: list[Migration] = [
     Migration(1, "decisioncard.diff_stat (📎 changes line, §6.3)", _v1_decisioncard_diff_stat),
+    Migration(2, "session.main_workspace fallback for PM worktrees", _v2_session_main_workspace),
 ]

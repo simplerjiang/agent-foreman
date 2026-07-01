@@ -45,6 +45,23 @@ def test_api_sessions(tmp_path):
     assert any(s["id"] == "s1" and s["goal"] == "g1" for s in sessions)
 
 
+def test_api_sessions_expose_main_workspace_and_workspace_exists(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    main = tmp_path / "main"
+    main.mkdir()
+    missing = tmp_path / "missing-worktree"
+    store.add_session(
+        Session(id="s1", goal="g1", workspace=str(missing), main_workspace=str(main))
+    )
+    c = TestClient(create_app(load_config(), store, EventBus()))
+
+    row = c.get("/api/sessions").json()[0]
+    assert row["workspace"] == str(missing)
+    assert row["main_workspace"] == str(main)
+    assert row["workspace_exists"] is False
+
+
 def test_api_events(tmp_path):
     c = TestClient(_app_with_store(tmp_path))
     events = c.get("/api/sessions/s1/events").json()
@@ -342,6 +359,7 @@ def test_workspace_settings_can_dispatch_without_restart(tmp_path):
     assert res.status_code == 200
     assert res.json()["workspace"] == path
     session_id = res.json()["session_id"]
+    assert store.get_session(session_id).main_workspace == path
     events = c.get(f"/api/sessions/{session_id}/events").json()
     assert events[-1]["source"] == "desktop"
 
@@ -359,6 +377,30 @@ def test_workspace_settings_can_dispatch_without_restart(tmp_path):
 
     assert c.delete("/api/workspaces", params={"path": path}).json() == []
     assert c.get("/api/workspaces").json() == []
+
+
+def test_followup_without_workspace_falls_back_to_session_main_workspace(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    dispatcher = DispatchService(cfg, store)
+    c = TestClient(create_app(cfg, store, EventBus(), dispatcher=dispatcher))
+    main = tmp_path / "main"
+    main.mkdir()
+    missing = tmp_path / "gone-worktree"
+    c.post("/api/workspaces", json={"path": str(main), "name": "Main"})
+
+    res = c.post("/api/tasks", json={"goal": "do x", "workspace": str(main), "source": "desktop"})
+    session_id = res.json()["session_id"]
+    store.update_session(session_id, workspace=str(missing))
+
+    follow = c.post(
+        "/api/tasks",
+        json={"goal": "do y", "session_id": session_id, "source": "desktop"},
+    )
+    assert follow.status_code == 200
+    assert follow.json()["continued"] is True
+    assert follow.json()["workspace"] == str(main)
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -380,6 +422,17 @@ def test_workspace_git_status_and_init(tmp_path):
     assert initialized["is_git_repo"] is True
     assert initialized["worktree"].replace("\\", "/").endswith("/project")
 
+    (path / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=str(path), capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Foreman Test", "-c", "user.email=foreman@example.test", "commit", "-m", "init"],
+        cwd=str(path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    base_branch = c.get("/api/workspaces/git-status", params={"path": str(path)}).json()["branch"]
+
     subprocess.run(
         ["git", "checkout", "-b", "feature/ws-status"],
         cwd=str(path),
@@ -389,6 +442,47 @@ def test_workspace_git_status_and_init(tmp_path):
     )
     after = c.get("/api/workspaces/git-status", params={"path": str(path)}).json()
     assert after["branch"] == "feature/ws-status"
+    assert "feature/ws-status" in after["branches"]
+
+    switched = c.post(
+        "/api/workspaces/checkout-branch",
+        json={"path": str(path), "branch": base_branch},
+    ).json()
+    assert switched["branch"] == base_branch
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_workspace_git_status_allows_session_owned_worktree(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    c = TestClient(create_app(cfg, store, EventBus()))
+    path = tmp_path / "pm-worktree"
+    path.mkdir()
+    subprocess.run(["git", "init"], cwd=str(path), capture_output=True, text=True, check=True)
+    store.add_session(Session(id="s1", goal="g", workspace=str(path)))
+
+    status = c.get("/api/workspaces/git-status", params={"path": str(path)})
+    assert status.status_code == 200
+    assert status.json()["is_git_repo"] is True
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_workspace_git_status_allows_session_main_workspace_fallback(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    cfg = Config()
+    c = TestClient(create_app(cfg, store, EventBus()))
+    main = tmp_path / "main"
+    main.mkdir()
+    subprocess.run(["git", "init"], cwd=str(main), capture_output=True, text=True, check=True)
+    store.add_session(
+        Session(id="s1", goal="g", workspace=str(tmp_path / "gone"), main_workspace=str(main))
+    )
+
+    status = c.get("/api/workspaces/git-status", params={"path": str(main)})
+    assert status.status_code == 200
+    assert status.json()["is_git_repo"] is True
 
 
 # ── /api/settings/llm: switch the PM brain at runtime (§15) ──────────────────────────────────────
