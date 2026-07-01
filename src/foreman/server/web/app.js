@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.4.4",
+      en: "Context v2 planning now has Codex-style design and implementation task docs covering recoverable checkpoints, PM active context envelopes, remote /responses/compact reuse, and review-ready branch handoff requirements; session views also keep new messages scrolled to the bottom.",
+      zh: "Context v2 规划新增 Codex 风格设计书和实施任务书，覆盖可恢复 checkpoint、PM active context envelope、复用远端 /responses/compact、以及便于 GPT-5.5 pro review 的分支交付要求；会话视图发送新消息后也会保持滚动到底部。",
+    },
+    {
       version: "v1.4.3",
       en: "Pytest maintenance now folds repetitive table-style checks into compact table-driven tests, removes a redundant client import smoke test, and keeps the same behavior coverage with fewer collected pytest nodes.",
       zh: "Pytest 维护整理将重复的表格型断言合并为更紧凑的表驱动测试，移除冗余的 client import smoke test，并在保留相同行为覆盖的同时减少 pytest 收集节点。",
@@ -640,6 +645,7 @@
     return approxTokensFromChars(chars);
   }
   function eventContextChars(e) {
+    if (e && (e.type === "pm_output" || e.type === "pm_reasoning")) return 0;
     const p = (e && e.payload) || {};
     const primary = p.text || p.delta || p.summary || p.raw_text || p.goal || "";
     if (primary) return String(primary).length;
@@ -696,23 +702,29 @@
     };
   }
   function lastContextPackEvent(events) {
+    const idx = lastContextPackIndex(events);
+    return idx >= 0 ? events[idx] : null;
+  }
+  function lastContextPackIndex(events) {
     for (let i = (events || []).length - 1; i >= 0; i -= 1) {
       const e = events[i];
-      if (e && e.type === "context_compact") return e;
+      if (e && e.type === "context_compact") return i;
     }
-    return null;
+    return -1;
   }
   function nextContextStats(sessionRow, events) {
+    const compactIdx = lastContextPackIndex(events);
+    const compact = compactIdx >= 0 ? events[compactIdx] : null;
+    const tailTokens = compactIdx >= 0 ? estTokens((events || []).slice(compactIdx + 1)) : 0;
     if (sessionRow && sessionRow.context_compacted && Object.prototype.hasOwnProperty.call(sessionRow, "context_tokens")) {
       return {
-        tokens: Math.max(0, Number(sessionRow.context_tokens) || 0),
+        tokens: Math.max(0, Number(sessionRow.context_tokens) || 0) + tailTokens,
         compacted: true,
       };
     }
-    const compact = lastContextPackEvent(events);
     if (compact) {
       const view = contextPackView(compact.payload || {});
-      return { tokens: view.afterTokens, compacted: true };
+      return { tokens: view.afterTokens + tailTokens, compacted: true };
     }
     return { tokens: estTokens(events || []), compacted: false };
   }
@@ -1889,6 +1901,8 @@
       rightTab, setRightTab, onCard, onApproval, openDetail, composer, runCompact, compacting, compactStatus, onBriefing,
       cards, approvals, onCancelSession, onRetrySession, onDeleteSession, onRenameSession, topControls, onCopy } = props;
     const threadNodes = threadExtras(dig, cards, approvals, sessionRow);
+    const threadRef = useRef(null);
+    const lastThreadNodeId = threadNodes.length ? threadNodes[threadNodes.length - 1].id : "";
     const agentType = displayAgent(sessionRow && sessionRow.agent_type, d);
     const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
     const statusKey = status.replace(/[\s-]+/g, "_");
@@ -1904,6 +1918,11 @@
     const failReason = terminalFail ? lastFailureReason(events, d) : "";
     const onBars = Math.max(0, Math.min(4, autonomy + 1));
     const autonomyName = d[`auto${autonomy}`] || `L${autonomy}`;
+    useEffect(() => {
+      const el = threadRef.current;
+      if (!el) return;
+      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    }, [sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId]);
     return html`
       <div className="main">
         <div className="sess-header">
@@ -1931,7 +1950,7 @@
 
         <div className="ws-body">
           <div className="ws-left">
-            <div className="thread">
+            <div className="thread" ref=${threadRef}>
               <div className="thread-inner">
                 ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
                   threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${openCalls} toggleCall=${toggleCall} onCard=${onCard} onApproval=${onApproval} openDetail=${openDetail} onCopy=${onCopy} />`)}
@@ -2909,6 +2928,8 @@
   function MobileWorkspace({ d, lang, dig, mTab, mainProps }) {
     const sessionRow = mainProps.sessionRow;
     const threadNodes = threadExtras(dig, mainProps.cards, mainProps.approvals, sessionRow);
+    const threadRef = useRef(null);
+    const lastThreadNodeId = threadNodes.length ? threadNodes[threadNodes.length - 1].id : "";
     const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
     const statusKey = status.replace(/[\s-]+/g, "_");
     const live = sessionRow && ["planning", "queued", "running", "active", "waiting_approval"].includes(statusKey);
@@ -2916,6 +2937,11 @@
     const cancelled = status.includes("cancel");
     const done = status.includes("done") || status.includes("complete");
     const statusText = live ? d.running : cancelled ? d.cancelled : failed ? d.failed : done ? d.done : ((sessionRow && sessionRow.status) || "");
+    useEffect(() => {
+      const el = threadRef.current;
+      if (!el) return;
+      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    }, [sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId, mTab]);
     if (mTab === "chat") return html`<div className="m-workspace">
       ${sessionRow ? html`<div className="m-session-controls">
         <span className=${`tag ${failed ? "red" : done ? "green" : "plain"}`}><span className=${`dot${live ? " live" : ""}`} style=${{ background: failed ? "var(--red)" : done ? "var(--green)" : "var(--faint)" }}></span>${statusText}</span>
@@ -2925,7 +2951,7 @@
         ${failed ? html`<button className="btn primary sm" onClick=${() => mainProps.onRetrySession(sessionRow)}>${d.retry}</button>` : null}
         ${!live ? html`<button className="btn sm" onClick=${() => mainProps.onDeleteSession(sessionRow.id)}>${d.deleteSession}</button>` : null}
       </div>` : null}
-      <div className="thread" style=${{ padding: 13 }}><div className="thread-inner">
+      <div className="thread" ref=${threadRef} style=${{ padding: 13 }}><div className="thread-inner">
         ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
           threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${mainProps.openCalls} toggleCall=${mainProps.toggleCall} onCard=${mainProps.onCard} onApproval=${mainProps.onApproval} openDetail=${mainProps.openDetail} onCopy=${mainProps.onCopy} />`)}
       </div></div>

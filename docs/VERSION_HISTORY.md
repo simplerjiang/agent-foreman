@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.4
+
+English:
+
+- Added the Codex-style Context v2 design document covering structured frames, recoverable checkpoints, PM active context envelopes, and remote `/responses/compact` as the preferred semantic compaction engine.
+- Added the GPT-5.5 pro implementation task book with commit-by-commit sequencing, validation gates, and review handoff requirements for every development round.
+- PM context preparation now preserves high-signal timeline anchors for compaction fallback, and session views keep newly sent messages scrolled to the bottom.
+
+中文：
+
+- 新增 Codex 风格 Context v2 设计书，覆盖结构化 frames、可恢复 checkpoints、PM active context envelope，以及优先使用远端 `/responses/compact` 作为语义压缩引擎。
+- 新增 GPT-5.5 pro 实施任务书，写明逐 commit 开发顺序、验收门禁，以及每轮开发后的 review 交付要求。
+- PM 上下文压缩 fallback 会保留高信号时间线锚点；会话视图发送新消息后会保持滚动到底部。
+
 ## v1.4.3
 
 English:

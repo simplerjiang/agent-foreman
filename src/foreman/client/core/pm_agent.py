@@ -435,7 +435,7 @@ def build_plan_prompt(
 
 def events_to_text(rows: list[Any], *, max_chars: int = MAX_EVENT_CHARS) -> str:
     parts: list[str] = []
-    for row in rows[-120:]:
+    for row in rows:
         if getattr(row, "type", "") in {"pm_output", "pm_reasoning"}:
             continue
         try:
@@ -458,8 +458,51 @@ def events_to_text(rows: list[Any], *, max_chars: int = MAX_EVENT_CHARS) -> str:
         )
     text = "\n".join(parts)
     if len(text) > max_chars:
-        return "...[timeline truncated]...\n" + text[-max_chars:]
+        return _fit_event_text(parts, max_chars=max_chars)
     return text
+
+
+def _fit_event_text(parts: list[str], *, max_chars: int) -> str:
+    text = "\n".join(parts)
+    marker = "...[timeline truncated]..."
+    head_budget = max_chars // 3
+    head_parts = _timeline_anchor_parts(parts, budget=head_budget)
+    if not head_parts:
+        for part in parts[:20]:
+            candidate = "\n".join([*head_parts, part])
+            if len(candidate) > head_budget:
+                if not head_parts and len(part) <= max_chars // 2:
+                    head_parts.append(part)
+                break
+            head_parts.append(part)
+    head = "\n".join(head_parts)
+    if not head:
+        return marker + "\n" + text[-max_chars:]
+    tail_budget = max_chars - len(head) - len(marker) - 2
+    if tail_budget < max_chars // 2:
+        return marker + "\n" + text[-max_chars:]
+    return head + "\n" + marker + "\n" + text[-tail_budget:]
+
+
+def _timeline_anchor_parts(parts: list[str], *, budget: int) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    marker_groups = (
+        ("git worktree", "worktree add", "preparing worktree"),
+        ("/agent_start:",),
+        ("/dispatch:", "/pm_plan:"),
+    )
+    for markers in marker_groups:
+        for part in parts:
+            low = part.lower()
+            if part in seen or not any(marker in low for marker in markers):
+                continue
+            candidate = "\n".join([*selected, part])
+            if len(candidate) > budget:
+                continue
+            selected.append(part)
+            seen.add(part)
+    return selected
 
 
 def _payload_summary(payload: object) -> str:
@@ -481,7 +524,24 @@ def _content_summary(value: object) -> str:
         return value.strip()
     if not isinstance(value, dict):
         return ""
+    command = _as_str(value.get("command"))
+    output = _as_str(value.get("aggregated_output"))
+    if command or output:
+        parts = []
+        if command:
+            parts.append(f"command: {command}")
+        status = _as_str(value.get("status"))
+        exit_code = value.get("exit_code")
+        if status or exit_code is not None:
+            parts.append(f"status: {status or 'unknown'} exit_code: {exit_code}")
+        if output:
+            parts.append(f"output: {output}")
+        return "\n".join(parts).strip()
     for key in ("text", "delta", "thinking", "reasoning", "summary"):
+        direct = _as_str(value.get(key))
+        if direct:
+            return direct
+    for key in ("message", "error"):
         direct = _as_str(value.get(key))
         if direct:
             return direct

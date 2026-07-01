@@ -227,6 +227,15 @@ def test_workspace_chat_thread_and_right_panel_wired():
     assert ".thread" in css and ".ws-right" in css and ".composer-box" in css
 
 
+def test_workspace_thread_scrolls_to_bottom_on_new_messages():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "const threadRef = useRef(null)" in js
+    assert "lastThreadNodeId" in js
+    assert "el.scrollTop = el.scrollHeight" in js
+    assert '<div className="thread" ref=${threadRef}>' in js
+
+
 def test_workspace_user_and_pm_bubbles_have_copy_buttons():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
@@ -276,7 +285,7 @@ def test_context_meter_and_context_pack_helpers_match_provider_context():
 const must = (cond, label, value) => { if (!cond) { console.error(label, value); process.exit(1); } };
 const noisyEvents = [{ type: "agent_output", payload: { summary: "x".repeat(4000) } }];
 let stats = nextContextStats({ context_tokens: 809, context_compacted: true }, noisyEvents);
-must(stats.tokens === 809 && stats.compacted === true, "session context stats win", stats);
+must(stats.tokens === 809 && stats.compacted === true, "compacted sessions use backend base without compact marker", stats);
 stats = nextContextStats({ context_tokens: 0, context_compacted: false }, noisyEvents);
 must(stats.tokens === 1000 && stats.compacted === false, "uncompacted sessions use raw event context", stats);
 const payload = {
@@ -292,6 +301,22 @@ const broken = contextPackView({ summary: '{"dynamic_tail":', after_tokens: 5, s
 must(broken.json.includes('"parse_error"') && !broken.json.includes('{"dynamic_tail":'), "broken json is not raw rendered", broken.json);
 stats = nextContextStats(null, [{ type: "context_compact", payload }]);
 must(stats.tokens === 12 && stats.compacted === true, "compact event fallback", stats);
+stats = nextContextStats({ context_tokens: 809, context_compacted: true }, [
+  { type: "context_compact", payload },
+  { type: "agent_output", payload: { summary: "x".repeat(4000) } },
+]);
+must(stats.tokens === 1809 && stats.compacted === true, "compacted sessions add post-compact tail", stats);
+stats = nextContextStats({ context_tokens: 809, context_compacted: true }, [
+  { type: "context_compact", payload },
+  { type: "pm_reasoning", payload: { delta: "x".repeat(4000) } },
+  { type: "pm_output", payload: { delta: "x".repeat(4000) } },
+]);
+must(stats.tokens === 809 && stats.compacted === true, "pm stream noise does not grow context meter", stats);
+stats = nextContextStats(null, [
+  { type: "context_compact", payload },
+  { type: "agent_output", payload: { summary: "x".repeat(4000) } },
+]);
+must(stats.tokens === 1012 && stats.compacted === true, "compact event fallback adds post-compact tail", stats);
 '''
     subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
 

@@ -593,6 +593,101 @@ def test_events_to_text_extracts_nested_agent_item_text():
     assert "nested text" in events_to_text(rows)
 
 
+def test_events_to_text_extracts_codex_command_execution_output():
+    rows = [
+        make_event(
+            "agent_output",
+            "codex",
+            "s1",
+            payload={
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "git worktree add E:/repo-wt origin/main",
+                    "aggregated_output": "Preparing worktree (detached HEAD)",
+                    "exit_code": 0,
+                    "status": "completed",
+                },
+            },
+        )
+    ]
+
+    text = events_to_text(rows)
+    assert "git worktree add E:/repo-wt origin/main" in text
+    assert "Preparing worktree" in text
+
+
+def test_events_to_text_keeps_agent_output_before_pm_stream_noise():
+    rows = [
+        make_event(
+            "agent_output",
+            "codex",
+            "s1",
+            payload={
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "rg WHOLE_COMPUTER_CONTROL",
+                    "aggregated_output": "docs/WHOLE_COMPUTER_CONTROL.zh-CN.md",
+                    "exit_code": 0,
+                    "status": "completed",
+                },
+            },
+        )
+    ]
+    rows.extend(
+        make_event("pm_output", "pm-agent", "s1", payload={"delta": "noise"})
+        for _ in range(160)
+    )
+    rows.append(
+        make_event(
+            "pm_review",
+            "pm-agent",
+            "s1",
+            payload={"summary": "reviewed after noisy PM streaming"},
+        )
+    )
+
+    text = events_to_text(rows)
+    assert "docs/WHOLE_COMPUTER_CONTROL.zh-CN.md" in text
+    assert "reviewed after noisy PM streaming" in text
+    assert "noise" not in text
+
+
+def test_events_to_text_preserves_early_worktree_context_when_truncated():
+    rows = [
+        make_event(
+            "agent_output",
+            "codex",
+            "s1",
+            payload={
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "git worktree add E:/AutoWorkAgent-worktrees/feature origin/main",
+                    "aggregated_output": "Preparing worktree (new branch 'docs/whole-computer-control')",
+                    "exit_code": 0,
+                    "status": "completed",
+                },
+            },
+        )
+    ]
+    rows.extend(
+        make_event(
+            "agent_output",
+            "codex",
+            "s1",
+            payload={"type": "item.completed", "item": {"type": "agent_message", "text": f"tail {i} " + ("x" * 120)}},
+        )
+        for i in range(40)
+    )
+
+    text = events_to_text(rows, max_chars=1200)
+    assert "git worktree add E:/AutoWorkAgent-worktrees/feature origin/main" in text
+    assert "tail 39" in text
+    assert "timeline truncated" in text
+
+
 def test_parse_plan_extracts_todo_and_deliberation():
     plan = parse_plan(
         json.dumps(
