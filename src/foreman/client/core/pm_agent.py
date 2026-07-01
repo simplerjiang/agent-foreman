@@ -111,6 +111,7 @@ class PMPlan:
     model: str
     effort: str
     instruction: str
+    workspace: str = ""
     kind: str = "agent_task"
     reply: str = ""
     summary: str = ""
@@ -230,6 +231,7 @@ def parse_plan(
         model=_as_str(obj.get("model")) or fallback_model,
         effort=effort,
         instruction=instruction,
+        workspace=_as_str(obj.get("workspace")),
         kind=_plan_kind(obj.get("kind")),
         reply=_as_str(obj.get("reply")),
         summary=_as_str(obj.get("summary")),
@@ -661,6 +663,7 @@ class PMAgent:
                     "model": "",
                     "effort": requested_effort,
                     "instruction": fallback_instruction,
+                    "workspace": "",
                 }
                 prompt = build_plan_prompt(
                     goal,
@@ -709,6 +712,7 @@ class PMAgent:
                     effort=_as_str(outcome.final_plan.get("effort")),
                     instruction=_as_str(outcome.final_plan.get("instruction"))
                     or fallback_instruction,
+                    workspace=_as_str(outcome.final_plan.get("workspace")),
                     kind=_plan_kind(outcome.final_plan.get("kind")),
                     reply=_as_str(outcome.final_plan.get("reply")),
                     summary=_as_str(outcome.final_plan.get("summary")),

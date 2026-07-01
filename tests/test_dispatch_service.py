@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 
 import pytest
 
@@ -143,6 +144,79 @@ async def test_cancelled_session_is_not_overwritten_by_background_completion(tmp
     assert store.get_session(res["session_id"]).status == "cancelled"
     assert (await svc.delete(res["session_id"]))["ok"] is True
     assert store.get_session(res["session_id"]) is None
+
+
+async def test_pm_plan_workspace_updates_session_and_launches_from_git_worktree(tmp_path):
+    store = _store(tmp_path)
+    main = tmp_path / "main"
+    worktree = tmp_path / "pm-worktree"
+    main.mkdir()
+    subprocess.run(["git", "init"], cwd=main, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=main,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=main,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (main / "README.md").write_text("main\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=main, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=main, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feature/worktree", str(worktree)],
+        cwd=main,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    launched = asyncio.Event()
+    launched_workspaces: list[str] = []
+
+    class FakePM:
+        max_runs = 1
+
+        async def plan(self, goal, **_kw):
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="",
+                workspace=str(worktree),
+                instruction="do it from the selected worktree",
+            )
+
+        async def review(self, goal, plan, timeline, **_kw):
+            return PMReview(done=True, summary="done")
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            launched_workspaces.append(str(workspace))
+            launched.set()
+            return object()
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(main))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    res = await svc.create("use the existing worktree", workspace=str(main))
+    await asyncio.wait_for(launched.wait(), timeout=1)
+
+    session = store.get_session(res["session_id"])
+    assert session is not None
+    assert session.workspace == str(worktree)
+    assert session.main_workspace == str(main)
+    assert launched_workspaces == [str(worktree)]
 
 
 async def test_cancelled_session_is_not_overwritten_by_background_failure(tmp_path):

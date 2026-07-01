@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.2
+
+English:
+
+- PM final plans can now include a verified target workspace/worktree path.
+- When that path is either an allowed workspace or a git worktree registered under the current main workspace, Foreman updates `session.workspace` before launching the coding agent.
+- The composer worktree/branch status, workspace file actions, and follow-up dispatches now see the same target worktree that the coding agent actually uses, instead of staying pinned to the main checkout.
+
+中文：
+
+- PM 最终计划现在可以携带已验证的目标 workspace/worktree 路径。
+- 当该路径属于允许的工作区，或是当前 main workspace 登记过的 git worktree 时，Foreman 会在启动编码代理前更新 `session.workspace`。
+- 输入区 worktree/branch 状态、工作区文件操作和后续下发现在会看到编码代理实际使用的目标 worktree，而不是继续停在 main checkout。
+
 ## v1.4.1
 
 English:
