@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.4.0`.
+Current documented release: `v1.4.1`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.4.1` | Context compression now renders as a collapsed transparent ContextPack row with pretty JSON on expand, and the composer context meter follows the next provider-bound context before and after compaction. |
 | `v1.4.0` | Subagent cards now render replies, commands, reasoning, and final results as one chronological timeline, keep agent identity separate from model output, preserve Windows CJK CLI text, and make workspace file references clickable. |
 | `v1.3.9` | Session workspace status now records the original main workspace, falls back when a PM worktree disappears, shows no worktree for new chats, and exposes a guarded local branch switcher. |
 | `v1.3.8` | PM tool activity now appears as a public timeline with tool starts, result summaries, collapsible details, optional public notes, and no hidden reasoning exposure. |
@@ -286,7 +287,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.4.0`。
+当前文档版本：`v1.4.1`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -294,6 +295,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.4.1` | 上下文压缩现在显示为透明折叠 ContextPack 行，展开后展示格式化 JSON；输入区上下文仪表盘会按压缩前后下一次真正发给 provider 的上下文计数。 |
 | `v1.4.0` | 子代理卡片现在按同一条时间线展示回复、命令、思考和最终结果，把 agent 身份与模型输出分开，保留 Windows 中文 CLI 输出，并让工作区文件引用可点击。 |
 | `v1.3.9` | 会话工作区状态现在记录原始 main workspace，PM worktree 消失时回退 main，新对话显示无 worktree，并提供受保护的本地分支切换下拉框。 |
 | `v1.3.8` | PM 工具活动现在进入公开时间线，显示工具开始、结果摘要、可折叠详情和可选公开说明，同时不暴露隐藏思维链。 |

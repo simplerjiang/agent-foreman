@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.1
+
+English:
+
+- Context compression events now render as a collapsed transparent row instead of exposing raw ContextPack JSON in the timeline.
+- Expanding the row shows parsed, pretty-printed ContextPack JSON and never falls back to raw summary text when parsing fails.
+- The composer context meter now tracks the context that the next PM call will send to the LLM provider: raw event context before compaction, and the stored ContextPack after compaction.
+
+中文：
+
+- 上下文压缩事件现在默认显示为透明折叠行，不再在线程里裸露 ContextPack 原始 JSON。
+- 展开折叠行后显示解析并格式化后的 ContextPack JSON；解析失败时也不会回显原始 summary 文本。
+- 输入区上下文仪表盘现在按下一次 PM 调用真正发送给 LLM provider 的上下文计数：压缩前按事件上下文估算，压缩后按已保存的 ContextPack 计算。
+
 ## v1.4.0
 
 English:

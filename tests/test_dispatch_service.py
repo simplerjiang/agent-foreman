@@ -1772,13 +1772,17 @@ async def test_explicit_workspace_accepted_when_no_allowlist_with_dev_flag(tmp_p
 
 async def test_overview_counts_and_newest_first(tmp_path):
     store = _store(tmp_path)
-    store.add_session(Session(id="s1", goal="older", status="running",
+    store.add_session(Session(id="s1", goal="older", status="running", plan="ordinary PM plan",
                               agent_type="claude-code", created_at="2026-01-01T00:00:00Z"))
-    store.add_session(Session(id="s2", goal="newer", status="idle",
+    store.add_session(Session(id="s2", goal="newer", status="idle", plan="short context",
                               agent_type="codex", created_at="2026-02-01T00:00:00Z"))
     store.add_event(make_event("agent_output", "claude-code", "s1", payload={"t": "a"}))
     store.add_event(make_event("stop", "claude-code", "s1", payload={"r": "done"}))
     store.add_event(make_event("agent_output", "codex", "s2", payload={"t": "b"}))
+    store.add_event(make_event(
+        "context_compact", "pm-agent", "s2",
+        payload={"summary": "short context", "after_tokens": 3},
+    ))
     # an open (undecided) card + a pending approval on s1
     store.add_decision_card(DecisionCard(id="c1", action_id="a1", session_id="s1", ts="t"))
     store.add_approval(Approval(id="ap1", session_id="s1", status="pending", requested_at="t"))
@@ -1792,8 +1796,12 @@ async def test_overview_counts_and_newest_first(tmp_path):
     assert s1["last_event_type"] == "stop"
     assert s1["open_cards"] == 1
     assert s1["pending_approvals"] == 1
+    assert s1["context_compacted"] is False
+    assert s1["context_tokens"] == 0
     s2 = next(d for d in ov if d["id"] == "s2")
-    assert s2["events"] == 1 and s2["open_cards"] == 0 and s2["pending_approvals"] == 0
+    assert s2["events"] == 2 and s2["open_cards"] == 0 and s2["pending_approvals"] == 0
+    assert s2["context_compacted"] is True
+    assert s2["context_tokens"] == 4
 
 
 def test_overview_no_store_is_empty():

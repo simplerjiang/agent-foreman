@@ -461,15 +461,23 @@ def _compute_asset_ver() -> str:
 ASSET_VER = _compute_asset_ver()
 
 
-def _session_to_dict(s) -> dict:
+def _session_to_dict(s, *, context_compacted: bool = False) -> dict:
     workspace = getattr(s, "workspace", "") or ""
     main_workspace = getattr(s, "main_workspace", "") or workspace
+    context = (getattr(s, "plan", "") or "") if context_compacted else ""
     return {
         "id": s.id, "goal": s.goal, "status": s.status, "workspace": workspace,
         "main_workspace": main_workspace,
         "workspace_exists": bool(workspace and Path(workspace).expanduser().is_dir()),
         "agent_type": s.agent_type, "created_at": s.created_at, "updated_at": s.updated_at,
+        "context_chars": len(context),
+        "context_tokens": _approx_context_tokens(context),
+        "context_compacted": bool(context_compacted and context.strip()),
     }
+
+
+def _approx_context_tokens(text: str) -> int:
+    return (len(text or "") + 3) // 4
 
 
 def _clean_session_title(title: str) -> str:
@@ -1647,7 +1655,13 @@ def create_app(
     async def list_sessions() -> list[dict]:
         if store is None:
             raise HTTPException(status_code=503, detail="no local store")
-        return [_session_to_dict(s) for s in store.get_sessions()]
+        def compacted(session_id: str) -> bool:
+            return bool(
+                hasattr(store, "get_events")
+                and any(getattr(e, "type", "") == "context_compact" for e in store.get_events(session_id))
+            )
+
+        return [_session_to_dict(s, context_compacted=compacted(s.id)) for s in store.get_sessions()]
 
     @app.get("/api/sessions/{session_id}/events")
     async def list_events(session_id: str) -> list[dict]:
@@ -1667,7 +1681,11 @@ def create_app(
         )
         if row is None:
             raise HTTPException(status_code=404, detail="session_not_found")
-        return _session_to_dict(row)
+        compacted = bool(
+            hasattr(store, "get_events")
+            and any(getattr(e, "type", "") == "context_compact" for e in store.get_events(session_id))
+        )
+        return _session_to_dict(row, context_compacted=compacted)
 
     @app.post("/api/sessions/{session_id}/compact")
     async def compact_session(session_id: str) -> dict:

@@ -313,6 +313,17 @@ a { color: var(--accent-text); }
 .thread-inner { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
 .thread-divider { display: flex; align-items: center; gap: 12px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
 .thread-divider .line { flex: 1; height: 1px; background: var(--border); }
+.context-pack { border: 0; background: transparent; color: var(--faint); font-family: var(--mono); font-size: 11px; }
+.context-pack > summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; list-style: none; min-width: 0; }
+.context-pack > summary::-webkit-details-marker { display: none; }
+.context-pack-icon { transition: transform 0.15s ease; color: var(--muted); }
+.context-pack[open] .context-pack-icon { transform: rotate(90deg); }
+.context-pack-title { color: var(--muted); font-weight: 700; }
+.context-pack-stat { padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--faint); }
+.context-pack-time { margin-left: auto; white-space: nowrap; color: var(--faint); }
+.context-pack-preview { margin: 7px 0 0 18px; color: var(--muted); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.context-pack-json { margin: 8px 0 0 18px; max-height: min(46vh, 520px); overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: transparent; color: var(--text); }
+.context-pack-json code { font-family: var(--mono); font-size: 11.5px; line-height: 1.55; white-space: pre; }
 
 .bubble-user { display: flex; justify-content: flex-end; }
 .bubble-user .body { max-width: 80%; background: var(--accent); color: #fff; padding: 12px 15px; border-radius: 11px 11px 4px 11px; box-shadow: var(--shadow-sm); font-size: 14px; line-height: 1.55; }

@@ -48,3 +48,35 @@ def test_server_store_tables():
         "accounts", "access_keys", "auth_sessions", "process_registry",
         "notifications", "push_subscriptions", "invites", "schema_version",
     } == names
+
+
+def test_session_dict_reports_effective_context_stats_only_after_compaction():
+    from types import SimpleNamespace
+
+    from foreman.server.app import _session_to_dict
+
+    row = SimpleNamespace(
+        id="s1",
+        goal="continue",
+        plan="12345",
+        status="done",
+        workspace="",
+        main_workspace="",
+        agent_type="pm-agent",
+        created_at="",
+        updated_at="",
+    )
+
+    data = _session_to_dict(row)
+
+    assert data["context_chars"] == 0
+    assert data["context_tokens"] == 0
+    assert data["context_compacted"] is False
+    assert "plan" not in data
+
+    data = _session_to_dict(row, context_compacted=True)
+
+    assert data["context_chars"] == 5
+    assert data["context_tokens"] == 2
+    assert data["context_compacted"] is True
+    assert "plan" not in data
