@@ -38,7 +38,9 @@ def _add_event(store: Store, event: Event) -> None:
 
 def test_user_intent_classifier_is_deterministic():
     assert classify_user_intent("hello, what is Python?") == "direct_answer"
+    assert classify_user_intent("what is pytest?") == "direct_answer"
     assert classify_user_intent("fix the failing test") == "code_change"
+    assert classify_user_intent("run pytest and fix failing test") == "code_change"
     assert classify_user_intent("inspect repo and find file") == "repo_inspection"
     assert classify_user_intent("open https://example.com screenshot") == "browser_task"
     assert classify_user_intent("say hi", explicit_agent=True) == "code_change"
@@ -130,3 +132,30 @@ def test_rendered_text_contains_sections_and_caps_lane_7_noise(tmp_path):
     for section in ("task", "environment", "agents", "context", "output_contract", "validator_rules"):
         assert f'"{section}"' in active.rendered_text
     assert "secret secret secret secret" not in active.rendered_text
+
+
+def test_rendered_contract_precedes_large_context(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    _add_event(store, _event("e1", "dispatch", {"goal": "goal"}, ts="2026-07-01T00:00:00Z"))
+    for idx in range(35):
+        _add_event(
+            store,
+            _event(
+                f"e{idx + 2}",
+                "agent_output",
+                {"agent_id": "dev", "text": "large context " * 100},
+                ts=f"2026-07-01T00:00:{idx + 1:02d}Z",
+            ),
+        )
+
+    active = ContextManager(store).build_active_context("s1", purpose="pm_plan")
+    text = active.rendered_text
+
+    output_pos = text.index('"output_contract"')
+    rules_pos = text.index('"validator_rules"')
+    frames_pos = text.index('"frames_after_checkpoint"')
+    assert output_pos < frames_pos
+    assert rules_pos < frames_pos
+    assert output_pos < 1500
+    assert rules_pos < 1500

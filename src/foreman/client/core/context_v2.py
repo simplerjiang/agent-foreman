@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -188,10 +189,10 @@ class ContextManager:
 
         if checkpoint is not None:
             parsed = _parse_checkpoint(checkpoint)
-            if parsed["corrupted"]:
+            if parsed["corrupted"] or parsed["invalid"]:
                 degraded = True
                 restore_mode = "raw_frames_degraded"
-                warnings.append({"code": "corrupted_checkpoint", "message": "Latest context checkpoint JSON is corrupted."})
+                warnings.extend(parsed["warnings"])
                 frames_after = list(frames)
             else:
                 restore_mode = "checkpoint"
@@ -720,8 +721,9 @@ def classify_user_intent(
         return "planning_only"
     if any(marker in text for marker in ("http://", "https://", "browser", "webpage", "screenshot", "网页", "浏览器", "截图")):
         return "browser_task"
+    if _has_english_word(text, ("fix", "implement", "test", "refactor", "modify", "patch", "bug")):
+        return "code_change"
     if any(marker in text for marker in (
-        "fix", "implement", "test", "refactor", "modify", "patch", "bug",
         "修复", "修改", "实现", "测试", "改代码",
     )):
         return "code_change"
@@ -797,17 +799,23 @@ def render_active_context(active_context: ActiveContext) -> str:
         envelope.setdefault("context", {})["source_cursor"] = active_context.source_cursor
     ordered = {
         "task": envelope.get("task", {}),
+        "output_contract": envelope.get("output_contract", {}),
+        "validator_rules": envelope.get("validator_rules", {}),
         "environment": envelope.get("environment", {}),
         "agents": envelope.get("agents", {}),
         "context": envelope.get("context", {}),
-        "output_contract": envelope.get("output_contract", {}),
-        "validator_rules": envelope.get("validator_rules", {}),
         "tools": envelope.get("tools", {}),
         "warnings": envelope.get("warnings", []),
         "degraded": envelope.get("degraded", False),
     }
     text = json.dumps(_compact_payload(ordered), ensure_ascii=False, indent=2)
-    return _summarize_text(text, max_chars=8000)
+    if len(text) <= 8000:
+        return text
+    return text[:8000] + "\n...[truncated active context]..."
+
+
+def _has_english_word(text: str, words: tuple[str, ...]) -> bool:
+    return any(re.search(rf"\b{re.escape(word)}\b", text) for word in words)
 
 
 def _stable_prefix(session: Session, runtime: dict[str, Any], purpose: str) -> list[dict[str, Any]]:
@@ -853,6 +861,8 @@ def _snapshot_summary(snapshot: ContextSnapshot) -> str:
 
 def _parse_checkpoint(checkpoint: ContextCheckpoint) -> dict[str, Any]:
     corrupted = False
+    invalid = False
+    warnings: list[dict[str, Any]] = []
     replacement_raw = _loads_or_none(checkpoint.replacement_history_json)
     cursor_raw = _loads_or_none(checkpoint.source_cursor_json)
     summary_raw = _loads_or_none(checkpoint.summary_json)
@@ -860,16 +870,55 @@ def _parse_checkpoint(checkpoint: ContextCheckpoint) -> dict[str, Any]:
     for value in (replacement_raw, cursor_raw, summary_raw, runtime_raw):
         if value is None:
             corrupted = True
+    if corrupted:
+        warnings.append({"code": "corrupted_checkpoint", "message": "Latest context checkpoint JSON is corrupted."})
     replacement_history: list[dict[str, Any]] = []
     if isinstance(replacement_raw, dict):
         items = replacement_raw.get("items")
-        if isinstance(items, list):
-            replacement_history = [_compact_payload(item) for item in items if isinstance(item, dict)]
+        if not isinstance(items, list) or not items:
+            invalid = True
+        else:
+            replacement_history, item_errors = _validate_replacement_history_items(items)
+            invalid = bool(item_errors)
+    else:
+        invalid = True
+    if invalid:
+        warnings.append({"code": "invalid_replacement_history", "message": "Checkpoint replacement history is not renderable."})
     return {
         "corrupted": corrupted,
+        "invalid": invalid,
+        "warnings": warnings,
         "replacement_history": replacement_history,
         "source_cursor": cursor_raw if isinstance(cursor_raw, dict) else {},
     }
+
+
+def _validate_replacement_history_items(items: list[Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    valid: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append(f"item_{idx}_not_object")
+            continue
+        role = _text(item.get("role"))
+        kind = _text(item.get("kind") or item.get("type"))
+        content = _text(item.get("content"))
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else None
+        frame_ids = _as_list(item.get("frame_ids"))
+        source_refs = _as_list(item.get("source_refs"))
+        if not role:
+            errors.append(f"item_{idx}_missing_role")
+        if not kind:
+            errors.append(f"item_{idx}_missing_kind")
+        if not (content or payload):
+            errors.append(f"item_{idx}_missing_body")
+        if kind not in {"runtime_state", "checkpoint_summary"} and not (frame_ids or source_refs):
+            errors.append(f"item_{idx}_missing_sources")
+        if role and kind and (content or payload) and (
+            kind in {"runtime_state", "checkpoint_summary"} or frame_ids or source_refs
+        ):
+            valid.append(_compact_payload(item))
+    return valid, errors
 
 
 def _loads_or_none(raw: str) -> dict[str, Any] | None:
@@ -901,10 +950,10 @@ def _cursor_end(cursor: dict[str, Any]) -> dict[str, Any]:
 def _frames_after_cursor(frames: list[ContextFrame], cursor: dict[str, Any]) -> list[ContextFrame]:
     event_ts = _text(cursor.get("event_ts"))
     event_id = _text(cursor.get("event_id"))
-    if not event_ts:
+    if not event_ts or not event_id:
         return list(frames)
     out: list[ContextFrame] = []
-    matched = not event_id
+    matched = False
     for frame in frames:
         if frame.event_ts > event_ts or (frame.event_ts == event_ts and event_id and frame.event_id > event_id):
             out.append(frame)

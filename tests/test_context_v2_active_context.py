@@ -8,6 +8,7 @@ from foreman.client.store.models import ContextCheckpoint, ContextSnapshot, Even
 
 
 def _store(tmp_path) -> Store:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     store = Store(str(tmp_path / "active-context.db"))
     store.init()
     return store
@@ -41,7 +42,19 @@ def _checkpoint(**overrides) -> ContextCheckpoint:
             {"end": {"event_ts": "2026-07-01T00:00:00Z", "event_id": "e1"}}
         ),
         "summary_json": "{}",
-        "replacement_history_json": json.dumps({"items": [{"id": "rh1", "content": "checkpoint summary"}]}),
+        "replacement_history_json": json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "rh1",
+                        "role": "system",
+                        "kind": "checkpoint_summary",
+                        "content": "checkpoint summary",
+                        "source_refs": ["event:e1"],
+                    }
+                ]
+            }
+        ),
         "runtime_state_json": "{}",
         "created_at": "2026-07-01T00:00:02Z",
     }
@@ -76,7 +89,15 @@ def test_build_active_context_with_valid_checkpoint_uses_replacement_history(tmp
     active = ContextManager(store).build_active_context("s1", purpose="pm_review")
 
     assert active.envelope["context"]["restore_mode"] == "checkpoint"
-    assert active.replacement_history == [{"id": "rh1", "content": "checkpoint summary"}]
+    assert active.replacement_history == [
+        {
+            "id": "rh1",
+            "role": "system",
+            "kind": "checkpoint_summary",
+            "content": "checkpoint summary",
+            "source_refs": ["event:e1"],
+        }
+    ]
     assert [item["event_id"] for item in active.frames_after_checkpoint] == ["e2"]
     assert "checkpoint summary" in active.rendered_text
     assert "cp1" in active.rendered_text
@@ -118,6 +139,74 @@ def test_corrupted_checkpoint_degrades_to_raw_frames_without_overwrite(tmp_path)
     assert [item["event_id"] for item in active.frames_after_checkpoint] == ["e1"]
     assert "corrupted_checkpoint" in active.rendered_text
     assert '"degraded": true' in active.rendered_text
+
+
+def test_empty_replacement_history_degrades_and_keeps_all_raw_frames(tmp_path):
+    for idx, raw_history in enumerate(("{}", json.dumps({"items": []}))):
+        store = _store(tmp_path / f"case-{idx}")
+        store.add_session(Session(id="s1", goal="goal"))
+        _add_event(store, _event("e1", "dispatch", {"goal": "goal"}, ts="2026-07-01T00:00:00Z"))
+        _add_event(store, _event("e2", "pm_plan", {"summary": "tail"}, ts="2026-07-01T00:00:01Z"))
+        store.add_context_checkpoint(_checkpoint(replacement_history_json=raw_history))
+        store.set_latest_context_checkpoint("s1", "cp1")
+
+        active = ContextManager(store).build_active_context("s1", purpose="pm_plan")
+
+        assert active.degraded is True
+        assert active.envelope["context"]["restore_mode"] == "raw_frames_degraded"
+        assert any(warning["code"] == "invalid_replacement_history" for warning in active.warnings)
+        assert [item["event_id"] for item in active.frames_after_checkpoint] == ["e1", "e2"]
+
+
+def test_unrenderable_replacement_history_item_degrades(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    _add_event(store, _event("e1", "dispatch", {"goal": "goal"}, ts="2026-07-01T00:00:00Z"))
+    _add_event(store, _event("e2", "pm_plan", {"summary": "tail"}, ts="2026-07-01T00:00:01Z"))
+    store.add_context_checkpoint(
+        _checkpoint(replacement_history_json=json.dumps({"items": [{"content": "summary"}]}))
+    )
+    store.set_latest_context_checkpoint("s1", "cp1")
+
+    active = ContextManager(store).build_active_context("s1", purpose="pm_plan")
+
+    assert active.degraded is True
+    assert any(warning["code"] == "invalid_replacement_history" for warning in active.warnings)
+    assert [item["event_id"] for item in active.frames_after_checkpoint] == ["e1", "e2"]
+
+
+def test_checkpoint_cursor_without_event_id_is_conservative(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    _add_event(store, _event("e1", "dispatch", {"goal": "goal"}, ts="2026-07-01T00:00:00Z"))
+    _add_event(store, _event("e2", "pm_plan", {"summary": "same-ts"}, ts="2026-07-01T00:00:00Z"))
+    store.add_context_checkpoint(
+        _checkpoint(source_cursor_json=json.dumps({"end": {"event_ts": "2026-07-01T00:00:00Z"}}))
+    )
+    store.set_latest_context_checkpoint("s1", "cp1")
+
+    active = ContextManager(store).build_active_context("s1", purpose="pm_plan")
+
+    assert [item["event_id"] for item in active.frames_after_checkpoint] == ["e1", "e2"]
+
+
+def test_checkpoint_cursor_with_missing_event_id_is_conservative(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    _add_event(store, _event("e1", "dispatch", {"goal": "goal"}, ts="2026-07-01T00:00:00Z"))
+    _add_event(store, _event("e2", "pm_plan", {"summary": "tail"}, ts="2026-07-01T00:00:01Z"))
+    store.add_context_checkpoint(
+        _checkpoint(
+            source_cursor_json=json.dumps(
+                {"end": {"event_ts": "2026-07-01T00:00:00Z", "event_id": "missing"}}
+            )
+        )
+    )
+    store.set_latest_context_checkpoint("s1", "cp1")
+
+    active = ContextManager(store).build_active_context("s1", purpose="pm_plan")
+
+    assert [item["event_id"] for item in active.frames_after_checkpoint] == ["e1", "e2"]
 
 
 def test_legacy_session_plan_is_summary_not_replacement_history(tmp_path):
