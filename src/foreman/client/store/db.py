@@ -313,6 +313,11 @@ class Store:
             row = s.get(Session, session_id)
             if row is None:
                 return None
+            checkpoint = s.get(ContextCheckpoint, checkpoint_id)
+            if checkpoint is None:
+                return None
+            if checkpoint.session_id != session_id:
+                raise ValueError("checkpoint_session_mismatch")
             row.latest_context_checkpoint_id = checkpoint_id
             if plan_summary is not None:
                 row.plan = plan_summary
@@ -331,8 +336,9 @@ class Store:
     ) -> tuple[ContextCheckpoint, Event]:
         """Atomically install a Context v2 checkpoint and its compact event."""
         now = utc_now_iso()
-        if not checkpoint.session_id:
-            checkpoint.session_id = session_id
+        if checkpoint.session_id and checkpoint.session_id != session_id:
+            raise ValueError("checkpoint_session_mismatch")
+        checkpoint.session_id = session_id
         if not checkpoint.created_at:
             checkpoint.created_at = now
         payload = dict(compact_event_payload or {})

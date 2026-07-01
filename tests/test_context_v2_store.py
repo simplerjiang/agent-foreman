@@ -168,10 +168,45 @@ def test_install_context_checkpoint_rolls_back_when_session_missing(tmp_path):
     store = _store(tmp_path)
 
     with pytest.raises(ValueError, match="session_not_found"):
-        store.install_context_checkpoint("missing", _checkpoint("cp1"), "summary", {})
+        store.install_context_checkpoint(
+            "missing", _checkpoint("cp1", session_id="missing"), "summary", {}
+        )
 
     assert store.get_context_checkpoint("cp1") is None
     assert store.get_events("missing") == []
+
+
+def test_install_context_checkpoint_rejects_mismatched_session_id(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="one"))
+    checkpoint = _checkpoint("cp-mismatch", session_id="s2")
+
+    with pytest.raises(ValueError, match="checkpoint_session_mismatch"):
+        store.install_context_checkpoint(
+            "s1",
+            checkpoint,
+            "summary",
+            {"event_id": "evt-mismatch", "status": "completed"},
+        )
+
+    assert store.get_context_checkpoint("cp-mismatch") is None
+    assert [row for row in store.get_events("s1") if row.type == "context_compact"] == []
+    assert store.get_session("s1").latest_context_checkpoint_id == ""
+
+
+def test_set_latest_context_checkpoint_rejects_missing_or_mismatched_checkpoint(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="one"))
+    store.add_session(Session(id="s2", goal="two"))
+    store.add_context_checkpoint(_checkpoint("cp-s2", session_id="s2"))
+
+    assert store.set_latest_context_checkpoint("s1", "missing") is None
+    assert store.get_session("s1").latest_context_checkpoint_id == ""
+
+    with pytest.raises(ValueError, match="checkpoint_session_mismatch"):
+        store.set_latest_context_checkpoint("s1", "cp-s2")
+
+    assert store.get_session("s1").latest_context_checkpoint_id == ""
 
 
 def test_delete_session_cleans_context_v2_rows(tmp_path):
