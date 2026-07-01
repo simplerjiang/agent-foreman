@@ -9,13 +9,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from foreman.shared.events import utc_now_iso
+from foreman.shared.events import make_event, utc_now_iso
 
+from .context_compression import extract_json_object, memory_items_from_pack
 from .pm_contract import PlanContract
-from ..store.models import ContextCheckpoint, ContextFrame, ContextSnapshot, Event, Session
+from ..store.models import ContextCheckpoint, ContextFrame, ContextSnapshot, Event, MemoryItem, Session
 
 LANE_SYSTEM = 1
 LANE_TASK = 2
@@ -104,13 +106,27 @@ class ActiveContext:
     rendered_text: str = ""
 
 
+class ContextCompactError(RuntimeError):
+    """Raised when Context v2 compaction cannot produce a safe checkpoint."""
+
+
 class ContextManager:
     """Thin Store-backed facade for Context v2 replay and runtime-state extraction."""
 
-    def __init__(self, store: Any, *, runner: Any = None, clock=None) -> None:
+    def __init__(
+        self,
+        store: Any,
+        *,
+        runner: Any = None,
+        clock=None,
+        llm: Any = None,
+        local_compactor: Any = None,
+    ) -> None:
         self.store = store
         self.runner = runner
         self._clock = clock or utc_now_iso
+        self.llm = llm
+        self.local_compactor = local_compactor
 
     def record_event(self, session_id: str, event: Event | Any) -> list[ContextFrame]:
         event_session_id = _event_attr(event, "session_id")
@@ -155,6 +171,208 @@ class ContextManager:
             purpose=purpose,
             window_tokens=window_tokens,
         )
+
+    async def compact_now(
+        self,
+        session_id: str,
+        *,
+        trigger: str,
+        reason: str,
+        window_tokens: int,
+        hard: bool = False,
+    ) -> ContextCheckpoint:
+        method_attempted = "local"
+        before_plan = ""
+        session = self.store.get_session(session_id) if hasattr(self.store, "get_session") else None
+        if session is None:
+            raise ContextCompactError("session_not_found")
+        before_plan = _text(getattr(session, "plan", ""))
+        try:
+            active = self.build_active_context(
+                session_id,
+                purpose="compact",
+                window_tokens=window_tokens,
+            )
+            before_tokens = _approx_tokens(active.rendered_text)
+            method = "local"
+            provider_payload: dict[str, Any] = {}
+            remote_summary: dict[str, Any] = {}
+            remote_error = ""
+            if self.llm is not None and hasattr(self.llm, "responses_compact"):
+                method_attempted = "remote"
+                try:
+                    provider_payload = await self.llm.responses_compact(
+                        _compact_input_items(active),
+                        instructions=_compact_instructions(),
+                        metadata={"session_id": session_id, "trigger": trigger, "reason": reason},
+                    )
+                    remote_summary = _summary_from_provider_payload(provider_payload)
+                    method = "remote"
+                except Exception as exc:  # noqa: BLE001 - local fallback is the contract.
+                    remote_error = f"{type(exc).__name__}: {str(exc)[:240]}"
+                    method = "local"
+            if method == "local" and self.local_compactor is not None:
+                method_attempted = "local"
+                raw_summary = await self.local_compactor(active)
+                remote_summary = _summary_from_local_text(raw_summary)
+            summary_json = _summary_json(active, remote_summary, method=method, reason=reason)
+            replacement_history = frames_to_replacement_history(active, summary_json=summary_json)
+            valid_items, item_errors = _validate_replacement_history_items(
+                replacement_history.get("items", [])
+            )
+            if item_errors or not valid_items:
+                raise ContextCompactError("empty_replacement_history")
+            replacement_history["items"] = valid_items
+            source_cursor = _source_cursor_from_active_context(active)
+            frame_ids = [
+                _text(frame.get("id"))
+                for frame in active.frames_after_checkpoint
+                if isinstance(frame, dict) and _text(frame.get("id"))
+            ]
+            summary_text = _compat_summary_text(summary_json)
+            after_tokens = _approx_tokens(summary_text)
+            token_usage = {
+                "before_tokens": before_tokens,
+                "after_tokens": after_tokens,
+                "window_tokens": int(window_tokens or 0),
+                "method": method,
+                "provider": _text(getattr(self.llm, "provider", "")) if self.llm is not None else "",
+            }
+            if remote_error:
+                token_usage["remote_error"] = remote_error
+            if provider_payload:
+                summary_json["provider_payload"] = _compact_payload(provider_payload)
+            snapshot_id = self._store_compat_snapshot(session_id, active, summary_text, summary_json)
+            checkpoint = ContextCheckpoint(
+                id=f"ctxcp_{uuid.uuid4().hex}",
+                session_id=session_id,
+                schema_version=2,
+                trigger=_text(trigger) or "manual",
+                reason=_text(reason) or "compact",
+                method=method,
+                source_cursor_json=_dump(source_cursor),
+                input_frame_ids_json=json.dumps(frame_ids, ensure_ascii=False),
+                summary_json=_dump(summary_json),
+                replacement_history_json=_dump(replacement_history),
+                runtime_state_json=_dump(active.runtime_state),
+                token_usage_json=_dump(token_usage),
+                created_at=self._clock(),
+            )
+            installed, _event = self.store.install_context_checkpoint(
+                session_id,
+                checkpoint,
+                summary_text,
+                {
+                    "status": "completed",
+                    "schema_version": 2,
+                    "hard": bool(hard),
+                    "trigger": _text(trigger) or "manual",
+                    "reason": _text(reason) or "compact",
+                    "checkpoint_id": checkpoint.id,
+                    "snapshot_id": snapshot_id,
+                    "before_tokens": before_tokens,
+                    "after_tokens": after_tokens,
+                    "method": method,
+                    "source": "pm-agent",
+                },
+            )
+            self.build_active_context(session_id, purpose="pm_plan", window_tokens=window_tokens)
+            return installed
+        except Exception as exc:
+            self._emit_compact_failed(
+                session_id,
+                hard=hard,
+                method_attempted=method_attempted,
+                error=f"{type(exc).__name__}: {str(exc)[:240]}",
+                reason=reason,
+            )
+            if hasattr(self.store, "update_session") and before_plan:
+                current = self.store.get_session(session_id)
+                if current is not None and _text(getattr(current, "plan", "")) != before_plan:
+                    self.store.update_session(session_id, plan=before_plan, updated_at=self._clock())
+            raise
+
+    def _emit_compact_failed(
+        self,
+        session_id: str,
+        *,
+        hard: bool,
+        method_attempted: str,
+        error: str,
+        reason: str,
+    ) -> None:
+        if not hasattr(self.store, "add_event"):
+            return
+        self.store.add_event(
+            make_event(
+                "context_compact",
+                "pm-agent",
+                session_id,
+                payload={
+                    "status": "failed",
+                    "schema_version": 2,
+                    "hard": bool(hard),
+                    "method_attempted": method_attempted,
+                    "error": error,
+                    "reason": _text(reason),
+                },
+            )
+        )
+
+    def _store_compat_snapshot(
+        self,
+        session_id: str,
+        active: ActiveContext,
+        summary_text: str,
+        summary_json: dict[str, Any],
+    ) -> str:
+        if not hasattr(self.store, "add_context_snapshot"):
+            return ""
+        event_ids = [
+            _text(frame.get("event_id"))
+            for frame in active.frames_after_checkpoint
+            if isinstance(frame, dict) and _text(frame.get("event_id"))
+        ]
+        snapshot_id = uuid.uuid4().hex
+        snapshot = ContextSnapshot(
+            id=snapshot_id,
+            session_id=session_id,
+            kind="rolling",
+            source_start_event_id=event_ids[0] if event_ids else "",
+            source_end_event_id=event_ids[-1] if event_ids else "",
+            source_event_ids_json=json.dumps(event_ids, ensure_ascii=False),
+            summary_json=_dump(summary_json or {"text": summary_text}),
+            summary_hash=hashlib.sha256(summary_text.encode("utf-8")).hexdigest(),
+            created_at=self._clock(),
+        )
+        self.store.add_context_snapshot(snapshot)
+        pack = extract_json_object(summary_text)
+        if pack is not None and hasattr(self.store, "add_memory_item"):
+            now = self._clock()
+            for raw in memory_items_from_pack(pack):
+                self.store.add_memory_item(
+                    MemoryItem(
+                        id=uuid.uuid4().hex,
+                        session_id=session_id,
+                        snapshot_id=snapshot_id,
+                        scope="session",
+                        kind=raw["kind"],
+                        text=raw["text"],
+                        status=raw["status"],
+                        importance=raw["importance"],
+                        confidence=raw["confidence"],
+                        source_refs_json=json.dumps(raw["source_refs"], ensure_ascii=False),
+                        tags_json=json.dumps(raw["tags"], ensure_ascii=False),
+                        valid_from=raw["valid_from"],
+                        valid_until=raw["valid_until"],
+                        supersedes=raw["supersedes"],
+                        superseded_by=raw["superseded_by"],
+                        last_seen_at=now,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+        return snapshot_id
 
     def restore_from_latest_checkpoint(
         self,
@@ -812,6 +1030,259 @@ def render_active_context(active_context: ActiveContext) -> str:
     if len(text) <= 8000:
         return text
     return text[:8000] + "\n...[truncated active context]..."
+
+
+def frames_to_replacement_history(
+    active_context: ActiveContext,
+    *,
+    summary_json: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary_json = summary_json if isinstance(summary_json, dict) else {}
+    runtime = active_context.runtime_state if isinstance(active_context.runtime_state, dict) else {}
+    frames = [frame for frame in active_context.frames_after_checkpoint or [] if isinstance(frame, dict)]
+    items: list[dict[str, Any]] = []
+    source_refs = _frame_source_refs(frames)
+    goal = _text(runtime.get("goal") or active_context.envelope.get("task", {}).get("current_goal"))
+    if goal:
+        items.append(
+            {
+                "id": "original_goal",
+                "role": "user",
+                "kind": "original_goal",
+                "content": goal,
+                "source_refs": source_refs[:8] or ["session:goal"],
+            }
+        )
+    summary_text = _text(summary_json.get("summary") or summary_json.get("text"))
+    if not summary_text:
+        summary_text = _recent_frame_summary(frames) or "Context compacted."
+    items.append(
+        {
+            "id": "checkpoint_summary",
+            "role": "system",
+            "kind": "checkpoint_summary",
+            "content": _summarize_text(summary_text, max_chars=900),
+            "payload": _compact_payload(summary_json),
+            "source_refs": source_refs[:12],
+        }
+    )
+    if runtime:
+        items.append(
+            {
+                "id": "runtime_state",
+                "role": "system",
+                "kind": "runtime_state",
+                "content": "Runtime state at compaction.",
+                "payload": _compact_payload(runtime),
+            }
+        )
+    for key, kind, label in (
+        ("active_agents", "active_agents", "Active agents"),
+        ("changed_files", "changed_files", "Changed files"),
+        ("last_tests", "last_tests", "Last tests"),
+        ("next_steps", "next_steps", "Next steps"),
+        ("open_questions", "open_questions", "Open questions"),
+    ):
+        value = runtime.get(key)
+        if value:
+            items.append(
+                {
+                    "id": kind,
+                    "role": "system",
+                    "kind": kind,
+                    "content": f"{label}: {_summarize_text(json.dumps(value, ensure_ascii=False), max_chars=700)}",
+                    "payload": {key: _compact_payload(value)},
+                    "source_refs": source_refs[:12],
+                }
+            )
+    for idx, frame in enumerate(_anchor_frames(frames)[:12]):
+        payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+        content = _anchor_content(frame, payload)
+        if not content:
+            continue
+        frame_id = _text(frame.get("id"))
+        refs = _as_list(frame.get("source_refs"))
+        if _text(frame.get("event_id")):
+            refs.append(f"event:{_text(frame.get('event_id'))}")
+        items.append(
+            {
+                "id": f"anchor_{idx}",
+                "role": _text(frame.get("role")) or "system",
+                "kind": _text(frame.get("type")) or "frame_anchor",
+                "content": content,
+                "frame_ids": [frame_id] if frame_id else [],
+                "source_refs": _dedupe(refs),
+            }
+        )
+    return {"items": items, "schema": "foreman.replacement_history.v2"}
+
+
+def _compact_input_items(active_context: ActiveContext) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": active_context.rendered_text,
+                }
+            ],
+        }
+    ]
+
+
+def _compact_instructions() -> str:
+    return (
+        "Compact this Foreman active context into a concise, human-readable JSON summary. "
+        "Do not expose encrypted_content as summary text. Preserve decisions, files, tests, "
+        "commands, next steps, and validation errors. Avoid raw full stdout/stderr."
+    )
+
+
+def _summary_from_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    for key in ("summary_json", "summary", "output_json"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return _compact_payload(value)
+        if isinstance(value, str) and value.strip() and key != "encrypted_content":
+            parsed = _loads_json(value)
+            if isinstance(parsed, dict):
+                return _compact_payload(parsed)
+            return {"summary": _summarize_text(value, max_chars=1200)}
+    output = payload.get("output")
+    if isinstance(output, list):
+        texts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict) or item.get("encrypted_content"):
+                continue
+            text = _text(item.get("text") or item.get("summary"))
+            if text:
+                texts.append(text)
+        if texts:
+            return {"summary": _summarize_text("\n".join(texts), max_chars=1200)}
+    return {}
+
+
+def _summary_from_local_text(text: str) -> dict[str, Any]:
+    raw = _text(text)
+    if not raw:
+        raise ContextCompactError("no_context")
+    parsed = extract_json_object(raw)
+    if isinstance(parsed, dict):
+        session_state = parsed.get("session_state") if isinstance(parsed.get("session_state"), dict) else {}
+        summary = _text(session_state.get("summary") or parsed.get("summary") or parsed.get("text"))
+        out = dict(parsed)
+        out["summary"] = summary or _summarize_text(raw, max_chars=1400)
+        out["text"] = raw
+        return out
+    return {"summary": _summarize_text(raw, max_chars=1400), "text": raw}
+
+
+def _summary_json(active_context: ActiveContext, remote_summary: dict[str, Any], *, method: str, reason: str) -> dict[str, Any]:
+    runtime = active_context.runtime_state if isinstance(active_context.runtime_state, dict) else {}
+    frames = [frame for frame in active_context.frames_after_checkpoint or [] if isinstance(frame, dict)]
+    summary = _text(remote_summary.get("summary") or remote_summary.get("text"))
+    if not summary:
+        summary = _recent_frame_summary(frames)
+    if not summary:
+        summary = _text(runtime.get("goal")) or "Context compacted."
+    out = {
+        "schema_version": 2,
+        "summary": _summarize_text(summary, max_chars=1400),
+        "method": method,
+        "reason": _text(reason),
+        "changed_files": runtime.get("changed_files") or [],
+        "last_tests": runtime.get("last_tests") or [],
+        "next_steps": runtime.get("next_steps") or [],
+        "open_questions": runtime.get("open_questions") or [],
+    }
+    for key, value in remote_summary.items():
+        if key not in out and key != "encrypted_content":
+            out[key] = _compact_payload(value)
+    return _compact_payload(out)
+
+
+def _compat_summary_text(summary_json: dict[str, Any]) -> str:
+    text = _text(summary_json.get("text"))
+    if text:
+        return text
+    return json.dumps(_compact_payload(summary_json), ensure_ascii=False, indent=2)
+
+
+def _source_cursor_from_active_context(active_context: ActiveContext) -> dict[str, Any]:
+    frames = [frame for frame in active_context.frames_after_checkpoint or [] if isinstance(frame, dict)]
+    if not frames:
+        return {}
+    first = frames[0]
+    last = frames[-1]
+    return {
+        "start": {
+            "event_ts": _text(first.get("event_ts")),
+            "event_id": _text(first.get("event_id")),
+        },
+        "end": {
+            "event_ts": _text(last.get("event_ts")),
+            "event_id": _text(last.get("event_id")),
+        },
+    }
+
+
+def _approx_tokens(text: str) -> int:
+    return max(1, (len(text or "") + 3) // 4)
+
+
+def _anchor_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    wanted = {"command_result", "test_result", "file_change", "agent_stop", "previous_validation_error"}
+    return [frame for frame in frames if _text(frame.get("type")) in wanted]
+
+
+def _anchor_content(frame: dict[str, Any], payload: dict[str, Any]) -> str:
+    frame_type = _text(frame.get("type"))
+    keys = {
+        "command_result": ("command", "exit_code", "cwd", "important_lines", "stdout_summary", "stderr_summary"),
+        "test_result": ("command", "status", "passed", "failed", "exit_code", "failures", "important_lines"),
+        "file_change": ("changed_files", "files", "paths", "diff_stat", "truncated"),
+        "agent_stop": ("status", "summary", "result", "payload"),
+        "previous_validation_error": ("error", "round", "arguments"),
+    }.get(frame_type, ())
+    picked = {key: payload.get(key) for key in keys if payload.get(key) not in (None, "", [], {})}
+    if not picked:
+        picked = {"type": frame_type, "payload": _compact_payload(payload)}
+    return _summarize_text(json.dumps(picked, ensure_ascii=False, sort_keys=True), max_chars=900)
+
+
+def _recent_frame_summary(frames: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for frame in _anchor_frames(frames)[-8:]:
+        payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+        content = _anchor_content(frame, payload)
+        if content:
+            parts.append(f"{_text(frame.get('type'))}: {content}")
+    return "\n".join(parts)
+
+
+def _frame_source_refs(frames: list[dict[str, Any]]) -> list[str]:
+    refs: list[str] = []
+    for frame in frames:
+        refs.extend(_as_list(frame.get("source_refs")))
+        event_id = _text(frame.get("event_id"))
+        if event_id:
+            refs.append(f"event:{event_id}")
+    return _dedupe(refs)
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        text = _text(item)
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
 
 
 def _has_english_word(text: str, words: tuple[str, ...]) -> bool:

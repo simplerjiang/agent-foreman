@@ -516,7 +516,7 @@ async def test_compact_stores_context_snapshot_and_memory_items(tmp_path):
 
     class FakePM:
         async def compact(self, goal, timeline, *, existing_context=""):
-            assert "[event:" in timeline
+            assert "frames_after_checkpoint" in timeline
             return json.dumps(
                 {
                     "version": 1,

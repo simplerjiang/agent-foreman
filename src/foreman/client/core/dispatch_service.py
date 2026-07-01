@@ -147,7 +147,13 @@ class DispatchService:
         self._clock = clock or utc_now_iso
         self.context_manager = context_manager
         if self.context_manager is None and self.store is not None:
-            self.context_manager = ContextManager(self.store, runner=runner, clock=self._clock)
+            self.context_manager = ContextManager(
+                self.store,
+                runner=runner,
+                clock=self._clock,
+                llm=getattr(pm_agent, "llm", None) if pm_agent is not None else None,
+                local_compactor=self._local_compact_active_context,
+            )
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
         self._session_tasks: dict[str, set[asyncio.Task]] = {}
         self._session_queue_tails: dict[str, asyncio.Future[None]] = {}
@@ -331,12 +337,38 @@ class DispatchService:
         session = self.store.get_session(session_id)
         if session is None:
             return {"ok": False, "error": "session_not_found"}
+        if window_tokens is None:
+            window_tokens = await self._resolve_window_tokens("")
+        if self.context_manager is not None and hasattr(self.context_manager, "compact_now"):
+            try:
+                checkpoint = await self.context_manager.compact_now(
+                    session_id,
+                    trigger="manual",
+                    reason="api_compact",
+                    window_tokens=window_tokens,
+                    hard=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - API returns structured failure.
+                return {"ok": False, "error": str(exc) or type(exc).__name__}
+            refreshed = self.store.get_session(session_id)
+            summary = (getattr(refreshed, "plan", "") or "").strip() if refreshed else ""
+            token_usage = json.loads(checkpoint.token_usage_json or "{}")
+            compact_events = [e for e in self.store.get_events(session_id) if e.type == "context_compact"]
+            payload = json.loads(compact_events[-1].payload_json) if compact_events else {}
+            return {
+                "ok": True,
+                "session_id": session_id,
+                "summary": summary,
+                "original_chars": max(0, int(token_usage.get("before_tokens") or 0) * 4),
+                "summary_chars": len(summary),
+                "snapshot_id": payload.get("snapshot_id", ""),
+                "checkpoint_id": checkpoint.id,
+                "method": checkpoint.method,
+            }
         rows = self.store.get_events(session_id) if hasattr(self.store, "get_events") else []
         timeline = events_to_text(rows)
         if not timeline:
             return {"ok": False, "error": "no_context"}
-        if window_tokens is None:
-            window_tokens = await self._resolve_window_tokens("")
         existing = (session.plan or "").strip()
         if self.pm_agent is not None and hasattr(self.pm_agent, "compact"):
             kwargs = {"existing_context": existing}
@@ -1609,6 +1641,26 @@ class DispatchService:
         if active_context is not None and (active_context.rendered_text or "").strip():
             return active_context.rendered_text, active_context
         return self._session_context(session_id), None
+
+    async def _local_compact_active_context(self, active_context: ActiveContext) -> str:
+        session_id = active_context.session_id
+        session = self.store.get_session(session_id) if self.store is not None else None
+        goal = getattr(session, "goal", "") if session is not None else ""
+        existing = (getattr(session, "plan", "") or "").strip() if session is not None else ""
+        if self.pm_agent is not None and hasattr(self.pm_agent, "compact"):
+            kwargs = {"existing_context": existing}
+            if _accepts_keyword(self.pm_agent.compact, "on_stream"):
+                kwargs["on_stream"] = self._pm_stream_sink(session_id, None, "compact")
+            if _accepts_keyword(self.pm_agent.compact, "window_tokens"):
+                window_tokens = int((active_context.token_usage or {}).get("window_tokens") or 0)
+                kwargs["window_tokens"] = window_tokens
+            with trace_context(session_id=session_id, phase="compact"):
+                return await self.pm_agent.compact(
+                    goal,
+                    active_context.rendered_text,
+                    **kwargs,
+                )
+        return _fallback_compact(active_context.rendered_text, existing)
 
     def _mark_session(self, session_id: str, status: str) -> None:
         if self.store is not None and hasattr(self.store, "update_session"):
