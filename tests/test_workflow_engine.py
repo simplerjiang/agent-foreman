@@ -10,8 +10,6 @@ CardService and a recording bus:
 
 from __future__ import annotations
 
-import pytest
-
 from foreman.client.core.cards import CardService
 from foreman.client.core.workflow_engine import (
     BLOCKED,
@@ -98,13 +96,11 @@ def test_parse_workflow_json_list_and_name_default():
     assert spec.steps[1].instruction == "do b"
 
 
-@pytest.mark.parametrize(
-    "body",
-    ["", "   ", "{not valid yaml: [", "42", "name: x\nsteps: []", "name: x\nsteps: hello"],
-)
-def test_parse_workflow_fail_closed(body):
-    spec = parse_workflow(body)
-    assert spec.error and spec.steps == []  # never invent a skeleton from garbage
+def test_parse_workflow_fail_closed():
+    for body in ["", "   ", "{not valid yaml: [", "42", "name: x\nsteps: []",
+                 "name: x\nsteps: hello"]:
+        spec = parse_workflow(body)
+        assert spec.error and spec.steps == []  # never invent a skeleton from garbage
 
 
 def test_parse_workflow_rejects_non_mapping_step():

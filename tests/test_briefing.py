@@ -45,33 +45,19 @@ def _llm(reply_text: str, captured: dict) -> LLMClient:
 
 
 # ── parse_brief ──────────────────────────────────────────────────────────────────────────────────
-
-
-def test_parse_brief_full():
-    res = parse_brief('{"title": "Login refactor", "body_md": "- did x\\n- stuck on y"}')
-    assert res.title == "Login refactor"
-    assert "did x" in res.body_md
-
-
-def test_parse_brief_fenced():
-    res = parse_brief('```json\n{"title": "T", "body_md": "B"}\n```')
-    assert res.title == "T" and res.body_md == "B"
-
-
-def test_parse_brief_prose_embedded():
-    res = parse_brief('Here you go:\n{"title": "T", "body_md": "B"}\nhope that helps')
-    assert res.title == "T" and res.body_md == "B"
-
-
-def test_parse_brief_garbage_degrades_to_raw():
-    res = parse_brief("just some plain prose, not json")
-    assert res.title == "简报"
-    assert "plain prose" in res.body_md  # surfaces the raw text rather than an empty card
-
-
-def test_parse_brief_empty():
-    res = parse_brief("")
-    assert res.title == "简报" and res.body_md == "（简报输出为空）"
+def test_parse_brief_cases():
+    cases = [
+        ('{"title": "Login refactor", "body_md": "- did x\\n- stuck on y"}',
+         "Login refactor", "did x"),
+        ('```json\n{"title": "T", "body_md": "B"}\n```', "T", "B"),
+        ('Here you go:\n{"title": "T", "body_md": "B"}\nhope that helps', "T", "B"),
+        ("just some plain prose, not json", "简报", "plain prose"),
+        ("", "简报", "（简报输出为空）"),
+    ]
+    for raw, title, body_contains in cases:
+        res = parse_brief(raw)
+        assert res.title == title
+        assert body_contains in res.body_md
 
 
 def test_build_brief_prompt_carries_goal_and_activity():

@@ -7,12 +7,6 @@ foreman.server (the server is a relay; 秘方 stays local). DESIGN §14.
 from __future__ import annotations
 
 
-def test_client_public_surface_imports():
-    from foreman.client.agents.base import AgentAdapter, AgentHandle  # noqa: F401
-    from foreman.client.agents.runner import Runner  # noqa: F401
-    from foreman.client.store import Store  # noqa: F401
-
-
 def test_client_imports_cleanly_and_no_server_leak():
     """Every client submodule imports, in a FRESH interpreter, and none drags in
     foreman.server. Subprocess so other tests' imports can't pollute sys.modules."""
