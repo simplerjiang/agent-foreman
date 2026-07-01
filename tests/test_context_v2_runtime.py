@@ -120,6 +120,99 @@ def test_runtime_state_merges_agent_stop_and_last_command(tmp_path):
     assert dev_agent["status"] == "completed"
     assert state.last_commands[-1]["command"] == "pytest"
     assert state.last_commands[-1]["exit_code"] == 0
+    assert state.last_tests[-1]["command"] == "pytest"
+
+
+def test_runtime_anchor_uses_latest_observable_frame(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/old"))
+    _add_event(
+        store,
+        _event(
+            "e1",
+            "dispatch",
+            {"workspace": "E:/old", "branch": "old-branch"},
+            ts="2026-07-01T00:00:00Z",
+        )
+    )
+    _add_event(
+        store,
+        _event(
+            "e2",
+            "agent_start",
+            {"agent_id": "dev-1", "cwd": "E:/new", "branch": "new-branch"},
+            ts="2026-07-01T00:00:01Z",
+        )
+    )
+
+    frames = ContextManager(store).materialize_session("s1")
+    state = extract_runtime_state(session, frames)
+
+    assert state.workspace == "E:/old"
+    assert state.branch == "new-branch"
+    assert state.cwd == "E:/new"
+
+
+def test_file_change_updates_runtime_changed_files(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal"))
+    _add_event(
+        store,
+        _event("e1", "file_change", {"changed_files": ["src/app.py", "tests/test_app.py"]}),
+    )
+
+    frames = ContextManager(store).materialize_session("s1")
+    state = extract_runtime_state(session, frames)
+
+    assert state.changed_files == ["src/app.py", "tests/test_app.py"]
+
+
+def test_runtime_last_tests_includes_test_result_frame(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal"))
+    _add_event(
+        store,
+        _event(
+            "e1",
+            "test_result",
+            {"command": "pytest", "exit_code": 0, "stdout": "2 passed"},
+        ),
+    )
+
+    frames = ContextManager(store).materialize_session("s1")
+    state = extract_runtime_state(session, frames)
+
+    assert state.last_tests[-1]["command"] == "pytest"
+    assert state.last_tests[-1]["passed"] is True
+
+
+def test_agent_stop_updates_runtime_collections_and_output(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal"))
+    _add_event(
+        store,
+        _event(
+            "e1",
+            "stop",
+            {
+                "agent_id": "dev-1",
+                "status": "completed",
+                "summary": "patched context v2",
+                "changed_files": ["src/foreman/client/core/context_v2.py"],
+                "tests": [{"command": "pytest", "exit_code": 0, "stdout": "1 passed"}],
+                "next_actions": ["wait for review"],
+            },
+        ),
+    )
+
+    frames = ContextManager(store).materialize_session("s1")
+    state = extract_runtime_state(session, frames)
+
+    agent = next(item for item in state.active_agents if item["agent_id"] == "dev-1")
+    assert state.changed_files == ["src/foreman/client/core/context_v2.py"]
+    assert state.last_tests[-1]["command"] == "pytest"
+    assert state.next_steps == ["wait for review"]
+    assert agent["last_meaningful_output"]["summary"] == "patched context v2"
 
 
 @dataclass

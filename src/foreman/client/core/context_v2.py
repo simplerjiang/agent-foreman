@@ -111,7 +111,13 @@ class ContextManager:
         self._clock = clock or utc_now_iso
 
     def record_event(self, session_id: str, event: Event | Any) -> list[ContextFrame]:
-        frames = materialize_event(event)
+        event_session_id = _event_attr(event, "session_id")
+        target_session_id = _text(session_id)
+        if event_session_id and target_session_id and event_session_id != target_session_id:
+            raise ValueError("event_session_mismatch")
+        if not event_session_id and not target_session_id:
+            return []
+        frames = materialize_event(event, session_id_override=target_session_id or None)
         if frames and hasattr(self.store, "add_context_frames"):
             self.store.add_context_frames(frames)
         return frames
@@ -145,11 +151,15 @@ def make_frame_id(session_id: str, event_id: str, frame_type: str, payload: dict
     return f"frame_{session_short}_{event_short}_{type_part}_{digest}"
 
 
-def materialize_event(event: Event | Any) -> list[ContextFrame]:
+def materialize_event(
+    event: Event | Any,
+    *,
+    session_id_override: str | None = None,
+) -> list[ContextFrame]:
     try:
         event_type = _event_attr(event, "type")
         payload = _event_payload(event)
-        session_id = _event_attr(event, "session_id")
+        session_id = _event_attr(event, "session_id") or _text(session_id_override)
         event_id = _event_attr(event, "id")
         event_ts = _event_attr(event, "ts")
         task_id = _event_attr(event, "task_id")
@@ -238,6 +248,34 @@ def materialize_event(event: Event | Any) -> list[ContextFrame]:
                 role="system",
                 lane=LANE_PLAN,
                 turn_id=task_id,
+            )
+        ]
+
+    if event_type == "agent_input":
+        message = _text(payload.get("message") or payload.get("instruction") or payload.get("task"))
+        return [
+            _frame(
+                session_id,
+                event_id,
+                event_ts,
+                "agent_input",
+                {
+                    **base,
+                    **_workspace_payload(payload),
+                    "agent_id": _text(payload.get("agent_id")),
+                    "agent_role": _text(payload.get("agent_role")),
+                    "agent_type": _text(payload.get("agent_type")),
+                    "parent_agent_id": _text(payload.get("parent_agent_id")),
+                    "message": _summarize_text(message),
+                    "expected_output": _summarize_text(_text(payload.get("expected_output"))),
+                },
+                role="assistant",
+                lane=LANE_PLAN,
+                turn_id=task_id,
+                agent_id=_text(payload.get("agent_id")),
+                agent_role=_text(payload.get("agent_role")),
+                agent_type=_text(payload.get("agent_type")),
+                parent_agent_id=_text(payload.get("parent_agent_id")),
             )
         ]
 
@@ -365,7 +403,7 @@ def materialize_event(event: Event | Any) -> list[ContextFrame]:
             "ok": _boolish(payload.get("ok", result.get("ok"))),
             "result": _compact_payload(result or payload),
         }
-        return [
+        frames = [
             _frame(
                 session_id,
                 event_id,
@@ -378,6 +416,21 @@ def materialize_event(event: Event | Any) -> list[ContextFrame]:
                 agent_id=_text(payload.get("source") or source),
             )
         ]
+        if command_payload and _is_test_command(_text(command_payload.get("command"))):
+            frames.append(
+                _frame(
+                    session_id,
+                    event_id,
+                    event_ts,
+                    "test_result",
+                    {**base, **_test_result_payload(command_payload)},
+                    role="tool",
+                    lane=LANE_DETAIL,
+                    turn_id=task_id,
+                    agent_id=_text(payload.get("source") or source),
+                )
+            )
+        return frames
 
     if event_type == "stop":
         return [
@@ -389,6 +442,39 @@ def materialize_event(event: Event | Any) -> list[ContextFrame]:
                 {**base, "payload": _compact_payload(payload), "status": _stop_status(payload)},
                 role="assistant",
                 lane=LANE_RUNTIME,
+                turn_id=task_id,
+                agent_id=_agent_id(payload, event_id, source),
+                agent_type=source,
+            )
+        ]
+
+    if event_type in {"file_change", "git_diff", "diff_stat", "git_status"}:
+        file_payload = _file_change_payload(payload)
+        if not file_payload:
+            return []
+        return [
+            _frame(
+                session_id,
+                event_id,
+                event_ts,
+                "file_change",
+                {**base, **file_payload},
+                role="tool",
+                lane=LANE_DETAIL,
+                turn_id=task_id,
+            )
+        ]
+
+    if event_type == "test_result":
+        return [
+            _frame(
+                session_id,
+                event_id,
+                event_ts,
+                "test_result",
+                {**base, **_test_result_payload(payload)},
+                role="tool",
+                lane=LANE_DETAIL,
                 turn_id=task_id,
                 agent_id=_agent_id(payload, event_id, source),
                 agent_type=source,
@@ -439,6 +525,15 @@ def extract_runtime_state(
         payload = _loads(frame.payload_json)
         if frame.type == "worktree_state":
             _merge_runtime_anchor(state, payload)
+        elif frame.type == "agent_input":
+            agent_id = frame.agent_id or _text(payload.get("agent_id")) or frame.id
+            agent = agents.setdefault(agent_id, _new_agent(agent_id))
+            agent["agent_role"] = frame.agent_role or agent.get("agent_role", "")
+            agent["agent_type"] = frame.agent_type or agent.get("agent_type", "")
+            agent["parent_agent_id"] = frame.parent_agent_id or agent.get("parent_agent_id", "")
+            agent["last_seen_at"] = frame.event_ts or frame.created_at or agent.get("last_seen_at", "")
+            agent["last_meaningful_output"] = {"type": frame.type, "payload": payload}
+            _merge_runtime_anchor(state, payload)
         elif frame.type == "agent_start":
             agent_id = frame.agent_id or _text(payload.get("agent_id")) or frame.id
             agent = agents.setdefault(agent_id, _new_agent(agent_id))
@@ -465,6 +560,16 @@ def extract_runtime_state(
             agent = agents.setdefault(agent_id, _new_agent(agent_id))
             agent["status"] = _text(payload.get("status")) or "completed"
             agent["last_seen_at"] = frame.event_ts or frame.created_at or agent.get("last_seen_at", "")
+            stop_payload = _as_dict(payload.get("payload"))
+            summary = _text(payload.get("summary") or stop_payload.get("summary"))
+            agent["last_meaningful_output"] = {
+                "type": frame.type,
+                "status": agent["status"],
+                "summary": summary,
+                "payload": payload,
+            }
+            _merge_runtime_collections(state, payload)
+            _merge_runtime_collections(state, stop_payload)
         elif frame.type in {"agent_output", "command_result", "tool_result", "test_result"} and frame.agent_id:
             agent = agents.setdefault(frame.agent_id, _new_agent(frame.agent_id))
             if frame.event_ts >= _text(agent.get("last_seen_at")):
@@ -474,6 +579,8 @@ def extract_runtime_state(
             state.last_commands.append(_command_state(payload))
         if frame.type == "test_result":
             state.last_tests.append(payload)
+        if frame.type == "file_change":
+            _merge_changed_files(state, payload)
         for path in _as_list(payload.get("changed_files") or payload.get("files")):
             text = _text(path)
             if text and text not in state.changed_files:
@@ -630,6 +737,76 @@ def _command_result_from_tool(
     }
 
 
+def _file_change_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    changed_files = [_text(item) for item in _as_list(payload.get("changed_files")) if _text(item)]
+    files = [_text(item) for item in _as_list(payload.get("files")) if _text(item)]
+    paths = [_text(item) for item in _as_list(payload.get("paths")) if _text(item)]
+    changed = changed_files or files or paths
+    diff_text = _text(payload.get("diff") or payload.get("patch") or payload.get("text"))
+    diff_stat = _text(payload.get("diff_stat") or payload.get("stat") or payload.get("summary"))
+    out: dict[str, Any] = {}
+    if changed:
+        out["changed_files"] = changed
+    if files:
+        out["files"] = files
+    if paths:
+        out["paths"] = paths
+    if diff_stat:
+        out["diff_stat"] = _summarize_text(diff_stat)
+    if diff_text:
+        out["diff_summary"] = _summarize_text(diff_text)
+        out["truncated"] = len(diff_text) > MAX_TEXT_CHARS
+    if payload.get("truncated") is not None:
+        out["truncated"] = bool(payload.get("truncated"))
+    return out
+
+
+def _test_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    stdout = _text(payload.get("stdout") or payload.get("stdout_summary"))
+    stderr = _text(payload.get("stderr") or payload.get("stderr_summary"))
+    exit_code = _int_or_none(
+        payload.get("exit_code") if "exit_code" in payload else payload.get("returncode")
+    )
+    passed = payload.get("passed")
+    failed = payload.get("failed")
+    if passed is None and exit_code is not None:
+        passed = exit_code == 0
+    if failed is None and exit_code is not None:
+        failed = exit_code != 0
+    failures = _as_list(payload.get("failures")) or _important_lines("\n".join([stdout, stderr]))
+    return {
+        "command": _text(payload.get("command")),
+        "cwd": _text(payload.get("cwd")),
+        "status": _text(payload.get("status")) or ("passed" if passed else "failed" if failed else ""),
+        "passed": passed,
+        "failed": failed,
+        "exit_code": exit_code,
+        "failures": [_text(item) for item in failures if _text(item)][:IMPORTANT_LINE_LIMIT],
+        "important_lines": _important_lines("\n".join([stdout, stderr])),
+        "stdout_summary": _summarize_text(stdout),
+        "stderr_summary": _summarize_text(stderr),
+        "truncated": bool(payload.get("truncated")) or len(stdout) > MAX_TEXT_CHARS or len(stderr) > MAX_TEXT_CHARS,
+    }
+
+
+def _is_test_command(command: str) -> bool:
+    text = _text(command).lower().strip()
+    if not text:
+        return False
+    markers = (
+        "pytest",
+        "python -m pytest",
+        "npm test",
+        "npm run test",
+        "pnpm test",
+        "pnpm run test",
+        "yarn test",
+        "go test",
+        "cargo test",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _payload_text(payload: dict[str, Any]) -> str:
     for key in ("text", "delta", "summary", "msg", "error", "result", "reasoning", "thinking"):
         value = _text(payload.get(key))
@@ -707,8 +884,28 @@ def _stop_status(payload: dict[str, Any]) -> str:
 def _merge_runtime_anchor(state: RuntimeState, payload: dict[str, Any]) -> None:
     for key in ("cwd", "workspace", "worktree", "branch", "base_ref", "head_sha"):
         value = _text(payload.get(key))
-        if value and not getattr(state, key):
+        if value:
             setattr(state, key, value)
+
+
+def _merge_runtime_collections(state: RuntimeState, payload: dict[str, Any]) -> None:
+    _merge_changed_files(state, payload)
+    for test in _as_list(payload.get("tests") or payload.get("test_results")):
+        if isinstance(test, dict):
+            state.last_tests.append(_test_result_payload(test))
+        elif _text(test):
+            state.last_tests.append({"summary": _text(test)})
+    for step in _as_list(payload.get("next_actions") or payload.get("next_steps")):
+        text = _text(step)
+        if text and text not in state.next_steps:
+            state.next_steps.append(text)
+
+
+def _merge_changed_files(state: RuntimeState, payload: dict[str, Any]) -> None:
+    for path in _as_list(payload.get("changed_files") or payload.get("files") or payload.get("paths")):
+        text = _text(path)
+        if text and text not in state.changed_files:
+            state.changed_files.append(text)
 
 
 def _new_agent(agent_id: str) -> dict[str, Any]:

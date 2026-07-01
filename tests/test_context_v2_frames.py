@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from foreman.client.core.context_v2 import (
     LANE_NOISE,
     ContextManager,
@@ -18,10 +20,17 @@ def _store(tmp_path) -> Store:
     return store
 
 
-def _event(event_id: str, event_type: str, payload: dict, *, ts: str = "2026-07-01T00:00:00Z") -> Event:
+def _event(
+    event_id: str,
+    event_type: str,
+    payload: dict,
+    *,
+    ts: str = "2026-07-01T00:00:00Z",
+    session_id: str = "s1",
+) -> Event:
     return Event(
         id=event_id,
-        session_id="s1",
+        session_id=session_id,
         task_id="t1",
         type=event_type,
         source="test",
@@ -60,6 +69,24 @@ def test_materialize_session_replay_twice_does_not_duplicate_frames(tmp_path):
     assert len(first) == 2
     assert len(second) == 2
     assert [row.id for row in store.get_context_frames("s1")] == [row.id for row in first]
+
+
+def test_record_event_uses_session_override_and_rejects_mismatch(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    manager = ContextManager(store)
+
+    frames = manager.record_event(
+        "s1",
+        _event("e-empty", "dispatch", {"goal": "hello"}, session_id=""),
+    )
+
+    assert frames
+    assert frames[0].session_id == "s1"
+    assert store.get_context_frames("s1")
+    assert manager.record_event("", _event("e-none", "dispatch", {"goal": "hello"}, session_id="")) == []
+    with pytest.raises(ValueError, match="event_session_mismatch"):
+        manager.record_event("s1", _event("e-other", "dispatch", {"goal": "bad"}, session_id="s2"))
 
 
 def test_dispatch_materializes_user_message_and_worktree_state():
@@ -159,6 +186,89 @@ def test_tool_pre_and_post_with_same_call_id_become_paired_tool_frames():
     assert post[0].type == "tool_result"
     assert _payload(pre[0])["call_id"] == "call-1"
     assert _payload(post[0])["call_id"] == "call-1"
+
+
+def test_agent_input_materializes_instruction_frame():
+    frames = materialize_event(
+        _event(
+            "e1",
+            "agent_input",
+            {
+                "agent_id": "dev-1",
+                "agent_role": "dev",
+                "agent_type": "codex",
+                "parent_agent_id": "pm",
+                "message": "implement the patch",
+                "expected_output": "patch plus tests",
+                "cwd": "E:/repo",
+            },
+        )
+    )
+
+    assert [frame.type for frame in frames] == ["agent_input"]
+    assert frames[0].agent_id == "dev-1"
+    assert json.loads(frames[0].source_refs_json) == ["event:e1"]
+    payload = _payload(frames[0])
+    assert payload["message"] == "implement the patch"
+    assert payload["expected_output"] == "patch plus tests"
+    assert payload["cwd"] == "E:/repo"
+
+
+def test_file_change_materializes_and_caps_long_diff():
+    diff = "diff --git a/app.py b/app.py\n" + ("+noise\n" * 1000)
+    frames = materialize_event(
+        _event(
+            "e1",
+            "file_change",
+            {"changed_files": ["app.py"], "diff": diff, "diff_stat": "1 file changed"},
+        )
+    )
+
+    assert [frame.type for frame in frames] == ["file_change"]
+    payload = _payload(frames[0])
+    assert payload["changed_files"] == ["app.py"]
+    assert payload["diff_stat"] == "1 file changed"
+    assert payload["truncated"] is True
+    assert len(payload["diff_summary"]) <= 1200
+    assert "+noise\n" * 500 not in payload["diff_summary"]
+
+
+def test_explicit_test_result_materializes_test_frame():
+    frames = materialize_event(
+        _event(
+            "e1",
+            "test_result",
+            {"command": "pytest", "exit_code": 1, "stdout": "FAILED tests/test_x.py::test_x"},
+        )
+    )
+
+    assert [frame.type for frame in frames] == ["test_result"]
+    payload = _payload(frames[0])
+    assert payload["command"] == "pytest"
+    assert payload["failed"] is True
+    assert payload["exit_code"] == 1
+
+
+def test_tool_post_run_command_pytest_emits_command_and_test_result_frames():
+    frames = materialize_event(
+        _event(
+            "e1",
+            "tool_post",
+            {
+                "tool": "run_command",
+                "call_id": "cmd-1",
+                "ok": True,
+                "result": {
+                    "ok": True,
+                    "data": {"command": "pytest", "returncode": 0, "stdout": "1 passed"},
+                },
+            },
+        )
+    )
+
+    assert [frame.type for frame in frames] == ["command_result", "test_result"]
+    assert _payload(frames[1])["command"] == "pytest"
+    assert _payload(frames[1])["passed"] is True
 
 
 def test_context_compact_event_becomes_context_compaction_frame():
