@@ -1034,8 +1034,10 @@ class DispatchService:
                 reviewed_event_id,
                 review_active_context,
             )
-            timeline = review_context if review_active_context is not None else events_to_text(
-                _events_after(rows, reviewed_event_id)
+            timeline = _review_timeline_from_active_context(
+                review_active_context,
+                rows,
+                reviewed_event_id,
             )
             review_cutoff_id = _last_event_id(rows)
             review_kwargs = {
@@ -2087,6 +2089,102 @@ def _events_after(rows: list[Any], event_id: str) -> list[Any]:
         if _event_id(row) == marker:
             return rows[idx + 1:]
     return rows
+
+
+_REVIEW_TIMELINE_FRAME_TYPES = {
+    "command_result",
+    "tool_result",
+    "test_result",
+    "file_change",
+    "agent_output",
+    "agent_stop",
+    "previous_validation_error",
+    "context_compaction",
+}
+
+
+def _review_timeline_from_active_context(
+    active_context: ActiveContext | None,
+    rows: list[Any],
+    reviewed_event_id: str,
+) -> str:
+    if active_context is None:
+        return events_to_text(_events_after(rows, reviewed_event_id))
+    order = {_event_id(row): idx for idx, row in enumerate(rows) if _event_id(row)}
+    reviewed_idx = order.get((reviewed_event_id or "").strip(), -1)
+    lines: list[str] = []
+    for frame in active_context.frames_after_checkpoint or []:
+        if not isinstance(frame, dict):
+            continue
+        frame_type = str(frame.get("type") or "").strip()
+        if frame_type not in _REVIEW_TIMELINE_FRAME_TYPES:
+            continue
+        if int(frame.get("lane") or 0) == 7:
+            continue
+        event_id = _frame_event_id(frame)
+        if reviewed_event_id and not event_id:
+            continue
+        if event_id and event_id in order and order[event_id] <= reviewed_idx:
+            continue
+        if event_id and event_id not in order and reviewed_event_id:
+            continue
+        line = _render_review_timeline_frame(frame, event_id)
+        if line:
+            lines.append(line)
+    return "\n".join(lines) if lines else "(no new agent output captured)"
+
+
+def _frame_event_id(frame: dict[str, Any]) -> str:
+    event_id = str(frame.get("event_id") or "").strip()
+    if event_id:
+        return event_id
+    for ref in frame.get("source_refs") or []:
+        text = str(ref or "")
+        if text.startswith("event:"):
+            return text.split(":", 1)[1].strip()
+    return ""
+
+
+def _render_review_timeline_frame(frame: dict[str, Any], event_id: str) -> str:
+    frame_type = str(frame.get("type") or "").strip()
+    payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    bits = [frame_type]
+    if event_id:
+        bits.append(f"event:{event_id}")
+    agent_id = str(frame.get("agent_id") or payload.get("agent_id") or "").strip()
+    if agent_id:
+        bits.append(f"agent:{agent_id}")
+    call_id = str(payload.get("call_id") or payload.get("tool_call_id") or "").strip()
+    if call_id:
+        bits.append(f"call:{call_id}")
+    summary = _review_payload_summary(frame_type, payload)
+    return f"- {' '.join(bits)}: {summary}" if summary else f"- {' '.join(bits)}"
+
+
+def _review_payload_summary(frame_type: str, payload: dict[str, Any]) -> str:
+    keys_by_type = {
+        "command_result": ["command", "exit_code", "cwd", "important_lines", "stdout_summary", "stderr_summary"],
+        "tool_result": ["tool", "name", "status", "result", "summary", "important_lines"],
+        "test_result": ["command", "status", "passed", "failed", "exit_code", "failures", "important_lines"],
+        "file_change": ["changed_files", "files", "paths", "diff_stat", "truncated"],
+        "agent_output": ["summary", "text", "message", "important_lines"],
+        "agent_stop": ["status", "summary", "result", "payload", "next_actions", "next_steps"],
+        "previous_validation_error": ["error", "round", "arguments"],
+        "context_compaction": ["summary", "checkpoint_id", "event_id"],
+    }
+    picked = {
+        key: payload.get(key)
+        for key in keys_by_type.get(frame_type, [])
+        if payload.get(key) not in (None, "", [], {})
+    }
+    if not picked:
+        picked = {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+    try:
+        text = json.dumps(picked, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        text = str(picked)
+    text = " ".join(text.split())
+    return text[:900] + "...[truncated]" if len(text) > 900 else text
 
 
 def _advance_reviewed_event_id_from_active_context(

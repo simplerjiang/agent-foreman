@@ -6,6 +6,7 @@ from foreman.client.core.context_v2 import ActiveContext
 from foreman.client.core.dispatch_service import (
     DispatchService,
     _advance_reviewed_event_id_from_active_context,
+    _review_timeline_from_active_context,
 )
 from foreman.client.core.pm_agent import PMPlan, PMReview
 from foreman.client.store import Store
@@ -33,16 +34,23 @@ def _seed(store: Store, tmp_path):
 
 
 class _FakeContextManager:
-    def __init__(self, *, fail: bool = False):
+    def __init__(self, *, fail: bool = False, review_context: ActiveContext | None = None):
         self.fail = fail
         self.calls: list[tuple[str, str, int]] = []
         self.by_purpose = {
             "pm_plan": ActiveContext(session_id="s1", purpose="pm_plan", rendered_text="ACTIVE_CONTEXT_PM_PLAN"),
-            "pm_review": ActiveContext(
+            "pm_review": review_context or ActiveContext(
                 session_id="s1",
                 purpose="pm_review",
                 rendered_text="ACTIVE_CONTEXT_PM_REVIEW",
-                source_cursor={"end": {"event_id": "e2"}},
+                frames_after_checkpoint=[
+                    {
+                        "type": "agent_stop",
+                        "lane": 6,
+                        "payload": {"summary": "review evidence"},
+                        "source_refs": [],
+                    }
+                ],
             ),
         }
 
@@ -207,10 +215,30 @@ async def test_pm_plan_does_not_pass_active_context_when_not_supported(tmp_path)
     await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
 
 
-async def test_pm_review_uses_context_manager(tmp_path):
+async def test_pm_review_uses_active_context_as_context_not_timeline(tmp_path):
     store = _store(tmp_path)
     _seed(store, tmp_path)
-    cm = _FakeContextManager()
+    cm = _FakeContextManager(
+        review_context=ActiveContext(
+            session_id="s1",
+            purpose="pm_review",
+            rendered_text='{"output_contract": {}, "validator_rules": {}, "context": "FULL ACTIVE CONTEXT"}',
+            frames_after_checkpoint=[
+                {
+                    "event_id": "",
+                    "type": "command_result",
+                    "lane": 6,
+                    "agent_id": "codex",
+                    "payload": {
+                        "command": "pytest",
+                        "exit_code": 0,
+                        "important_lines": ["1 passed"],
+                    },
+                    "source_refs": [],
+                }
+            ],
+        )
+    )
 
     class PM:
         language = "en"
@@ -235,10 +263,53 @@ async def test_pm_review_uses_context_manager(tmp_path):
 
     await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
 
-    assert pm.timeline == "ACTIVE_CONTEXT_PM_REVIEW"
-    assert pm.context == "ACTIVE_CONTEXT_PM_REVIEW"
+    assert "FULL ACTIVE CONTEXT" in pm.context
+    assert "command_result" in pm.timeline
+    assert "pytest" in pm.timeline
+    assert pm.timeline != pm.context
+    assert "output_contract" not in pm.timeline
+    assert "validator_rules" not in pm.timeline
     assert pm.active_context is cm.by_purpose["pm_review"]
     assert [call[1] for call in cm.calls] == ["pm_plan", "pm_review"]
+
+
+async def test_pm_review_no_new_frames_returns_no_new_output(tmp_path):
+    store = _store(tmp_path)
+    _seed(store, tmp_path)
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        def __init__(self):
+            self.timeline = ""
+
+        async def plan(self, goal, **kw):
+            return PMPlan(agent="codex", model="", effort="low", instruction="run", todo=["check"])
+
+        async def review(self, goal, plan, timeline, **kw):
+            self.timeline = timeline
+            return PMReview(done=True, summary="done")
+
+    pm = PM()
+    svc = DispatchService(
+        _cfg(tmp_path),
+        store,
+        runner=_Runner(store),
+        pm_agent=pm,
+        context_manager=_FakeContextManager(
+            review_context=ActiveContext(
+                session_id="s1",
+                purpose="pm_review",
+                rendered_text="FULL ACTIVE CONTEXT",
+                frames_after_checkpoint=[],
+            )
+        ),
+    )
+
+    await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
+
+    assert pm.timeline == "(no new agent output captured)"
 
 
 async def test_pm_review_falls_back_to_legacy_timeline_on_context_failure(tmp_path):
@@ -285,3 +356,46 @@ def test_reviewed_cursor_advances_from_checkpoint_source_cursor():
     assert _advance_reviewed_event_id_from_active_context(rows, "e3", active) == "e3"
     missing = ActiveContext(source_cursor={"end": {"event_id": "missing"}})
     assert _advance_reviewed_event_id_from_active_context(rows, "e1", missing) == "e1"
+
+
+def test_pm_review_checkpoint_cursor_does_not_duplicate_covered_frames():
+    rows = [
+        Event(id="e1", session_id="s1", type="dispatch", source="test"),
+        Event(id="e2", session_id="s1", type="pm_plan", source="test"),
+        Event(id="e3", session_id="s1", type="stop", source="codex"),
+    ]
+    active = ActiveContext(
+        source_cursor={"end": {"event_id": "e2"}},
+        frames_after_checkpoint=[
+            {
+                "event_id": "e1",
+                "type": "agent_stop",
+                "lane": 6,
+                "payload": {"summary": "old dispatch"},
+                "source_refs": ["event:e1"],
+            },
+            {
+                "event_id": "e2",
+                "type": "command_result",
+                "lane": 6,
+                "payload": {"command": "covered"},
+                "source_refs": ["event:e2"],
+            },
+            {
+                "event_id": "e3",
+                "type": "command_result",
+                "lane": 6,
+                "payload": {"command": "pytest", "exit_code": 0},
+                "source_refs": ["event:e3"],
+            },
+        ],
+    )
+
+    reviewed = _advance_reviewed_event_id_from_active_context(rows, "e1", active)
+    timeline = _review_timeline_from_active_context(active, rows, reviewed)
+
+    assert reviewed == "e2"
+    assert "pytest" in timeline
+    assert "e3" in timeline
+    assert "old dispatch" not in timeline
+    assert "covered" not in timeline
