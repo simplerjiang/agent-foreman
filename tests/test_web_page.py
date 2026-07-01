@@ -252,14 +252,48 @@ def test_composer_dispatch_with_effort_and_context_meter():
     # context meter + compact action
     assert "ctx-meter" in js and "/compact" in js and "runCompact" in js
     assert "contextLimitFor" in js and "context_length" in js
+    assert "nextContextStats(sessionRow, events || [])" in js
+    assert "context_tokens" in js and "context_compacted" in js
     assert "contextLength - outputReserve" not in js
     assert ".ctx-meter" in css and ".effort-pick" in css
+    assert ".context-pack" in css and "function ContextPackPanel" in js
+    assert 'kind: "context-pack"' in js and "contextPackView(p)" in js
     assert 'e.key === "@"' in js and "addAttach(); return;" in js
     assert 'attachments.map((a) => `@${a.name}`).join(" ")' in js
     assert "continue_mode" in js and 'runDispatch("queue")' in js
     assert 'runDispatch("interrupt")' not in js
     assert "onCancelSession" in js and "busy-chip" in css
     assert "clipboardImageFiles" in js and "addPastedImages" in js and "onPaste" in js
+
+
+def test_context_meter_and_context_pack_helpers_match_provider_context():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function estTokens")
+    end = js.index("function clipboardImageFiles", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const must = (cond, label, value) => { if (!cond) { console.error(label, value); process.exit(1); } };
+const noisyEvents = [{ type: "agent_output", payload: { summary: "x".repeat(4000) } }];
+let stats = nextContextStats({ context_tokens: 809, context_compacted: true }, noisyEvents);
+must(stats.tokens === 809 && stats.compacted === true, "session context stats win", stats);
+stats = nextContextStats({ context_tokens: 0, context_compacted: false }, noisyEvents);
+must(stats.tokens === 1000 && stats.compacted === false, "uncompacted sessions use raw event context", stats);
+const payload = {
+  summary: JSON.stringify({ session_state: { summary: "done" }, dynamic_tail: [{ text: "tail" }] }),
+  after_tokens: 12,
+  summary_chars: 90,
+  format: "context_pack_v1",
+};
+const view = contextPackView(payload);
+must(view.preview === "done", "context pack preview", view);
+must(view.json.includes('\n  "session_state"') && view.json.includes('"dynamic_tail"'), "pretty json", view.json);
+const broken = contextPackView({ summary: '{"dynamic_tail":', after_tokens: 5, summary_chars: 16 });
+must(broken.json.includes('"parse_error"') && !broken.json.includes('{"dynamic_tail":'), "broken json is not raw rendered", broken.json);
+stats = nextContextStats(null, [{ type: "context_compact", payload }]);
+must(stats.tokens === 12 && stats.compacted === true, "compact event fallback", stats);
+'''
+    subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
 
 
 def test_pm_brain_timeout_setting_wired():

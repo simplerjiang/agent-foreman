@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.4.1",
+      en: "Context compression now renders as a collapsed transparent ContextPack row with parsed pretty JSON on expand, and the composer context meter follows the next provider-bound context before and after compaction.",
+      zh: "上下文压缩现在显示为透明折叠 ContextPack 行，展开后展示解析并格式化后的 JSON；输入区上下文仪表盘会按压缩前后下一次真正发给 provider 的上下文计数。",
+    },
+    {
       version: "v1.4.0",
       en: "Subagent cards now show replies, commands, reasoning, and explicit final results in one chronological timeline, keep agent identity separate from model output, preserve Windows CJK CLI text, and make workspace file references clickable.",
       zh: "子代理卡片现在按同一条时间线展示回复、命令、思考和明确的最终结果，把 agent 身份与模型输出分开，保留 Windows 中文 CLI 输出，并让工作区文件引用可点击。",
@@ -621,12 +626,17 @@
   }
   function estTokens(events) {
     let chars = 0;
-    for (const e of events) {
-      const p = e.payload || {};
-      chars += (p.text || p.delta || p.summary || p.raw_text || p.goal || "").length;
-      if (!p.text && !p.delta && !p.summary && !p.raw_text && !p.goal) chars += JSON.stringify(p).length;
-    }
-    return Math.round(chars / 4);
+    for (const e of events) chars += eventContextChars(e);
+    return approxTokensFromChars(chars);
+  }
+  function eventContextChars(e) {
+    const p = (e && e.payload) || {};
+    const primary = p.text || p.delta || p.summary || p.raw_text || p.goal || "";
+    if (primary) return String(primary).length;
+    try { return JSON.stringify(p).length; } catch (err) { return 0; }
+  }
+  function approxTokensFromChars(chars) {
+    return Math.round(Math.max(0, Number(chars) || 0) / 4);
   }
   function contextLimitFor(options, selectedModel, fallbackModel) {
     const models = options || [];
@@ -642,6 +652,59 @@
     const n = Math.max(0, Number(value) || 0);
     if (n >= 1000) return `${Math.round(n / 100) / 10}k`;
     return `${Math.round(n)}`;
+  }
+  function parseObject(text) {
+    try {
+      const obj = JSON.parse(text || "{}");
+      return obj && typeof obj === "object" && !Array.isArray(obj) ? obj : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function contextPackView(payload) {
+    const p = payload || {};
+    const summary = String(p.summary || "");
+    const pack = parseObject(summary);
+    const state = (pack && pack.session_state && typeof pack.session_state === "object") ? pack.session_state : {};
+    const preview = String(state.summary || state.current_step || "").trim();
+    const beforeTokens = Math.max(0, Number(p.before_tokens) || 0);
+    const afterTokens = Math.max(0, Number(p.after_tokens) || approxTokensFromChars(summary.length));
+    const displayPack = pack || {
+      parse_error: "ContextPack JSON could not be parsed",
+      format: String(p.format || ""),
+      summary_chars: Math.max(0, Number(p.summary_chars) || summary.length),
+      before_tokens: beforeTokens,
+      after_tokens: afterTokens,
+    };
+    return {
+      json: JSON.stringify(displayPack, null, 2),
+      preview,
+      beforeTokens,
+      afterTokens,
+      summaryChars: Math.max(0, Number(p.summary_chars) || summary.length),
+      format: String(p.format || ""),
+    };
+  }
+  function lastContextPackEvent(events) {
+    for (let i = (events || []).length - 1; i >= 0; i -= 1) {
+      const e = events[i];
+      if (e && e.type === "context_compact") return e;
+    }
+    return null;
+  }
+  function nextContextStats(sessionRow, events) {
+    if (sessionRow && sessionRow.context_compacted && Object.prototype.hasOwnProperty.call(sessionRow, "context_tokens")) {
+      return {
+        tokens: Math.max(0, Number(sessionRow.context_tokens) || 0),
+        compacted: true,
+      };
+    }
+    const compact = lastContextPackEvent(events);
+    if (compact) {
+      const view = contextPackView(compact.payload || {});
+      return { tokens: view.afterTokens, compacted: true };
+    }
+    return { tokens: estTokens(events || []), compacted: false };
   }
   function clipboardImageFiles(ev) {
     const items = ev && ev.clipboardData && ev.clipboardData.items;
@@ -1532,7 +1595,10 @@
       } else if (t === "notification") {
         const label = p.label || p.title || (p.kind === "cancelled" ? d.sessionCanceled : d.notification);
         nodes.push({ kind: "system", id: e.id || `n-${nodes.length}`, ts: e.ts, label, tone: "muted", text: p.msg || p.text || "" });
-      } else if (["checkpoint", "gate", "action_executed", "action_undone", "review", "audit", "undo", "recover", "stall", "context_compact"].includes(t)) {
+      } else if (t === "context_compact") {
+        const view = contextPackView(p);
+        nodes.push({ kind: "context-pack", id: e.id || `cp-${nodes.length}`, ts: e.ts, label: d.compactDone, ...view });
+      } else if (["checkpoint", "gate", "action_executed", "action_undone", "review", "audit", "undo", "recover", "stall"].includes(t)) {
         nodes.push({ kind: "system", id: e.id || `sy-${nodes.length}`, ts: e.ts, label: d[`ev_${t}`] || t, tone: "muted", text: p.summary || p.note || p.disposition || "" });
       }
     }
@@ -1923,6 +1989,20 @@
     </details>`;
   }
 
+  function ContextPackPanel({ n, d, lang }) {
+    return html`<details className="context-pack">
+      <summary>
+        <span className="context-pack-icon" aria-hidden="true">▸</span>
+        <span className="context-pack-title">${n.label || d.compactDone}</span>
+        ${n.afterTokens ? html`<span className="context-pack-stat">≈${tokenK(n.afterTokens)}</span>` : null}
+        ${n.summaryChars ? html`<span className="context-pack-stat">${n.summaryChars} chars</span>` : null}
+        <span className="context-pack-time">${formatTime(n.ts, lang)}</span>
+      </summary>
+      ${n.preview ? html`<div className="context-pack-preview">${n.preview}</div>` : null}
+      <pre className="context-pack-json"><code>${n.json || ""}</code></pre>
+    </details>`;
+  }
+
   function ThreadNode({ n, dig, d, lang, openCalls, toggleCall, onCard, onApproval, openDetail, onCopy }) {
     if (n.kind === "user") {
       return html`<div className="bubble-user"><div className="body">
@@ -1965,6 +2045,9 @@
     }
     if (n.kind === "pm-activity") {
       return html`<${PmActivity} n=${n} d=${d} />`;
+    }
+    if (n.kind === "context-pack") {
+      return html`<${ContextPackPanel} n=${n} d=${d} lang=${lang} />`;
     }
     if (n.kind === "call") {
       const c = dig.calls.get(n.callId);
@@ -2187,9 +2270,10 @@
       setSelectedWorkModeIds(wmSelected.includes(id) ? wmSelected.filter((x) => x !== id) : [...wmSelected, id]);
     };
     const wmDesc = (row) => { try { const m = JSON.parse(row.metadata_json || "{}"); if (m && m.description) return m.description; } catch (e) {} return (row.body || "").slice(0, 80); };
-    const est = estTokens(events || []);
+    const contextStats = nextContextStats(sessionRow, events || []);
+    const est = contextStats.tokens;
     const contextLimit = contextLimitFor(modelOptions, model, llm && llm.model);
-    const pct = Math.min(95, Math.round((est / contextLimit) * 100));
+    const pct = contextLimit > 0 ? Math.min(95, Math.round((est / contextLimit) * 100)) : 0;
     const sessionStatus = String((sessionRow && sessionRow.status) || "").toLowerCase().replace(/[\s-]+/g, "_");
     const busy = !!sessionRow && ["planning", "queued", "running", "active", "waiting_approval"].includes(sessionStatus);
     const sendBusy = !!dispatching;
@@ -2215,7 +2299,7 @@
     };
     return html`<div className="composer">
       <div className="composer-inner">
-        ${(events && events.length) ? html`<div className="ctx-meter">
+        ${(sessionRow || (events && events.length)) ? html`<div className="ctx-meter">
           <span>${d.context}</span>
           <div className="track"><span style=${{ width: `${pct}%` }}></span></div>
           <span>≈${tokenK(est)} / ${tokenK(contextLimit)}</span>

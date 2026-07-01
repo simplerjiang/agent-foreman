@@ -1607,6 +1607,8 @@ class DispatchService:
         for s in self.store.get_sessions():
             events = self.store.get_events(s.id) if hasattr(self.store, "get_events") else []
             last = events[-1] if events else None
+            context_compacted = any(getattr(e, "type", "") == "context_compact" for e in events)
+            context = (s.plan or "") if context_compacted else ""
             cards = (
                 self.store.get_decision_cards(s.id)
                 if hasattr(self.store, "get_decision_cards")
@@ -1621,6 +1623,9 @@ class DispatchService:
                     "workspace": s.workspace,
                     "created_at": s.created_at,
                     "updated_at": s.updated_at,
+                    "context_chars": len(context),
+                    "context_tokens": _ctx_approx_tokens(context),
+                    "context_compacted": bool(context_compacted and context.strip()),
                     "events": len(events),
                     "last_event_ts": last.ts if last else "",
                     "last_event_type": last.type if last else "",
