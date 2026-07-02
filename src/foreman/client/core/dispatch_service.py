@@ -1657,6 +1657,21 @@ class DispatchService:
                 f"Context compaction failed before PM call: {str(exc)[:400]}",
             )
             return False
+        except Exception as exc:  # noqa: BLE001 - restore/usage failure is a soft dependency.
+            await self._persist_then_publish(
+                make_event(
+                    "notification",
+                    "pm-agent",
+                    session_id,
+                    payload={
+                        "kind": "context_restore_failed",
+                        "purpose": purpose,
+                        "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                        "fallback": "legacy_session_context",
+                    },
+                )
+            )
+            return True
 
     async def _local_compact_active_context(self, active_context: ActiveContext) -> str:
         session_id = active_context.session_id

@@ -353,6 +353,56 @@ async def test_pm_plan_soft_compact_failure_allows_plan_call(tmp_path):
     assert failed[-1]["hard"] is False
 
 
+async def test_pm_plan_maybe_compact_restore_failure_falls_back_to_legacy_context(tmp_path):
+    store = _store(tmp_path)
+    _seed(store, tmp_path)
+
+    class CM(_FakeContextManager):
+        async def maybe_compact(
+            self,
+            session_id: str,
+            *,
+            reason: str,
+            purpose: str,
+            window_tokens: int,
+            run_count: int = 0,
+        ):
+            raise RuntimeError("restore boom")
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        def __init__(self):
+            self.context = ""
+
+        async def plan(self, goal, **kw):
+            self.context = kw["context"]
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="low",
+                instruction="direct reply only",
+                kind="direct_reply",
+                reply="done",
+            )
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("direct reply should not review")
+
+    pm = PM()
+    svc = DispatchService(_cfg(tmp_path), store, runner=_Runner(store), pm_agent=pm, context_manager=CM(fail=True))
+
+    await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
+
+    notifications = [json.loads(event.payload_json) for event in store.get_events("s1") if event.type == "notification"]
+    assert pm.context == "LEGACY_CONTEXT"
+    assert any(
+        item.get("kind") == "context_restore_failed" and "restore boom" in item.get("error", "")
+        for item in notifications
+    )
+
+
 async def test_pm_plan_falls_back_to_legacy_context_on_context_manager_failure(tmp_path):
     store = _store(tmp_path)
     _seed(store, tmp_path)

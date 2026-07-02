@@ -316,12 +316,20 @@ class ContextManager:
         run_count: int = 0,
         hard: bool | None = None,
     ) -> ContextCheckpoint | None:
-        active = self.build_active_context(
-            session_id,
-            purpose=purpose,
-            window_tokens=window_tokens,
-        )
-        usage = estimate_context_usage(active, window_tokens)
+        try:
+            active = self.build_active_context(
+                session_id,
+                purpose=purpose,
+                window_tokens=window_tokens,
+            )
+            usage = estimate_context_usage(active, window_tokens)
+        except Exception as exc:  # noqa: BLE001 - restore failure should fall back to legacy context.
+            self._emit_compact_warning(
+                session_id,
+                checkpoint_id="",
+                warning=f"maybe_compact_usage_estimate_failed: {type(exc).__name__}: {str(exc)[:200]}",
+            )
+            return None
         hard_trigger = bool(hard) or should_hard_compact(usage)
         soft_trigger = should_soft_compact(usage, run_count=run_count)
         if not hard_trigger and not soft_trigger:
@@ -1104,8 +1112,28 @@ def render_active_context(active_context: ActiveContext) -> str:
     return text[:8000] + "\n...[truncated active context]..."
 
 
+def estimate_active_context_tokens(active_context: ActiveContext) -> int:
+    envelope = active_context.envelope if isinstance(active_context.envelope, dict) else {}
+    usage_payload = {
+        "rendered_text": active_context.rendered_text or "",
+        "stable_prefix": active_context.stable_prefix or [],
+        "replacement_history": active_context.replacement_history or [],
+        "frames_after_checkpoint": active_context.frames_after_checkpoint or [],
+        "runtime_state": active_context.runtime_state or {},
+        "task": _as_dict(envelope.get("task")),
+        "environment": _as_dict(envelope.get("environment")),
+        "agents": _as_dict(envelope.get("agents")),
+        "context": {
+            key: value
+            for key, value in _as_dict(envelope.get("context")).items()
+            if key not in {"stable_prefix", "checkpoint_replacement_history", "frames_after_checkpoint", "runtime_state"}
+        },
+    }
+    return _approx_tokens(json.dumps(_compact_payload(usage_payload), ensure_ascii=False, sort_keys=True))
+
+
 def estimate_context_usage(active_context: ActiveContext, window_tokens: int) -> ContextUsage:
-    used = _approx_tokens(active_context.rendered_text or "")
+    used = estimate_active_context_tokens(active_context)
     window = max(0, int(window_tokens or 0))
     soft_threshold = 0.70
     hard_threshold = 0.90
@@ -2120,6 +2148,7 @@ __all__ = [
     "RuntimeState",
     "build_pm_envelope",
     "classify_user_intent",
+    "estimate_active_context_tokens",
     "estimate_context_usage",
     "extract_runtime_state",
     "make_frame_id",
