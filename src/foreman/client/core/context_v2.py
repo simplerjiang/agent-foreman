@@ -1170,7 +1170,7 @@ def estimate_active_context_tokens(active_context: ActiveContext) -> int:
             if key not in {"stable_prefix", "checkpoint_replacement_history", "frames_after_checkpoint", "runtime_state"}
         },
     }
-    return _approx_tokens(json.dumps(_compact_payload(usage_payload), ensure_ascii=False, sort_keys=True))
+    return _approx_tokens(json.dumps(usage_payload, ensure_ascii=False, sort_keys=True))
 
 
 def estimate_context_usage(active_context: ActiveContext, window_tokens: int) -> ContextUsage:

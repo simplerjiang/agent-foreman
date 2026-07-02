@@ -2171,7 +2171,7 @@
               <button className=${`rp-tab${rightTab === "todo" ? " on" : ""}`} onClick=${() => setRightTab("todo")}>${d.tabTodos} <span style=${{ opacity: 0.7 }}>${dig.todos.length}</span></button>
               <button className=${`rp-tab${rightTab === "sub" ? " on" : ""}`} onClick=${() => setRightTab("sub")}>${d.tabSubagents} <span style=${{ opacity: 0.7 }}>${dig.subagents.length}</span></button>
               <button className=${`rp-tab${rightTab === "term" ? " on" : ""}`} onClick=${() => setRightTab("term")}>${d.tabTerminal}</button>
-              <button className=${`rp-tab${rightTab === "ctx" ? " on" : ""}`} data-testid="context-tab" onClick=${() => setRightTab("ctx")}>Context</button>
+              <button className=${`rp-tab${rightTab === "ctx" ? " on" : ""}`} data-testid="context-tab" onClick=${() => setRightTab("ctx")}>${d.context}</button>
             </div>
             <div className="rp-body">
               ${rightTab === "todo" ? html`<${TodoPanel} key=${sessionRow ? sessionRow.id : "none"} d=${d} todos=${dig.todos} onAddStep=${composer.onAddStep} />` : null}

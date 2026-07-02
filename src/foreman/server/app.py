@@ -675,18 +675,33 @@ def _checkpoint_detail_dict(checkpoint: Any, *, events: list[Any] | None = None)
 
 
 def _usage_from_active_context(active_context: Any, window_tokens: int) -> dict[str, Any]:
-    rendered = str(getattr(active_context, "rendered_text", "") or "")
-    used = _approx_context_tokens(rendered)
-    window = max(0, int(window_tokens or 0))
-    soft_threshold = 0.70
-    hard_threshold = 0.90
-    lane_usage = {str(i): 0 for i in range(1, 8)}
-    for frame in getattr(active_context, "frames_after_checkpoint", []) or []:
-        if not isinstance(frame, dict):
-            continue
-        lane = str(frame.get("lane") or "6")
-        if lane in lane_usage:
-            lane_usage[lane] += _approx_context_tokens(json.dumps(frame, ensure_ascii=False, sort_keys=True))
+    try:
+        from foreman.client.core.context_v2 import estimate_context_usage
+
+        usage = estimate_context_usage(active_context, window_tokens)
+        return {
+            "used_tokens": int(getattr(usage, "used_tokens", 0) or 0),
+            "window_tokens": int(getattr(usage, "window_tokens", 0) or 0),
+            "percent": float(getattr(usage, "percent", 0.0) or 0.0),
+            "tokens_until_soft_compact": int(getattr(usage, "tokens_until_soft_compact", 0) or 0),
+            "tokens_until_hard_compact": int(getattr(usage, "tokens_until_hard_compact", 0) or 0),
+            "soft_threshold": float(getattr(usage, "soft_threshold", 0.70) or 0.70),
+            "hard_threshold": float(getattr(usage, "hard_threshold", 0.90) or 0.90),
+            "run_count_threshold": int(getattr(usage, "run_count_threshold", 8) or 8),
+            "lane_usage": {
+                str(k): int(v or 0)
+                for k, v in dict(getattr(usage, "lane_usage", {}) or {}).items()
+            },
+        }
+    except Exception:  # noqa: BLE001 - never let UI estimation hide the context panel.
+        pass
+    token_usage = getattr(active_context, "token_usage", {}) if active_context is not None else {}
+    token_usage = token_usage if isinstance(token_usage, dict) else {}
+    used = int(token_usage.get("used_tokens") or token_usage.get("before_tokens") or 0)
+    window = max(0, int(token_usage.get("window_tokens") or window_tokens or 0))
+    soft_threshold = float(token_usage.get("soft_threshold") or 0.70)
+    hard_threshold = float(token_usage.get("hard_threshold") or 0.90)
+    lane_usage = token_usage.get("lane_usage") if isinstance(token_usage.get("lane_usage"), dict) else {}
     return {
         "used_tokens": used,
         "window_tokens": window,
@@ -696,12 +711,18 @@ def _usage_from_active_context(active_context: Any, window_tokens: int) -> dict[
         "soft_threshold": soft_threshold,
         "hard_threshold": hard_threshold,
         "run_count_threshold": 8,
-        "lane_usage": lane_usage,
+        "lane_usage": {str(i): int(lane_usage.get(str(i), 0) or 0) for i in range(1, 8)},
     }
 
 
 def _context_preview(text: str, limit: int = 6000) -> str:
-    cleaned = str(_sanitize_context_value(str(text or "")) or "")
+    redacted_lines: list[str] = []
+    for line in str(text or "").splitlines():
+        lowered = line.lower()
+        if any(key in lowered for key in _CONTEXT_REDACT_KEYS):
+            continue
+        redacted_lines.append(line)
+    cleaned = str(_sanitize_context_value("\n".join(redacted_lines)) or "")
     return cleaned if len(cleaned) <= limit else cleaned[:limit] + "\n...[preview truncated]"
 
 

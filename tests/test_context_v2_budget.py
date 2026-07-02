@@ -63,7 +63,7 @@ def test_usage_uses_uncapped_context_not_rendered_text():
     usage = estimate_context_usage(active, 600)
 
     assert usage.used_tokens > estimate_active_context_tokens(ActiveContext(rendered_text="short"))
-    assert should_soft_compact(usage) is True
+    assert should_hard_compact(usage) is True
 
 
 def test_large_lane7_noise_triggers_usage_even_when_rendered_text_capped():

@@ -5,7 +5,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from foreman.client.core.context_v2 import ContextManager
+from foreman.client.core.context_v2 import ActiveContext, ContextManager
 from foreman.client.core.dispatch_service import DispatchService
 from foreman.client.store import Store
 from foreman.client.store.models import ContextCheckpoint, Event, Session
@@ -113,9 +113,17 @@ def _checkpoint(checkpoint_id: str, *, session_id: str = "s1", created_at: str =
     )
 
 
-def _client(store: Store, cfg: Config, *, manager: ContextManager | None = None) -> TestClient:
+def _client(store: Store, cfg: Config, *, manager=None) -> TestClient:
     dispatcher = DispatchService(cfg, store, context_manager=manager)
     return TestClient(create_app(cfg, store=store, dispatcher=dispatcher))
+
+
+class _StaticContextManager:
+    def __init__(self, active: ActiveContext) -> None:
+        self.active = active
+
+    def build_active_context(self, session_id: str, *, purpose: str, window_tokens: int) -> ActiveContext:
+        return self.active
 
 
 @pytest.mark.asyncio
@@ -187,6 +195,72 @@ def test_checkpoint_detail_excludes_provider_payload_and_encrypted_content(tmp_p
     assert "encrypted_content" not in body
     assert "SECRET" not in body
     assert "replacement_history_json" not in body
+
+
+def test_context_api_usage_uses_uncapped_context_estimator(tmp_path):
+    store = _store(tmp_path)
+    _seed_session(store, tmp_path)
+    large_text = "lane7-noise " * 5000
+    active = ActiveContext(
+        session_id="s1",
+        purpose="ui_context",
+        rendered_text="short",
+        frames_after_checkpoint=[
+            {
+                "id": "f-large",
+                "type": "agent_reasoning",
+                "lane": 7,
+                "payload": {"summary": large_text},
+                "source_refs": ["event:e2"],
+            }
+        ],
+        replacement_history=[
+            {
+                "role": "system",
+                "kind": "checkpoint_summary",
+                "content": "prior " * 1000,
+                "payload": {"summary": "prior"},
+            }
+        ],
+        runtime_state={"workspace": str(tmp_path)},
+        envelope={"context": {"restore_mode": "checkpoint"}},
+    )
+
+    data = _client(store, _cfg(tmp_path), manager=_StaticContextManager(active)).get("/api/sessions/s1/context").json()
+
+    assert data["usage"]["used_tokens"] > 10000
+    assert data["usage"]["used_tokens"] > 1000  # much larger than approx_tokens("short")
+    assert data["usage"]["lane_usage"]["7"] > 10000
+
+
+def test_context_api_preview_remains_capped_even_when_usage_uncapped(tmp_path):
+    store = _store(tmp_path)
+    _seed_session(store, tmp_path)
+    large_text = "safe context " * 8000
+    active = ActiveContext(
+        session_id="s1",
+        purpose="ui_context",
+        rendered_text=f"short\nprovider_payload: SECRET\n{large_text}\nencrypted_content: SECRET_BLOB",
+        frames_after_checkpoint=[
+            {
+                "id": "f-large",
+                "type": "agent_output",
+                "lane": 6,
+                "payload": {"summary": large_text},
+                "source_refs": ["event:e2"],
+            }
+        ],
+        runtime_state={"workspace": str(tmp_path)},
+        envelope={"context": {"restore_mode": "raw_frames"}},
+    )
+
+    data = _client(store, _cfg(tmp_path), manager=_StaticContextManager(active)).get("/api/sessions/s1/context").json()
+
+    assert data["usage"]["used_tokens"] > 10000
+    assert len(data["active_context_preview"]) <= 6030
+    assert "provider_payload" not in data["active_context_preview"]
+    assert "encrypted_content" not in data["active_context_preview"]
+    assert "SECRET" not in data["active_context_preview"]
 
 
 @pytest.mark.asyncio
