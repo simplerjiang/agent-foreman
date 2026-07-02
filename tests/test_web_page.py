@@ -19,13 +19,23 @@ from foreman.shared.config import WorkspaceCfg, load_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _dashboard_bundle(c: TestClient) -> str:
+    return "\n".join(
+        [
+            c.get("/app-core.js").text,
+            c.get("/app-context.js").text,
+            c.get("/app.js").text,
+        ]
+    )
+
+
 def test_index_served():
     c = TestClient(create_app(load_config()))
     r = c.get("/")
     assert r.status_code == 200
     assert "Foreman" in r.text
     assert '<div id="root" data-admin-root="1">' in r.text
-    assert "/admin-app.js" in r.text and "/app.js" in r.text
+    assert "/admin-app.js" in r.text and "/app-core.js" in r.text and "/app-context.js" in r.text and "/app.js" in r.text
     assert "/index-redirect.js" not in r.text
 
 
@@ -38,7 +48,7 @@ def test_index_ships_slim_vendor_and_self_hosted_fonts():
     assert "/vendor/react-dom.production.min.js" in html
     assert "/vendor/htm.umd.js" in html
     assert "/vendor/antd.min.js" in html
-    assert "/app.css" in html and "/app.js" in html and "/admin-app.js" in html
+    assert "/app.css" in html and "/app-core.js" in html and "/app-context.js" in html and "/app.js" in html and "/admin-app.js" in html
     # self-hosted variable fonts, preloaded
     assert "plus-jakarta-sans-latin.woff2" in html
     assert "jetbrains-mono-latin.woff2" in html
@@ -47,6 +57,22 @@ def test_index_ships_slim_vendor_and_self_hosted_fonts():
         r = c.get(f"/vendor/fonts/{font}")
         assert r.status_code == 200, font
         assert r.content[:4] == b"wOF2", font
+
+
+def test_app_split_scripts_are_served_without_build_step():
+    c = TestClient(create_app(load_config()))
+    html = c.get("/app.html").text
+    assert '<script src="/app-core.js?v=' in html
+    assert '<script src="/app-context.js?v=' in html
+    assert '<script src="/app.js?v=' in html
+    assert html.index("/app-core.js") < html.index("/app-context.js") < html.index("/app.js")
+    for path in ("/app-core.js", "/app-context.js", "/app.js"):
+        res = c.get(path)
+        assert res.status_code == 200, path
+        assert "type=\"module\"" not in html
+    lower = html.lower()
+    for word in ("vite", "webpack", "babel", "tsx", "jsx"):
+        assert word not in lower
 
 
 def test_legacy_index_redirects_to_console_control_view():
@@ -278,7 +304,7 @@ def test_composer_dispatch_with_effort_and_context_meter():
 
 def test_context_panel_renders_usage_meter():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     css = c.get("/app.css").text
     assert 'data-testid="context-tab"' in js
     assert 'data-testid="context-panel"' in js
@@ -293,7 +319,7 @@ def test_context_panel_renders_usage_meter():
 
 def test_context_panel_renders_lane_usage():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'data-testid="context-lane-usage"' in js
     for lane in range(1, 8):
         assert f"context-lane-${{lane}}" in js or f"context-lane-{lane}" in js
@@ -302,7 +328,7 @@ def test_context_panel_renders_lane_usage():
 
 def test_context_panel_renders_runtime_state():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'data-testid="context-runtime-state"' in js
     assert 'data-testid="context-runtime-workspace"' in js
     assert 'data-testid="context-runtime-cwd"' in js
@@ -314,7 +340,7 @@ def test_context_panel_renders_runtime_state():
 
 def test_context_panel_renders_active_agents():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     css = c.get("/app.css").text
     assert 'data-testid="context-agents-card"' in js
     assert 'data-testid="context-agent-row"' in js
@@ -328,7 +354,7 @@ def test_context_panel_renders_active_agents():
 
 def test_context_panel_renders_latest_checkpoint():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'data-testid="latest-checkpoint-card"' in js
     assert 'data-testid="latest-checkpoint-id"' in js
     assert 'data-testid="latest-checkpoint-trigger"' in js
@@ -340,7 +366,7 @@ def test_context_panel_renders_latest_checkpoint():
 
 def test_context_panel_renders_checkpoint_list():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'data-testid="checkpoint-list"' in js
     assert 'data-testid="checkpoint-row"' in js
     assert 'data-testid="checkpoint-row-created"' in js
@@ -354,7 +380,7 @@ def test_context_panel_renders_checkpoint_list():
 
 def test_context_panel_renders_checkpoint_detail():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'data-testid="checkpoint-detail"' in js
     assert 'data-testid="checkpoint-summary"' in js
     assert 'data-testid="checkpoint-runtime"' in js
@@ -366,27 +392,27 @@ def test_context_panel_renders_checkpoint_detail():
 
 def test_context_panel_hides_provider_payload_by_default():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert "provider_payload" not in js
     assert "raw replacement_history full JSON" not in js
 
 
 def test_context_panel_hides_encrypted_content():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert "encrypted_content" not in js
 
 
 def test_context_panel_hides_hidden_reasoning():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert "hidden_reasoning" not in js
     assert "pm_reasoning raw" not in js
 
 
 def test_compact_now_button_calls_manual_compact_endpoint():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'data-testid="context-compact-now"' in js
     assert "/context/compact" in js
     assert 'trigger: "manual", reason: "user_requested"' in js
@@ -394,21 +420,21 @@ def test_compact_now_button_calls_manual_compact_endpoint():
 
 def test_compact_now_button_disabled_while_running():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'disabled=${state === "compacting" || !sessionId}' in js
     assert "Compacting..." in js
 
 
 def test_compact_now_success_refreshes_context():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'setCompactMsg("Context compacted.")' in js
     assert "await loadContext();" in js
 
 
 def test_compact_now_failure_shows_error():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert "Context compact failed." in js
     assert "Latest checkpoint was not changed." in js
     assert 'data-testid="context-compact-error"' in js
@@ -416,7 +442,7 @@ def test_compact_now_failure_shows_error():
 
 def test_compact_progress_started_completed_visible():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'data-testid="context-compact-loading"' in js
     assert 'data-testid="timeline-context-compaction"' in js
     assert 'data-testid="timeline-context-compaction-started"' in js
@@ -425,7 +451,7 @@ def test_compact_progress_started_completed_visible():
 
 def test_compact_progress_failed_visible():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert 'data-testid="timeline-context-compaction-failed"' in js
 
 
@@ -441,7 +467,7 @@ def test_new_message_scrolls_conversation_to_bottom():
 
 def test_context_panel_refresh_does_not_jump_conversation_to_top():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert "function ContextPanel" in js
     assert "setState((prev) => prev === \"ready\" || prev === \"degraded\" ? prev : \"loading\")" in js
     assert "threadNodes.length" in js and "loadContext" in js
@@ -449,7 +475,7 @@ def test_context_panel_refresh_does_not_jump_conversation_to_top():
 
 def test_compact_progress_item_does_not_break_bottom_scroll():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = _dashboard_bundle(c)
     assert "stickToBottomRef.current" in js
     assert "timeline-context-compaction" in js
 
