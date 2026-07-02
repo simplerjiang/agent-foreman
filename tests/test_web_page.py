@@ -24,6 +24,7 @@ def _dashboard_bundle(c: TestClient) -> str:
         [
             c.get("/app-core.js").text,
             c.get("/app-context.js").text,
+            c.get("/app-timeline.js").text,
             c.get("/app.js").text,
         ]
     )
@@ -35,7 +36,7 @@ def test_index_served():
     assert r.status_code == 200
     assert "Foreman" in r.text
     assert '<div id="root" data-admin-root="1">' in r.text
-    assert "/admin-app.js" in r.text and "/app-core.js" in r.text and "/app-context.js" in r.text and "/app.js" in r.text
+    assert "/admin-app.js" in r.text and "/app-core.js" in r.text and "/app-context.js" in r.text and "/app-timeline.js" in r.text and "/app.js" in r.text
     assert "/index-redirect.js" not in r.text
 
 
@@ -48,7 +49,7 @@ def test_index_ships_slim_vendor_and_self_hosted_fonts():
     assert "/vendor/react-dom.production.min.js" in html
     assert "/vendor/htm.umd.js" in html
     assert "/vendor/antd.min.js" in html
-    assert "/app.css" in html and "/app-core.js" in html and "/app-context.js" in html and "/app.js" in html and "/admin-app.js" in html
+    assert "/app.css" in html and "/app-core.js" in html and "/app-context.js" in html and "/app-timeline.js" in html and "/app.js" in html and "/admin-app.js" in html
     # self-hosted variable fonts, preloaded
     assert "plus-jakarta-sans-latin.woff2" in html
     assert "jetbrains-mono-latin.woff2" in html
@@ -64,9 +65,10 @@ def test_app_split_scripts_are_served_without_build_step():
     html = c.get("/app.html").text
     assert '<script src="/app-core.js?v=' in html
     assert '<script src="/app-context.js?v=' in html
+    assert '<script src="/app-timeline.js?v=' in html
     assert '<script src="/app.js?v=' in html
-    assert html.index("/app-core.js") < html.index("/app-context.js") < html.index("/app.js")
-    for path in ("/app-core.js", "/app-context.js", "/app.js"):
+    assert html.index("/app-core.js") < html.index("/app-context.js") < html.index("/app-timeline.js") < html.index("/app.js")
+    for path in ("/app-core.js", "/app-context.js", "/app-timeline.js", "/app.js"):
         res = c.get(path)
         assert res.status_code == 200, path
         assert "type=\"module\"" not in html
@@ -296,9 +298,11 @@ def test_workspace_chat_thread_and_right_panel_wired():
     terminal), all derived from the live event stream."""
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    timeline_js = c.get("/app-timeline.js").text
     css = c.get("/app.css").text
     assert "function digest" in js  # events -> thread/todos/subagents/terminal
-    assert "function ThreadNode" in js
+    assert "function ThreadNode" in timeline_js
+    assert "function ThreadNode" not in js
     assert "function TodoPanel" in js and "function SubPanel" in js and "function TermPanel" in js
     assert "rightTab" in js and "tabTodos" in js and "tabSubagents" in js and "tabTerminal" in js
     assert ".thread" in css and ".ws-right" in css and ".composer-box" in css
@@ -317,10 +321,11 @@ def test_workspace_thread_scrolls_to_bottom_on_new_messages():
 def test_workspace_user_and_pm_bubbles_have_copy_buttons():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    timeline_js = c.get("/app-timeline.js").text
     css = c.get("/app.css").text
-    assert "function BubbleCopy" in js
-    assert "<${BubbleCopy} text=${n.goal}" in js
-    assert "<${BubbleCopy} text=${n.text}" in js
+    assert "function BubbleCopy" in timeline_js
+    assert "<${BubbleCopy} text=${n.goal}" in timeline_js
+    assert "<${BubbleCopy} text=${n.text}" in timeline_js
     assert "onCopy=${onCopy}" in js and "onCopy=${mainProps.onCopy}" in js
     assert ".bubble-copy" in css and ".bubble-copy.invert" in css
 
@@ -343,7 +348,7 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert "context_tokens" in js and "context_compacted" in js
     assert "contextLength - outputReserve" not in js
     assert ".ctx-meter" in css and ".effort-pick" in css
-    assert ".context-pack" in css and "function ContextPackPanel" in js
+    assert ".context-pack" in css and "function ContextPackPanel" in _dashboard_bundle(c)
     assert 'kind: "context-pack"' in js and "contextPackView(p)" in js
     assert 'e.key === "@"' in js and "addAttach(); return;" in js
     assert 'attachments.map((a) => `@${a.name}`).join(" ")' in js
@@ -752,11 +757,12 @@ def test_pm_review_rendered_in_thread():
     """pm_review stays an internal diagnostic, while pm_reply is the user-visible PM bubble."""
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    timeline_js = c.get("/app-timeline.js").text
     assert 't === "pm_review"' in js and "follow_up" in js
     assert "todo_status" in js and "mergeTodoRows" in js
     assert 't === "pm_reply"' in js
     assert 'nodes.push({ kind: "pm-review"' in js
-    assert 'className=${`pm-review${n.done ? " done" : ""}`}' in js
+    assert 'className=${`pm-review${n.done ? " done" : ""}`}' in timeline_js
 
 
 def test_pm_stream_replaces_starting_status():
@@ -888,6 +894,7 @@ must(dig.calls.size === 0 && dig.subagents.length === 0, "pm tools are not subag
 def test_tool_stream_and_icon_stop_controls_are_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    timeline_js = c.get("/app-timeline.js").text
     css = c.get("/app.css").text
     assert 't === "tool_stream"' in js
     assert 'p.stream === "stderr" ? "err" : "out"' in js
@@ -900,16 +907,16 @@ def test_tool_stream_and_icon_stop_controls_are_wired():
     assert 'className="term-input"' in js
     assert ".term-input-row" in css and ".term-input" in css
     assert ".stop-icon" in css and "background: currentColor" in css
-    assert "function ThinkingPanel" in js
-    assert 'className=${`pm-thinking${open ? " open" : ""}`}' in js
-    assert 'className="pm-thinking-head"' in js and "aria-expanded=${open}" in js
-    assert "const parts = pmThinkingParts(text, d.thinkingTrace)" in js and 'className="pm-thinking-title"' in js
+    assert "function ThinkingPanel" in timeline_js
+    assert 'className=${`pm-thinking${open ? " open" : ""}`}' in timeline_js
+    assert 'className="pm-thinking-head"' in timeline_js and "aria-expanded=${open}" in timeline_js
+    assert "pmThinkingParts(text, d.thinkingTrace)" in timeline_js and 'className="pm-thinking-title"' in timeline_js
     assert 'const txt = t === "pm_reasoning" ? formatPmReasoningText(cleaned) : displayPmStreamText(cleaned, lang, d);' in js
-    assert "<${MD} text=${parts.body} maxChars=${4000} />" in js
+    assert "<${MD} text=${parts.body} maxChars=${4000} />" in timeline_js
     assert ".pm-thinking-head:hover .pm-thinking-icon" in css and ".pm-thinking.open .pm-thinking-icon" in css
     assert ".pm-thinking .markdown-body" in css
     assert ".pm-thinking .markdown-body p" in css and "white-space: normal" in css
-    assert "function PmActivity" in js and 'kind: "pm-activity"' in js
+    assert "function PmActivity" in timeline_js and 'kind: "pm-activity"' in js
     assert "isPmToolEvent(e, p)" in js and "upsertPmActivityPost(e, p)" in js
     assert ".pm-activity" in css and ".pm-activity-body" in css
 
