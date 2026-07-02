@@ -56,6 +56,14 @@ async def test_launch_persists_and_publishes(tmp_path):
     persisted = store.get_events("s1")
     assert {e.type for e in persisted} == {"agent_start", "agent_output", "stop"}
     assert len(persisted) == 3
+    start_payload = json.loads(next(e.payload_json for e in persisted if e.type == "agent_start"))
+    assert start_payload["handle_id"] == handle.id
+    assert start_payload["status"] == "running"
+    assert start_payload["cwd"] == str(tmp_path)
+    assert start_payload["worktree"] == str(tmp_path)
+    stop_payload = json.loads(next(e.payload_json for e in persisted if e.type == "stop"))
+    assert stop_payload["handle_id"] == handle.id
+    assert stop_payload["status"] == "completed"
     # published in stream order
     assert [e.type for e in received] == ["agent_start", "agent_output", "stop"]
 

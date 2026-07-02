@@ -17,7 +17,7 @@ from foreman.shared.events import make_event, utc_now_iso
 
 from .context_compression import extract_json_object, memory_items_from_pack
 from .pm_contract import PlanContract
-from ..store.models import ContextCheckpoint, ContextFrame, ContextSnapshot, Event, MemoryItem, Session
+from ..store.models import ContextCheckpoint, ContextFrame, ContextSnapshot, Event, MemoryItem, Session, Task
 
 LANE_SYSTEM = 1
 LANE_TASK = 2
@@ -157,7 +157,12 @@ class ContextManager:
         frames: list[ContextFrame] | None = None,
         runner: Any = None,
     ) -> RuntimeState:
-        return extract_runtime_state(session, frames or [], runner=runner or self.runner)
+        return extract_runtime_state(
+            session,
+            frames or [],
+            runner=runner or self.runner,
+            tasks=_tasks_for_session(self.store, session.id),
+        )
 
     def build_active_context(
         self,
@@ -674,6 +679,7 @@ def materialize_event(
                     "parent_agent_id": _text(payload.get("parent_agent_id")),
                     "message": _summarize_text(message),
                     "expected_output": _summarize_text(_text(payload.get("expected_output"))),
+                    "instruction": _summarize_text(_text(payload.get("instruction"))),
                 },
                 role="assistant",
                 lane=LANE_PLAN,
@@ -727,7 +733,7 @@ def materialize_event(
                     event_id,
                     event_ts,
                     "command_result",
-                    {**base, **command},
+                    {**base, **_agent_payload(payload, source), **command},
                     role="tool",
                     lane=LANE_DETAIL,
                     turn_id=task_id,
@@ -741,7 +747,12 @@ def materialize_event(
                 event_id,
                 event_ts,
                 "agent_output",
-                {**base, "text": _summarize_text(_payload_text(payload)), "payload": _compact_payload(payload)},
+                {
+                    **base,
+                    **_agent_payload(payload, source),
+                    "text": _summarize_text(_payload_text(payload)),
+                    "payload": _compact_payload(payload),
+                },
                 role="assistant",
                 lane=LANE_DETAIL,
                 turn_id=task_id,
@@ -845,7 +856,43 @@ def materialize_event(
                 event_id,
                 event_ts,
                 "agent_stop",
-                {**base, "payload": _compact_payload(payload), "status": _stop_status(payload)},
+                {
+                    **base,
+                    **_workspace_payload(payload),
+                    "payload": _compact_payload(payload),
+                    "status": _stop_status(payload),
+                    "returncode": _int_or_none(payload.get("returncode")),
+                    "error": _text(payload.get("error") or payload.get("msg")),
+                    "summary": _text(payload.get("summary") or payload.get("result")),
+                    "native_session_id": _text(payload.get("native_session_id")),
+                    "handle_id": _text(payload.get("handle_id")),
+                },
+                role="assistant",
+                lane=LANE_RUNTIME,
+                turn_id=task_id,
+                agent_id=_agent_id(payload, event_id, source),
+                agent_type=source,
+            )
+        ]
+
+    if event_type == "error":
+        return [
+            _frame(
+                session_id,
+                event_id,
+                event_ts,
+                "agent_stop",
+                {
+                    **base,
+                    **_workspace_payload(payload),
+                    "payload": _compact_payload(payload),
+                    "status": "failed",
+                    "returncode": _int_or_none(payload.get("returncode")),
+                    "error": _text(payload.get("error") or payload.get("msg")),
+                    "summary": _text(payload.get("summary") or payload.get("msg")),
+                    "native_session_id": _text(payload.get("native_session_id")),
+                    "handle_id": _text(payload.get("handle_id")),
+                },
                 role="assistant",
                 lane=LANE_RUNTIME,
                 turn_id=task_id,
@@ -916,6 +963,7 @@ def extract_runtime_state(
     session: Session,
     frames: list[ContextFrame],
     runner: Any = None,
+    tasks: list[Task] | None = None,
 ) -> RuntimeState:
     state = RuntimeState(
         session_id=_text(getattr(session, "id", "")),
@@ -937,34 +985,25 @@ def extract_runtime_state(
             agent["agent_role"] = frame.agent_role or agent.get("agent_role", "")
             agent["agent_type"] = frame.agent_type or agent.get("agent_type", "")
             agent["parent_agent_id"] = frame.parent_agent_id or agent.get("parent_agent_id", "")
+            _merge_agent_fields(agent, payload)
             agent["last_seen_at"] = frame.event_ts or frame.created_at or agent.get("last_seen_at", "")
             agent["last_meaningful_output"] = {"type": frame.type, "payload": payload}
             _merge_runtime_anchor(state, payload)
         elif frame.type == "agent_start":
             agent_id = frame.agent_id or _text(payload.get("agent_id")) or frame.id
             agent = agents.setdefault(agent_id, _new_agent(agent_id))
-            agent.update(
-                {
-                    "agent_role": frame.agent_role or _text(payload.get("agent_role")),
-                    "agent_type": frame.agent_type or _text(payload.get("agent_type")),
-                    "parent_agent_id": frame.parent_agent_id,
-                    "status": _text(payload.get("status")) or "running",
-                    "cwd": _text(payload.get("cwd")) or agent.get("cwd", ""),
-                    "worktree": _text(payload.get("worktree")) or _text(payload.get("cwd")) or agent.get("worktree", ""),
-                    "branch": _text(payload.get("branch")) or agent.get("branch", ""),
-                    "native_session_id": _text(payload.get("native_session_id")) or agent.get("native_session_id", ""),
-                    "pid": payload.get("pid") if payload.get("pid") is not None else agent.get("pid"),
-                    "model": _text(payload.get("model")) or agent.get("model", ""),
-                    "effort": _text(payload.get("effort")) or agent.get("effort", ""),
-                    "transcript_path": _text(payload.get("transcript_path")) or agent.get("transcript_path", ""),
-                    "last_seen_at": frame.event_ts or frame.created_at or agent.get("last_seen_at", ""),
-                }
-            )
+            agent["agent_role"] = frame.agent_role or _text(payload.get("agent_role")) or agent.get("agent_role", "")
+            agent["agent_type"] = frame.agent_type or _text(payload.get("agent_type")) or agent.get("agent_type", "")
+            agent["parent_agent_id"] = frame.parent_agent_id or _text(payload.get("parent_agent_id")) or agent.get("parent_agent_id", "")
+            agent["status"] = _text(payload.get("status")) or "running"
+            _merge_agent_fields(agent, payload)
+            agent["last_seen_at"] = frame.event_ts or frame.created_at or agent.get("last_seen_at", "")
             _merge_runtime_anchor(state, payload)
         elif frame.type == "agent_stop":
             agent_id = frame.agent_id or _text(payload.get("agent_id")) or frame.id
             agent = agents.setdefault(agent_id, _new_agent(agent_id))
             agent["status"] = _text(payload.get("status")) or "completed"
+            _merge_agent_fields(agent, payload)
             agent["last_seen_at"] = frame.event_ts or frame.created_at or agent.get("last_seen_at", "")
             stop_payload = _as_dict(payload.get("payload"))
             summary = _text(payload.get("summary") or stop_payload.get("summary"))
@@ -980,6 +1019,7 @@ def extract_runtime_state(
             _merge_changed_files(state, payload)
         elif frame.type in {"agent_output", "command_result", "tool_result", "test_result"} and frame.agent_id:
             agent = agents.setdefault(frame.agent_id, _new_agent(frame.agent_id))
+            _merge_agent_fields(agent, payload)
             if frame.event_ts >= _text(agent.get("last_seen_at")):
                 agent["last_seen_at"] = frame.event_ts
                 agent["last_meaningful_output"] = {"type": frame.type, "payload": payload}
@@ -996,6 +1036,7 @@ def extract_runtime_state(
             if text and text not in state.next_steps:
                 state.next_steps.append(text)
 
+    _merge_task_state(agents, tasks or [])
     _merge_runner_state(state, agents, runner, state.session_id)
     state.active_agents = sorted(agents.values(), key=lambda item: item.get("agent_id", ""))
     return state
@@ -1779,11 +1820,15 @@ def _workspace_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _agent_payload(payload: dict[str, Any], source: str) -> dict[str, Any]:
     out = _workspace_payload(payload)
     for key in (
-        "pid", "command", "model", "effort", "native_session_id", "transcript_path",
+        "handle_id", "pid", "command", "model", "effort", "native_session_id", "transcript_path",
         "agent_id", "agent_role", "agent_type", "parent_agent_id",
+        "status", "source", "base_ref", "head_sha",
     ):
         if key in payload and payload.get(key) not in (None, ""):
             out[key] = payload.get(key)
+    if out.get("handle_id") and not out.get("agent_id"):
+        out["agent_id"] = out["handle_id"]
+    out.setdefault("source", source)
     out.setdefault("agent_type", source)
     out.setdefault("status", "running")
     return out
@@ -1983,10 +2028,17 @@ def _stop_status(payload: dict[str, Any]) -> str:
     status = _text(payload.get("status"))
     if status:
         return status
+    if payload.get("cancelled"):
+        return "cancelled"
+    if payload.get("interrupted"):
+        return "interrupted"
     hook = _text(payload.get("hook"))
     if hook in {"Stop", "SubagentStop"}:
         return "completed"
-    if payload.get("error"):
+    if payload.get("error") or payload.get("msg"):
+        return "failed"
+    returncode = _int_or_none(payload.get("returncode"))
+    if returncode is not None and returncode != 0:
         return "failed"
     return "completed"
 
@@ -2021,6 +2073,7 @@ def _merge_changed_files(state: RuntimeState, payload: dict[str, Any]) -> None:
 def _new_agent(agent_id: str) -> dict[str, Any]:
     return {
         "agent_id": agent_id,
+        "handle_id": "",
         "agent_role": "",
         "agent_type": "",
         "parent_agent_id": "",
@@ -2028,14 +2081,66 @@ def _new_agent(agent_id: str) -> dict[str, Any]:
         "cwd": "",
         "worktree": "",
         "branch": "",
+        "base_ref": "",
+        "head_sha": "",
         "native_session_id": "",
         "pid": None,
+        "command": [],
         "model": "",
         "effort": "",
         "transcript_path": "",
+        "returncode": None,
+        "error": "",
+        "task_status": "",
+        "process_status": "",
         "last_seen_at": "",
         "last_meaningful_output": {},
     }
+
+
+def _merge_agent_fields(agent: dict[str, Any], payload: dict[str, Any]) -> None:
+    for key in (
+        "handle_id",
+        "agent_role",
+        "agent_type",
+        "parent_agent_id",
+        "cwd",
+        "worktree",
+        "branch",
+        "base_ref",
+        "head_sha",
+        "native_session_id",
+        "model",
+        "effort",
+        "transcript_path",
+        "error",
+    ):
+        value = _text(payload.get(key))
+        if value:
+            agent[key] = value
+    if _text(payload.get("cwd")) and not agent.get("worktree"):
+        agent["worktree"] = _text(payload.get("cwd"))
+    if payload.get("pid") is not None:
+        agent["pid"] = payload.get("pid")
+    if payload.get("returncode") is not None:
+        agent["returncode"] = payload.get("returncode")
+    command = payload.get("command")
+    if command:
+        agent["command"] = command
+
+
+def _merge_task_state(agents: dict[str, dict[str, Any]], tasks: list[Task]) -> None:
+    for task in tasks:
+        handle_id = _text(getattr(task, "agent_handle", ""))
+        if not handle_id:
+            continue
+        agent = agents.setdefault(handle_id, _new_agent(handle_id))
+        agent["handle_id"] = handle_id
+        status = _text(getattr(task, "status", ""))
+        if status:
+            agent["task_status"] = status
+            if agent.get("status") in {"", "unknown"}:
+                agent["status"] = status
 
 
 def _merge_runner_state(
@@ -2067,15 +2172,58 @@ def _merge_runner_state(
         if not agent_id:
             continue
         agent = agents.setdefault(agent_id, _new_agent(agent_id))
-        agent["status"] = "running"
+        process_status = _runner_process_status(runner, item)
+        if process_status == "alive":
+            agent["status"] = "running"
+        elif agent.get("status") in {"", "unknown"}:
+            agent["status"] = "unknown"
+        agent["handle_id"] = agent_id
         agent["cwd"] = _text(getattr(item, "cwd", "")) or agent.get("cwd", "")
+        agent["worktree"] = _text(getattr(item, "worktree", "")) or agent.get("worktree", "") or agent.get("cwd", "")
+        agent["branch"] = _text(getattr(item, "branch", "")) or agent.get("branch", "")
+        agent["base_ref"] = _text(getattr(item, "base_ref", "")) or agent.get("base_ref", "")
+        agent["head_sha"] = _text(getattr(item, "head_sha", "")) or agent.get("head_sha", "")
         agent["pid"] = getattr(item, "pid", None)
         agent["native_session_id"] = _text(getattr(item, "native_session_id", "")) or agent.get("native_session_id", "")
         agent["model"] = _text(getattr(item, "model", "")) or agent.get("model", "")
         agent["effort"] = _text(getattr(item, "effort", "")) or agent.get("effort", "")
+        agent["agent_type"] = _text(getattr(item, "agent_type", "")) or _text(getattr(item, "source", "")) or agent.get("agent_type", "")
+        if process_status:
+            agent["process_status"] = process_status
         command = getattr(item, "command", None)
         if command:
+            agent["command"] = command
             agent["last_meaningful_output"] = {"type": "handle", "command": command}
+
+
+def _runner_process_status(runner: Any, handle: Any) -> str:
+    watcher = getattr(runner, "process_watcher", None) or getattr(runner, "watcher", None)
+    pid = getattr(handle, "pid", None)
+    if watcher is None or pid is None or not hasattr(watcher, "poll"):
+        return "alive"
+    key = _text(getattr(handle, "id", "")) or _text(pid)
+    try:
+        status = watcher.poll(key, pid)
+    except Exception:
+        return "unknown"
+    alive = getattr(status, "alive", None)
+    if alive is True:
+        return "alive"
+    if alive is False:
+        return "dead"
+    return "unknown"
+
+
+def _tasks_for_session(store: Any, session_id: str) -> list[Task]:
+    if store is None or not hasattr(store, "session"):
+        return []
+    try:
+        from sqlmodel import select
+
+        with store.session() as db:
+            return list(db.exec(select(Task).where(Task.session_id == session_id)).all())
+    except Exception:
+        return []
 
 
 def _command_state(payload: dict[str, Any]) -> dict[str, Any]:

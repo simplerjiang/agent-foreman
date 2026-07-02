@@ -119,6 +119,7 @@ class SubprocessCliAdapter:
             workspace,
             self._env_overrides(effective_model, effective_effort),
         )
+        git_refs = _detect_git_refs(workspace)
         handle = AgentHandle(
             id=f"{session_id}:{proc.pid}",
             session_id=session_id,
@@ -126,7 +127,13 @@ class SubprocessCliAdapter:
             model=effective_model,
             command=cmd,
             cwd=str(workspace),
+            worktree=str(workspace),
             effort=effective_effort,
+            branch=git_refs.get("branch", ""),
+            base_ref=git_refs.get("base_ref", ""),
+            head_sha=git_refs.get("head_sha", ""),
+            agent_type=self.name,
+            source=self.name,
         )
         self._procs[handle.id] = proc
         self._workspaces[handle.id] = Path(workspace)
@@ -141,13 +148,7 @@ class SubprocessCliAdapter:
             "agent_start",
             self.name,
             handle.session_id,
-            payload={
-                "pid": handle.pid,
-                "command": handle.command,
-                "cwd": handle.cwd,
-                "model": handle.model,
-                "effort": handle.effort,
-            },
+            payload=_handle_event_payload(handle, self.name, status="running"),
         )
         stderr_task = (
             asyncio.create_task(_read_pipe_text(proc.stderr))
@@ -165,6 +166,15 @@ class SubprocessCliAdapter:
                         sid = event.payload.get("session_id")
                         if sid:
                             handle.native_session_id = sid
+                    if event.type in {"agent_output", "agent_reasoning", "stop"}:
+                        event.payload = {
+                            **_handle_event_payload(handle, self.name),
+                            **event.payload,
+                        }
+                    if event.type == "stop":
+                        if not event.payload.get("status") or event.payload.get("status") == "running":
+                            event.payload["status"] = "completed"
+                        event.payload.setdefault("returncode", 0)
                     yield event
 
             returncode = await proc.wait()
@@ -175,11 +185,14 @@ class SubprocessCliAdapter:
                     self.name,
                     handle.session_id,
                     payload={
+                        **_handle_event_payload(handle, self.name, status="failed"),
                         "msg": _process_error_message(self.name, returncode, stderr_text),
                         "returncode": returncode,
                         "stderr": stderr_text[-4000:],
                     },
                 )
+            else:
+                handle.status = "completed"
         finally:
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()
@@ -231,6 +244,8 @@ class SubprocessCliAdapter:
         handle.pid = proc.pid
         handle.command = cmd
         handle.cwd = str(workspace)
+        handle.worktree = str(workspace)
+        handle.status = "running"
 
     async def interrupt(self, handle: AgentHandle) -> None:
         """Pause/interrupt the running process (the first rung of the stall ladder, DESIGN §5.6).
@@ -285,6 +300,48 @@ def _which_spawnable(name: str) -> str | None:
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def _detect_git_refs(workspace: Path) -> dict[str, str]:
+    def run_git(*args: str) -> str:
+        try:
+            return subprocess.check_output(
+                ["git", "-C", str(workspace), *args],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=2,
+            ).strip()
+        except Exception:
+            return ""
+
+    branch = run_git("branch", "--show-current")
+    head_sha = run_git("rev-parse", "HEAD")
+    base_ref = run_git("merge-base", "HEAD", "origin/main")
+    return {"branch": branch, "head_sha": head_sha, "base_ref": base_ref}
+
+
+def _handle_event_payload(handle: AgentHandle, source: str, *, status: str = "") -> dict:
+    if status:
+        handle.status = status
+    return {
+        "handle_id": handle.id,
+        "agent_id": handle.id,
+        "pid": handle.pid,
+        "command": handle.command,
+        "cwd": handle.cwd,
+        "worktree": handle.worktree or handle.cwd,
+        "branch": handle.branch,
+        "base_ref": handle.base_ref,
+        "head_sha": handle.head_sha,
+        "model": handle.model,
+        "effort": handle.effort,
+        "native_session_id": handle.native_session_id or "",
+        "agent_type": handle.agent_type or source,
+        "source": source,
+        "status": status or handle.status or "",
+    }
 
 
 def _is_reasoning_payload(obj: dict) -> bool:

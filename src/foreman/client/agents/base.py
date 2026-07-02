@@ -24,6 +24,13 @@ class AgentHandle:
     model: str = ""
     command: list[str] = field(default_factory=list)
     cwd: str = ""
+    worktree: str = ""
+    branch: str = ""
+    base_ref: str = ""
+    head_sha: str = ""
+    agent_type: str = ""
+    source: str = ""
+    status: str = "running"
     # Reasoning effort/速度档位 for this run (low|medium|high; "" = the CLI default). Remembered on
     # the handle so a resume (`send`) re-spawns with the same level. How it reaches the CLI differs
     # per adapter: codex passes a `-c model_reasoning_effort=` flag; claude sets an env var (§4.2).

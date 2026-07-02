@@ -1011,6 +1011,7 @@ class DispatchService:
             plan.agent, plan.instruction, Path(workspace), session_id,
             model=plan.model, effort=plan.effort,
         )
+        await self._emit_agent_input(session_id, task_id, handle, plan.instruction, plan)
         run_count = 1
         reviewed_event_id = ""
         review_notes: list[dict[str, Any]] = []
@@ -1138,6 +1139,7 @@ class DispatchService:
                 )
                 return
             agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+            await self._emit_agent_input(session_id, task_id, handle, review.follow_up, plan)
             await self.runner.send(handle, review.follow_up)
             self._mark_session_unless_terminal(session_id, "running")
             run_count += 1
@@ -1486,6 +1488,41 @@ class DispatchService:
         )
         await self._persist_then_publish(event)
         return event.id
+
+    async def _emit_agent_input(
+        self,
+        session_id: str,
+        task_id: str,
+        handle: Any,
+        instruction: str,
+        plan: PMPlan,
+    ) -> None:
+        await self._persist_then_publish(
+            make_event(
+                "agent_input",
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload={
+                    "agent_id": str(getattr(handle, "id", "") or plan.agent),
+                    "handle_id": str(getattr(handle, "id", "") or ""),
+                    "agent_role": "developer",
+                    "agent_type": plan.agent,
+                    "source": "pm-agent",
+                    "message": instruction,
+                    "instruction": instruction,
+                    "expected_output": plan.summary or "",
+                    "cwd": str(getattr(handle, "cwd", "") or plan.workspace or ""),
+                    "worktree": str(getattr(handle, "worktree", "") or getattr(handle, "cwd", "") or plan.workspace or ""),
+                    "branch": str(getattr(handle, "branch", "") or ""),
+                    "base_ref": str(getattr(handle, "base_ref", "") or ""),
+                    "head_sha": str(getattr(handle, "head_sha", "") or ""),
+                    "model": plan.model,
+                    "effort": plan.effort,
+                    "native_session_id": str(getattr(handle, "native_session_id", "") or ""),
+                },
+            )
+        )
 
     async def _emit_pm_status(
         self, session_id: str, task_id: str, phase: str, text: str
