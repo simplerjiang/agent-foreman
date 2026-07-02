@@ -21,7 +21,7 @@ from pathlib import Path
 from foreman.shared.config import AgentCfg
 from foreman.shared.events import AgentEvent, make_event
 
-from .base import AgentHandle
+from .base import AgentHandle, detect_git_refs
 
 
 _STDOUT_READ_CHUNK_BYTES = 64 * 1024
@@ -119,7 +119,7 @@ class SubprocessCliAdapter:
             workspace,
             self._env_overrides(effective_model, effective_effort),
         )
-        git_refs = _detect_git_refs(workspace)
+        git_refs = detect_git_refs(workspace)
         handle = AgentHandle(
             id=f"{session_id}:{proc.pid}",
             session_id=session_id,
@@ -172,7 +172,11 @@ class SubprocessCliAdapter:
                             **event.payload,
                         }
                     if event.type == "stop":
-                        if not event.payload.get("status") or event.payload.get("status") == "running":
+                        returncode = _event_returncode(event.payload)
+                        explicit_status = str(event.payload.get("status") or "").strip().lower()
+                        if returncode not in (None, 0) and explicit_status not in {"cancelled", "interrupted"}:
+                            event.payload["status"] = "failed"
+                        elif not event.payload.get("status") or event.payload.get("status") == "running":
                             event.payload["status"] = "completed"
                         event.payload.setdefault("returncode", 0)
                     yield event
@@ -302,26 +306,6 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def _detect_git_refs(workspace: Path) -> dict[str, str]:
-    def run_git(*args: str) -> str:
-        try:
-            return subprocess.check_output(
-                ["git", "-C", str(workspace), *args],
-                stderr=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                timeout=2,
-            ).strip()
-        except Exception:
-            return ""
-
-    branch = run_git("branch", "--show-current")
-    head_sha = run_git("rev-parse", "HEAD")
-    base_ref = run_git("merge-base", "HEAD", "origin/main")
-    return {"branch": branch, "head_sha": head_sha, "base_ref": base_ref}
-
-
 def _handle_event_payload(handle: AgentHandle, source: str, *, status: str = "") -> dict:
     if status:
         handle.status = status
@@ -342,6 +326,13 @@ def _handle_event_payload(handle: AgentHandle, source: str, *, status: str = "")
         "source": source,
         "status": status or handle.status or "",
     }
+
+
+def _event_returncode(payload: dict) -> int | None:
+    try:
+        return int(payload.get("returncode"))
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_reasoning_payload(obj: dict) -> bool:

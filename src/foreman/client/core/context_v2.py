@@ -2025,20 +2025,22 @@ def _compact_payload(value: Any, *, max_text: int = MAX_TEXT_CHARS) -> Any:
 
 
 def _stop_status(payload: dict[str, Any]) -> str:
-    status = _text(payload.get("status"))
-    if status:
-        return status
     if payload.get("cancelled"):
         return "cancelled"
     if payload.get("interrupted"):
         return "interrupted"
+    status = _text(payload.get("status")).lower()
+    if status in {"cancelled", "interrupted", "failed"}:
+        return status
+    returncode = _int_or_none(payload.get("returncode"))
+    if returncode is not None and returncode != 0:
+        return "failed"
+    if status and status != "running":
+        return status
     hook = _text(payload.get("hook"))
     if hook in {"Stop", "SubagentStop"}:
         return "completed"
     if payload.get("error") or payload.get("msg"):
-        return "failed"
-    returncode = _int_or_none(payload.get("returncode"))
-    if returncode is not None and returncode != 0:
         return "failed"
     return "completed"
 
@@ -2139,7 +2141,7 @@ def _merge_task_state(agents: dict[str, dict[str, Any]], tasks: list[Task]) -> N
         status = _text(getattr(task, "status", ""))
         if status:
             agent["task_status"] = status
-            if agent.get("status") in {"", "unknown"}:
+            if _is_terminal_agent_status(status) or agent.get("status") in {"", "unknown"}:
                 agent["status"] = status
 
 
@@ -2172,8 +2174,14 @@ def _merge_runner_state(
         if not agent_id:
             continue
         agent = agents.setdefault(agent_id, _new_agent(agent_id))
+        handle_status = _text(getattr(item, "status", ""))
         process_status = _runner_process_status(runner, item)
-        if process_status == "alive":
+        if process_status == "alive" and not _is_terminal_agent_status(agent.get("status", "")) and not _is_terminal_agent_status(handle_status):
+            agent["status"] = "running"
+        elif handle_status:
+            if _is_terminal_agent_status(handle_status) or agent.get("status") in {"", "unknown"}:
+                agent["status"] = handle_status
+        elif process_status == "" and agent.get("status") in {"", "unknown"}:
             agent["status"] = "running"
         elif agent.get("status") in {"", "unknown"}:
             agent["status"] = "unknown"
@@ -2197,10 +2205,13 @@ def _merge_runner_state(
 
 
 def _runner_process_status(runner: Any, handle: Any) -> str:
+    handle_status = _text(getattr(handle, "status", ""))
+    if _is_terminal_agent_status(handle_status):
+        return ""
     watcher = getattr(runner, "process_watcher", None) or getattr(runner, "watcher", None)
     pid = getattr(handle, "pid", None)
     if watcher is None or pid is None or not hasattr(watcher, "poll"):
-        return "alive"
+        return ""
     key = _text(getattr(handle, "id", "")) or _text(pid)
     try:
         status = watcher.poll(key, pid)
@@ -2212,6 +2223,10 @@ def _runner_process_status(runner: Any, handle: Any) -> str:
     if alive is False:
         return "dead"
     return "unknown"
+
+
+def _is_terminal_agent_status(status: str) -> bool:
+    return _text(status).lower() in {"completed", "failed", "cancelled", "interrupted", "done"}
 
 
 def _tasks_for_session(store: Any, session_id: str) -> list[Task]:

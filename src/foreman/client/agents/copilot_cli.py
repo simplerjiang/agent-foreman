@@ -15,8 +15,8 @@ from pathlib import Path
 
 from foreman.shared.events import AgentEvent, make_event
 
-from ._subprocess import SubprocessCliAdapter, _handle_event_payload, _process_error_message, _read_pipe_text
-from .base import AgentHandle
+from ._subprocess import SubprocessCliAdapter, _event_returncode, _handle_event_payload, _process_error_message, _read_pipe_text
+from .base import AgentHandle, detect_git_refs
 
 
 class CopilotCliAdapter(SubprocessCliAdapter):
@@ -118,6 +118,7 @@ class CopilotCliAdapter(SubprocessCliAdapter):
             workspace,
             self._env_overrides(effective_model, effective_effort),
         )
+        git_refs = detect_git_refs(workspace)
         handle = AgentHandle(
             id=f"{session_id}:{proc.pid}",
             session_id=session_id,
@@ -127,6 +128,9 @@ class CopilotCliAdapter(SubprocessCliAdapter):
             cwd=str(workspace),
             worktree=str(workspace),
             effort=effective_effort,
+            branch=git_refs.get("branch", ""),
+            base_ref=git_refs.get("base_ref", ""),
+            head_sha=git_refs.get("head_sha", ""),
             agent_type=self.name,
             source=self.name,
         )
@@ -183,7 +187,11 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                         **event.payload,
                     }
                 if event.type == "stop":
-                    if not event.payload.get("status") or event.payload.get("status") == "running":
+                    returncode = _event_returncode(event.payload)
+                    explicit_status = str(event.payload.get("status") or "").strip().lower()
+                    if returncode not in (None, 0) and explicit_status not in {"cancelled", "interrupted"}:
+                        event.payload["status"] = "failed"
+                    elif not event.payload.get("status") or event.payload.get("status") == "running":
                         event.payload["status"] = "completed"
                     event.payload.setdefault("returncode", 0)
                 if event.type == "stop":

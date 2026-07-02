@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from foreman.client.agents.base import detect_git_refs
 from foreman.client.core.context_v2 import ContextManager, extract_runtime_state
 from foreman.client.store import Store
 from foreman.client.store.models import Event, Session, Task
@@ -92,6 +93,10 @@ def test_multi_agent_multi_worktree_runtime_state_active_agents(tmp_path):
     assert by_id["h-test"]["branch"] == "test/context"
 
 
+def test_detect_git_refs_returns_empty_for_non_git_workspace(tmp_path):
+    assert detect_git_refs(tmp_path) == {"branch": "", "head_sha": "", "base_ref": ""}
+
+
 def test_agent_input_captures_instruction_expected_output_and_worktree(tmp_path):
     store = _store(tmp_path)
     session = store.add_session(Session(id="s1", goal="goal", workspace="E:/main"))
@@ -136,6 +141,7 @@ class _Handle:
     native_session_id: str = ""
     model: str = ""
     effort: str = ""
+    status: str = ""
     command: list[str] | None = None
 
 
@@ -175,6 +181,71 @@ def test_missing_agent_stop_live_runner_handle_is_running_or_unknown(tmp_path):
     assert state.active_agents[0]["process_status"] == "alive"
 
 
+def test_completed_handle_not_resurrected_as_running_without_watcher(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    _add_event(
+        store,
+        _event(
+            "e1",
+            "stop",
+            {"agent_id": "h-dev", "status": "completed", "summary": "done"},
+            ts="2026-07-01T00:00:00Z",
+        ),
+    )
+    frames = ContextManager(store).materialize_session("s1")
+    handle = _Handle(id="h-dev", session_id="s1", pid=1, cwd="E:/repo", worktree="E:/repo", status="completed")
+
+    state = extract_runtime_state(session, frames, runner=_Runner(handle))
+    agent = state.active_agents[0]
+
+    assert agent["status"] == "completed"
+    assert agent["process_status"] in {"", "unknown"}
+    assert agent["process_status"] != "alive"
+
+
+def test_completed_handle_not_resurrected_as_running_with_dead_watcher(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    _add_event(
+        store,
+        _event("e1", "stop", {"agent_id": "h-dev", "status": "completed"}, ts="2026-07-01T00:00:00Z"),
+    )
+    frames = ContextManager(store).materialize_session("s1")
+    handle = _Handle(id="h-dev", session_id="s1", pid=1, cwd="E:/repo", worktree="E:/repo", status="")
+
+    state = extract_runtime_state(session, frames, runner=_Runner(handle, _Watcher(False)))
+    agent = state.active_agents[0]
+
+    assert agent["status"] == "completed"
+    assert agent["process_status"] == "dead"
+
+
+def test_running_handle_with_alive_watcher_is_running(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    handle = _Handle(id="h-live", session_id="s1", pid=1, cwd="E:/repo", worktree="E:/repo", status="running")
+
+    state = extract_runtime_state(session, [], runner=_Runner(handle, _Watcher(True)))
+    agent = state.active_agents[0]
+
+    assert agent["status"] == "running"
+    assert agent["process_status"] == "alive"
+
+
+def test_task_terminal_status_can_override_unknown_handle(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    store.add_task(Task(id="t1", session_id="s1", instruction="run", status="failed", agent_handle="h-task"))
+    handle = _Handle(id="h-task", session_id="s1", pid=1, cwd="E:/repo", worktree="E:/repo", status="unknown")
+
+    state = ContextManager(store, runner=_Runner(handle)).extract_runtime_state(session, [])
+    agent = state.active_agents[0]
+
+    assert agent["task_status"] == "failed"
+    assert agent["status"] == "failed"
+
+
 def test_task_row_status_merges_into_runtime_agent(tmp_path):
     store = _store(tmp_path)
     session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
@@ -187,6 +258,38 @@ def test_task_row_status_merges_into_runtime_agent(tmp_path):
     assert agent["handle_id"] == "h-task"
     assert agent["task_status"] == "running"
     assert agent["status"] == "running"
+
+
+def test_stop_returncode_nonzero_materializes_failed_agent_stop(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    _add_event(store, _event("e1", "stop", {"agent_id": "h-dev", "returncode": 2}, ts="2026-07-01T00:00:00Z"))
+
+    frames = ContextManager(store).materialize_session("s1")
+    state = extract_runtime_state(session, frames)
+    payload = json.loads(frames[0].payload_json)
+
+    assert payload["status"] == "failed"
+    assert state.active_agents[0]["status"] == "failed"
+
+
+def test_stop_status_completed_returncode_nonzero_prefers_failed(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    _add_event(
+        store,
+        _event(
+            "e1",
+            "stop",
+            {"agent_id": "h-dev", "status": "completed", "returncode": 2},
+            ts="2026-07-01T00:00:00Z",
+        ),
+    )
+
+    frames = ContextManager(store).materialize_session("s1")
+    state = extract_runtime_state(session, frames)
+
+    assert state.active_agents[0]["status"] == "failed"
 
 
 def test_completed_agent_stop_later_output_updates_latest_evidence(tmp_path):
