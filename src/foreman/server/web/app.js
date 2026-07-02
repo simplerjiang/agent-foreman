@@ -1867,8 +1867,8 @@
               <button className=${`rp-tab${rightTab === "sub" ? " on" : ""}`} onClick=${() => setRightTab("sub")}>${d.tabSubagents} <span style=${{ opacity: 0.7 }}>${dig.subagents.length}</span></button>
               <button className=${`rp-tab${rightTab === "term" ? " on" : ""}`} onClick=${() => setRightTab("term")}>${d.tabTerminal}</button>
               <button
-                className=${`rp-tab${rightTab === "ctx" ? " on" : ""}`}
                 data-testid="context-tab"
+                className=${`rp-tab${rightTab === "ctx" ? " on" : ""}`}
                 onClick=${() => setRightTab("ctx")}
               >${d.context}</button>
             </div>
