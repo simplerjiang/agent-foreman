@@ -277,7 +277,20 @@ class ContextManager:
                     "source": "pm-agent",
                 },
             )
-            self.build_active_context(session_id, purpose="pm_plan", window_tokens=window_tokens)
+            try:
+                restored = self.build_active_context(session_id, purpose="pm_plan", window_tokens=window_tokens)
+                if restored.degraded:
+                    self._emit_compact_warning(
+                        session_id,
+                        checkpoint_id=installed.id,
+                        warning="post_install_restore_degraded",
+                    )
+            except Exception as exc:  # noqa: BLE001 - install succeeded; report recoverable warning.
+                self._emit_compact_warning(
+                    session_id,
+                    checkpoint_id=installed.id,
+                    warning=f"post_install_restore_failed: {type(exc).__name__}: {str(exc)[:200]}",
+                )
             return installed
         except Exception as exc:
             self._emit_compact_failed(
@@ -292,6 +305,47 @@ class ContextManager:
                 if current is not None and _text(getattr(current, "plan", "")) != before_plan:
                     self.store.update_session(session_id, plan=before_plan, updated_at=self._clock())
             raise
+
+    async def maybe_compact(
+        self,
+        session_id: str,
+        *,
+        reason: str,
+        purpose: str,
+        window_tokens: int,
+        run_count: int = 0,
+        hard: bool | None = None,
+    ) -> ContextCheckpoint | None:
+        active = self.build_active_context(
+            session_id,
+            purpose=purpose,
+            window_tokens=window_tokens,
+        )
+        usage = estimate_context_usage(active, window_tokens)
+        hard_trigger = bool(hard) or should_hard_compact(usage)
+        soft_trigger = should_soft_compact(usage, run_count=run_count)
+        if not hard_trigger and not soft_trigger:
+            return None
+        try:
+            checkpoint = await self.compact_now(
+                session_id,
+                trigger="threshold" if hard_trigger or should_soft_compact(usage) else "run_count",
+                reason=reason,
+                window_tokens=window_tokens,
+                hard=hard_trigger,
+            )
+            restored = self.build_active_context(session_id, purpose=purpose, window_tokens=window_tokens)
+            if restored.degraded:
+                self._emit_compact_warning(
+                    session_id,
+                    checkpoint_id=checkpoint.id,
+                    warning="maybe_compact_restore_degraded",
+                )
+            return checkpoint
+        except Exception as exc:
+            if hard_trigger:
+                raise ContextCompactError(str(exc) or type(exc).__name__) from exc
+            return None
 
     def _emit_compact_failed(
         self,
@@ -316,6 +370,23 @@ class ContextManager:
                     "method_attempted": method_attempted,
                     "error": error,
                     "reason": _text(reason),
+                },
+            )
+        )
+
+    def _emit_compact_warning(self, session_id: str, *, checkpoint_id: str, warning: str) -> None:
+        if not hasattr(self.store, "add_event"):
+            return
+        self.store.add_event(
+            make_event(
+                "context_compact",
+                "pm-agent",
+                session_id,
+                payload={
+                    "status": "warning",
+                    "schema_version": 2,
+                    "checkpoint_id": checkpoint_id,
+                    "warning": warning,
                 },
             )
         )
@@ -1031,6 +1102,47 @@ def render_active_context(active_context: ActiveContext) -> str:
     if len(text) <= 8000:
         return text
     return text[:8000] + "\n...[truncated active context]..."
+
+
+def estimate_context_usage(active_context: ActiveContext, window_tokens: int) -> ContextUsage:
+    used = _approx_tokens(active_context.rendered_text or "")
+    window = max(0, int(window_tokens or 0))
+    soft_threshold = 0.70
+    hard_threshold = 0.90
+    lane_usage = {str(lane): 0 for lane in LANES}
+    for frame in active_context.frames_after_checkpoint or []:
+        if not isinstance(frame, dict):
+            continue
+        lane = str(frame.get("lane") or LANE_DETAIL)
+        if lane not in lane_usage:
+            continue
+        lane_usage[lane] += _approx_tokens(json.dumps(frame, ensure_ascii=False, sort_keys=True))
+    percent = (used / window) if window > 0 else 0.0
+    soft_at = int(window * soft_threshold) if window > 0 else 0
+    hard_at = int(window * hard_threshold) if window > 0 else 0
+    return ContextUsage(
+        used_tokens=used,
+        window_tokens=window,
+        percent=percent,
+        tokens_until_soft_compact=max(0, soft_at - used) if window > 0 else 0,
+        tokens_until_hard_compact=max(0, hard_at - used) if window > 0 else 0,
+        soft_threshold=soft_threshold,
+        hard_threshold=hard_threshold,
+        run_count_threshold=8,
+        lane_usage=lane_usage,
+    )
+
+
+def should_hard_compact(usage: ContextUsage) -> bool:
+    return usage.window_tokens > 0 and usage.percent >= usage.hard_threshold
+
+
+def should_soft_compact(usage: ContextUsage, run_count: int = 0) -> bool:
+    if should_hard_compact(usage):
+        return False
+    if usage.window_tokens > 0 and usage.percent >= usage.soft_threshold:
+        return True
+    return run_count > 0 and usage.run_count_threshold > 0 and run_count % usage.run_count_threshold == 0
 
 
 def frames_to_replacement_history(
@@ -1993,6 +2105,7 @@ def _safe_id_part(value: str, limit: int) -> str:
 
 __all__ = [
     "ActiveContext",
+    "ContextCompactError",
     "ContextManager",
     "ContextRestoreWarning",
     "ContextUsage",
@@ -2007,6 +2120,7 @@ __all__ = [
     "RuntimeState",
     "build_pm_envelope",
     "classify_user_intent",
+    "estimate_context_usage",
     "extract_runtime_state",
     "make_frame_id",
     "materialize_event",
@@ -2014,4 +2128,6 @@ __all__ = [
     "record_event",
     "render_active_context",
     "runtime_state_dict",
+    "should_hard_compact",
+    "should_soft_compact",
 ]

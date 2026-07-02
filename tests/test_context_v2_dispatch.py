@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from foreman.client.core.context_v2 import ActiveContext, ContextManager
+from foreman.client.core.context_v2 import ActiveContext, ContextCompactError, ContextManager
 from foreman.client.core.dispatch_service import (
     DispatchService,
     _advance_reviewed_event_id_from_active_context,
@@ -59,6 +59,72 @@ class _FakeContextManager:
         if self.fail:
             raise RuntimeError("restore failed")
         return self.by_purpose[purpose]
+
+
+class _MaybeContextManager:
+    def __init__(
+        self,
+        *,
+        store: Store | None = None,
+        fail: bool = False,
+        hard: bool = False,
+        raise_on_fail: bool | None = None,
+    ):
+        self.store = store
+        self.fail = fail
+        self.hard = hard
+        self.raise_on_fail = hard if raise_on_fail is None else raise_on_fail
+        self.calls: list[dict] = []
+        self.active = ActiveContext(session_id="s1", purpose="pm_plan", rendered_text="BEFORE_COMPACT")
+
+    async def maybe_compact(self, session_id: str, *, reason: str, purpose: str, window_tokens: int, run_count: int = 0):
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "reason": reason,
+                "purpose": purpose,
+                "window_tokens": window_tokens,
+                "run_count": run_count,
+            }
+        )
+        if self.fail:
+            if self.store is not None:
+                self.store.add_event(
+                    make_event(
+                        "context_compact",
+                        "pm-agent",
+                        session_id,
+                        payload={
+                            "status": "failed",
+                            "schema_version": 2,
+                            "hard": self.hard,
+                            "reason": reason,
+                        },
+                    )
+                )
+            if self.raise_on_fail:
+                raise ContextCompactError("hard compact failed" if self.hard else "soft compact failed")
+            return None
+        self.active = ActiveContext(
+            session_id=session_id,
+            purpose=purpose,
+            rendered_text=f"AFTER_COMPACT_{purpose}",
+            source_cursor={"end": {"event_id": "e2"}},
+            frames_after_checkpoint=[
+                {
+                    "event_id": "e3",
+                    "type": "agent_stop",
+                    "lane": 6,
+                    "payload": {"summary": "new review evidence"},
+                    "source_refs": ["event:e3"],
+                }
+            ],
+        )
+        return object()
+
+    def build_active_context(self, session_id: str, *, purpose: str, window_tokens: int):
+        self.active.purpose = purpose
+        return self.active
 
 
 class _Handle:
@@ -176,6 +242,115 @@ async def test_pm_plan_uses_context_manager(tmp_path):
 
     assert pm.context == "ACTIVE_CONTEXT_PM_PLAN"
     assert cm.calls[0][1] == "pm_plan"
+
+
+async def test_pm_plan_invokes_maybe_compact_and_uses_rebuilt_context(tmp_path):
+    store = _store(tmp_path)
+    _seed(store, tmp_path)
+    cm = _MaybeContextManager()
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        def __init__(self):
+            self.context = ""
+
+        async def plan(self, goal, **kw):
+            self.context = kw["context"]
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="low",
+                instruction="direct reply only",
+                kind="direct_reply",
+                reply="done",
+            )
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("direct reply should not review")
+
+    pm = PM()
+    svc = DispatchService(_cfg(tmp_path), store, runner=_Runner(store), pm_agent=pm, context_manager=cm)
+
+    await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
+
+    assert cm.calls[0]["reason"] == "pre_turn"
+    assert cm.calls[0]["purpose"] == "pm_plan"
+    assert pm.context == "AFTER_COMPACT_pm_plan"
+
+
+async def test_pm_plan_hard_compact_failure_blocks_plan_call(tmp_path):
+    store = _store(tmp_path)
+    _seed(store, tmp_path)
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        async def plan(self, *_args, **_kwargs):
+            raise AssertionError("plan must not be called")
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("review must not be called")
+
+    svc = DispatchService(
+        _cfg(tmp_path),
+        store,
+        runner=_Runner(store),
+        pm_agent=PM(),
+        context_manager=_MaybeContextManager(store=store, fail=True, hard=True),
+    )
+
+    await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
+
+    assert store.get_session("s1").status == "failed"
+    assert any(event.type == "error" for event in store.get_events("s1"))
+    failed = [json.loads(event.payload_json) for event in store.get_events("s1") if event.type == "context_compact"]
+    assert failed[-1]["status"] == "failed"
+    assert failed[-1]["hard"] is True
+
+
+async def test_pm_plan_soft_compact_failure_allows_plan_call(tmp_path):
+    store = _store(tmp_path)
+    _seed(store, tmp_path)
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        def __init__(self):
+            self.called = False
+
+        async def plan(self, goal, **kw):
+            self.called = True
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="low",
+                instruction="direct reply only",
+                kind="direct_reply",
+                reply="done",
+            )
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("direct reply should not review")
+
+    pm = PM()
+    svc = DispatchService(
+        _cfg(tmp_path),
+        store,
+        runner=_Runner(store),
+        pm_agent=pm,
+        context_manager=_MaybeContextManager(store=store, fail=True, hard=False, raise_on_fail=False),
+    )
+
+    await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
+
+    assert pm.called is True
+    failed = [json.loads(event.payload_json) for event in store.get_events("s1") if event.type == "context_compact"]
+    assert failed[-1]["status"] == "failed"
+    assert failed[-1]["hard"] is False
 
 
 async def test_pm_plan_falls_back_to_legacy_context_on_context_manager_failure(tmp_path):
@@ -334,6 +509,91 @@ async def test_pm_review_uses_active_context_as_context_not_timeline(tmp_path):
     assert "validator_rules" not in pm.timeline
     assert pm.active_context is cm.by_purpose["pm_review"]
     assert [call[1] for call in cm.calls] == ["pm_plan", "pm_review"]
+
+
+async def test_pm_review_invokes_maybe_compact_and_uses_rebuilt_context(tmp_path):
+    store = _store(tmp_path)
+    _seed(store, tmp_path)
+    cm = _MaybeContextManager()
+
+    class Runner(_Runner):
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            self.handle.session_id = session_id
+            with self.store.session() as session:
+                session.add(Event(id="e2", session_id=session_id, task_id="t1", type="pm_plan", source="pm-agent", ts="2026-07-01T00:00:00Z"))
+                session.add(Event(id="e3", session_id=session_id, task_id="t1", type="stop", source=agent, payload_json=json.dumps({"result": "new review evidence"}), ts="2026-07-01T00:00:01Z"))
+                session.commit()
+            return self.handle
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        def __init__(self):
+            self.timeline = ""
+            self.context = ""
+
+        async def plan(self, goal, **kw):
+            return PMPlan(agent="codex", model="", effort="low", instruction="run", todo=["check"])
+
+        async def review(self, goal, plan, timeline, *, context="", **kw):
+            self.timeline = timeline
+            self.context = context
+            return PMReview(done=True, summary="done")
+
+    pm = PM()
+    svc = DispatchService(_cfg(tmp_path), store, runner=Runner(store), pm_agent=pm, context_manager=cm)
+
+    await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
+
+    assert [call["purpose"] for call in cm.calls] == ["pm_plan", "pm_review"]
+    assert cm.calls[-1]["reason"] == "pre_review"
+    assert cm.calls[-1]["run_count"] == 1
+    assert pm.context == "AFTER_COMPACT_pm_review"
+    assert "new review evidence" in pm.timeline
+    assert "event:e2" not in pm.timeline
+
+
+async def test_pm_review_hard_compact_failure_blocks_review_call(tmp_path):
+    store = _store(tmp_path)
+    _seed(store, tmp_path)
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        async def plan(self, goal, **kw):
+            return PMPlan(agent="codex", model="", effort="low", instruction="run", todo=["check"])
+
+        async def review(self, *_args, **_kw):
+            raise AssertionError("review must not be called")
+
+    class CM(_MaybeContextManager):
+        async def maybe_compact(self, session_id: str, *, reason: str, purpose: str, window_tokens: int, run_count: int = 0):
+            if purpose == "pm_plan":
+                self.calls.append({"purpose": purpose, "reason": reason, "run_count": run_count})
+                return None
+            return await super().maybe_compact(
+                session_id,
+                reason=reason,
+                purpose=purpose,
+                window_tokens=window_tokens,
+                run_count=run_count,
+            )
+
+    svc = DispatchService(
+        _cfg(tmp_path),
+        store,
+        runner=_Runner(store),
+        pm_agent=PM(),
+        context_manager=CM(store=store, fail=True, hard=True),
+    )
+
+    await svc._pm_launch("s1", "t1", "goal", str(tmp_path), "codex", "", "low")
+
+    assert store.get_session("s1").status == "failed"
+    failed = [json.loads(event.payload_json) for event in store.get_events("s1") if event.type == "context_compact"]
+    assert failed[-1]["hard"] is True
 
 
 async def test_pm_review_no_new_frames_returns_no_new_output(tmp_path):

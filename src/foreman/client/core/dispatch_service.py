@@ -38,10 +38,9 @@ from ..store.models import ContextSnapshot, MemoryItem, Task
 from .context_budget import (
     approx_tokens as _ctx_approx_tokens,
     resolve_window_tokens,
-    should_auto_compact,
 )
 from .context_compression import extract_json_object, memory_items_from_pack
-from .context_v2 import ActiveContext, ContextManager
+from .context_v2 import ActiveContext, ContextCompactError, ContextManager
 from .pm_agent import PMPlan, events_to_text
 from .supervisor import ERRORED, classify_tail
 from .work_mode_context import (
@@ -901,22 +900,20 @@ class DispatchService:
         ] or [{"name": agent, "model": "", "effort": effort, "full_access": True}]
         # Resolve the PM model window ONCE per dispatch (§8B.8; never per-loop — it can hit /models).
         window_tokens = await self._resolve_window_tokens(pm_model)
+        if not await self._maybe_compact_pm(
+            session_id,
+            task_id,
+            reason="pre_turn",
+            purpose="pm_plan",
+            window_tokens=window_tokens,
+            run_count=0,
+        ):
+            return
         context, active_context = await self._pm_context_text(
             session_id,
             purpose="pm_plan",
             window_tokens=window_tokens,
         )
-        # Pre-plan auto-compact: if the carried session memory alone is already near the window,
-        # compact before planning so the plan call doesn't start over budget.
-        if should_auto_compact(
-            _ctx_approx_tokens(context), 0, 0, window_tokens=window_tokens, run_count=0
-        ):
-            await self._safe_compact(session_id, window_tokens)
-            context, active_context = await self._pm_context_text(
-                session_id,
-                purpose="pm_plan",
-                window_tokens=window_tokens,
-            )
         await self._emit_pm_status(
             session_id,
             task_id,
@@ -1055,6 +1052,15 @@ class DispatchService:
                 self._mark_session_unless_terminal(session_id, "running")
                 return
         while True:
+            if not await self._maybe_compact_pm(
+                session_id,
+                task_id,
+                reason="pre_review",
+                purpose="pm_review",
+                window_tokens=window_tokens,
+                run_count=run_count,
+            ):
+                return
             rows = self.store.get_events(session_id)
             review_context, review_active_context = await self._pm_context_text(
                 session_id,
@@ -1131,25 +1137,6 @@ class DispatchService:
                     _empty_followup_text(language),
                 )
                 return
-            # Auto-compact (§8B.8) BETWEEN rounds — AFTER this review consumed its raw increment, and
-            # BEFORE the next follow-up runs. Compact when (session memory + pulled bodies + the
-            # just-reviewed timeline) crosses the window threshold OR every N runs, then fold history
-            # into Session.plan and advance the cursor (no double-count; no review ever loses its
-            # increment — the rolling-plan ↔ incremental-review reconciliation).
-            if should_auto_compact(
-                _ctx_approx_tokens(context),
-                (work_mode_resolver.body_chars + 3) // 4,
-                _ctx_approx_tokens(timeline),
-                window_tokens=window_tokens,
-                run_count=run_count,
-            ):
-                await self._safe_compact(session_id, window_tokens)
-                context, active_context = await self._pm_context_text(
-                    session_id,
-                    purpose="pm_plan",
-                    window_tokens=window_tokens,
-                )
-                reviewed_event_id = _last_event_id(self.store.get_events(session_id))
             agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
             await self.runner.send(handle, review.follow_up)
             self._mark_session_unless_terminal(session_id, "running")
@@ -1641,6 +1628,35 @@ class DispatchService:
         if active_context is not None and (active_context.rendered_text or "").strip():
             return active_context.rendered_text, active_context
         return self._session_context(session_id), None
+
+    async def _maybe_compact_pm(
+        self,
+        session_id: str,
+        task_id: str,
+        *,
+        reason: str,
+        purpose: str,
+        window_tokens: int,
+        run_count: int = 0,
+    ) -> bool:
+        if self.context_manager is None or not hasattr(self.context_manager, "maybe_compact"):
+            return True
+        try:
+            await self.context_manager.maybe_compact(
+                session_id,
+                reason=reason,
+                purpose=purpose,
+                window_tokens=window_tokens,
+                run_count=run_count,
+            )
+            return True
+        except ContextCompactError as exc:
+            await self._emit_pm_error(
+                session_id,
+                task_id,
+                f"Context compaction failed before PM call: {str(exc)[:400]}",
+            )
+            return False
 
     async def _local_compact_active_context(self, active_context: ActiveContext) -> str:
         session_id = active_context.session_id

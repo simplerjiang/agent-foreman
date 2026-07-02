@@ -7,7 +7,7 @@ import pytest
 from foreman.client.core import context_v2
 from foreman.client.core import dispatch_service
 from foreman.client.core.dispatch_service import DispatchService
-from foreman.client.core.context_v2 import ContextCompactError, ContextManager
+from foreman.client.core.context_v2 import ActiveContext, ContextCompactError, ContextManager
 from foreman.client.store import Store
 from foreman.client.store.models import ContextCheckpoint, Event, Session
 from foreman.shared.config import AgentCfg, Config, WorkspaceCfg
@@ -358,3 +358,93 @@ async def test_second_compact_preserves_previous_replacement_history_semantics(t
     assert "SECOND_CHECKPOINT_EVIDENCE" in active.rendered_text
     assert json.loads(checkpoint_2.source_cursor_json)["end"]["event_id"] == "e4"
     assert active.degraded is False
+
+
+async def test_repeated_compact_preserves_semantics_without_unbounded_growth(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="ship feature", workspace="E:/repo"))
+
+    def add_event(event_id: str, event_type: str, payload: dict, ts: str, *, source: str = "codex") -> None:
+        with store.session() as session:
+            session.add(
+                Event(
+                    id=event_id,
+                    session_id="s1",
+                    task_id="t1",
+                    type=event_type,
+                    source=source,
+                    payload_json=json.dumps(payload),
+                    ts=ts,
+                )
+            )
+            session.commit()
+
+    add_event("e1", "dispatch", {"goal": "ship feature", "workspace": "E:/repo"}, "2026-07-01T00:00:00Z", source="user")
+    add_event("e2", "pm_plan", {"summary": "FIRST_CHECKPOINT_DECISION"}, "2026-07-01T00:00:01Z", source="pm-agent")
+    manager = ContextManager(store)
+    checkpoint_1 = await manager.compact_now("s1", trigger="manual", reason="first", window_tokens=1000)
+
+    add_event("e3", "test_result", {"command": "pytest", "status": "passed"}, "2026-07-01T00:00:02Z")
+    add_event("e4", "stop", {"result": "SECOND_CHECKPOINT_EVIDENCE"}, "2026-07-01T00:00:03Z")
+    checkpoint_2 = await manager.compact_now("s1", trigger="manual", reason="second", window_tokens=1000)
+
+    for index in range(5, 25):
+        add_event(
+            f"e{index}",
+            "pm_reasoning",
+            {"text": f"noise {index} " * 80},
+            f"2026-07-01T00:00:{index:02d}Z",
+            source="pm-agent",
+        )
+    add_event("e25", "file_change", {"changed_files": ["src/app.py"]}, "2026-07-01T00:00:25Z")
+    add_event("e26", "stop", {"result": "THIRD_CHECKPOINT_EVIDENCE"}, "2026-07-01T00:00:26Z")
+    checkpoint_3 = await manager.compact_now("s1", trigger="manual", reason="third", window_tokens=1000)
+    active = manager.build_active_context("s1", purpose="pm_plan")
+
+    history_1 = json.loads(checkpoint_1.replacement_history_json)["items"]
+    history_2 = json.loads(checkpoint_2.replacement_history_json)["items"]
+    history_3 = json.loads(checkpoint_3.replacement_history_json)["items"]
+    token_usage = json.loads(checkpoint_3.token_usage_json)
+
+    assert store.get_session("s1").latest_context_checkpoint_id == checkpoint_3.id
+    assert "FIRST_CHECKPOINT_DECISION" in active.rendered_text
+    assert "SECOND_CHECKPOINT_EVIDENCE" in active.rendered_text
+    assert "THIRD_CHECKPOINT_EVIDENCE" in active.rendered_text
+    assert "noise 5" not in json.dumps(history_3, ensure_ascii=False)
+    assert len(history_3) <= len(history_2) + 8
+    assert len(history_3) < len(history_1) + 30
+    assert token_usage["after_tokens"] <= token_usage["before_tokens"]
+    assert active.degraded is False
+
+
+async def test_post_install_restore_failure_warns_without_losing_checkpoint(tmp_path):
+    store = _store(tmp_path)
+    _seed(store)
+
+    class DegradedAfterInstallManager(ContextManager):
+        def __init__(self, target_store):
+            super().__init__(target_store)
+            self.build_calls = 0
+
+        def build_active_context(self, session_id: str, *, purpose: str, window_tokens: int = 0):
+            self.build_calls += 1
+            if self.build_calls > 1:
+                return ActiveContext(
+                    session_id=session_id,
+                    purpose=purpose,
+                    rendered_text="degraded restore",
+                    degraded=True,
+                )
+            return super().build_active_context(session_id, purpose=purpose, window_tokens=window_tokens)
+
+    manager = DegradedAfterInstallManager(store)
+    checkpoint = await manager.compact_now("s1", trigger="manual", reason="restore-warning", window_tokens=1000)
+    session = store.get_session("s1")
+    payloads = [json.loads(event.payload_json) for event in store.get_events("s1") if event.type == "context_compact"]
+
+    assert session.latest_context_checkpoint_id == checkpoint.id
+    assert payloads[-2]["status"] == "completed"
+    assert payloads[-2]["checkpoint_id"] == checkpoint.id
+    assert payloads[-1]["status"] == "warning"
+    assert payloads[-1]["checkpoint_id"] == checkpoint.id
+    assert payloads[-1]["warning"] == "post_install_restore_degraded"

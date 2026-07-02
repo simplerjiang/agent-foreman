@@ -4,13 +4,16 @@ import json
 
 import pytest
 
-from foreman.client.core.context_v2 import ContextManager
+from foreman.client.core.context_v2 import ContextManager, estimate_context_usage
 from foreman.client.core.dispatch_service import (
+    DispatchService,
     _advance_reviewed_event_id_from_active_context,
     _review_timeline_from_active_context,
 )
+from foreman.client.core.pm_agent import PMPlan
 from foreman.client.store import Store
-from foreman.client.store.models import Event, Session
+from foreman.client.store.models import Event, Session, Task
+from foreman.shared.config import AgentCfg, Config, WorkspaceCfg
 
 
 def _store(tmp_path) -> Store:
@@ -166,11 +169,101 @@ async def test_command_tool_pair_survives_compact_or_is_paired_in_replacement_hi
     assert "pytest" in command_item["content"]
 
 
-@pytest.mark.xfail(reason="threshold commit will implement soft compact failure surfacing")
-def test_soft_compact_failure_fact_enters_active_context_when_available():
-    raise NotImplementedError
+async def test_soft_compact_failure_fact_enters_active_context_when_available(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="ship it", workspace="E:/repo"))
+    _add_event(store, "e1", "dispatch", {"goal": "ship it", "workspace": "E:/repo"}, ts="2026-07-01T00:00:00Z", source="user")
+
+    async def fail_local(_active_context):
+        raise RuntimeError("local compact down")
+
+    manager = ContextManager(store, local_compactor=fail_local)
+
+    result = await manager.maybe_compact(
+        "s1",
+        reason="soft-threshold",
+        purpose="pm_plan",
+        window_tokens=100000,
+        run_count=8,
+    )
+    active = manager.build_active_context("s1", purpose="pm_plan", window_tokens=100000)
+    payloads = [json.loads(event.payload_json) for event in store.get_events("s1") if event.type == "context_compact"]
+
+    assert result is None
+    assert payloads[-1]["status"] == "failed"
+    assert payloads[-1]["hard"] is False
+    assert "context_compaction" in active.rendered_text
+    assert "failed" in active.rendered_text
 
 
-@pytest.mark.xfail(reason="threshold commit will implement hard compact failure blocking")
-def test_hard_compact_failure_blocks_pm_llm_call():
-    raise NotImplementedError
+def _cfg(tmp_path) -> Config:
+    cfg = Config()
+    cfg.agents = {"codex": AgentCfg(command="codex", enabled=True)}
+    cfg.workspaces = [WorkspaceCfg(path=str(tmp_path))]
+    return cfg
+
+
+async def test_hard_compact_failure_blocks_pm_llm_call(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="ship it", workspace=str(tmp_path), plan="legacy"))
+    store.add_task(Task(id="t1", session_id="s1", instruction="ship it"))
+    _add_event(
+        store,
+        "e1",
+        "dispatch",
+        {"goal": "ship it", "message": "large context " * 80, "workspace": str(tmp_path)},
+        ts="2026-07-01T00:00:00Z",
+        source="user",
+    )
+
+    class PM:
+        language = "en"
+        max_runs = 1
+
+        def __init__(self):
+            self.called = False
+
+        async def plan(self, *_args, **_kwargs):
+            self.called = True
+            return PMPlan(agent="codex", model="", effort="low", instruction="run")
+
+        async def review(self, *_args, **_kwargs):
+            raise AssertionError("review must not be called")
+
+    class FailingLLM:
+        provider = "openai"
+
+        async def responses_compact(self, *_args, **_kwargs):
+            raise RuntimeError("remote down")
+
+    async def fail_local(_active_context):
+        raise RuntimeError("local down")
+
+    pm = PM()
+    manager = ContextManager(store, llm=FailingLLM(), local_compactor=fail_local)
+    usage = estimate_context_usage(manager.build_active_context("s1", purpose="pm_plan", window_tokens=10), 10)
+    service = DispatchService(
+        _cfg(tmp_path),
+        store,
+        runner=object(),
+        pm_agent=pm,
+        context_manager=manager,
+    )
+
+    async def small_window(_pm_model):
+        return 10
+
+    service._resolve_window_tokens = small_window
+
+    await service._pm_launch("s1", "t1", "ship it", str(tmp_path), "codex", "", "low")
+
+    events = store.get_events("s1")
+    assert usage.percent >= usage.hard_threshold
+    assert pm.called is False
+    assert store.get_session("s1").status == "failed"
+    assert any(event.type == "error" for event in events)
+    failed = [json.loads(event.payload_json) for event in events if event.type == "context_compact"]
+    assert failed[-1]["status"] == "failed"
+    assert failed[-1]["hard"] is True
+    assert failed[-1]["method_attempted"] == "local"
+    assert "local down" in failed[-1]["error"]
