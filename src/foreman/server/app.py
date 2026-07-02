@@ -37,7 +37,7 @@ from foreman.shared.config import (
     default_agents,
     remote_execution_enabled,
 )
-from foreman.shared.events import AgentEvent, EventBus, utc_now_iso
+from foreman.shared.events import AgentEvent, EventBus, make_event, utc_now_iso
 from foreman.shared.i18n import normalize as normalize_lang
 from foreman.shared.protocol import KIND_SNAPSHOT_REQ, Envelope, command_envelope, new_id
 from foreman.shared.ratelimit import SlidingWindowLimiter
@@ -282,6 +282,11 @@ class _SessionTitleBody(BaseModel):
     title: str
 
 
+class _ContextCompactBody(BaseModel):
+    trigger: str = "manual"
+    reason: str = "user_requested"
+
+
 class _RemoteApproveBody(BaseModel):
     """Team-mode approval/card decision routed to one local process."""
 
@@ -504,6 +509,200 @@ def _event_to_dict(ev: AgentEvent) -> dict:
         "id": ev.id or None, "session_id": ev.session_id, "task_id": ev.task_id,
         "type": ev.type, "source": ev.source, "payload": ev.payload, "ts": ev.ts,
     }
+
+
+_CONTEXT_REDACT_KEYS = frozenset(
+    {
+        "encrypted_content",
+        "provider_payload",
+        "hidden_reasoning",
+        "pm_reasoning",
+        "reasoning",
+        "stdout",
+        "stderr",
+        "aggregated_output",
+        "raw_output",
+        "api_key",
+        "access_key",
+        "secret",
+        "token",
+    }
+)
+_CONTEXT_SUMMARY_KEYS = (
+    "current_progress",
+    "key_decisions",
+    "constraints",
+    "verified_facts",
+    "open_questions",
+    "risks",
+    "next_steps",
+    "changed_files",
+    "commands",
+    "tests",
+)
+
+
+def _json_obj(raw: str) -> dict[str, Any]:
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _json_list(raw: str) -> list[Any]:
+    try:
+        data = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _sanitize_context_value(value: Any, *, key: str = "") -> Any:
+    if key and key.lower() in _CONTEXT_REDACT_KEYS:
+        return None
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for child_key, child_value in value.items():
+            if str(child_key).lower() in _CONTEXT_REDACT_KEYS:
+                continue
+            cleaned = _sanitize_context_value(child_value, key=str(child_key))
+            if cleaned is not None:
+                out[str(child_key)] = cleaned
+        return out
+    if isinstance(value, list):
+        return [
+            cleaned
+            for item in value
+            if (cleaned := _sanitize_context_value(item, key=key)) is not None
+        ]
+    if isinstance(value, str) and len(value) > 2000:
+        return value[:2000] + "\n...[truncated]"
+    return value
+
+
+def _summary_list(value: Any) -> list[Any]:
+    cleaned = _sanitize_context_value(value)
+    if cleaned in (None, "", [], {}):
+        return []
+    if isinstance(cleaned, list):
+        return cleaned[:50]
+    return [cleaned]
+
+
+def _safe_checkpoint_summary(raw: dict[str, Any]) -> dict[str, list[Any]]:
+    summary = {key: [] for key in _CONTEXT_SUMMARY_KEYS}
+    aliases = {
+        "last_tests": "tests",
+        "test_results": "tests",
+        "last_commands": "commands",
+        "decisions": "key_decisions",
+        "summary": "current_progress",
+    }
+    for key in _CONTEXT_SUMMARY_KEYS:
+        summary[key] = _summary_list(raw.get(key)) if isinstance(raw, dict) else []
+    if isinstance(raw, dict):
+        for old_key, new_key in aliases.items():
+            if not summary[new_key] and old_key in raw:
+                summary[new_key] = _summary_list(raw.get(old_key))
+    return summary
+
+
+def _checkpoint_payloads(events: list[Any], checkpoint_id: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for event in events:
+        if getattr(event, "type", "") != "context_compact":
+            continue
+        payload = _json_obj(getattr(event, "payload_json", ""))
+        if checkpoint_id and payload.get("checkpoint_id") != checkpoint_id:
+            continue
+        out.append(payload)
+    return out
+
+
+def _checkpoint_row_dict(checkpoint: Any, *, events: list[Any] | None = None) -> dict[str, Any]:
+    token_usage = _sanitize_context_value(_json_obj(getattr(checkpoint, "token_usage_json", ""))) or {}
+    source_cursor = _sanitize_context_value(_json_obj(getattr(checkpoint, "source_cursor_json", ""))) or {}
+    replacement = _json_obj(getattr(checkpoint, "replacement_history_json", ""))
+    items = replacement.get("items") if isinstance(replacement.get("items"), list) else []
+    payloads = _checkpoint_payloads(events or [], getattr(checkpoint, "id", ""))
+    status = "completed"
+    warnings: list[str] = []
+    for payload in payloads:
+        payload_status = str(payload.get("status") or "").strip()
+        if payload_status:
+            status = payload_status
+        if payload_status == "warning":
+            warnings.append(str(payload.get("warning") or payload.get("error") or "warning"))
+    before_tokens = int(token_usage.get("before_tokens") or 0)
+    after_tokens = int(token_usage.get("after_tokens") or 0)
+    return {
+        "id": getattr(checkpoint, "id", ""),
+        "created_at": getattr(checkpoint, "created_at", ""),
+        "trigger": getattr(checkpoint, "trigger", ""),
+        "reason": getattr(checkpoint, "reason", ""),
+        "method": getattr(checkpoint, "method", ""),
+        "before_tokens": before_tokens,
+        "after_tokens": after_tokens,
+        "window_tokens": int(token_usage.get("window_tokens") or 0),
+        "source_cursor": source_cursor,
+        "replacement_history_items_count": len(items),
+        "status": status,
+        "warnings": warnings,
+    }
+
+
+def _checkpoint_detail_dict(checkpoint: Any, *, events: list[Any] | None = None) -> dict[str, Any]:
+    replacement = _json_obj(getattr(checkpoint, "replacement_history_json", ""))
+    items = replacement.get("items") if isinstance(replacement.get("items"), list) else []
+    input_frame_ids = _json_list(getattr(checkpoint, "input_frame_ids_json", ""))
+    row = _checkpoint_row_dict(checkpoint, events=events)
+    return {
+        "id": row["id"],
+        "summary": _safe_checkpoint_summary(_json_obj(getattr(checkpoint, "summary_json", ""))),
+        "runtime_state": _sanitize_context_value(_json_obj(getattr(checkpoint, "runtime_state_json", ""))) or {},
+        "token_usage": _sanitize_context_value(_json_obj(getattr(checkpoint, "token_usage_json", ""))) or {},
+        "source_cursor": _sanitize_context_value(_json_obj(getattr(checkpoint, "source_cursor_json", ""))) or {},
+        "replacement_history_items_count": len(items),
+        "input_frame_ids_count": len(input_frame_ids),
+        "warnings": row["warnings"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "trigger": row["trigger"],
+        "reason": row["reason"],
+        "method": row["method"],
+    }
+
+
+def _usage_from_active_context(active_context: Any, window_tokens: int) -> dict[str, Any]:
+    rendered = str(getattr(active_context, "rendered_text", "") or "")
+    used = _approx_context_tokens(rendered)
+    window = max(0, int(window_tokens or 0))
+    soft_threshold = 0.70
+    hard_threshold = 0.90
+    lane_usage = {str(i): 0 for i in range(1, 8)}
+    for frame in getattr(active_context, "frames_after_checkpoint", []) or []:
+        if not isinstance(frame, dict):
+            continue
+        lane = str(frame.get("lane") or "6")
+        if lane in lane_usage:
+            lane_usage[lane] += _approx_context_tokens(json.dumps(frame, ensure_ascii=False, sort_keys=True))
+    return {
+        "used_tokens": used,
+        "window_tokens": window,
+        "percent": (used / window) if window else 0.0,
+        "tokens_until_soft_compact": max(0, int(window * soft_threshold) - used) if window else 0,
+        "tokens_until_hard_compact": max(0, int(window * hard_threshold) - used) if window else 0,
+        "soft_threshold": soft_threshold,
+        "hard_threshold": hard_threshold,
+        "run_count_threshold": 8,
+        "lane_usage": lane_usage,
+    }
+
+
+def _context_preview(text: str, limit: int = 6000) -> str:
+    cleaned = str(_sanitize_context_value(str(text or "")) or "")
+    return cleaned if len(cleaned) <= limit else cleaned[:limit] + "\n...[preview truncated]"
 
 
 def _bearer_token(request: Request) -> str:
@@ -1668,6 +1867,165 @@ def create_app(
         if store is None:
             raise HTTPException(status_code=503, detail="no local store")
         return [_row_to_dict(e) for e in store.get_events(session_id)]
+
+    async def _context_window_tokens() -> int:
+        if dispatcher is not None and hasattr(dispatcher, "_resolve_window_tokens"):
+            try:
+                return int(await dispatcher._resolve_window_tokens(""))
+            except Exception:  # noqa: BLE001 - UI can still show a conservative fallback.
+                pass
+        return 268_000
+
+    def _context_manager():
+        manager = getattr(dispatcher, "context_manager", None) if dispatcher is not None else None
+        if manager is None or not hasattr(manager, "build_active_context"):
+            raise HTTPException(status_code=503, detail="context_manager_unavailable")
+        return manager
+
+    def _require_session(session_id: str):
+        if store is None or not hasattr(store, "get_session"):
+            raise HTTPException(status_code=503, detail="no_store")
+        row = store.get_session(session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        return row
+
+    def _latest_checkpoint(session_id: str):
+        if store is None or not hasattr(store, "get_latest_context_checkpoint"):
+            return None
+        return store.get_latest_context_checkpoint(session_id)
+
+    def _checkpoint_events(session_id: str) -> list[Any]:
+        if store is None or not hasattr(store, "get_events"):
+            return []
+        return [event for event in store.get_events(session_id) if getattr(event, "type", "") == "context_compact"]
+
+    def _context_response(
+        session_id: str,
+        active: Any,
+        *,
+        window_tokens: int,
+        checkpoint: Any | None = None,
+    ) -> dict[str, Any]:
+        events = _checkpoint_events(session_id)
+        runtime = _sanitize_context_value(getattr(active, "runtime_state", {}) or {}) or {}
+        envelope = getattr(active, "envelope", {}) if isinstance(getattr(active, "envelope", {}), dict) else {}
+        context = envelope.get("context") if isinstance(envelope.get("context"), dict) else {}
+        return {
+            "usage": _usage_from_active_context(active, window_tokens),
+            "latest_checkpoint": _checkpoint_row_dict(checkpoint, events=events) if checkpoint is not None else None,
+            "runtime_state": runtime,
+            "active_context_preview": _context_preview(getattr(active, "rendered_text", "") or ""),
+            "restore_mode": str(context.get("restore_mode") or ("raw_frames_degraded" if getattr(active, "degraded", False) else "raw_frames")),
+            "degraded": bool(getattr(active, "degraded", False)),
+            "warnings": _sanitize_context_value(getattr(active, "warnings", []) or []) or [],
+        }
+
+    @app.get("/api/sessions/{session_id}/context")
+    async def get_session_context(session_id: str) -> dict:
+        _require_session(session_id)
+        window_tokens = await _context_window_tokens()
+        manager = _context_manager()
+        checkpoint = _latest_checkpoint(session_id)
+        try:
+            active = manager.build_active_context(
+                session_id,
+                purpose="ui_context",
+                window_tokens=window_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 - display degraded UI instead of hiding state.
+            active = type(
+                "DegradedActiveContext",
+                (),
+                {
+                    "runtime_state": {},
+                    "rendered_text": "",
+                    "frames_after_checkpoint": [],
+                    "envelope": {"context": {"restore_mode": "raw_frames_degraded"}},
+                    "degraded": True,
+                    "warnings": [
+                        {
+                            "code": "context_restore_failed",
+                            "message": f"{type(exc).__name__}: {str(exc)[:200]}",
+                        }
+                    ],
+                },
+            )()
+        return _context_response(session_id, active, window_tokens=window_tokens, checkpoint=checkpoint)
+
+    @app.get("/api/sessions/{session_id}/context/checkpoints")
+    async def list_context_checkpoints(session_id: str) -> dict:
+        _require_session(session_id)
+        if store is None or not hasattr(store, "get_context_checkpoints"):
+            raise HTTPException(status_code=503, detail="context_checkpoints_unavailable")
+        events = _checkpoint_events(session_id)
+        return {
+            "items": [
+                _checkpoint_row_dict(checkpoint, events=events)
+                for checkpoint in store.get_context_checkpoints(session_id)
+            ]
+        }
+
+    @app.get("/api/sessions/{session_id}/context/checkpoints/{checkpoint_id}")
+    async def get_context_checkpoint_detail(session_id: str, checkpoint_id: str) -> dict:
+        _require_session(session_id)
+        if store is None or not hasattr(store, "get_context_checkpoint"):
+            raise HTTPException(status_code=503, detail="context_checkpoints_unavailable")
+        checkpoint = store.get_context_checkpoint(checkpoint_id)
+        if checkpoint is None or getattr(checkpoint, "session_id", "") != session_id:
+            raise HTTPException(status_code=404, detail="checkpoint_not_found")
+        return _checkpoint_detail_dict(checkpoint, events=_checkpoint_events(session_id))
+
+    @app.post("/api/sessions/{session_id}/context/compact")
+    async def compact_session_context(session_id: str, body: _ContextCompactBody) -> dict:
+        before = _require_session(session_id)
+        manager = _context_manager()
+        window_tokens = await _context_window_tokens()
+        old_checkpoint_id = str(getattr(before, "latest_context_checkpoint_id", "") or "")
+        trigger = (body.trigger or "manual").strip() or "manual"
+        reason = (body.reason or "user_requested").strip() or "user_requested"
+        if store is not None and hasattr(store, "add_event"):
+            store.add_event(
+                make_event(
+                    "context_compact",
+                    "pm-agent",
+                    session_id,
+                    payload={
+                        "status": "started",
+                        "schema_version": 2,
+                        "trigger": trigger,
+                        "reason": reason,
+                        "source": "context_api",
+                    },
+                )
+            )
+        try:
+            checkpoint = await manager.compact_now(
+                session_id,
+                trigger=trigger,
+                reason=reason,
+                window_tokens=window_tokens,
+                hard=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - UI needs a structured failure body.
+            current = store.get_session(session_id) if store is not None and hasattr(store, "get_session") else None
+            return {
+                "ok": False,
+                "error": {
+                    "code": "context_compact_failed",
+                    "message": f"{type(exc).__name__}: {str(exc)[:240]}",
+                    "hard": False,
+                },
+                "latest_checkpoint_unchanged": str(getattr(current, "latest_context_checkpoint_id", "") or "") == old_checkpoint_id,
+            }
+        active = manager.build_active_context(session_id, purpose="ui_context", window_tokens=window_tokens)
+        response = _context_response(session_id, active, window_tokens=window_tokens, checkpoint=checkpoint)
+        return {
+            "ok": True,
+            "checkpoint": _checkpoint_row_dict(checkpoint, events=_checkpoint_events(session_id)),
+            "usage": response["usage"],
+            "runtime_state": response["runtime_state"],
+        }
 
     @app.patch("/api/sessions/{session_id}")
     async def rename_session(session_id: str, body: _SessionTitleBody) -> dict:

@@ -233,7 +233,8 @@ def test_workspace_thread_scrolls_to_bottom_on_new_messages():
     assert "const threadRef = useRef(null)" in js
     assert "lastThreadNodeId" in js
     assert "el.scrollTop = el.scrollHeight" in js
-    assert '<div className="thread" ref=${threadRef}>' in js
+    assert 'className="thread" ref=${threadRef} onScroll=${onThreadScroll}' in js
+    assert 'data-testid="conversation-scroll-container"' in js
 
 
 def test_workspace_user_and_pm_bubbles_have_copy_buttons():
@@ -273,6 +274,184 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert 'runDispatch("interrupt")' not in js
     assert "onCancelSession" in js and "busy-chip" in css
     assert "clipboardImageFiles" in js and "addPastedImages" in js and "onPaste" in js
+
+
+def test_context_panel_renders_usage_meter():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert 'data-testid="context-tab"' in js
+    assert 'data-testid="context-panel"' in js
+    assert 'data-testid="context-usage-card"' in js
+    assert 'data-testid="context-usage-percent"' in js
+    assert 'data-testid="context-usage-used"' in js
+    assert 'data-testid="context-usage-window"' in js
+    assert 'data-testid="context-soft-remaining"' in js
+    assert 'data-testid="context-hard-remaining"' in js
+    assert ".context-meter-track" in css
+
+
+def test_context_panel_renders_lane_usage():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="context-lane-usage"' in js
+    for lane in range(1, 8):
+        assert f"context-lane-${{lane}}" in js or f"context-lane-{lane}" in js
+    assert "Lane 7 noise is high" in js
+
+
+def test_context_panel_renders_runtime_state():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="context-runtime-state"' in js
+    assert 'data-testid="context-runtime-workspace"' in js
+    assert 'data-testid="context-runtime-cwd"' in js
+    assert 'data-testid="context-runtime-worktree"' in js
+    assert 'data-testid="context-runtime-branch"' in js
+    assert 'data-testid="context-runtime-base-ref"' in js
+    assert 'data-testid="context-runtime-head-sha"' in js
+
+
+def test_context_panel_renders_active_agents():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert 'data-testid="context-agents-card"' in js
+    assert 'data-testid="context-agent-row"' in js
+    assert 'data-testid="context-agent-status"' in js
+    assert 'data-testid="context-agent-cwd"' in js
+    assert 'data-testid="context-agent-worktree"' in js
+    assert 'data-testid="context-agent-branch"' in js
+    assert 'data-testid="context-agent-native-session"' in js
+    assert ".agent-status.failed" in css
+
+
+def test_context_panel_renders_latest_checkpoint():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="latest-checkpoint-card"' in js
+    assert 'data-testid="latest-checkpoint-id"' in js
+    assert 'data-testid="latest-checkpoint-trigger"' in js
+    assert 'data-testid="latest-checkpoint-method"' in js
+    assert 'data-testid="latest-checkpoint-before-tokens"' in js
+    assert 'data-testid="latest-checkpoint-after-tokens"' in js
+    assert 'data-testid="latest-checkpoint-items-count"' in js
+
+
+def test_context_panel_renders_checkpoint_list():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="checkpoint-list"' in js
+    assert 'data-testid="checkpoint-row"' in js
+    assert 'data-testid="checkpoint-row-created"' in js
+    assert 'data-testid="checkpoint-row-trigger"' in js
+    assert 'data-testid="checkpoint-row-reason"' in js
+    assert 'data-testid="checkpoint-row-method"' in js
+    assert 'data-testid="checkpoint-row-before"' in js
+    assert 'data-testid="checkpoint-row-after"' in js
+    assert 'data-testid="checkpoint-row-status"' in js
+
+
+def test_context_panel_renders_checkpoint_detail():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="checkpoint-detail"' in js
+    assert 'data-testid="checkpoint-summary"' in js
+    assert 'data-testid="checkpoint-runtime"' in js
+    assert 'data-testid="checkpoint-token-usage"' in js
+    assert 'data-testid="checkpoint-source-cursor"' in js
+    assert 'data-testid="checkpoint-warnings"' in js
+    assert 'data-testid="active-context-preview"' in js
+
+
+def test_context_panel_hides_provider_payload_by_default():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "provider_payload" not in js
+    assert "raw replacement_history full JSON" not in js
+
+
+def test_context_panel_hides_encrypted_content():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "encrypted_content" not in js
+
+
+def test_context_panel_hides_hidden_reasoning():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "hidden_reasoning" not in js
+    assert "pm_reasoning raw" not in js
+
+
+def test_compact_now_button_calls_manual_compact_endpoint():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="context-compact-now"' in js
+    assert "/context/compact" in js
+    assert 'trigger: "manual", reason: "user_requested"' in js
+
+
+def test_compact_now_button_disabled_while_running():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'disabled=${state === "compacting" || !sessionId}' in js
+    assert "Compacting..." in js
+
+
+def test_compact_now_success_refreshes_context():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'setCompactMsg("Context compacted.")' in js
+    assert "await loadContext();" in js
+
+
+def test_compact_now_failure_shows_error():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "Context compact failed." in js
+    assert "Latest checkpoint was not changed." in js
+    assert 'data-testid="context-compact-error"' in js
+
+
+def test_compact_progress_started_completed_visible():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="context-compact-loading"' in js
+    assert 'data-testid="timeline-context-compaction"' in js
+    assert 'data-testid="timeline-context-compaction-started"' in js
+    assert 'data-testid="timeline-context-compaction-completed"' in js
+
+
+def test_compact_progress_failed_visible():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="timeline-context-compaction-failed"' in js
+
+
+def test_new_message_scrolls_conversation_to_bottom():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="conversation-scroll-container"' in js
+    assert "stickToBottomRef" in js
+    assert "el.scrollTop = el.scrollHeight" in js
+    assert 'data-testid="message-composer"' in js
+    assert 'data-testid="send-message"' in js
+
+
+def test_context_panel_refresh_does_not_jump_conversation_to_top():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "function ContextPanel" in js
+    assert "setState((prev) => prev === \"ready\" || prev === \"degraded\" ? prev : \"loading\")" in js
+    assert "threadNodes.length" in js and "loadContext" in js
+
+
+def test_compact_progress_item_does_not_break_bottom_scroll():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "stickToBottomRef.current" in js
+    assert "timeline-context-compaction" in js
 
 
 def test_context_meter_and_context_pack_helpers_match_provider_context():
