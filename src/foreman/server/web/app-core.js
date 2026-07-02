@@ -126,11 +126,16 @@
       not_configured: d.cloudNotConfigured, cloud_unavailable: d.cloudUnavailable,
       session_busy: d.sessionBusy, no_context: d.noContext, no_store: d.noStore,
       session_not_found: d.sessionNotFound, decline: d.requestDeclined,
+      file_not_found: d.fileNotFound, file_too_large: d.fileTooLarge, file_not_text: d.fileNotText,
+      file_open_failed: d.fileOpenFailed, file_outside_workspace: d.workspaceMissing, not_file: d.fileNotText,
       machine_offline: d.machineOffline, relay_unavailable: d.relayUnavailable,
       disabled: d.remoteDisabled, process_required: d.remoteProcessRequired,
       rate_limited: d.remoteRateLimited, auth: d.cloudAuthFailed,
       timeout: d.cloudTimeout, unreachable: d.cloudUnreachable,
-      title_too_long: d.sessionTitleTooLong,
+      missing_description: d.missingDescription, description_too_long: d.descriptionTooLong,
+      title_too_long: d.sessionTitleTooLong, git_unavailable: d.gitInitFailed,
+      git_init_failed: d.gitInitFailed, git_checkout_failed: d.branchSwitchFailed,
+      workspace_dirty: d.workspaceDirty, bad_branch: d.badBranch, bad_workspace: d.workspaceMissing,
     };
     return map[detail] || detail || `${(error && error.status) || ""}`;
   }
@@ -149,5 +154,11 @@
     shortPath,
     formatTime,
     getToken,
+    setToken,
+    redirectToLogin,
+    TOKEN_KEY,
+    CONSOLE_TOKEN_KEY,
+    PROCESS_KEY,
+    SERVER_API_PREFIXES,
   };
 })();

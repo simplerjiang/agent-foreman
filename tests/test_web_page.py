@@ -75,6 +75,55 @@ def test_app_split_scripts_are_served_without_build_step():
         assert word not in lower
 
 
+def test_app_core_exports_shared_helpers():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app-core.js").text
+    assert "window.ForemanApp" in js
+    for name in (
+        "api",
+        "friendlyError",
+        "tokenK",
+        "shortPath",
+        "formatTime",
+        "getToken",
+        "setToken",
+        "redirectToLogin",
+        "SERVER_API_PREFIXES",
+        "PROCESS_KEY",
+    ):
+        assert name in js
+
+
+def test_app_js_consumes_foreman_app_helpers():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "window.ForemanApp" in js
+    for name in (
+        "api",
+        "friendlyError",
+        "tokenK",
+        "shortPath",
+        "formatTime",
+        "getToken",
+        "setToken",
+        "redirectToLogin",
+        "PROCESS_KEY",
+    ):
+        assert name in js
+
+
+def test_no_duplicate_api_helper_in_app_js_if_removed():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "async function api(" not in js
+    assert "function friendlyError(" not in js
+    assert "function tokenK(" not in js
+    assert "function shortPath(" not in js
+    assert "function formatTime(" not in js
+    assert "function getToken(" not in js
+    assert "window.fetch = async" not in js
+
+
 def test_legacy_index_redirects_to_console_control_view():
     c = TestClient(create_app(load_config()))
     html = c.get("/index.html").text
@@ -88,9 +137,10 @@ def test_legacy_index_redirects_to_console_control_view():
 def test_app_js_wires_api_and_ws_and_is_xss_safe():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    bundle = _dashboard_bundle(c)
     assert "/api/overview" in js and "/api/sessions" in js
     assert "/ws?session_id=" in js
-    assert "ReactDOM.createRoot" in js and "htm.bind" in js
+    assert "ReactDOM.createRoot" in js and "htm.bind" in bundle
     # React renders agent/PM output; never assign event payloads to raw HTML (XSS).
     assert ".innerHTML" not in js
     assert "dangerouslySetInnerHTML" not in js
@@ -129,9 +179,9 @@ def test_ui_language_defaults_to_browser_language_when_unset():
 
 def test_friendly_error_maps_backend_codes_and_network_errors():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = c.get("/app-core.js").text
     start = js.index("function friendlyError")
-    end = js.index("function jsonObjectError", start)
+    end = js.index("window.ForemanApp", start)
     helper = js[start:end]
     script = helper + r'''
 const d = {
@@ -228,8 +278,9 @@ def test_autonomy_dial_wired_in_page():
     """The PWA exposes the autonomy dial (0/1/2/3) and syncs it to the backend (§6.4)."""
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    bundle = _dashboard_bundle(c)
     css = c.get("/app.css").text
-    assert "/api/settings/autonomy" in js and "/api/remote/api" in js and "saveAutonomy" in js
+    assert "/api/settings/autonomy" in js and "/api/remote/api" in bundle and "saveAutonomy" in js
     assert "/api/remote/settings/autonomy" not in js
     assert "slider-wrap" in js and "autoExec" in js
     assert "自动执行权限" in js
@@ -584,13 +635,14 @@ def test_pm_brain_timeout_setting_wired():
 def test_remote_control_ui_wires_process_target_and_approve_endpoint():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    bundle = _dashboard_bundle(c)
     css = c.get("/app.css").text
     assert "/api/processes" in js and "loadProcesses" in js
     assert "selectedProcessId" in js and "process_id" in js
     assert "/api/snapshot" in js and "snapshot_req" not in js  # browser calls REST, server builds frame
-    assert "/api/remote/api" in js and "SERVER_API_PREFIXES" in js
+    assert "/api/remote/api" in bundle and "SERVER_API_PREFIXES" in bundle
     assert "card_choice" not in js
-    assert "machine_offline" in js and "relay_unavailable" in js
+    assert "machine_offline" in bundle and "relay_unavailable" in bundle
     assert "machine-select" in js and ".m-machine" in css
 
 
@@ -608,6 +660,7 @@ def test_member_console_has_control_entry_into_dashboard():
     c = TestClient(create_app(load_config()))
     admin_js = c.get("/admin-app.js").text
     app_js = c.get("/app.js").text
+    core_js = c.get("/app-core.js").text
     # MemberView/Admin processes: per-machine 控制 button → seed the dashboard target and switch view.
     assert "控制" in admin_js
     assert "function ControlView" in admin_js and "ForemanControlApp" in admin_js
@@ -620,12 +673,12 @@ def test_member_console_has_control_entry_into_dashboard():
     assert 'location.href = "/index.html"' not in admin_js
     # The control handoff refreshes the dashboard's canonical token before navigation; the dashboard
     # still accepts the old console key as a fallback for already-open tabs.
-    token_start = app_js.index("const getToken =")
-    token_end = app_js.index("const setToken", token_start)
-    assert "localStorage.getItem(TOKEN_KEY) || localStorage.getItem(CONSOLE_TOKEN_KEY)" in app_js[token_start:token_end]
+    token_start = core_js.index("const getToken =")
+    token_end = core_js.index("const setToken", token_start)
+    assert "localStorage.getItem(TOKEN_KEY) || localStorage.getItem(CONSOLE_TOKEN_KEY)" in core_js[token_start:token_end]
     assert "window.ForemanControlApp = { Root: Shell }" in app_js and "dataset.adminRoot" in app_js
-    assert "/app.html?next=" in app_js and "/api/auth/me" in app_js
-    assert '!path.startsWith("/api/auth/")' in app_js
+    assert "/app.html?next=" in core_js and "/api/auth/me" in app_js
+    assert '!path.startsWith("/api/auth/")' in core_js
     assert "Access token required" not in app_js and "window.prompt" not in app_js
     assert "nextUrl()" in admin_js and "finishAuth(onAuthed)" in admin_js
 
@@ -1042,9 +1095,10 @@ if (displayPmStreamText(codeish, "zh", d) !== codeish) {
 def test_session_controls_and_custom_delete_confirm_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    bundle = _dashboard_bundle(c)
     assert "/api/sessions/${encodeURIComponent(id)}/cancel" in js
     assert 'api(`/api/sessions/${encodeURIComponent(id)}`' in js
-    assert "session_busy" in js and "!live" in js and "waiting_approval" in js
+    assert "session_busy" in bundle and "!live" in js and "waiting_approval" in js
     assert "async function retrySession(row)" in js
     assert "onRetrySession(sessionRow)" in js and "${d.retry}" in js
     assert "const body = { goal: row.goal, workspace: target, source: clientSource(), effort }" in js
@@ -1266,7 +1320,7 @@ def test_team_snapshot_drives_dashboard_state_and_decision_count():
 
 def test_team_api_wrapper_proxies_local_api_but_not_console_api():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = c.get("/app-core.js").text
     assert "function shouldRouteLocal" in js
     assert 'requestJson("/api/remote/api"' in js
     assert 'path,' in js and 'body: opts.body' in js
