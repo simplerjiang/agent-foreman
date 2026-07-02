@@ -148,6 +148,21 @@ async def test_send_resumes_session_and_repumps(tmp_path):
     assert any("resumed" in p for p in payloads)
 
 
+async def test_subprocess_stop_failed_status_survives_zero_process_exit(tmp_path):
+    store = _store(tmp_path)
+    runner = Runner(Config(), EventBus(), store)
+    proc = FakeProc(pid=1, stdout_lines=[b'{"type":"result","returncode":2,"result":"failed"}\n'])
+    adapter = fake_adapter(ClaudeCodeAdapter, AgentCfg(command="claude"), proc)
+    runner.adapters["claude-code"] = adapter
+
+    handle = await runner.launch("claude-code", "do x", tmp_path, "s1")
+    await runner.wait(handle)
+
+    assert handle.status == "failed"
+    stop_payload = json.loads(next(e.payload_json for e in store.get_events("s1") if e.type == "stop"))
+    assert stop_payload["status"] == "failed"
+
+
 async def test_interrupt_terminates_the_process(tmp_path):
     runner = Runner(Config(), EventBus(), _store(tmp_path))
     proc = FakeProc(pid=7, stdout_lines=[b'{"type":"result","result":"x"}\n'])

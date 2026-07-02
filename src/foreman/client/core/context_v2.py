@@ -2141,8 +2141,7 @@ def _merge_task_state(agents: dict[str, dict[str, Any]], tasks: list[Task]) -> N
         status = _text(getattr(task, "status", ""))
         if status:
             agent["task_status"] = status
-            if _is_terminal_agent_status(status) or agent.get("status") in {"", "unknown"}:
-                agent["status"] = status
+            agent["status"] = _choose_agent_status(agent.get("status", ""), status)
 
 
 def _merge_runner_state(
@@ -2176,11 +2175,10 @@ def _merge_runner_state(
         agent = agents.setdefault(agent_id, _new_agent(agent_id))
         handle_status = _text(getattr(item, "status", ""))
         process_status = _runner_process_status(runner, item)
-        if process_status == "alive" and not _is_terminal_agent_status(agent.get("status", "")) and not _is_terminal_agent_status(handle_status):
+        if process_status == "alive" and _terminal_status_rank(agent.get("status", "")) == 0 and _terminal_status_rank(handle_status) == 0:
             agent["status"] = "running"
         elif handle_status:
-            if _is_terminal_agent_status(handle_status) or agent.get("status") in {"", "unknown"}:
-                agent["status"] = handle_status
+            agent["status"] = _choose_agent_status(agent.get("status", ""), handle_status)
         elif process_status == "" and agent.get("status") in {"", "unknown"}:
             agent["status"] = "running"
         elif agent.get("status") in {"", "unknown"}:
@@ -2226,7 +2224,34 @@ def _runner_process_status(runner: Any, handle: Any) -> str:
 
 
 def _is_terminal_agent_status(status: str) -> bool:
-    return _text(status).lower() in {"completed", "failed", "cancelled", "interrupted", "done"}
+    return _terminal_status_rank(status) > 0
+
+
+def _terminal_status_rank(status: str) -> int:
+    text = _text(status).lower()
+    if text in {"completed", "done"}:
+        return 1
+    if text in {"cancelled", "interrupted"}:
+        return 2
+    if text == "failed":
+        return 3
+    return 0
+
+
+def _choose_agent_status(current: str, candidate: str) -> str:
+    current_text = _text(current).lower()
+    candidate_text = _text(candidate).lower()
+    if not candidate_text:
+        return current_text or "unknown"
+    current_rank = _terminal_status_rank(current_text)
+    candidate_rank = _terminal_status_rank(candidate_text)
+    if candidate_rank > 0:
+        if current_rank > 0:
+            return candidate_text if candidate_rank > current_rank else current_text
+        return candidate_text
+    if current_rank > 0:
+        return current_text
+    return candidate_text if current_text in {"", "unknown", "running"} else current_text
 
 
 def _tasks_for_session(store: Any, session_id: str) -> list[Task]:

@@ -178,6 +178,7 @@ class SubprocessCliAdapter:
                             event.payload["status"] = "failed"
                         elif not event.payload.get("status") or event.payload.get("status") == "running":
                             event.payload["status"] = "completed"
+                        handle.status = str(event.payload.get("status") or handle.status or "")
                         event.payload.setdefault("returncode", 0)
                     yield event
 
@@ -196,7 +197,8 @@ class SubprocessCliAdapter:
                     },
                 )
             else:
-                handle.status = "completed"
+                if handle.status not in {"failed", "cancelled", "interrupted"}:
+                    handle.status = "completed"
         finally:
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()

@@ -193,6 +193,7 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                         event.payload["status"] = "failed"
                     elif not event.payload.get("status") or event.payload.get("status") == "running":
                         event.payload["status"] = "completed"
+                    handle.status = str(event.payload.get("status") or handle.status or "")
                     event.payload.setdefault("returncode", 0)
                 if event.type == "stop":
                     emitted_stop = True
@@ -221,4 +222,5 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                 payload={**_handle_event_payload(handle, self.name, status="completed"), "result": "", "returncode": 0},
             )
         else:
-            handle.status = "completed"
+            if handle.status not in {"failed", "cancelled", "interrupted"}:
+                handle.status = "completed"

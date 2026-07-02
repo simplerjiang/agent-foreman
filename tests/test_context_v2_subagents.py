@@ -204,6 +204,54 @@ def test_completed_handle_not_resurrected_as_running_without_watcher(tmp_path):
     assert agent["process_status"] != "alive"
 
 
+def test_failed_stop_not_overwritten_by_completed_runner_handle(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    _add_event(store, _event("e1", "stop", {"agent_id": "h-dev", "returncode": 2}, ts="2026-07-01T00:00:00Z"))
+    frames = ContextManager(store).materialize_session("s1")
+    handle = _Handle(id="h-dev", session_id="s1", pid=1, cwd="E:/repo", worktree="E:/repo", status="completed")
+
+    state = extract_runtime_state(session, frames, runner=_Runner(handle))
+
+    assert state.active_agents[0]["status"] == "failed"
+
+
+def test_failed_task_not_overwritten_by_completed_runner_handle(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    store.add_task(Task(id="t1", session_id="s1", instruction="run", status="failed", agent_handle="h-dev"))
+    handle = _Handle(id="h-dev", session_id="s1", pid=1, cwd="E:/repo", worktree="E:/repo", status="completed")
+
+    state = ContextManager(store, runner=_Runner(handle)).extract_runtime_state(session, [])
+
+    assert state.active_agents[0]["status"] == "failed"
+
+
+def test_completed_frame_can_be_upgraded_by_failed_runner_handle(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    _add_event(store, _event("e1", "stop", {"agent_id": "h-dev", "status": "completed"}, ts="2026-07-01T00:00:00Z"))
+    frames = ContextManager(store).materialize_session("s1")
+    handle = _Handle(id="h-dev", session_id="s1", pid=1, cwd="E:/repo", worktree="E:/repo", status="failed")
+
+    state = extract_runtime_state(session, frames, runner=_Runner(handle))
+
+    assert state.active_agents[0]["status"] == "failed"
+
+
+def test_live_running_handle_does_not_override_failed_frame(tmp_path):
+    store = _store(tmp_path)
+    session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
+    _add_event(store, _event("e1", "stop", {"agent_id": "h-dev", "status": "failed"}, ts="2026-07-01T00:00:00Z"))
+    frames = ContextManager(store).materialize_session("s1")
+    handle = _Handle(id="h-dev", session_id="s1", pid=1, cwd="E:/repo", worktree="E:/repo", status="running")
+
+    state = extract_runtime_state(session, frames, runner=_Runner(handle, _Watcher(True)))
+
+    assert state.active_agents[0]["status"] == "failed"
+    assert state.active_agents[0]["process_status"] == "alive"
+
+
 def test_completed_handle_not_resurrected_as_running_with_dead_watcher(tmp_path):
     store = _store(tmp_path)
     session = store.add_session(Session(id="s1", goal="goal", workspace="E:/repo"))
