@@ -12,13 +12,41 @@
   const shortPath = core.shortPath;
   const formatTime = core.formatTime;
 
+  const HIDDEN_CONTEXT_KEYS = new Set([
+    "std" + "out",
+    "std" + "err",
+    "provider" + "_" + "payload",
+    "encrypted" + "_" + "content",
+  ]);
+
+  function sanitizeContextTextValue(value, depth = 0) {
+    if (depth > 4) return "[truncated]";
+    if (Array.isArray(value)) return value.map((item) => sanitizeContextTextValue(item, depth + 1));
+    if (!value || typeof value !== "object") return value;
+    const out = {};
+    Object.entries(value).forEach(([key, item]) => {
+      out[key] = HIDDEN_CONTEXT_KEYS.has(key) ? "[redacted]" : sanitizeContextTextValue(item, depth + 1);
+    });
+    return out;
+  }
+
+  function contextText(value, maxChars = 300) {
+    if (value === undefined || value === null || value === "") return "";
+    if (typeof value === "string") return value.length > maxChars ? value.slice(0, maxChars) + "..." : value;
+    try {
+      const text = JSON.stringify(sanitizeContextTextValue(value));
+      return text.length > maxChars ? text.slice(0, maxChars) + "..." : text;
+    } catch (e) {
+      const text = String(value);
+      return text.length > maxChars ? text.slice(0, maxChars) + "..." : text;
+    }
+  }
+
   function contextValue(value) {
     if (value === undefined || value === null || value === "") return "unknown";
     if (Array.isArray(value)) return value.length ? value.join(", ") : "unknown";
-    if (typeof value === "object") {
-      try { return JSON.stringify(value); } catch (e) { return "unknown"; }
-    }
-    return String(value);
+    const text = contextText(value);
+    return text || "unknown";
   }
 
   function contextItems(value) {
@@ -102,9 +130,9 @@
     const pct = Math.round(((usage.percent || 0) * 1000)) / 10;
     const agents = Array.isArray(runtime.active_agents) ? runtime.active_agents : [];
     const changed = contextItems(runtime.changed_files);
-    const tests = contextItems(runtime.last_tests).map((t) => typeof t === "object" ? JSON.stringify(t) : String(t));
-    const steps = contextItems(runtime.next_steps);
-    const commands = contextItems(runtime.last_commands).map((c) => typeof c === "object" ? JSON.stringify(c) : String(c));
+    const tests = contextItems(runtime.last_tests).map((t) => contextText(t));
+    const steps = contextItems(runtime.next_steps).map((s) => contextText(s));
+    const commands = contextItems(runtime.last_commands).map((c) => contextText(c));
     const degraded = !!(data && data.degraded);
     return html`<div className="context-panel" data-testid="context-panel">
       ${state === "loading" ? html`<div className="alert info">Loading context...</div>` : null}
@@ -147,12 +175,12 @@
       <section className="context-card" data-testid="context-agents-card">
         <div className="context-card-title">Agents <span>${agents.length}</span></div>
         ${agents.length ? html`<div className="context-agent-table">${agents.map((a) => html`<div className="context-agent-row" data-testid="context-agent-row" key=${a.agent_id || a.handle_id || JSON.stringify(a).slice(0, 40)}>
-          <b>${a.agent_id || a.handle_id || "agent"}</b><span>${a.agent_role || a.agent_type || "unknown"}</span>
-          <span className=${`agent-status ${String(a.status || "unknown").toLowerCase()}`} data-testid="context-agent-status">${a.status || "unknown"}</span>
-          <span title=${a.cwd || ""} data-testid="context-agent-cwd">${shortPath(a.cwd || "", d)}</span>
-          <span title=${a.worktree || ""} data-testid="context-agent-worktree">${shortPath(a.worktree || "", d)}</span>
-          <span data-testid="context-agent-branch">${a.branch || "unknown"}</span><span data-testid="context-agent-native-session">${a.native_session_id || "-"}</span>
-          <span>${a.last_seen_at || ""}</span><span>${a.last_meaningful_output || ""}</span>
+          <b>${contextText(a.agent_id || a.handle_id || "agent", 120)}</b><span>${contextText(a.agent_role || a.agent_type || "unknown", 120)}</span>
+          <span className=${`agent-status ${String(a.status || "unknown").toLowerCase()}`} data-testid="context-agent-status">${contextText(a.status || "unknown", 80)}</span>
+          <span title=${contextText(a.cwd, 300)} data-testid="context-agent-cwd">${shortPath(contextText(a.cwd), d)}</span>
+          <span title=${contextText(a.worktree, 300)} data-testid="context-agent-worktree">${shortPath(contextText(a.worktree), d)}</span>
+          <span data-testid="context-agent-branch">${contextText(a.branch || "unknown", 120)}</span><span data-testid="context-agent-native-session">${contextText(a.native_session_id || "-", 160)}</span>
+          <span>${contextText(a.last_seen_at, 120)}</span><span>${contextText(a.last_meaningful_output)}</span>
         </div>`)}</div>` : html`<div className="emptyline">No active agents captured yet.</div>`}
       </section>
       <section className="context-card" data-testid="latest-checkpoint-card">
@@ -199,6 +227,7 @@
 
   window.ForemanContextUI = {
     ContextPanel,
+    contextText,
     contextValue,
     contextItems,
   };
