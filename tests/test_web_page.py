@@ -319,9 +319,10 @@ def test_context_panel_renders_usage_meter():
 
 def test_context_tab_selector_exists():
     c = TestClient(create_app(load_config()))
-    js = _dashboard_bundle(c)
-    assert 'data-testid="context-tab"' in js
-    assert "${d.context}" in js
+    app_js = c.get("/app.js").text
+    assert 'data-testid="context-tab"' in app_js
+    assert 'setRightTab("ctx")' in app_js
+    assert "${d.context}" in app_js
 
 
 def test_context_panel_renders_lane_usage():
@@ -369,6 +370,22 @@ def test_context_panel_agent_last_meaningful_output_object_is_stringified():
     assert '"provider" + "_" + "payload"' in context_js
     assert '"encrypted" + "_" + "content"' in context_js
     assert "contextText(a.last_meaningful_output)" in context_js
+    assert '${a.last_meaningful_output || ""}' not in context_js
+
+
+def test_context_panel_sanitizer_redacts_reasoning_and_secret_keys():
+    c = TestClient(create_app(load_config()))
+    context_js = c.get("/app-context.js").text
+    assert "function isHiddenContextKey" in context_js
+    assert "HIDDEN_CONTEXT_KEY_PARTS" in context_js
+    assert "k.includes(part)" in context_js
+    assert '"reason" + "ing"' in context_js
+    assert '"sec" + "ret"' in context_js
+    assert '"tok" + "en"' in context_js
+    assert '"api" + "_" + "key"' in context_js
+    assert '"author" + "ization"' in context_js
+    assert '"raw" + "_" + "output"' in context_js
+    assert '"aggregated" + "_" + "output"' in context_js
     assert '${a.last_meaningful_output || ""}' not in context_js
 
 

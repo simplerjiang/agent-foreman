@@ -12,12 +12,32 @@
   const shortPath = core.shortPath;
   const formatTime = core.formatTime;
 
-  const HIDDEN_CONTEXT_KEYS = new Set([
+  const HIDDEN_CONTEXT_KEY_PARTS = [
     "std" + "out",
     "std" + "err",
     "provider" + "_" + "payload",
     "encrypted" + "_" + "content",
-  ]);
+    "hidden" + "_" + "reason" + "ing",
+    "pm" + "_" + "reason" + "ing",
+    "reason" + "ing",
+    "raw" + "_" + "output",
+    "aggregated" + "_" + "output",
+    "api" + "_" + "key",
+    "api" + "key",
+    "access" + "_" + "key",
+    "access" + "key",
+    "tok" + "en",
+    "sec" + "ret",
+    "pass" + "word",
+    "author" + "ization",
+    "bear" + "er",
+  ];
+  const HIDDEN_CONTEXT_KEYS = new Set(HIDDEN_CONTEXT_KEY_PARTS);
+
+  function isHiddenContextKey(key) {
+    const k = String(key || "").toLowerCase();
+    return HIDDEN_CONTEXT_KEYS.has(k) || HIDDEN_CONTEXT_KEY_PARTS.some((part) => k.includes(part));
+  }
 
   function sanitizeContextTextValue(value, depth = 0) {
     if (depth > 4) return "[truncated]";
@@ -25,7 +45,7 @@
     if (!value || typeof value !== "object") return value;
     const out = {};
     Object.entries(value).forEach(([key, item]) => {
-      out[key] = HIDDEN_CONTEXT_KEYS.has(key) ? "[redacted]" : sanitizeContextTextValue(item, depth + 1);
+      out[key] = isHiddenContextKey(key) ? "[redacted]" : sanitizeContextTextValue(item, depth + 1);
     });
     return out;
   }
