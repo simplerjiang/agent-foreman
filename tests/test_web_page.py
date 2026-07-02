@@ -375,12 +375,14 @@ def test_context_panel_renders_usage_meter():
 
 def test_context_tab_selector_exists():
     c = TestClient(create_app(load_config()))
-    app_js = c.get("/app.js").text
-    start = app_js.index('data-testid="context-tab"')
-    button = app_js[app_js.rfind("<button", 0, start) : app_js.index("</button>", start)]
-    assert 'data-testid="context-tab"' in button
-    assert 'setRightTab("ctx")' in button
-    assert "${d.context}" in button
+    js = c.get("/app.js").text
+    idx = js.find('data-testid="context-tab"')
+    assert idx != -1
+    start = js.rfind("<button", 0, idx)
+    end = js.find("</button>", idx)
+    snippet = js[start:end]
+    assert 'setRightTab("ctx")' in snippet
+    assert "${d.context}" in snippet
 
 
 def test_context_panel_renders_lane_usage():
