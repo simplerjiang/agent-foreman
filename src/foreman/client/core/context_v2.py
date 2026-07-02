@@ -1042,6 +1042,7 @@ def frames_to_replacement_history(
     runtime = active_context.runtime_state if isinstance(active_context.runtime_state, dict) else {}
     frames = [frame for frame in active_context.frames_after_checkpoint or [] if isinstance(frame, dict)]
     items: list[dict[str, Any]] = []
+    items.extend(_prior_replacement_history_items(active_context))
     source_refs = _frame_source_refs(frames)
     goal = _text(runtime.get("goal") or active_context.envelope.get("task", {}).get("current_goal"))
     if goal:
@@ -1215,7 +1216,11 @@ def _compat_summary_text(summary_json: dict[str, Any]) -> str:
 
 
 def _source_cursor_from_active_context(active_context: ActiveContext) -> dict[str, Any]:
-    frames = [frame for frame in active_context.frames_after_checkpoint or [] if isinstance(frame, dict)]
+    frames = [
+        frame
+        for frame in active_context.frames_after_checkpoint or []
+        if isinstance(frame, dict) and _text(frame.get("type")) != "context_compaction"
+    ]
     if not frames:
         return {}
     first = frames[0]
@@ -1237,7 +1242,15 @@ def _approx_tokens(text: str) -> int:
 
 
 def _anchor_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    wanted = {"command_result", "test_result", "file_change", "agent_stop", "previous_validation_error"}
+    wanted = {
+        "pm_plan",
+        "pm_review",
+        "command_result",
+        "test_result",
+        "file_change",
+        "agent_stop",
+        "previous_validation_error",
+    }
     return [frame for frame in frames if _text(frame.get("type")) in wanted]
 
 
@@ -1255,6 +1268,8 @@ def _anchor_content(frame: dict[str, Any], payload: dict[str, Any], frames: list
         "file_change": ("changed_files", "files", "paths", "diff_stat", "truncated"),
         "agent_stop": ("status", "summary", "result", "payload"),
         "previous_validation_error": ("error", "round", "arguments"),
+        "pm_plan": ("summary", "payload"),
+        "pm_review": ("summary", "payload"),
     }.get(frame_type, ())
     picked = {key: payload.get(key) for key in keys if payload.get(key) not in (None, "", [], {})}
     if not picked:
@@ -1274,6 +1289,29 @@ def _paired_frame_ids(frame: dict[str, Any], frames: list[dict[str, Any]]) -> li
             if _text(candidate_payload.get("call_id") or candidate_payload.get("tool_call_id")) == call_id:
                 ids.append(_text(candidate.get("id")))
     return _dedupe(ids)
+
+
+def _prior_replacement_history_items(active_context: ActiveContext) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, item in enumerate(active_context.replacement_history or []):
+        if not isinstance(item, dict):
+            continue
+        cloned = _compact_payload(item)
+        key = _text(cloned.get("id")) or json.dumps(cloned, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        cloned.setdefault("id", f"prior_{idx}")
+        cloned.setdefault("role", "system")
+        cloned.setdefault("kind", cloned.get("type") or "prior_checkpoint")
+        if not _text(cloned.get("content")) and isinstance(cloned.get("payload"), dict):
+            cloned["content"] = _summarize_text(
+                json.dumps(cloned["payload"], ensure_ascii=False, sort_keys=True),
+                max_chars=900,
+            )
+        out.append(cloned)
+    return out
 
 
 def _paired_source_refs(frame: dict[str, Any], frames: list[dict[str, Any]]) -> list[str]:

@@ -279,3 +279,82 @@ async def test_replacement_history_json_round_trips_and_passes_validation(tmp_pa
     restored = manager.build_active_context("s1", purpose="pm_review")
     assert restored.degraded is False
     assert restored.replacement_history == json.loads(checkpoint.replacement_history_json)["items"]
+
+
+async def test_second_compact_preserves_previous_replacement_history_semantics(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="ship feature", workspace="E:/repo"))
+    with store.session() as session:
+        session.add(
+            Event(
+                id="e1",
+                session_id="s1",
+                task_id="t1",
+                type="dispatch",
+                source="user",
+                payload_json=json.dumps({"goal": "ship feature", "workspace": "E:/repo"}),
+                ts="2026-07-01T00:00:00Z",
+            )
+        )
+        session.add(
+            Event(
+                id="e2",
+                session_id="s1",
+                task_id="t1",
+                type="pm_plan",
+                source="pm-agent",
+                payload_json=json.dumps({"summary": "FIRST_CHECKPOINT_DECISION"}),
+                ts="2026-07-01T00:00:01Z",
+            )
+        )
+        session.commit()
+
+    manager = ContextManager(store)
+    checkpoint_1 = await manager.compact_now(
+        "s1",
+        trigger="manual",
+        reason="first",
+        window_tokens=1000,
+    )
+    history_1 = json.loads(checkpoint_1.replacement_history_json)
+    assert "FIRST_CHECKPOINT_DECISION" in json.dumps(history_1, ensure_ascii=False)
+
+    with store.session() as session:
+        session.add(
+            Event(
+                id="e3",
+                session_id="s1",
+                task_id="t1",
+                type="tool_post",
+                source="codex",
+                payload_json=json.dumps({"tool": "run_command", "command": "pytest", "exit_code": 0}),
+                ts="2026-07-01T00:00:02Z",
+            )
+        )
+        session.add(
+            Event(
+                id="e4",
+                session_id="s1",
+                task_id="t1",
+                type="stop",
+                source="codex",
+                payload_json=json.dumps({"result": "SECOND_CHECKPOINT_EVIDENCE"}),
+                ts="2026-07-01T00:00:03Z",
+            )
+        )
+        session.commit()
+
+    checkpoint_2 = await manager.compact_now(
+        "s1",
+        trigger="manual",
+        reason="second",
+        window_tokens=1000,
+    )
+    active = manager.build_active_context("s1", purpose="pm_plan")
+
+    assert store.get_session("s1").latest_context_checkpoint_id == checkpoint_2.id
+    assert checkpoint_2.id != checkpoint_1.id
+    assert "FIRST_CHECKPOINT_DECISION" in active.rendered_text
+    assert "SECOND_CHECKPOINT_EVIDENCE" in active.rendered_text
+    assert json.loads(checkpoint_2.source_cursor_json)["end"]["event_id"] == "e4"
+    assert active.degraded is False
