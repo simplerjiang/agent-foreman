@@ -685,11 +685,26 @@ class PMAgent:
         *,
         session_id: str = "",
         task_id: str = "",
+        store: Any = None,
+        main_workspace: str = "",
+        worktree_manager: Any = None,
         work_mode_resolver: Any = None,
     ):
         if self.tool_runtime_factory is None:
             return None
-        runtime = self.tool_runtime_factory(workspace)
+        factory_kwargs = {
+            "store": store,
+            "session_id": session_id,
+            "task_id": task_id,
+            "main_workspace": main_workspace or workspace,
+            "worktree_manager": worktree_manager,
+        }
+        accepted_kwargs = {
+            key: value
+            for key, value in factory_kwargs.items()
+            if value is not None and _accepts_keyword(self.tool_runtime_factory, key)
+        }
+        runtime = self.tool_runtime_factory(workspace, **accepted_kwargs)
         if work_mode_resolver is not None and hasattr(runtime, "set_work_mode_resolver"):
             runtime.set_work_mode_resolver(work_mode_resolver)
         if hasattr(runtime, "set_decision_context"):
@@ -768,6 +783,9 @@ class PMAgent:
         work_mode_resolver: Any = None,
         session_id: str = "",
         task_id: str = "",
+        store: Any = None,
+        main_workspace: str = "",
+        worktree_manager: Any = None,
         active_context: Any = None,
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
@@ -785,6 +803,9 @@ class PMAgent:
             workspace,
             session_id=session_id,
             task_id=task_id,
+            store=store,
+            main_workspace=main_workspace,
+            worktree_manager=worktree_manager,
             work_mode_resolver=work_mode_resolver,
         )
         if runtime is not None:
@@ -930,6 +951,9 @@ class PMAgent:
         work_mode_resolver: Any = None,
         session_id: str = "",
         task_id: str = "",
+        store: Any = None,
+        main_workspace: str = "",
+        worktree_manager: Any = None,
         active_context: Any = None,
     ) -> PMReview:
         system = REVIEW_SYSTEM + "\n" + language_directive(self.language)
@@ -948,6 +972,9 @@ class PMAgent:
             workspace or plan.workspace,
             session_id=session_id,
             task_id=task_id,
+            store=store,
+            main_workspace=main_workspace,
+            worktree_manager=worktree_manager,
             work_mode_resolver=work_mode_resolver,
         )
         if runtime is not None:
@@ -1010,6 +1037,9 @@ class PMAgent:
         work_mode_resolver: Any = None,
         session_id: str = "",
         task_id: str = "",
+        store: Any = None,
+        main_workspace: str = "",
+        worktree_manager: Any = None,
     ) -> PMRecovery:
         system = RECOVERY_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_recovery_prompt(
@@ -1024,6 +1054,9 @@ class PMAgent:
             workspace or plan.workspace,
             session_id=session_id,
             task_id=task_id,
+            store=store,
+            main_workspace=main_workspace,
+            worktree_manager=worktree_manager,
             work_mode_resolver=work_mode_resolver,
         )
         enabled = [_as_str(a.get("name")) for a in available_agents]

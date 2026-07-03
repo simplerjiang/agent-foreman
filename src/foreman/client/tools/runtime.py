@@ -15,7 +15,7 @@ from urllib.parse import quote_plus, urlparse
 
 import httpx
 
-from foreman.shared.config import Config, clamp_pm_tool_rounds
+from foreman.shared.config import Config, clamp_pm_tool_rounds, resolve_worktree_roots
 
 from .models import (
     EXTERNAL_WEB,
@@ -52,14 +52,21 @@ class PMToolRuntime:
         self.auditor = auditor
         self.cards = cards
         self.guard = PathGuard(cfg.workspace, cfg.allowed_roots)
+        self.worktree_guard = PathGuard(
+            cfg.main_workspace or cfg.workspace,
+            cfg.worktree_roots or resolve_worktree_roots(
+                cfg.main_workspace or cfg.workspace,
+                [],
+            ),
+        )
         self._http = http_client
         self._browser: BrowserRuntime | None = None
         # Per-task work-mode resolver (client.core.WorkModeResolver), duck-typed to avoid a
         # tools → core import. Backs work_mode_search / work_mode_get; None = tools return
         # "work_mode_unavailable" instead of crashing. Usually attached via set_work_mode_resolver.
         self._work_mode_resolver = work_mode_resolver
-        self._session_id = ""
-        self._task_id = ""
+        self._session_id = str(cfg.session_id or "")
+        self._task_id = str(cfg.task_id or "")
 
     def set_work_mode_resolver(self, resolver: Any) -> None:
         """Attach the per-task work-mode resolver (the live path builds it per dispatch and sets it
@@ -70,6 +77,8 @@ class PMToolRuntime:
         """Attach the live session context used by ask_question decision cards."""
         self._session_id = str(session_id or "")
         self._task_id = str(task_id or "")
+        self.cfg.session_id = self._session_id
+        self.cfg.task_id = self._task_id
 
     @classmethod
     def from_config(
@@ -77,23 +86,38 @@ class PMToolRuntime:
         cfg: Config,
         workspace: str | Path,
         *,
+        store: Any = None,
+        session_id: str = "",
+        task_id: str = "",
+        main_workspace: str | Path | None = None,
+        worktree_manager: Any = None,
         gate: Any = None,
         auditor: Any = None,
         work_mode_resolver: Any = None,
         cards: Any = None,
     ) -> "PMToolRuntime":
         roots = [Path(w.path) for w in cfg.workspaces] or [Path(workspace)]
+        main_root = Path(main_workspace or workspace)
         pm = cfg.pm_tools
         return cls(
             ToolRuntimeConfig(
                 workspace=Path(workspace),
                 allowed_roots=roots,
+                store=store,
+                session_id=session_id,
+                task_id=task_id,
+                main_workspace=main_root,
+                worktree_manager=worktree_manager,
                 file_read=pm.file_read,
                 file_write=pm.file_write,
                 shell=pm.shell,
                 web_fetch=pm.web_fetch,
                 web_search=pm.web_search,
                 browser=pm.browser,
+                git_worktree=pm.git_worktree,
+                worktree_roots=resolve_worktree_roots(main_root, pm.worktree_roots),
+                worktree_branch_prefix=pm.worktree_branch_prefix,
+                default_base_ref=pm.default_base_ref,
                 allowed_origins=list(pm.allowed_origins),
                 web_search_provider=pm.web_search_provider,
                 searxng_url=pm.searxng_url,
@@ -252,6 +276,18 @@ class PMToolRuntime:
                 SAFE,
             ),
             ToolSpec(
+                "worktree_bind_session",
+                "Bind the current PM session to a server-owned worktree lease. The current "
+                "session_id/task_id are injected by the runtime, never accepted from PM input.",
+                {
+                    "type": "object",
+                    "properties": {"lease_id": string, "reason": string},
+                    "required": ["lease_id"],
+                    "additionalProperties": False,
+                },
+                NEEDS_STRATEGY,
+            ),
+            ToolSpec(
                 "work_mode_search",
                 "Search applicable work-mode definitions (skills / code standards / QA rubrics) "
                 "for this task. Returns lightweight index entries (name + description), NOT full "
@@ -292,6 +328,10 @@ class PMToolRuntime:
         return {
             "os": os.name,
             "cwd": str(self.cfg.workspace),
+            "main_workspace": str(self.cfg.main_workspace or self.cfg.workspace),
+            "worktree_roots": [str(path) for path in self.cfg.worktree_roots],
+            "worktree_branch_prefix": self.cfg.worktree_branch_prefix,
+            "default_base_ref": self.cfg.default_base_ref,
             "path_style": "windows" if os.name == "nt" else "posix",
             "shell": "powershell" if os.name == "nt" else "sh",
         }
@@ -305,8 +345,10 @@ class PMToolRuntime:
                 "web_fetch": self.cfg.web_fetch,
                 "web_search": self.cfg.web_search,
                 "browser": self.cfg.browser,
+                "git_worktree": self.cfg.git_worktree,
             },
             "allowed_roots": [str(p) for p in self.cfg.allowed_roots],
+            "worktree_roots": [str(p) for p in self.cfg.worktree_roots],
             "allowed_origins": list(self.cfg.allowed_origins),
             "shell_rule": (
                 "run_command has no static command list gate; "
@@ -352,6 +394,8 @@ class PMToolRuntime:
                 return await self._web_search(call.id, args)
             if call.name == "ask_question":
                 return await self._ask_question(call.id, args)
+            if call.name == "worktree_bind_session":
+                return await self._worktree_bind_session(call.id, args)
             if call.name.startswith("browser_"):
                 return await self._browser_call(ToolCall(call.id, call.name, args))
             if call.name == "work_mode_search":
@@ -399,6 +443,86 @@ class PMToolRuntime:
         if not res.get("ok"):
             return ToolResult(cid, "ask_question", False, data=res, error=str(res.get("error") or "failed"))
         return ToolResult(cid, "ask_question", True, res)
+
+    async def _worktree_bind_session(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(
+                cid, "worktree_bind_session", False, error="tool_disabled", risk=NEEDS_STRATEGY
+            )
+        forbidden = {"session_id", "task_id", "path", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(
+                cid, "worktree_bind_session", False, error="invalid_args", risk=NEEDS_STRATEGY
+            )
+        lease_id = str(args.get("lease_id") or "").strip()
+        if not lease_id:
+            return ToolResult(cid, "worktree_bind_session", False, error="missing_lease_id")
+        manager = self.cfg.worktree_manager
+        bind = getattr(manager, "bind_session", None)
+        if manager is None or not callable(bind):
+            return ToolResult(
+                cid,
+                "worktree_bind_session",
+                False,
+                error="worktree_manager_unavailable",
+                risk=NEEDS_STRATEGY,
+            )
+        data = await _maybe_await(
+            bind(
+                self.worktree_context(),
+                lease_id=lease_id,
+                reason=str(args.get("reason") or ""),
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(
+                cid, "worktree_bind_session", False, error="invalid_worktree_result"
+            )
+        ok = bool(data.get("ok", data.get("bound", False)))
+        if not ok:
+            return ToolResult(
+                cid,
+                "worktree_bind_session",
+                False,
+                data=data,
+                error=str(data.get("error") or "bind_failed"),
+                risk=NEEDS_STRATEGY,
+            )
+        workspace = str(data.get("workspace") or data.get("path") or "").strip()
+        if not workspace:
+            return ToolResult(
+                cid, "worktree_bind_session", False, data=data, error="missing_workspace"
+            )
+        try:
+            self.bind_workspace(workspace, main_workspace=data.get("main_workspace"))
+        except ToolPolicyError as exc:
+            return ToolResult(
+                cid, "worktree_bind_session", False, data=data, error=exc.code, risk=NEEDS_STRATEGY
+            )
+        out = dict(data)
+        out["workspace"] = str(self.cfg.workspace)
+        out["cwd"] = str(self.cfg.workspace)
+        return ToolResult(cid, "worktree_bind_session", True, out, risk=NEEDS_STRATEGY)
+
+    def bind_workspace(self, workspace: str | Path, *, main_workspace: object = None) -> None:
+        resolved = self.worktree_guard.resolve(str(workspace))
+        self.cfg.workspace = resolved
+        self.cfg.allowed_roots = [resolved]
+        if main_workspace:
+            self.cfg.main_workspace = Path(str(main_workspace)).expanduser()
+        self.guard = PathGuard(resolved, [resolved])
+
+    def worktree_context(self) -> dict[str, Any]:
+        return {
+            "store": self.cfg.store,
+            "session_id": self._session_id,
+            "task_id": self._task_id,
+            "workspace": str(self.cfg.workspace),
+            "main_workspace": str(self.cfg.main_workspace or self.cfg.workspace),
+            "worktree_roots": [str(path) for path in self.cfg.worktree_roots],
+            "branch_prefix": self.cfg.worktree_branch_prefix,
+            "default_base_ref": self.cfg.default_base_ref,
+        }
 
     async def _work_mode_search(self, cid: str, args: dict[str, Any]) -> ToolResult:
         """L1 discovery: return the L0 index (metadata only, never a body) of work modes applicable
@@ -902,6 +1026,12 @@ async def _emit_tool_event(
             await res
     except Exception:
         return
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:

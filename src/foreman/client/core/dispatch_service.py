@@ -125,6 +125,7 @@ class DispatchService:
         embedder=None,
         workflow_engine=None,
         context_manager=None,
+        worktree_manager=None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -142,6 +143,7 @@ class DispatchService:
         # Optional WorkflowEngine (P5 §10) for lightweight per-step dispatch (set after construction
         # in local_app since the two are built together). None → no workflow step dispatch.
         self.workflow_engine = workflow_engine
+        self.worktree_manager = worktree_manager
         self.language_getter = language_getter
         self._clock = clock or utc_now_iso
         self.context_manager = context_manager
@@ -158,6 +160,8 @@ class DispatchService:
         self._session_queue_tails: dict[str, asyncio.Future[None]] = {}
         self._session_queue_locks: dict[str, asyncio.Lock] = {}
         self._stop_after_reply_counts: dict[str, int] = {}
+        self._event_id_prefix = uuid.uuid4().hex[:8]
+        self._event_seq = 0
 
     # ── create a session (下发任务, §5.1) ─────────────────────────────────────────────────────
     async def create(
@@ -1014,7 +1018,7 @@ class DispatchService:
         # ZERO injection / ZERO residue (P2 §4 back-compat; the plan instruction already goes to the
         # CLI directly). Best-effort: an injection failure must never abort the dispatch.
         self._inject_work_modes_for_plan(workspace, task_id, plan, wm_index)
-        agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+        agent_run_seen_ids = _event_ids(self.store.get_events(session_id)) if self.store else set()
         handle = await _launch_runner(
             self.runner, plan.agent, plan.instruction, Path(workspace), session_id,
             model=plan.model, effort=plan.effort, task_id=task_id,
@@ -1031,7 +1035,7 @@ class DispatchService:
             return
         while True:
             fatal_rows = (
-                _events_after(self.store.get_events(session_id), agent_run_cursor)
+                _events_not_in(self.store.get_events(session_id), agent_run_seen_ids)
                 if self.store else []
             )
             fatal_msg = _fatal_agent_exit_text(fatal_rows, language=language, agent=plan.agent)
@@ -1056,7 +1060,7 @@ class DispatchService:
             )
             if recovered is None:
                 return
-            handle, plan, agent_run_cursor, todo_status = recovered
+            handle, plan, agent_run_seen_ids, todo_status = recovered
             await self.runner.wait(handle)
             if self._consume_stop_after_reply(session_id):
                 self._mark_session_unless_terminal(session_id, "running")
@@ -1157,7 +1161,7 @@ class DispatchService:
                     _empty_followup_text(language),
                 )
                 return
-            agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+            agent_run_seen_ids = _event_ids(self.store.get_events(session_id)) if self.store else set()
             attempt_id = _prepare_runner_attempt(self.runner, handle)
             await self._emit_agent_input(session_id, task_id, handle, review.follow_up, plan)
             await _send_runner(self.runner, handle, review.follow_up, attempt_id=attempt_id)
@@ -1169,7 +1173,7 @@ class DispatchService:
                 return
             while True:
                 fatal_rows = (
-                    _events_after(self.store.get_events(session_id), agent_run_cursor)
+                    _events_not_in(self.store.get_events(session_id), agent_run_seen_ids)
                     if self.store else []
                 )
                 fatal_msg = _fatal_agent_exit_text(
@@ -1196,7 +1200,7 @@ class DispatchService:
                 )
                 if recovered is None:
                     return
-                handle, plan, agent_run_cursor, todo_status = recovered
+                handle, plan, agent_run_seen_ids, todo_status = recovered
                 await self.runner.wait(handle)
                 if self._consume_stop_after_reply(session_id):
                     self._mark_session_unless_terminal(session_id, "running")
@@ -1242,7 +1246,7 @@ class DispatchService:
         wm_index: list[dict[str, Any]],
         work_mode_resolver: Any,
         todo_status: list[dict[str, str]],
-    ) -> tuple[Any, PMPlan, str, list[dict[str, str]]] | None:
+    ) -> tuple[Any, PMPlan, set[str], list[dict[str, str]]] | None:
         failed_agents.add(plan.agent)
         candidates = [
             row for row in enabled_agents
@@ -1312,7 +1316,7 @@ class DispatchService:
             _pm_status_text(language, "recover", recovery_plan.agent),
         )
         self._inject_work_modes_for_plan(workspace, task_id, recovery_plan, wm_index)
-        agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+        agent_run_seen_ids = _event_ids(self.store.get_events(session_id)) if self.store else set()
         handle = await _launch_runner(
             self.runner,
             recovery_plan.agent,
@@ -1327,7 +1331,7 @@ class DispatchService:
             session_id, task_id, handle, recovery_plan.instruction, recovery_plan
         )
         self._mark_session_unless_terminal(session_id, "running")
-        return handle, recovery_plan, agent_run_cursor, todo_status
+        return handle, recovery_plan, agent_run_seen_ids, todo_status
 
     def _inject_work_modes_for_plan(
         self, workspace: str, task_id: str, plan: PMPlan, wm_index: list[dict[str, Any]]
@@ -1623,15 +1627,14 @@ class DispatchService:
         async def emit(event_type: str, payload: dict[str, Any]) -> None:
             if event_type not in {"tool_pre", "tool_post", "tool_stream", "pm_validation_error"}:
                 return
-            await self._persist_then_publish(
-                make_event(
-                    event_type,
-                    "pm-agent",
-                    session_id,
-                    task_id=task_id,
-                    payload=payload,
-                )
+            event = make_event(
+                event_type,
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload=payload,
             )
+            await self._persist_then_publish(event)
 
         return emit
 
@@ -1658,7 +1661,21 @@ class DispatchService:
             kwargs["session_id"] = session_id
         if _accepts_keyword(method, "task_id"):
             kwargs["task_id"] = task_id
+        if _accepts_keyword(method, "store"):
+            kwargs["store"] = self.store
+        if _accepts_keyword(method, "main_workspace"):
+            kwargs["main_workspace"] = self._main_workspace_for_session(session_id, workspace)
+        if _accepts_keyword(method, "worktree_manager"):
+            kwargs["worktree_manager"] = self.worktree_manager
         return kwargs
+
+    def _main_workspace_for_session(self, session_id: str, fallback: str) -> str:
+        if self.store is not None and hasattr(self.store, "get_session"):
+            session = self.store.get_session(session_id)
+            main_workspace = (getattr(session, "main_workspace", "") or "").strip() if session else ""
+            if main_workspace:
+                return main_workspace
+        return fallback
 
     async def _safe_launch(
         self, session_id: str, goal: str, workspace: str, agent: str, model: str, effort: str
@@ -1893,6 +1910,9 @@ class DispatchService:
 
     async def _persist_then_publish(self, event) -> None:
         """Persist-first (so a late UI can backfill) then publish — mirrors Runner/Gate."""
+        if not getattr(event, "id", ""):
+            self._event_seq += 1
+            event.id = f"dispatch-{self._event_id_prefix}-{self._event_seq:09d}"
         if self.store is not None and hasattr(self.store, "add_event"):
             self.store.add_event(event)
         if self.bus is not None:
@@ -2327,6 +2347,16 @@ def _events_after(rows: list[Any], event_id: str) -> list[Any]:
         if _event_id(row) == marker:
             return rows[idx + 1:]
     return rows
+
+
+def _event_ids(rows: list[Any]) -> set[str]:
+    return {event_id for event_id in (_event_id(row) for row in rows) if event_id}
+
+
+def _events_not_in(rows: list[Any], seen_ids: set[str]) -> list[Any]:
+    if not seen_ids:
+        return rows
+    return [row for row in rows if _event_id(row) not in seen_ids]
 
 
 _REVIEW_TIMELINE_FRAME_TYPES = {
