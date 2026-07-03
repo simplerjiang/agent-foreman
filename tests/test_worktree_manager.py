@@ -318,3 +318,190 @@ def test_plan_rejects_custom_path_symlink_escape_when_available(tmp_path: Path):
 
     assert result["decision"] == "reject"
     assert result["error"] == "path_outside_worktree_roots"
+
+
+def test_create_dry_run_does_not_mutate_git_db_or_filesystem(tmp_path: Path):
+    repo = _repo(tmp_path)
+    store = _store(tmp_path)
+    manager = WorktreeManager()
+    before_worktrees = _git(repo, "worktree", "list", "--porcelain")
+
+    result = manager.create(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "main_workspace": str(repo),
+            "branch_prefix": "foreman/",
+            "default_base_ref": "HEAD",
+        },
+        goal="Dry Run Create",
+        dry_run=True,
+    )
+
+    assert result["decision"] == "create"
+    assert result["dry_run"] is True
+    assert result["created"] is False
+    assert not Path(result["proposed_path"]).exists()
+    assert store.get_worktree_leases() == []
+    assert _git(repo, "worktree", "list", "--porcelain") == before_worktrees
+
+
+def test_create_success_registers_worktree_and_active_lease(tmp_path: Path):
+    repo = _repo(tmp_path)
+    store = _store(tmp_path)
+
+    class RecordingManager(WorktreeManager):
+        def __init__(self):
+            super().__init__()
+            self.commands: list[tuple[str, ...]] = []
+
+        def _git(self, cwd: Path, *args: str) -> dict[str, object]:
+            self.commands.append(args)
+            return super()._git(cwd, *args)
+
+    manager = RecordingManager()
+    result = manager.create(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "main_workspace": str(repo),
+            "worktree_roots": [tmp_path / "roots"],
+            "branch_prefix": "foreman/",
+            "default_base_ref": "HEAD",
+        },
+        goal="Create Feature",
+    )
+
+    assert result["ok"] is True
+    assert result["decision"] == "create"
+    assert result["created"] is True
+    worktree = Path(result["path"])
+    assert worktree.exists()
+    assert _git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "foreman/s1/create-feature"
+    listed = WorktreeManager().list(repo)
+    assert any(row["resolved_path"] == str(worktree.resolve(strict=False)) for row in listed["worktrees"])
+    lease = store.get_active_worktree_lease(session_id="s1")
+    assert lease is not None
+    assert lease.worktree_path == str(worktree.resolve(strict=False))
+    assert lease.branch == "foreman/s1/create-feature"
+    assert lease.base_sha == result["base_sha"]
+    assert lease.head_sha == result["head_sha"]
+    assert lease.session_id == "s1"
+    assert lease.task_id == "t1"
+    forbidden = {"fetch", "pull", "push", "merge"}
+    assert not any(args and args[0] in forbidden for args in manager.commands)
+
+
+def test_create_reuses_existing_clean_owned_worktree(tmp_path: Path):
+    repo = _repo(tmp_path)
+    store = _store(tmp_path)
+    manager = WorktreeManager()
+    context = {
+        "store": store,
+        "session_id": "s1",
+        "task_id": "t1",
+        "main_workspace": str(repo),
+        "branch_prefix": "foreman/",
+        "default_base_ref": "HEAD",
+    }
+    created = manager.create(context, goal="Reuse Create")
+
+    reused = manager.create(context, goal="Reuse Create")
+
+    assert created["created"] is True
+    assert reused["decision"] == "reuse"
+    assert reused["created"] is False
+    assert reused["lease_id"] == created["lease_id"]
+    assert len(store.get_worktree_leases(status="active")) == 1
+
+
+def test_create_rejects_custom_path_target_exists_bad_base_and_bad_branch(tmp_path: Path):
+    repo = _repo(tmp_path)
+    store = _store(tmp_path)
+    manager = WorktreeManager()
+    context = {
+        "store": store,
+        "session_id": "s1",
+        "task_id": "t1",
+        "main_workspace": str(repo),
+        "branch_prefix": "foreman/",
+        "default_base_ref": "HEAD",
+    }
+    planned = manager.plan(context, goal="Existing Target")
+    Path(planned["proposed_path"]).mkdir(parents=True)
+
+    custom = manager.create(context, goal="Custom", custom_path=str(tmp_path / "manual"))
+    existing = manager.create(context, goal="Existing Target")
+    missing_base = manager.create(context, goal="Missing Base", base_ref="missing-ref")
+    bad_branch = manager.create({**context, "branch_prefix": "bad prefix/"}, goal="Bad Branch")
+
+    assert custom["decision"] == "reject" and custom["error"] == "custom_path_disabled"
+    assert existing["decision"] == "reject" and existing["error"] == "path_exists_unregistered"
+    assert missing_base["decision"] == "reject" and missing_base["error"] == "base_ref_not_found"
+    assert bad_branch["decision"] == "reject" and bad_branch["error"] == "invalid_branch"
+    assert store.get_worktree_leases() == []
+
+
+def test_create_git_add_failure_does_not_write_lease_or_leave_path(tmp_path: Path):
+    repo = _repo(tmp_path)
+    store = _store(tmp_path)
+
+    class FailingAddManager(WorktreeManager):
+        def _git(self, cwd: Path, *args: str) -> dict[str, object]:
+            if args[:2] == ("worktree", "add"):
+                return {"ok": False, "stdout": "", "stderr": "simulated add failure"}
+            return super()._git(cwd, *args)
+
+    result = FailingAddManager().create(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "main_workspace": str(repo),
+            "worktree_roots": [tmp_path / "roots"],
+            "branch_prefix": "foreman/",
+            "default_base_ref": "HEAD",
+        },
+        goal="Fail Add",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "git_worktree_add_failed"
+    assert not Path(result["proposed_path"]).exists()
+    assert not (tmp_path / "roots").exists()
+    assert store.get_worktree_leases() == []
+
+
+def test_create_rejects_custom_path_symlink_escape_when_available(tmp_path: Path):
+    repo = _repo(tmp_path)
+    store = _store(tmp_path)
+    root = tmp_path / "roots"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    link = root / "link"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    result = WorktreeManager().create(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "main_workspace": str(repo),
+            "worktree_roots": [root],
+            "branch_prefix": "foreman/",
+            "default_base_ref": "HEAD",
+            "allow_custom_worktree_path": True,
+        },
+        goal="Custom",
+        custom_path=str(link / "task"),
+    )
+
+    assert result["decision"] == "reject"
+    assert result["error"] == "path_outside_worktree_roots"
+    assert store.get_worktree_leases() == []

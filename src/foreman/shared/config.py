@@ -210,6 +210,7 @@ class PMToolsCfg(BaseModel):
     worktree_roots: list[str] = Field(default_factory=list)
     worktree_branch_prefix: str = "foreman/"
     default_base_ref: str = "HEAD"
+    allow_custom_worktree_path: bool = False
     allowed_origins: list[str] = Field(default_factory=list)
     web_search_provider: str = "duckduckgo"  # duckduckgo | searxng
     searxng_url: str = ""

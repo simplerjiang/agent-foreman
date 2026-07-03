@@ -131,6 +131,7 @@ class ToolRuntimeConfig:
     worktree_roots: list[Path] = field(default_factory=list)
     worktree_branch_prefix: str = "foreman/"
     default_base_ref: str = "HEAD"
+    allow_custom_worktree_path: bool = False
     allowed_origins: list[str] = field(default_factory=list)
     web_search_provider: str = "duckduckgo"
     searxng_url: str = ""

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from foreman.client.store.models import WorktreeLease
 from foreman.shared.config import default_worktree_root
 
 
@@ -109,6 +111,102 @@ class WorktreeManager:
         out["decision"] = "create"
         out["ok"] = True
         return out
+
+    def create(
+        self,
+        context: dict[str, Any],
+        *,
+        goal: str = "",
+        slug: str = "",
+        base_ref: str = "",
+        reuse_policy: str = "reuse_clean_owned",
+        custom_path: str = "",
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        planned = self.plan(
+            context,
+            goal=goal,
+            slug=slug,
+            base_ref=base_ref,
+            reuse_policy=reuse_policy,
+            custom_path=custom_path,
+        )
+        if dry_run or planned.get("decision") != "create":
+            return {**planned, "dry_run": bool(dry_run), "created": False}
+        session_id = str(context.get("session_id") or "").strip()
+        task_id = str(context.get("task_id") or "").strip()
+        if not session_id:
+            return _create_error(planned, "missing_session")
+        if not task_id:
+            return _create_error(planned, "missing_task")
+        store = context.get("store")
+        add_lease = getattr(store, "add_worktree_lease", None)
+        if store is None or not callable(add_lease):
+            return _create_error(planned, "worktree_store_unavailable")
+        repo_root = _normalize_path(planned.get("repo_root") or planned.get("main_workspace") or ".")
+        worktree_path = _normalize_path(planned.get("proposed_path") or "")
+        branch = str(planned.get("proposed_branch") or "").strip()
+        base_label = str(planned.get("base_ref") or "").strip()
+        if not branch.startswith(str(context.get("branch_prefix") or "")):
+            return _create_error(planned, "invalid_branch_prefix")
+        parent = worktree_path.parent
+        parent_existed = parent.exists()
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return _create_error(planned, "worktree_parent_create_failed", detail=str(exc))
+        added = self._git(repo_root, "worktree", "add", "-b", branch, str(worktree_path), base_label)
+        if not added["ok"]:
+            _rollback_failed_create_path(worktree_path, parent, parent_existed)
+            return _create_error(planned, "git_worktree_add_failed", detail=added["stderr"])
+        verified = self.list(repo_root)
+        if not verified.get("ok"):
+            return _create_error(
+                planned,
+                str(verified.get("error") or "worktree_verify_failed"),
+                detail=str(verified.get("detail") or ""),
+            )
+        rows = [row for row in verified.get("worktrees", []) if isinstance(row, dict)]
+        registered = _find_worktree(rows, worktree_path, branch)
+        if registered is None:
+            return _create_error(planned, "worktree_not_registered")
+        status = self.status(worktree_path, str(planned.get("base_sha") or ""))
+        if not status.get("ok"):
+            return _create_error(
+                planned,
+                str(status.get("error") or "worktree_status_failed"),
+                detail=str(status.get("detail") or ""),
+            )
+        lease = add_lease(
+            WorktreeLease(
+                id="",
+                repo_root=str(repo_root),
+                main_workspace=str(planned.get("main_workspace") or repo_root),
+                worktree_path=str(worktree_path),
+                branch=branch,
+                base_ref=base_label,
+                base_sha=str(planned.get("base_sha") or ""),
+                head_sha=str(status.get("head_sha") or ""),
+                session_id=session_id,
+                task_id=task_id,
+                dirty=bool(status.get("dirty")),
+                locked=bool(registered.get("locked")),
+            )
+        )
+        return {
+            **planned,
+            "ok": True,
+            "decision": "create",
+            "created": True,
+            "dry_run": False,
+            "path": str(worktree_path),
+            "workspace": str(worktree_path),
+            "head_sha": str(status.get("head_sha") or ""),
+            "lease_id": str(getattr(lease, "id", "") or ""),
+            "owner_session_id": session_id,
+            "owner_task_id": task_id,
+            "lease_status": str(getattr(lease, "status", "") or ""),
+        }
 
     def list(self, main_workspace: str | Path) -> dict[str, Any]:
         workspace = _normalize_path(main_workspace)
@@ -338,6 +436,13 @@ def _reject(out: dict[str, Any], code: str, *, detail: str = "") -> dict[str, An
     return result
 
 
+def _create_error(out: dict[str, Any], code: str, *, detail: str = "") -> dict[str, Any]:
+    result = _reject(out, code, detail=detail)
+    result["ok"] = False
+    result["created"] = False
+    return result
+
+
 def _slug(value: str, *, max_len: int = 48) -> str:
     lowered = str(value or "").strip().lower()
     normalized = _SAFE_TOKEN_RE.sub("-", lowered).strip(".-_")
@@ -428,6 +533,13 @@ def _lease_owned_by(lease: Any, session_id: str, task_id: str) -> bool:
         return False
     lease_task_id = str(getattr(lease, "task_id", "") or "")
     return not task_id or lease_task_id == task_id
+
+
+def _rollback_failed_create_path(worktree_path: Path, parent: Path, parent_existed: bool) -> None:
+    if worktree_path.exists():
+        shutil.rmtree(worktree_path, ignore_errors=True)
+    if not parent_existed and parent.exists():
+        shutil.rmtree(parent, ignore_errors=True)
 
 
 def _error(code: str, *, path: Path, detail: str = "") -> dict[str, Any]:

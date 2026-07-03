@@ -73,17 +73,22 @@ def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fi
     by_name = {item.name: item for item in PMToolRuntime.specs()}
 
     plan_spec = by_name["worktree_plan"]
+    create_spec = by_name["worktree_create"]
     list_spec = by_name["worktree_list"]
     status_spec = by_name["worktree_status"]
 
     assert plan_spec.risk == "safe"
+    assert create_spec.risk == "needs-strategy"
     assert list_spec.risk == "safe"
     assert status_spec.risk == "safe"
     assert plan_spec.input_schema["additionalProperties"] is False
+    assert create_spec.input_schema["additionalProperties"] is False
     assert list_spec.input_schema["additionalProperties"] is False
     assert status_spec.input_schema["additionalProperties"] is False
     assert "custom_path" in plan_spec.input_schema["properties"]
-    for spec in (plan_spec, list_spec, status_spec):
+    assert "custom_path" in create_spec.input_schema["properties"]
+    assert "dry_run" in create_spec.input_schema["properties"]
+    for spec in (plan_spec, create_spec, list_spec, status_spec):
         assert "session_id" not in spec.input_schema["properties"]
         assert "task_id" not in spec.input_schema["properties"]
         assert "path" not in spec.input_schema["properties"] or spec.name == "worktree_status"
@@ -93,6 +98,7 @@ def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fi
 async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
     cases = [
         ToolCall("plan", "worktree_plan", {"goal": "x"}),
+        ToolCall("create", "worktree_create", {"goal": "x"}),
         ToolCall("bind", "worktree_bind_session", {"lease_id": "lease-1"}),
         ToolCall("list", "worktree_list", {}),
         ToolCall("status", "worktree_status", {}),
@@ -108,6 +114,7 @@ def test_runtime_from_config_injects_worktree_dependencies(tmp_path: Path):
     cfg = Config()
     cfg.pm_tools.git_worktree = True
     cfg.pm_tools.worktree_roots = [str(tmp_path / "worktrees")]
+    cfg.pm_tools.allow_custom_worktree_path = True
     store = object()
     manager = object()
 
@@ -128,6 +135,7 @@ def test_runtime_from_config_injects_worktree_dependencies(tmp_path: Path):
     assert rt.cfg.worktree_manager is manager
     assert rt.cfg.git_worktree is True
     assert rt.cfg.worktree_roots == [tmp_path / "worktrees"]
+    assert rt.cfg.allow_custom_worktree_path is True
     assert "session_id" not in rt.runtime_context()
     assert "task_id" not in rt.runtime_context()
     assert rt.worktree_context()["session_id"] == "s1"
@@ -300,6 +308,89 @@ async def test_worktree_plan_injects_runtime_context_and_rejects_pm_context_fiel
         "base_ref": "main",
         "reuse_policy": "reuse_clean_owned",
         "custom_path": str(worktree_root / "s1-task"),
+    }
+
+
+async def test_worktree_create_injects_runtime_context_and_rejects_pm_context_fields(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    main.mkdir()
+    store = object()
+    seen: dict[str, object] = {"calls": 0}
+
+    class FakeWorktreeManager:
+        def create(self, context, **kwargs):
+            seen["calls"] = int(seen["calls"]) + 1
+            seen["context"] = context
+            seen["kwargs"] = kwargs
+            return {
+                "ok": True,
+                "decision": "create",
+                "created": not kwargs["dry_run"],
+                "main_workspace": str(main),
+                "repo_root": str(main),
+                "proposed_path": str(worktree_root / "s1-task"),
+                "proposed_branch": "foreman/s1/task",
+                "base_ref": "main",
+                "base_sha": "base",
+                "head_sha": "base",
+                "lease_id": "lease-1",
+                "requires_approval": False,
+                "risks": [],
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+            worktree_branch_prefix="foreman/",
+            default_base_ref="main",
+            allow_custom_worktree_path=True,
+        )
+    )
+
+    result = await rt.call(
+        ToolCall(
+            "create",
+            "worktree_create",
+            {
+                "goal": "Build task",
+                "slug": "task",
+                "base_ref": "main",
+                "reuse_policy": "reuse_clean_owned",
+                "custom_path": str(worktree_root / "s1-task"),
+                "dry_run": False,
+            },
+        )
+    )
+    invalid = await rt.call(
+        ToolCall("bad", "worktree_create", {"goal": "x", "task_id": "other"})
+    )
+
+    assert result.ok is True
+    assert result.data["created"] is True
+    assert invalid.ok is False
+    assert invalid.error == "invalid_args"
+    assert seen["calls"] == 1
+    context = seen["context"]
+    assert context["store"] is store
+    assert context["session_id"] == "s1"
+    assert context["task_id"] == "t1"
+    assert context["allow_custom_worktree_path"] is True
+    assert seen["kwargs"] == {
+        "goal": "Build task",
+        "slug": "task",
+        "base_ref": "main",
+        "reuse_policy": "reuse_clean_owned",
+        "custom_path": str(worktree_root / "s1-task"),
+        "dry_run": False,
     }
 
 
