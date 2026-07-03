@@ -183,9 +183,13 @@ PM Agent 用法：
   "base_sha": "abc...",
   "head_sha": "abc...",
   "session_bound": true,
+  "workspace_switched": true,
+  "workspace": "/repo/.foreman/worktrees/abc123-add-login",
   "lease_id": "lease-xyz"
 }
 ```
+
+`bind_session=true` 的语义必须是：创建成功并通过验证后，立即走 `worktree_bind_session` 同一套校验与写库路径，把该 session 的 effective `workspace` 切到新 worktree。也就是说，后续 `submit_plan`、coding agent cwd、PM review 的默认 workspace 都应该是这个 worktree，而不是 `main_workspace`。如果 `bind_session=false`，`worktree_create` 只分配 worktree/lease，不切换 session workspace。
 
 实现上不要通过通用 shell tool 暴露，而是由 WorktreeManager 内部执行：
 
@@ -226,9 +230,12 @@ git -C <main_workspace> worktree add -b <branch> <path> <base_ref>
   "bound": true,
   "session_id": "abc123",
   "main_workspace": "/repo/app",
-  "workspace": "/repo/.foreman/worktrees/abc123-add-login"
+  "workspace": "/repo/.foreman/worktrees/abc123-add-login",
+  "previous_workspace": "/repo/app"
 }
 ```
+
+这个 tool 是切换 effective workspace 的唯一权威入口：它必须更新 `session.workspace`，保留 `session.main_workspace` 作为原始 checkout/fallback，并让本 session 之后的 PM tools、`submit_plan(workspace=...)`、coding agent 启动 cwd 都默认指向绑定后的 worktree。不能只返回一个推荐路径，也不能只让 PM 在自然语言计划里记住它。
 
 这个能力现在已经被 final plan 间接触发了；我建议把它显式 tool 化。这样 PM Agent 的 planning transcript 会更清楚：它不是“神秘地把 workspace 写进 plan”，而是先经过验证、绑定、再 submit plan。#190 现在的验收项也正好覆盖了 session workspace 更新、agent 从 worktree cwd 运行、拒绝任意 cwd 等行为。([GitHub][5])
 
@@ -365,6 +372,8 @@ worktree_list
 worktree_plan
   ↓
 worktree_create(bind_session=true)
+  ↓
+session.workspace = created_worktree
   ↓
 worktree_status
   ↓
@@ -526,6 +535,7 @@ When a coding task may modify files, prefer an isolated worktree.
 Before selecting a workspace, call worktree_list or worktree_plan.
 Never use run_command to create/remove/switch worktrees unless the dedicated worktree tool is unavailable.
 Never bind a session to an arbitrary path.
+After worktree_create(bind_session=true) or worktree_bind_session succeeds, treat the bound worktree as the session workspace for all later PM tools, submit_plan, and coding agent cwd.
 Do not remove dirty or unmerged worktrees without explicit approval.
 Do not push, merge, deploy, or delete branches unless the user explicitly approved it.
 Before final review, inspect worktree_status and worktree_diff.
