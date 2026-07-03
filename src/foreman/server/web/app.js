@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.5.1",
+      en: "Desktop session views now force-scroll to the bottom after a user sends or queues a message, including current-session timeline reloads, while background agent streaming still respects manual scrolling away from the bottom.",
+      zh: "PC 端会话页现在会在用户发送或排队消息后强制滚动到底部，包括当前会话 timeline 重新灌入的场景；后台 agent 持续输出仍会尊重用户手动上翻阅读旧消息。",
+    },
+    {
       version: "v1.5.0",
       en: "PM agent attempts now receive backend-generated attempt_id values across launch, resume, streamed output, stops, and errors, so repeated same-handle subagent runs render as distinct UI cards; PM plan, review, and recovery share the same tool runtime surface.",
       zh: "PM agent 每次 launch/resume 都会获得后端生成的 attempt_id，并贯穿输入、流式输出、stop/error，UI 不再把同 handle 的多次尝试合并；PM plan、review、recover 共用同一套工具上下文。",
@@ -1708,11 +1713,13 @@
   function Workspace(props) {
     const { d, lang, dig, sessionRow, events, autonomy, openCalls, toggleCall, expandedSub, toggleSub,
       rightTab, setRightTab, onCard, onApproval, openDetail, composer, runCompact, compacting, compactStatus, onBriefing,
-      cards, approvals, onCancelSession, onRetrySession, onDeleteSession, onRenameSession, topControls, onCopy } = props;
+      cards, approvals, onCancelSession, onRetrySession, onDeleteSession, onRenameSession, topControls, onCopy, forceScrollToken = 0 } = props;
     const threadNodes = threadExtras(dig, cards, approvals, sessionRow);
     const threadRef = useRef(null);
     const stickToBottomRef = useRef(true);
     const lastSessionIdRef = useRef(sessionRow && sessionRow.id);
+    const lastForceScrollTokenRef = useRef(forceScrollToken);
+    const pendingForceScrollRef = useRef(false);
     const lastThreadNodeId = threadNodes.length ? threadNodes[threadNodes.length - 1].id : "";
     const agentType = displayAgent(sessionRow && sessionRow.agent_type, d);
     const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
@@ -1731,18 +1738,34 @@
     const failReason = terminalFail ? lastFailureReason(events, d) : "";
     const onBars = Math.max(0, Math.min(4, autonomy + 1));
     const autonomyName = d[`auto${autonomy}`] || `L${autonomy}`;
-    useEffect(() => {
+    function scrollThreadToBottom() {
       const el = threadRef.current;
       if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    }
+    useEffect(() => {
       const sid = sessionRow && sessionRow.id;
       const switchedSession = lastSessionIdRef.current !== sid;
+      const forceChanged = lastForceScrollTokenRef.current !== forceScrollToken;
       if (switchedSession) {
         lastSessionIdRef.current = sid;
         stickToBottomRef.current = true;
       }
-      if (!stickToBottomRef.current && !switchedSession) return;
-      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
-    }, [sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId]);
+      if (forceChanged) {
+        lastForceScrollTokenRef.current = forceScrollToken;
+        stickToBottomRef.current = true;
+        pendingForceScrollRef.current = true;
+      }
+      const shouldScroll = switchedSession || stickToBottomRef.current || pendingForceScrollRef.current;
+      if (!shouldScroll) return;
+      requestAnimationFrame(() => {
+        scrollThreadToBottom();
+        requestAnimationFrame(() => {
+          scrollThreadToBottom();
+          if (pendingForceScrollRef.current && threadNodes.length) pendingForceScrollRef.current = false;
+        });
+      });
+    }, [sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId, forceScrollToken]);
     function onThreadScroll() {
       const el = threadRef.current;
       if (!el) return;
@@ -2696,6 +2719,7 @@
     const [sessions, setSessions] = useState([]);
     const [selectedSession, setSelectedSession] = useState("");
     const [events, setEvents] = useState([]);
+    const [threadScrollToken, setThreadScrollToken] = useState(0);
     const [cards, setCards] = useState([]);
     const [approvals, setApprovals] = useState([]);
     const [reports, setReports] = useState([]);
@@ -2743,6 +2767,9 @@
     const [renamingSession, setRenamingSession] = useState(false);
     const [openCalls, setOpenCalls] = useState({});
     const [expandedSub, setExpandedSub] = useState(null);
+    const forceThreadScroll = useCallback(() => {
+      setThreadScrollToken((n) => n + 1);
+    }, []);
     const [toasts, setToasts] = useState([]);
     const accountWsRef = useRef(null);
     const wsRef = useRef(null);
@@ -3204,6 +3231,7 @@
       if (teamMode && !selectedProcessId) { setDispatchStatus(d.remoteProcessRequired); return; }
       const target = effectiveSessionWorkspace(sessionRow, workspace);
       if (!target) { setDispatchStatus(d.dispatchNoWorkspace); setView("settings"); return; }
+      forceThreadScroll();
       setDispatching(true);
       const body = { goal, workspace: target, source: clientSource(), effort };
       if (sessionRow) {
@@ -3219,7 +3247,10 @@
         setDispatchStatus("");
         if (teamMode) await loadRemoteSnapshot(selectedProcessId);
         else await loadSessions();
-        if (res.session_id) openTimeline(res.session_id);
+        if (res.session_id) {
+          forceThreadScroll();
+          openTimeline(res.session_id);
+        }
       } catch (e) { setDispatchStatus(`${d.dispatchFailed}: ${friendlyError(e, d)}`); }
       finally { setDispatching(false); }
     }
@@ -3610,7 +3641,7 @@
             cards=${openCards} approvals=${approvals} onCancelSession=${cancelSession} onDeleteSession=${deleteSession}
             onRetrySession=${retrySession} onRenameSession=${openRenameSession} onCopy=${onCopy}
             timelineHelpers=${mainProps.timelineHelpers}
-            topControls=${mainProps.topControls} />`
+            topControls=${mainProps.topControls} forceScrollToken=${threadScrollToken} />`
           : html`<div className="main">
               <div className="page-head">
                 <div><h2>${d[`nav${view.charAt(0).toUpperCase()}${view.slice(1)}`] || d.navWorkspace}</h2><div className="sub">${d[`${view}Subtitle`] || ""}</div></div>
