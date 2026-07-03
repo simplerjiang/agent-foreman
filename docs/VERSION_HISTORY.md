@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.7
+
+English:
+
+- PM subagent runs now wait for real CLI completion across Codex, Claude, and Copilot instead of assuming every CLI emits the same terminal `result` event.
+- Codex JSONL runs that finish with `turn.completed` but no `result` now synthesize a final `stop` from the latest assistant reply after the process exits.
+- Runner stream events now carry Foreman's task ID, and the web UI falls back to the subagent handle for historical events so separate Codex/Copilot/Claude runs render as separate cards.
+
+中文：
+
+- PM 子 agent 运行现在兼容 Codex、Claude、Copilot 的真实 CLI 完成事件，不再假设每个 CLI 都会发同一种终态 `result`。
+- Codex JSONL 只有 `turn.completed` 没有 `result` 时，会在进程退出后用最新 assistant 回复合成最终 `stop`。
+- Runner 流式事件现在会带上 Foreman 的 task ID；历史事件没有 task ID 时，Web UI 会按子 agent handle 兜底分卡，让多次 Codex/Copilot/Claude 运行分开显示。
+
 ## v1.4.6
 
 English:
