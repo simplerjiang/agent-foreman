@@ -51,6 +51,40 @@ def _commit(path: Path, filename: str, text: str, message: str) -> str:
     return _git(path, "rev-parse", "HEAD")
 
 
+def _lease_context(
+    store: Store,
+    *,
+    repo: Path,
+    worktree: Path,
+    base_sha: str,
+    branch: str = "feature",
+) -> dict:
+    store.add_session(Session(id="s1", goal="goal", workspace=str(worktree), main_workspace=str(repo)))
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="lease-1",
+            repo_root=str(repo),
+            main_workspace=str(repo),
+            worktree_path=str(worktree),
+            branch=branch,
+            base_ref="main",
+            base_sha=base_sha,
+            head_sha=base_sha,
+            session_id="s1",
+            task_id="t1",
+            status="active",
+        )
+    )
+    return {
+        "store": store,
+        "session_id": "s1",
+        "task_id": "t1",
+        "workspace": str(worktree),
+        "main_workspace": str(repo),
+        "worktree_roots": [str(worktree.parent)],
+    }
+
+
 def test_list_reports_main_locked_and_deleted_real_worktrees(tmp_path: Path):
     repo = _repo(tmp_path)
     locked = tmp_path / "locked"
@@ -98,6 +132,78 @@ def test_status_reports_clean_dirty_and_ahead_behind(tmp_path: Path):
     assert dirty["changed_files"] == ["feature.txt"]
     assert dirty["ahead"] == 1
     assert dirty["behind"] == 1
+
+
+def test_diff_reports_clean_worktree_against_lease_base_sha(tmp_path: Path):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    context = _lease_context(_store(tmp_path), repo=repo, worktree=worktree, base_sha=base_sha)
+
+    result = WorktreeManager().diff(context)
+
+    assert result["ok"] is True
+    assert result["clean"] is True
+    assert result["changed_files"] == []
+    assert result["base_sha"] == base_sha
+    assert result["compare_to"] == base_sha
+    assert result["base_ref"] == "main"
+    assert result["patch_artifact"] == ""
+
+
+def test_diff_reports_untracked_deleted_renamed_and_stable_base_sha(tmp_path: Path):
+    repo = _repo(tmp_path)
+    (repo / "rename_me.txt").write_text("rename\n", encoding="utf-8")
+    _git(repo, "add", "rename_me.txt")
+    _git(repo, "commit", "-m", "add rename base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    context = _lease_context(_store(tmp_path), repo=repo, worktree=worktree, base_sha=base_sha)
+
+    _git(worktree, "mv", "rename_me.txt", "renamed.txt")
+    (worktree / "file.txt").unlink()
+    (worktree / "untracked.txt").write_text("new\nlines\n", encoding="utf-8")
+    _commit(repo, "main_moved.txt", "main moved\n", "advance main")
+
+    result = WorktreeManager().diff(context)
+
+    by_path = {row["path"]: row for row in result["changed_files"]}
+    assert result["clean"] is False
+    assert result["compare_to"] == base_sha
+    assert result["base_sha"] == base_sha
+    assert by_path["file.txt"]["status"] == "deleted"
+    assert by_path["renamed.txt"]["status"] == "renamed"
+    assert by_path["renamed.txt"]["old_path"] == "rename_me.txt"
+    assert by_path["untracked.txt"]["status"] == "untracked"
+    assert by_path["untracked.txt"]["additions"] == 2
+    assert result["files_changed"] == 3
+    artifact = Path(result["patch_artifact"]).resolve(strict=True)
+    assert (worktree / ".foreman" / "tool-logs").resolve(strict=False) in artifact.parents
+    assert all(not row["path"].startswith(".foreman/") for row in result["changed_files"])
+
+
+def test_diff_reports_binary_and_truncates_large_patch_artifact(tmp_path: Path):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    context = _lease_context(_store(tmp_path), repo=repo, worktree=worktree, base_sha=base_sha)
+    (worktree / "big.txt").write_text(
+        "\n".join(f"line {i}" for i in range(800)),
+        encoding="utf-8",
+    )
+    (worktree / "blob.bin").write_bytes(b"\0binary")
+
+    result = WorktreeManager().diff(context, max_patch_chars=500)
+
+    by_path = {row["path"]: row for row in result["changed_files"]}
+    assert by_path["blob.bin"]["binary"] is True
+    assert by_path["big.txt"]["additions"] == 800
+    assert result["patch_truncated"] is True
+    assert "worktree diff truncated" in result["patch"]
+    assert Path(result["patch_artifact"]).is_file()
 
 
 def test_status_accepts_directory_symlink_when_available(tmp_path: Path):

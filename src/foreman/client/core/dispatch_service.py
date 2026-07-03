@@ -1083,6 +1083,9 @@ class DispatchService:
                 rows,
                 reviewed_event_id,
             )
+            diff_evidence = self._worktree_diff_review_evidence(session_id, task_id, workspace)
+            if diff_evidence:
+                timeline = f"{timeline}\n\n{diff_evidence}" if timeline else diff_evidence
             review_cutoff_id = _last_event_id(rows)
             review_kwargs = {
                 "run_count": run_count,
@@ -1660,6 +1663,58 @@ class DispatchService:
         if _accepts_keyword(method, "worktree_manager"):
             kwargs["worktree_manager"] = self.worktree_manager
         return kwargs
+
+    def _worktree_diff_review_evidence(
+        self,
+        session_id: str,
+        task_id: str,
+        workspace: str,
+    ) -> str:
+        manager = self.worktree_manager
+        diff = getattr(manager, "diff", None)
+        if not callable(diff):
+            return ""
+        pm_tools = getattr(self.cfg, "pm_tools", None)
+        try:
+            data = diff(
+                {
+                    "store": self.store,
+                    "session_id": session_id,
+                    "task_id": task_id,
+                    "workspace": workspace,
+                    "main_workspace": self._main_workspace_for_session(session_id, workspace),
+                    "worktree_roots": list(getattr(pm_tools, "worktree_roots", []) or []),
+                },
+                max_patch_chars=0,
+                include_patch=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - PM review should receive the evidence failure
+            data = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        if not isinstance(data, dict):
+            return ""
+        if data.get("error") == "no_active_worktree_lease":
+            return ""
+        changed = data.get("changed_files") if isinstance(data.get("changed_files"), list) else []
+        summary = {
+            "source": "worktree_diff",
+            "ok": bool(data.get("ok", True)),
+            "clean": bool(data.get("clean", False)),
+            "error": str(data.get("error") or ""),
+            "base_ref": str(data.get("base_ref") or ""),
+            "base_sha": str(data.get("base_sha") or ""),
+            "compare_to": str(data.get("compare_to") or data.get("base_sha") or ""),
+            "head_sha": str(data.get("head_sha") or ""),
+            "branch": str(data.get("branch") or ""),
+            "lease_id": str(data.get("lease_id") or ""),
+            "lease_status": str(data.get("lease_status") or ""),
+            "files_changed": int(data.get("files_changed") or len(changed)),
+            "additions": int(data.get("additions") or 0),
+            "deletions": int(data.get("deletions") or 0),
+            "patch_truncated": bool(data.get("patch_truncated", False)),
+            "patch_artifact": str(data.get("patch_artifact") or ""),
+            "changed_files": changed[:80],
+        }
+        return "# Worktree diff evidence\n" + json.dumps(summary, ensure_ascii=False)
 
     def _main_workspace_for_session(self, session_id: str, fallback: str) -> str:
         if self.store is not None and hasattr(self.store, "get_session"):

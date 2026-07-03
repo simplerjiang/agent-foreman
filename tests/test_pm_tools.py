@@ -76,24 +76,28 @@ def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fi
     create_spec = by_name["worktree_create"]
     list_spec = by_name["worktree_list"]
     status_spec = by_name["worktree_status"]
+    diff_spec = by_name["worktree_diff"]
 
     assert plan_spec.risk == "safe"
     assert create_spec.risk == "needs-strategy"
     assert list_spec.risk == "safe"
     assert status_spec.risk == "safe"
+    assert diff_spec.risk == "safe"
     assert plan_spec.input_schema["additionalProperties"] is False
     assert create_spec.input_schema["additionalProperties"] is False
     assert list_spec.input_schema["additionalProperties"] is False
     assert status_spec.input_schema["additionalProperties"] is False
+    assert diff_spec.input_schema["additionalProperties"] is False
     assert "custom_path" in plan_spec.input_schema["properties"]
     assert "custom_path" in create_spec.input_schema["properties"]
     assert "dry_run" in create_spec.input_schema["properties"]
     assert "bind_session" in create_spec.input_schema["properties"]
-    for spec in (plan_spec, create_spec, list_spec, status_spec):
+    for spec in (plan_spec, create_spec, list_spec, status_spec, diff_spec):
         assert "session_id" not in spec.input_schema["properties"]
         assert "task_id" not in spec.input_schema["properties"]
         assert "path" not in spec.input_schema["properties"] or spec.name == "worktree_status"
         assert "worktree_path" not in spec.input_schema["properties"]
+        assert "base_sha" not in spec.input_schema["properties"]
 
 
 async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
@@ -103,6 +107,7 @@ async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
         ToolCall("bind", "worktree_bind_session", {"lease_id": "lease-1"}),
         ToolCall("list", "worktree_list", {}),
         ToolCall("status", "worktree_status", {}),
+        ToolCall("diff", "worktree_diff", {}),
     ]
 
     for call in cases:
@@ -584,6 +589,66 @@ async def test_worktree_status_rejects_arbitrary_path_before_manager_call(tmp_pa
 
     assert result.ok is False
     assert result.error == "path_outside_workspace"
+
+
+async def test_worktree_diff_injects_runtime_context_and_rejects_pm_context_fields(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+    patch = main / ".foreman" / "tool-logs" / "diff.patch"
+
+    class FakeWorktreeManager:
+        def __init__(self):
+            self.contexts: list[dict] = []
+
+        def diff(self, context, *, max_patch_chars: int = 0, include_patch: bool = True):
+            self.contexts.append(context)
+            patch.parent.mkdir(parents=True, exist_ok=True)
+            patch.write_text("diff", encoding="utf-8")
+            return {
+                "ok": True,
+                "clean": False,
+                "base_sha": "base",
+                "base_ref": "main",
+                "compare_to": "base",
+                "changed_files": [{"path": "a.txt", "status": "modified"}],
+                "files_changed": 1,
+                "additions": 1,
+                "deletions": 0,
+                "patch_artifact": str(patch),
+                "artifact_paths": [str(patch)],
+                "patch_truncated": False,
+                "max_patch_chars": max_patch_chars,
+                "include_patch": include_patch,
+            }
+
+    manager = FakeWorktreeManager()
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=SimpleNamespace(),
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=manager,
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+            max_chars=123,
+        )
+    )
+
+    result = await rt.call(ToolCall("diff", "worktree_diff", {}))
+    rejected = await rt.call(ToolCall("bad", "worktree_diff", {"path": str(main)}))
+    rejected_base = await rt.call(ToolCall("bad-base", "worktree_diff", {"base_sha": "other"}))
+
+    assert result.ok is True
+    assert result.data["compare_to"] == "base"
+    assert result.artifact_paths == [str(patch)]
+    assert manager.contexts[0]["session_id"] == "s1"
+    assert manager.contexts[0]["task_id"] == "t1"
+    assert manager.contexts[0]["main_workspace"] == str(main)
+    assert rejected.ok is False and rejected.error == "invalid_args"
+    assert rejected_base.ok is False and rejected_base.error == "invalid_args"
 
 
 async def test_worktree_status_uses_existing_tool_events(tmp_path: Path):

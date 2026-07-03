@@ -351,6 +351,20 @@ class PMToolRuntime:
                 SAFE,
             ),
             ToolSpec(
+                "worktree_diff",
+                "Show the current session worktree diff against its WorktreeLease.base_sha. "
+                "The current session_id/task_id are injected by the runtime.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "max_patch_chars": integer,
+                        "include_patch": boolean,
+                    },
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
                 "work_mode_search",
                 "Search applicable work-mode definitions (skills / code standards / QA rubrics) "
                 "for this task. Returns lightweight index entries (name + description), NOT full "
@@ -467,6 +481,8 @@ class PMToolRuntime:
                 return await self._worktree_list(call.id, args)
             if call.name == "worktree_status":
                 return await self._worktree_status(call.id, args)
+            if call.name == "worktree_diff":
+                return await self._worktree_diff(call.id, args)
             if call.name.startswith("browser_"):
                 return await self._browser_call(ToolCall(call.id, call.name, args))
             if call.name == "work_mode_search":
@@ -738,6 +754,42 @@ class PMToolRuntime:
             )
         lease = self._lease_for_path(data.get("resolved_path") or path)
         return ToolResult(cid, "worktree_status", True, {**data, **self._lease_fields(lease)})
+
+    async def _worktree_diff(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_diff", False, error="tool_disabled")
+        forbidden = {"session_id", "task_id", "path", "worktree_path", "base_ref", "base_sha"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "worktree_diff", False, error="invalid_args")
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_diff", False, error=error)
+        diff = getattr(manager, "diff", None)
+        if not callable(diff):
+            return ToolResult(cid, "worktree_diff", False, error="worktree_manager_unavailable")
+        data = await _maybe_await(
+            diff(
+                self.worktree_context(),
+                max_patch_chars=_positive_int(args.get("max_patch_chars"), self.cfg.max_chars),
+                include_patch=args.get("include_patch", True) is not False,
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(cid, "worktree_diff", False, error="invalid_worktree_result")
+        if not data.get("ok", True):
+            return ToolResult(
+                cid,
+                "worktree_diff",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_diff_failed"),
+            )
+        artifacts = [
+            str(path)
+            for path in (data.get("artifact_paths") or [data.get("patch_artifact")])
+            if str(path or "").strip()
+        ]
+        return ToolResult(cid, "worktree_diff", True, data, artifact_paths=artifacts)
 
     def bind_workspace(self, workspace: str | Path, *, main_workspace: object = None) -> None:
         resolved = self.worktree_guard.resolve(str(workspace))

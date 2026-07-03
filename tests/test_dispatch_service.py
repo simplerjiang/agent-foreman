@@ -2354,6 +2354,53 @@ async def test_existing_session_rejects_missing_recorded_worktree_outside_allowl
     assert follow["error"] == "workspace_not_allowed"
 
 
+def test_pm_review_diff_evidence_uses_worktree_manager_summary(tmp_path):
+    store = _store(tmp_path)
+    main = tmp_path / "main"
+    worktree = tmp_path / "pm-worktree"
+    main.mkdir()
+    worktree.mkdir()
+    store.add_session(Session(id="s1", goal="g", workspace=str(worktree), main_workspace=str(main)))
+
+    class FakeWorktreeManager:
+        def __init__(self):
+            self.context = None
+
+        def diff(self, context, *, max_patch_chars: int = 0, include_patch: bool = False):
+            self.context = context
+            return {
+                "ok": True,
+                "clean": False,
+                "base_ref": "main",
+                "base_sha": "base123",
+                "compare_to": "base123",
+                "head_sha": "head456",
+                "branch": "foreman/s1/t9",
+                "lease_id": "lease-1",
+                "lease_status": "active",
+                "files_changed": 1,
+                "additions": 2,
+                "deletions": 1,
+                "patch_truncated": True,
+                "patch_artifact": str(worktree / ".foreman" / "tool-logs" / "diff.patch"),
+                "changed_files": [{"path": "a.txt", "status": "modified"}],
+            }
+
+    manager = FakeWorktreeManager()
+    svc = DispatchService(_cfg(workspaces=[WorkspaceCfg(path=str(main))]), store, worktree_manager=manager)
+
+    evidence = svc._worktree_diff_review_evidence("s1", "t1", str(worktree))
+
+    assert "# Worktree diff evidence" in evidence
+    assert '"source": "worktree_diff"' in evidence
+    assert '"compare_to": "base123"' in evidence
+    assert '"patch_truncated": true' in evidence
+    assert '"path": "a.txt"' in evidence
+    assert manager.context["session_id"] == "s1"
+    assert manager.context["task_id"] == "t1"
+    assert manager.context["main_workspace"] == str(main)
+
+
 async def test_explicit_workspace_rejected_when_no_allowlist(tmp_path):
     # No workspaces configured → fail closed: an explicit path is rejected, not run in an arbitrary
     # cwd (issue #1 P2). Previously this failed open and accepted the path as-is.

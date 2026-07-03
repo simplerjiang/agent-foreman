@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -361,6 +362,104 @@ class WorktreeManager:
             "head_sha": head["stdout"].strip(),
         }
 
+    def diff(
+        self,
+        context: dict[str, Any],
+        *,
+        max_patch_chars: int = 20000,
+        include_patch: bool = True,
+    ) -> dict[str, Any]:
+        session_id = str(context.get("session_id") or "").strip()
+        store = context.get("store")
+        lease = _active_lease_for_session(store, session_id)
+        if lease is None:
+            return _clean_diff_result(error="no_active_worktree_lease")
+        if str(getattr(lease, "status", "") or "") != "active":
+            return _clean_diff_result(lease=lease, error="lease_not_active")
+        worktree = _normalize_path(getattr(lease, "worktree_path", "") or "")
+        main_workspace = _normalize_path(
+            getattr(lease, "main_workspace", "")
+            or context.get("main_workspace")
+            or context.get("workspace")
+            or "."
+        )
+        root_error = _path_root_error(
+            worktree,
+            _worktree_roots(main_workspace, context.get("worktree_roots")),
+        )
+        if root_error:
+            return _error(root_error, path=worktree)
+        if not worktree.exists() or not worktree.is_dir():
+            return _error("missing_path", path=worktree)
+        listed = self.list(main_workspace)
+        if not listed.get("ok"):
+            return _error(
+                str(listed.get("error") or "worktree_list_failed"),
+                path=main_workspace,
+                detail=str(listed.get("detail") or ""),
+            )
+        rows = [row for row in listed.get("worktrees", []) if isinstance(row, dict)]
+        registered = _find_worktree(rows, worktree, str(getattr(lease, "branch", "") or ""))
+        if registered is None:
+            return _error("worktree_not_registered", path=worktree)
+        base_sha = str(getattr(lease, "base_sha", "") or "").strip()
+        if not base_sha:
+            return _error("missing_base_sha", path=worktree)
+        base = self._git(worktree, "rev-parse", "--verify", f"{base_sha}^{{commit}}")
+        if not base["ok"]:
+            return _error("base_sha_not_found", path=worktree, detail=base["stderr"])
+        head = self._git(worktree, "rev-parse", "HEAD")
+        if not head["ok"]:
+            return _error("head_not_found", path=worktree, detail=head["stderr"])
+        name_status = self._git(worktree, "diff", "--name-status", "-M", base_sha, "--")
+        if not name_status["ok"]:
+            return _error("git_diff_failed", path=worktree, detail=name_status["stderr"])
+        numstat = self._git(worktree, "diff", "--numstat", "-M", base_sha, "--")
+        if not numstat["ok"]:
+            return _error("git_diff_failed", path=worktree, detail=numstat["stderr"])
+        patch_data = self._git(worktree, "diff", "--binary", "-M", base_sha, "--")
+        if not patch_data["ok"]:
+            return _error("git_diff_failed", path=worktree, detail=patch_data["stderr"])
+
+        files = _parse_diff_files(name_status["stdout"], numstat["stdout"])
+        patch = patch_data["stdout"]
+        for rel_path in _untracked_paths(self, worktree):
+            if _skip_artifact_path(rel_path):
+                continue
+            entry, entry_patch = _untracked_diff_entry(worktree, rel_path)
+            files.append(entry)
+            patch += entry_patch
+
+        additions = sum(int(item.get("additions") or 0) for item in files)
+        deletions = sum(int(item.get("deletions") or 0) for item in files)
+        patch_artifact = ""
+        artifact_paths: list[str] = []
+        if files and include_patch and patch:
+            patch_artifact = _write_diff_artifact(worktree, patch)
+            artifact_paths.append(patch_artifact)
+        inline_patch, patch_truncated = _truncate_patch(patch if include_patch else "", max_patch_chars)
+        return {
+            "ok": True,
+            "clean": not files,
+            "path": str(worktree),
+            "resolved_path": str(worktree.resolve(strict=False)),
+            "base_ref": str(getattr(lease, "base_ref", "") or ""),
+            "base_sha": base_sha,
+            "compare_to": base_sha,
+            "head_sha": head["stdout"].strip(),
+            "branch": str(getattr(lease, "branch", "") or registered.get("branch") or ""),
+            "lease_id": str(getattr(lease, "id", "") or ""),
+            "lease_status": str(getattr(lease, "status", "") or ""),
+            "changed_files": files,
+            "files_changed": len(files),
+            "additions": additions,
+            "deletions": deletions,
+            "patch": inline_patch,
+            "patch_truncated": patch_truncated,
+            "patch_artifact": patch_artifact,
+            "artifact_paths": artifact_paths,
+        }
+
     def _git(self, cwd: Path, *args: str) -> dict[str, Any]:
         env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
         try:
@@ -660,6 +759,28 @@ def _active_lease_for_path(store: Any, path: Path) -> Any | None:
     return None
 
 
+def _active_lease_for_session(store: Any, session_id: str) -> Any | None:
+    if store is None or not session_id:
+        return None
+    get_active = getattr(store, "get_active_worktree_lease", None)
+    if callable(get_active):
+        try:
+            return get_active(session_id=session_id)
+        except TypeError:
+            pass
+    get_many = getattr(store, "get_worktree_leases", None)
+    if not callable(get_many):
+        return None
+    try:
+        leases = get_many(session_id=session_id, status="active")
+    except TypeError:
+        leases = get_many(status="active")
+    for lease in leases or []:
+        if str(getattr(lease, "session_id", "") or "") == session_id:
+            return lease
+    return None
+
+
 def _lease_owned_by(lease: Any, session_id: str, task_id: str) -> bool:
     if lease is None:
         return False
@@ -667,6 +788,166 @@ def _lease_owned_by(lease: Any, session_id: str, task_id: str) -> bool:
         return False
     lease_task_id = str(getattr(lease, "task_id", "") or "")
     return not task_id or lease_task_id == task_id
+
+
+def _clean_diff_result(*, lease: Any = None, error: str = "") -> dict[str, Any]:
+    return {
+        "ok": True,
+        "clean": True,
+        "error": error,
+        "path": str(getattr(lease, "worktree_path", "") or ""),
+        "resolved_path": str(getattr(lease, "worktree_path", "") or ""),
+        "base_ref": str(getattr(lease, "base_ref", "") or ""),
+        "base_sha": str(getattr(lease, "base_sha", "") or ""),
+        "compare_to": str(getattr(lease, "base_sha", "") or ""),
+        "head_sha": str(getattr(lease, "head_sha", "") or ""),
+        "branch": str(getattr(lease, "branch", "") or ""),
+        "lease_id": str(getattr(lease, "id", "") or ""),
+        "lease_status": str(getattr(lease, "status", "") or ""),
+        "changed_files": [],
+        "files_changed": 0,
+        "additions": 0,
+        "deletions": 0,
+        "patch": "",
+        "patch_truncated": False,
+        "patch_artifact": "",
+        "artifact_paths": [],
+    }
+
+
+def _parse_diff_files(name_status: str, numstat: str) -> list[dict[str, Any]]:
+    nums = _parse_numstat_rows(numstat)
+    files: list[dict[str, Any]] = []
+    for idx, line in enumerate(name_status.splitlines()):
+        fields = line.split("\t")
+        if len(fields) < 2:
+            continue
+        code = fields[0]
+        status = _diff_status(code)
+        old_path = ""
+        path = fields[-1].strip()
+        if code.startswith("R") and len(fields) >= 3:
+            old_path = fields[1].strip()
+            path = fields[2].strip()
+        additions, deletions, binary = nums[idx] if idx < len(nums) else (0, 0, False)
+        files.append(
+            {
+                "path": path,
+                "old_path": old_path,
+                "status": status,
+                "additions": additions,
+                "deletions": deletions,
+                "binary": binary,
+            }
+        )
+    return files
+
+
+def _parse_numstat_rows(raw: str) -> list[tuple[int, int, bool]]:
+    rows: list[tuple[int, int, bool]] = []
+    for line in raw.splitlines():
+        fields = line.split("\t")
+        if len(fields) < 3:
+            continue
+        binary = fields[0] == "-" or fields[1] == "-"
+        additions = 0 if binary else _safe_int(fields[0])
+        deletions = 0 if binary else _safe_int(fields[1])
+        rows.append((additions, deletions, binary))
+    return rows
+
+
+def _diff_status(code: str) -> str:
+    marker = (code or "")[:1]
+    return {
+        "A": "added",
+        "M": "modified",
+        "D": "deleted",
+        "R": "renamed",
+        "C": "copied",
+        "T": "type_changed",
+        "U": "unmerged",
+    }.get(marker, "modified")
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _untracked_paths(manager: WorktreeManager, worktree: Path) -> list[str]:
+    out = manager._git(worktree, "ls-files", "--others", "--exclude-standard")
+    if not out["ok"]:
+        return []
+    return [line.strip() for line in out["stdout"].splitlines() if line.strip()]
+
+
+def _skip_artifact_path(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/")
+    return normalized.startswith(".foreman/tool-logs/")
+
+
+def _untracked_diff_entry(worktree: Path, rel_path: str) -> tuple[dict[str, Any], str]:
+    target = worktree / rel_path
+    try:
+        raw = target.read_bytes()
+    except OSError:
+        raw = b""
+    binary = b"\0" in raw
+    text = ""
+    if not binary:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            binary = True
+    additions = 0 if binary or not text else len(text.splitlines())
+    entry = {
+        "path": rel_path,
+        "old_path": "",
+        "status": "untracked",
+        "additions": additions,
+        "deletions": 0,
+        "binary": binary,
+    }
+    if binary:
+        return entry, f"diff --git a/{rel_path} b/{rel_path}\nnew file mode 100644\nBinary files /dev/null and b/{rel_path} differ\n"
+    lines = text.splitlines()
+    patch_lines = [
+        f"diff --git a/{rel_path} b/{rel_path}",
+        "new file mode 100644",
+        "--- /dev/null",
+        f"+++ b/{rel_path}",
+        f"@@ -0,0 +1,{len(lines)} @@",
+    ]
+    patch_lines.extend(f"+{line}" for line in lines)
+    return entry, "\n".join(patch_lines) + "\n"
+
+
+def _truncate_patch(patch: str, max_chars: int) -> tuple[str, bool]:
+    if not patch:
+        return "", False
+    try:
+        limit = max(0, int(max_chars))
+    except (TypeError, ValueError):
+        limit = 0
+    if not limit or len(patch) <= limit:
+        return patch, False
+    marker = "\n...[worktree diff truncated; see patch_artifact for full patch]...\n"
+    head = max(200, (limit - len(marker)) // 2)
+    tail = max(200, limit - len(marker) - head)
+    return patch[:head].rstrip() + marker + patch[-tail:].lstrip(), True
+
+
+def _write_diff_artifact(worktree: Path, patch: str) -> str:
+    log_dir = (worktree / ".foreman" / "tool-logs").resolve(strict=False)
+    worktree_resolved = worktree.resolve(strict=False)
+    if not (log_dir == worktree_resolved or worktree_resolved in log_dir.parents):
+        raise ValueError("artifact_path_outside_worktree")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / f"worktree-diff-{uuid.uuid4().hex[:12]}.patch"
+    path.write_text(patch, encoding="utf-8", newline="")
+    return str(path)
 
 
 def _rollback_failed_create_path(worktree_path: Path, parent: Path, parent_existed: bool) -> None:
