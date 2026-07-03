@@ -4,6 +4,18 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.8
+
+English:
+
+- Subprocess terminal reconciliation now treats a non-zero OS process return code as authoritative when it conflicts with a CLI stop payload that reported success.
+- Terminal stop payloads now retain `cli_returncode`, `process_returncode`, `final_returncode`, and existing `returncode` diagnostics for clearer runtime debugging.
+
+中文：
+
+- subprocess 终态合并现在在 CLI stop payload 报成功但 OS process return code 非零时，以进程真实退出码作为权威失败结果。
+- terminal stop payload 现在保留 `cli_returncode`、`process_returncode`、`final_returncode` 和现有 `returncode` 诊断字段，便于排查 runtime 状态。
+
 ## v1.4.7
 
 English:

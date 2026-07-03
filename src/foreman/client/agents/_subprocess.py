@@ -377,7 +377,16 @@ def _finalize_stop_event(
     payload = dict(event.payload)
     explicit_status = str(payload.get("status") or "").strip().lower()
     cli_returncode = _event_returncode(payload)
-    final_returncode = cli_returncode if cli_returncode is not None else returncode
+    process_returncode = int(returncode)
+    if process_returncode:
+        final_returncode = process_returncode
+    elif cli_returncode is not None:
+        final_returncode = cli_returncode
+    else:
+        final_returncode = 0
+    payload["cli_returncode"] = cli_returncode
+    payload["process_returncode"] = process_returncode
+    payload["final_returncode"] = final_returncode
     if explicit_status in {"cancelled", "interrupted"}:
         payload["status"] = explicit_status
     elif final_returncode:

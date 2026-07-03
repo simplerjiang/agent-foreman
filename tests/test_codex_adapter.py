@@ -301,7 +301,33 @@ async def test_stream_stop_without_returncode_wait_nonzero_yields_single_failed_
     assert [e.type for e in events] == ["agent_start", "stop"]
     assert events[-1].payload["status"] == "failed"
     assert events[-1].payload["returncode"] == 2
+    assert events[-1].payload["cli_returncode"] is None
+    assert events[-1].payload["process_returncode"] == 2
+    assert events[-1].payload["final_returncode"] == 2
     assert "codex failed" in events[-1].payload["msg"]
+
+
+async def test_stream_stop_returncode_zero_wait_nonzero_prefers_process_failure(tmp_path):
+    a = fake_adapter(
+        CodexAdapter,
+        _cfg(),
+        FakeProc(
+            stdout_lines=[b'{"type":"result","result":"partial","returncode":0}\n'],
+            stderr_lines=[b"codex process failed\n"],
+            returncode=9,
+        ),
+    )
+    h = await a.start("x", tmp_path, "s")
+
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_start", "stop"]
+    assert events[-1].payload["status"] == "failed"
+    assert events[-1].payload["cli_returncode"] == 0
+    assert events[-1].payload["process_returncode"] == 9
+    assert events[-1].payload["final_returncode"] == 9
+    assert events[-1].payload["returncode"] == 9
+    assert "codex process failed" in events[-1].payload["msg"]
 
 
 async def test_stream_explicit_cancelled_stop_is_not_overwritten_by_wait_returncode(tmp_path):
@@ -320,6 +346,8 @@ async def test_stream_explicit_cancelled_stop_is_not_overwritten_by_wait_returnc
     assert [e.type for e in events] == ["agent_start", "stop"]
     assert events[-1].payload["status"] == "cancelled"
     assert events[-1].payload["returncode"] == 130
+    assert events[-1].payload["process_returncode"] == 130
+    assert events[-1].payload["final_returncode"] == 130
 
 
 async def test_send_refreshes_git_refs(tmp_path, monkeypatch):
