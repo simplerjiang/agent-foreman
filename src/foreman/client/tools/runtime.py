@@ -7,6 +7,7 @@ import html
 import inspect
 import json
 import os
+import re
 import signal
 import uuid
 from html.parser import HTMLParser
@@ -34,6 +35,23 @@ if TYPE_CHECKING:
     from .browser import BrowserRuntime
 
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "env", "node_modules", ".pytest_cache"}
+ENTRY_POINT_NAMES = {
+    "pyproject.toml",
+    "package.json",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "requirements.txt",
+    "setup.py",
+    "Cargo.toml",
+    "go.mod",
+    "README.md",
+    "AGENTS.md",
+    "src",
+    "app",
+    "server",
+}
+TEST_DIR_NAMES = {"tests", "test", "e2e", "__tests__", "spec"}
 ToolEventSink = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 
@@ -138,6 +156,7 @@ class PMToolRuntime:
         string = {"type": "string"}
         boolean = {"type": "boolean"}
         integer = {"type": "integer"}
+        string_array = {"type": "array", "items": string}
         return [
             ToolSpec(
                 "list_files",
@@ -167,6 +186,72 @@ class PMToolRuntime:
                     "type": "object",
                     "properties": {"query": string, "path": string, "max_results": integer},
                     "required": ["query"],
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "repo_map",
+                "Return a bounded structural map of the current workspace without reading file bodies.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "path": string,
+                        "max_files": integer,
+                        "max_depth": integer,
+                    },
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "impact_analysis",
+                "Heuristically identify candidate files, tests, and risks for a goal. "
+                "Results are non-deterministic suggestions only.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "goal": string,
+                        "changed_files": string_array,
+                        "max_candidates": integer,
+                    },
+                    "required": ["goal"],
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "event_query",
+                "Query the current session timeline with bounded, compact event payloads. "
+                "The session_id/task_id are injected by the runtime.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "types": string_array,
+                        "contains": string,
+                        "limit": integer,
+                    },
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "session_summary",
+                "Summarize current-session runtime facts, active agents, key tests, and recent events.",
+                {
+                    "type": "object",
+                    "properties": {"limit": integer},
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "artifact_read",
+                "Read a bounded text artifact from the current workspace tool-log artifacts only.",
+                {
+                    "type": "object",
+                    "properties": {"path": string, "max_chars": integer},
+                    "required": ["path"],
                     "additionalProperties": False,
                 },
                 SAFE,
@@ -549,6 +634,16 @@ class PMToolRuntime:
                 return self._read_file(call.id, args)
             if call.name == "search_repo":
                 return self._search_repo(call.id, args)
+            if call.name == "repo_map":
+                return self._repo_map(call.id, args)
+            if call.name == "impact_analysis":
+                return self._impact_analysis(call.id, args)
+            if call.name == "event_query":
+                return self._event_query(call.id, args)
+            if call.name == "session_summary":
+                return self._session_summary(call.id, args)
+            if call.name == "artifact_read":
+                return self._artifact_read(call.id, args)
             if call.name == "write_file":
                 return self._write_file(call.id, args)
             if call.name == "replace_in_file":
@@ -1216,6 +1311,29 @@ class PMToolRuntime:
             return (self.cfg.workspace / ".foreman" / "tool-logs").resolve(strict=False)
         return log_dir
 
+    def _artifact_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        for raw in (self.cfg.workspace, self.cfg.main_workspace or self.cfg.workspace):
+            try:
+                root = (Path(str(raw)).expanduser() / ".foreman" / "tool-logs").resolve(strict=False)
+            except (OSError, ValueError):
+                continue
+            if all(root != existing for existing in roots):
+                roots.append(root)
+        tool_log_dir = self._tool_log_dir()
+        if all(tool_log_dir != existing for existing in roots):
+            roots.append(tool_log_dir)
+        return roots
+
+    def _current_session_events(self) -> tuple[list[Any], str]:
+        if not self._session_id:
+            return [], "missing_session"
+        store = self.cfg.store
+        get_events = getattr(store, "get_events", None)
+        if store is None or not callable(get_events):
+            return [], "store_unavailable"
+        return list(get_events(self._session_id) or []), ""
+
     async def _run_test_process(self, command: str, *, timeout_s: int) -> dict[str, Any]:
         log_dir = self._tool_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -1471,6 +1589,159 @@ class PMToolRuntime:
             True,
             {"matches": matches},
             truncated=len(matches) >= max_results,
+        )
+
+    def _repo_map(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.file_read:
+            return ToolResult(cid, "repo_map", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "repo_map", False, error="invalid_args")
+        root = self.guard.resolve(str(args.get("path") or "."))
+        max_files = min(_positive_int(args.get("max_files"), 120), 500)
+        max_depth = min(_positive_int(args.get("max_depth"), 4), 10)
+        data = _bounded_repo_map(root, self.guard, max_files=max_files, max_depth=max_depth)
+        return ToolResult(cid, "repo_map", True, data, truncated=bool(data.get("truncated")))
+
+    def _impact_analysis(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.file_read:
+            return ToolResult(cid, "impact_analysis", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "workspace", "worktree_path", "path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "impact_analysis", False, error="invalid_args")
+        goal = str(args.get("goal") or "").strip()
+        if not goal:
+            return ToolResult(cid, "impact_analysis", False, error="missing_goal")
+        changed_files = [
+            str(item).strip()
+            for item in (args.get("changed_files") if isinstance(args.get("changed_files"), list) else [])
+            if str(item or "").strip()
+        ][:50]
+        max_candidates = min(_positive_int(args.get("max_candidates"), 12), 50)
+        root = self.guard.resolve(".")
+        data = _heuristic_impact_analysis(
+            root,
+            self.guard,
+            goal=goal,
+            changed_files=changed_files,
+            max_candidates=max_candidates,
+        )
+        return ToolResult(
+            cid,
+            "impact_analysis",
+            True,
+            data,
+            truncated=bool(data.get("scan_truncated") or data.get("candidate_truncated")),
+        )
+
+    def _event_query(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "event_query", False, error="invalid_args")
+        events, error = self._current_session_events()
+        if error:
+            return ToolResult(cid, "event_query", False, error=error)
+        requested_types = {
+            str(item).strip()
+            for item in (args.get("types") if isinstance(args.get("types"), list) else [])
+            if str(item or "").strip()
+        }
+        contains = str(args.get("contains") or "").strip().casefold()
+        limit = min(_positive_int(args.get("limit"), 20), 100)
+        filtered = []
+        for event in events:
+            payload = _event_payload(event)
+            haystack = (
+                f"{getattr(event, 'type', '')} {getattr(event, 'source', '')} "
+                f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
+            ).casefold()
+            if requested_types and str(getattr(event, "type", "")) not in requested_types:
+                continue
+            if contains and contains not in haystack:
+                continue
+            filtered.append(_event_row(event, payload))
+        truncated = len(filtered) > limit
+        return ToolResult(
+            cid,
+            "event_query",
+            True,
+            {
+                "session_id": self._session_id,
+                "events": filtered[-limit:],
+                "matched_count": len(filtered),
+                "limit": limit,
+            },
+            truncated=truncated,
+        )
+
+    def _session_summary(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "session_summary", False, error="invalid_args")
+        events, error = self._current_session_events()
+        if error:
+            return ToolResult(cid, "session_summary", False, error=error)
+        store = self.cfg.store
+        session = store.get_session(self._session_id) if hasattr(store, "get_session") else None
+        if session is None:
+            return ToolResult(cid, "session_summary", False, error="session_not_found")
+        limit = min(_positive_int(args.get("limit"), 8), 30)
+        runtime_state = _runtime_state_for_session(store, self._session_id)
+        return ToolResult(
+            cid,
+            "session_summary",
+            True,
+            {
+                "session_id": self._session_id,
+                "task_id": self._task_id,
+                "goal": str(getattr(session, "goal", "") or ""),
+                "status": str(getattr(session, "status", "") or ""),
+                "workspace": str(getattr(session, "workspace", "") or ""),
+                "main_workspace": str(getattr(session, "main_workspace", "") or ""),
+                "runtime_state": runtime_state,
+                "recent_events": [_event_row(event, _event_payload(event)) for event in events[-limit:]],
+                "event_count": len(events),
+            },
+        )
+
+    def _artifact_read(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.file_read:
+            return ToolResult(cid, "artifact_read", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "artifact_read", False, error="invalid_args")
+        raw = str(args.get("path") or "").strip()
+        if not raw:
+            return ToolResult(cid, "artifact_read", False, error="missing_path")
+        try:
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                candidate = self.cfg.workspace / candidate
+            path = candidate.resolve(strict=False)
+        except (OSError, ValueError):
+            return ToolResult(cid, "artifact_read", False, error="invalid_path")
+        roots = self._artifact_roots()
+        if not any(_is_relative_to(path, root) for root in roots):
+            return ToolResult(cid, "artifact_read", False, error="path_outside_artifacts")
+        if not path.is_file():
+            return ToolResult(cid, "artifact_read", False, error="not_file")
+        max_chars = min(_positive_int(args.get("max_chars"), self.cfg.max_chars), self.cfg.max_chars)
+        try:
+            text = _read_text(path)
+        except UnicodeDecodeError:
+            return ToolResult(cid, "artifact_read", False, error="binary_file")
+        text, truncated = _truncate(text, max_chars)
+        return ToolResult(
+            cid,
+            "artifact_read",
+            True,
+            {
+                "path": str(path),
+                "artifact_root": str(next(root for root in roots if _is_relative_to(path, root))),
+                "text": text,
+            },
+            truncated=truncated,
+            artifact_paths=[str(path)],
         )
 
     def _write_file(self, cid: str, args: dict[str, Any]) -> ToolResult:
@@ -1802,6 +2073,289 @@ class PMToolRuntime:
         parser = _DDGParser(max_results)
         parser.feed(response.text)
         return parser.results
+
+
+def _bounded_repo_map(root: Path, guard: PathGuard, *, max_files: int, max_depth: int) -> dict[str, Any]:
+    root = root.resolve(strict=False)
+    entry_points: list[str] = []
+    test_dirs: list[str] = []
+    directories: list[str] = []
+    files: list[str] = []
+    file_count = 0
+    dir_count = 0
+    truncated = False
+    scan_budget = min(max(max_files * 10, max_files + 50), 2000)
+
+    if root.is_file():
+        rel = guard.relative(root)
+        return {
+            "path": rel,
+            "root": str(root),
+            "max_files": max_files,
+            "max_depth": max_depth,
+            "file_count_scanned": 1,
+            "dir_count_scanned": 0,
+            "files": [rel],
+            "directories": [],
+            "entry_points": [rel] if _is_entry_point(root.name) else [],
+            "test_dirs": [],
+            "truncated": False,
+        }
+
+    stop = False
+    for current, raw_dirs, raw_names in os.walk(root):
+        current_path = Path(current)
+        current_depth = _path_depth(current_path, root)
+        dirs = sorted([name for name in raw_dirs if name not in SKIP_DIRS])
+        if current_depth >= max_depth:
+            dirs = []
+        raw_dirs[:] = dirs
+        for dirname in dirs:
+            dir_path = current_path / dirname
+            rel = guard.relative(dir_path)
+            dir_count += 1
+            if len(directories) < 120:
+                directories.append(rel)
+            if _is_entry_point(dirname):
+                _append_unique(entry_points, rel, limit=40)
+            if dirname.casefold() in TEST_DIR_NAMES:
+                _append_unique(test_dirs, rel, limit=40)
+        for name in sorted(raw_names):
+            if current_depth + 1 > max_depth:
+                continue
+            path = current_path / name
+            rel = guard.relative(path)
+            file_count += 1
+            if _is_entry_point(name):
+                _append_unique(entry_points, rel, limit=40)
+            if len(files) < max_files:
+                files.append(rel)
+            else:
+                truncated = True
+            if file_count >= scan_budget:
+                truncated = True
+                stop = True
+                break
+        if stop:
+            raw_dirs[:] = []
+            break
+
+    return {
+        "path": guard.relative(root),
+        "root": str(root),
+        "max_files": max_files,
+        "max_depth": max_depth,
+        "file_count_scanned": file_count,
+        "dir_count_scanned": dir_count,
+        "files": files,
+        "directories": directories,
+        "entry_points": entry_points,
+        "test_dirs": test_dirs,
+        "truncated": truncated,
+    }
+
+
+def _heuristic_impact_analysis(
+    root: Path,
+    guard: PathGuard,
+    *,
+    goal: str,
+    changed_files: list[str],
+    max_candidates: int,
+) -> dict[str, Any]:
+    paths, scan_truncated = _scan_repo_file_paths(root, guard, max_files=1200)
+    tokens = _impact_tokens(goal, changed_files)
+    changed_set = {item.replace("\\", "/") for item in changed_files}
+    candidates_by_path: dict[str, dict[str, Any]] = {}
+
+    for rel in paths:
+        rel_norm = rel.replace("\\", "/")
+        text = rel_norm.casefold()
+        matched = [token for token in tokens if token in text]
+        score = len(matched)
+        reasons: list[str] = []
+        if matched:
+            reasons.append("path_matches_goal_token")
+        if rel_norm in changed_set:
+            score += 5
+            reasons.append("provided_changed_file")
+        if score <= 0:
+            continue
+        candidates_by_path[rel_norm] = {
+            "path": rel_norm,
+            "score": score,
+            "matched_tokens": matched[:8],
+            "reason": ", ".join(reasons),
+        }
+
+    for rel in changed_set:
+        candidates_by_path.setdefault(
+            rel,
+            {
+                "path": rel,
+                "score": 5,
+                "matched_tokens": [],
+                "reason": "provided_changed_file",
+            },
+        )
+
+    candidates = sorted(
+        candidates_by_path.values(),
+        key=lambda item: (-int(item.get("score", 0)), str(item.get("path", ""))),
+    )
+    candidate_truncated = len(candidates) > max_candidates
+    candidates = candidates[:max_candidates]
+    risks = ["heuristic_only"]
+    if scan_truncated or candidate_truncated:
+        risks.append("candidate_files_not_exhaustive")
+    return {
+        "goal": goal,
+        "deterministic": False,
+        "confidence": "heuristic",
+        "claim": "candidate_files_and_tests_are_suggestions_not_proof",
+        "tokens": tokens[:20],
+        "candidate_files": candidates,
+        "test_suggestions": _test_suggestions(paths, [str(item["path"]) for item in candidates]),
+        "risks": risks,
+        "scanned_files": len(paths),
+        "scan_truncated": scan_truncated,
+        "candidate_truncated": candidate_truncated,
+    }
+
+
+def _scan_repo_file_paths(root: Path, guard: PathGuard, *, max_files: int) -> tuple[list[str], bool]:
+    paths: list[str] = []
+    truncated = False
+    for current, dirs, names in os.walk(root):
+        dirs[:] = sorted([name for name in dirs if name not in SKIP_DIRS])
+        for name in sorted(names):
+            paths.append(guard.relative(Path(current) / name).replace("\\", "/"))
+            if len(paths) >= max_files:
+                truncated = True
+                dirs[:] = []
+                return paths, truncated
+    return paths, truncated
+
+
+def _impact_tokens(goal: str, changed_files: list[str]) -> list[str]:
+    stop = {
+        "the", "and", "for", "with", "from", "into", "that", "this", "should", "need",
+        "needs", "fix", "add", "update", "change", "implement", "测试", "修复", "实现",
+    }
+    raw = re.findall(r"[A-Za-z0-9_]{3,}", goal.casefold())
+    for path in changed_files:
+        raw.extend(re.findall(r"[A-Za-z0-9_]{3,}", Path(path).stem.casefold()))
+    tokens: list[str] = []
+    for token in raw:
+        if token in stop or token in tokens:
+            continue
+        tokens.append(token)
+    return tokens[:40]
+
+
+def _test_suggestions(paths: list[str], candidate_paths: list[str]) -> list[str]:
+    suggestions: list[str] = []
+    path_set = {path.replace("\\", "/") for path in paths}
+    has_pytest = any(path.startswith("tests/") or "/tests/" in path for path in path_set)
+    has_package_json = "package.json" in path_set
+
+    for candidate in candidate_paths[:8]:
+        candidate = candidate.replace("\\", "/")
+        if candidate.startswith("tests/") or "/tests/" in candidate:
+            _append_unique(suggestions, f"pytest {candidate}", limit=10)
+            continue
+        stem = Path(candidate).stem
+        for test_path in sorted(path_set):
+            test_name = Path(test_path).stem
+            if test_path.startswith("tests/") and stem and stem in test_name:
+                _append_unique(suggestions, f"pytest {test_path}", limit=10)
+    if has_pytest:
+        _append_unique(suggestions, "pytest tests", limit=10)
+    if has_package_json:
+        _append_unique(suggestions, "npm test", limit=10)
+    if not suggestions:
+        suggestions.append("run the smallest relevant test command for the candidate files")
+    return suggestions
+
+
+def _runtime_state_for_session(store: Any, session_id: str) -> dict[str, Any]:
+    try:
+        from foreman.client.core.context_v2 import extract_runtime_state, materialize_event, runtime_state_dict
+
+        session = store.get_session(session_id) if hasattr(store, "get_session") else None
+        if session is None:
+            return {}
+        events = store.get_events(session_id) if hasattr(store, "get_events") else []
+        frames = []
+        for event in events:
+            frames.extend(materialize_event(event))
+        return _compact_tool_payload(runtime_state_dict(extract_runtime_state(session, frames)))
+    except Exception:
+        return {}
+
+
+def _event_payload(event: Any) -> dict[str, Any]:
+    try:
+        raw = json.loads(str(getattr(event, "payload_json", "") or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _event_row(event: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_tool_payload(payload, max_text=600)
+    return {
+        "id": str(getattr(event, "id", "") or ""),
+        "ts": str(getattr(event, "ts", "") or ""),
+        "type": str(getattr(event, "type", "") or ""),
+        "source": str(getattr(event, "source", "") or ""),
+        "task_id": str(getattr(event, "task_id", "") or ""),
+        "payload": compact,
+        "payload_summary": json.dumps(compact, ensure_ascii=False, sort_keys=True)[:800],
+    }
+
+
+def _compact_tool_payload(value: Any, *, max_text: int = 800) -> Any:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"stdout", "stderr", "output", "aggregated_output"} and isinstance(item, str):
+                out[f"{key}_summary"] = _truncate(item, max_text)[0]
+                out[f"{key}_truncated"] = len(item) > max_text
+                continue
+            out[str(key)] = _compact_tool_payload(item, max_text=max_text)
+        return out
+    if isinstance(value, list):
+        return [_compact_tool_payload(item, max_text=max_text) for item in value[:40]]
+    if isinstance(value, str):
+        return _truncate(value, max_text)[0]
+    return value
+
+
+def _append_unique(values: list[str], value: str, *, limit: int) -> None:
+    if value and value not in values and len(values) < limit:
+        values.append(value)
+
+
+def _path_depth(path: Path, root: Path) -> int:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return 0
+    return 0 if str(rel) == "." else len(rel.parts)
+
+
+def _is_entry_point(name: str) -> bool:
+    lowered = name.casefold()
+    return any(lowered == item.casefold() for item in ENTRY_POINT_NAMES)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _walk_files(root: Path) -> list[Path]:

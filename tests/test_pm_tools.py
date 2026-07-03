@@ -22,6 +22,7 @@ from foreman.client.tools.loop import (
 )
 from foreman.client.tools.models import ToolRuntimeConfig
 from foreman.shared.config import Config, GatesCfg
+from foreman.shared.events import make_event
 from foreman.shared.llm import LLMToolCall, LLMToolResponse, Message
 
 
@@ -151,6 +152,27 @@ def test_checkpoint_diff_and_test_tool_schemas_do_not_accept_pm_context_fields()
         assert "worktree_path" not in spec.input_schema["properties"]
 
 
+def test_pm_intel_tool_schemas_are_safe_and_server_scoped():
+    by_name = {item.name: item for item in PMToolRuntime.specs()}
+    specs = [
+        by_name["repo_map"],
+        by_name["impact_analysis"],
+        by_name["event_query"],
+        by_name["session_summary"],
+        by_name["artifact_read"],
+    ]
+
+    for spec in specs:
+        assert spec.risk == "safe"
+        assert spec.input_schema["additionalProperties"] is False
+        assert "session_id" not in spec.input_schema["properties"]
+        assert "task_id" not in spec.input_schema["properties"]
+        assert "workspace" not in spec.input_schema["properties"]
+        assert "worktree_path" not in spec.input_schema["properties"]
+    assert set(by_name["impact_analysis"].input_schema["required"]) == {"goal"}
+    assert set(by_name["artifact_read"].input_schema["required"]) == {"path"}
+
+
 async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
     cases = [
         ToolCall("plan", "worktree_plan", {"goal": "x"}),
@@ -167,6 +189,120 @@ async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
         result = await _runtime(tmp_path, git_worktree=False).call(call)
         assert result.ok is False
         assert result.error == "tool_disabled"
+
+
+async def test_repo_map_and_impact_analysis_are_bounded_heuristics(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "auth.py").write_text("def login(): pass\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_auth.py").write_text("def test_login(): pass\n", encoding="utf-8")
+    deep = tmp_path / "src" / "deep" / "nested"
+    deep.mkdir(parents=True)
+    (deep / "too_deep.py").write_text("secret body should not be mapped\n", encoding="utf-8")
+    for idx in range(12):
+        (tmp_path / "src" / f"module_{idx}.py").write_text("x = 1\n", encoding="utf-8")
+    rt = _runtime(tmp_path)
+
+    repo = await rt.call(ToolCall("map", "repo_map", {"max_files": 5, "max_depth": 2}))
+    impact = await rt.call(
+        ToolCall("impact", "impact_analysis", {"goal": "fix auth login failure", "max_candidates": 5})
+    )
+    invalid = await rt.call(ToolCall("bad", "impact_analysis", {"goal": "x", "session_id": "evil"}))
+
+    assert repo.ok is True
+    assert repo.truncated is True
+    assert len(repo.data["files"]) <= 5
+    assert "pyproject.toml" in repo.data["entry_points"]
+    assert "tests" in repo.data["test_dirs"]
+    assert "too_deep.py" not in json.dumps(repo.data, ensure_ascii=False)
+    assert "secret body" not in json.dumps(repo.data, ensure_ascii=False)
+    assert impact.ok is True
+    assert impact.data["deterministic"] is False
+    assert impact.data["confidence"] == "heuristic"
+    assert "heuristic_only" in impact.data["risks"]
+    assert any(item["path"] == "src/auth.py" for item in impact.data["candidate_files"])
+    assert any("test_auth.py" in item for item in impact.data["test_suggestions"])
+    assert invalid.ok is False and invalid.error == "invalid_args"
+
+
+async def test_event_session_and_artifact_tools_are_scoped_to_current_session(tmp_path: Path):
+    store = Store(str(tmp_path / "tools.db"))
+    store.init()
+    artifact = tmp_path / ".foreman" / "tool-logs" / "pytest.log"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("pytest passed\n", encoding="utf-8")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("do not read me\n", encoding="utf-8")
+    store.add_session(Session(id="s1", goal="run tests", workspace=str(tmp_path)))
+    store.add_session(Session(id="s2", goal="other", workspace=str(tmp_path)))
+    store.add_event(
+        make_event(
+            "tool_post",
+            "pm-agent",
+            "s1",
+            task_id="t1",
+            payload={
+                "tool": "test_run",
+                "call_id": "call-1",
+                "ok": True,
+                "result": {
+                    "id": "call-1",
+                    "name": "test_run",
+                    "ok": True,
+                    "data": {
+                        "command": "pytest tests",
+                        "returncode": 0,
+                        "passed": True,
+                        "failed": False,
+                        "summary": "Tests passed.",
+                        "log_path": str(artifact),
+                    },
+                },
+            },
+        )
+    )
+    store.add_event(
+        make_event(
+            "agent_output",
+            "codex",
+            "s2",
+            task_id="t2",
+            payload={"text": "other session secret"},
+        )
+    )
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=tmp_path,
+            allowed_roots=[tmp_path],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+            main_workspace=tmp_path,
+        )
+    )
+
+    assert store.get_context_frames("s1") == []
+    events = await rt.call(ToolCall("events", "event_query", {"contains": "pytest", "limit": 10}))
+    summary = await rt.call(ToolCall("summary", "session_summary", {}))
+    artifact_ok = await rt.call(ToolCall("artifact", "artifact_read", {"path": str(artifact), "max_chars": 20}))
+    outside_read = await rt.call(ToolCall("outside", "artifact_read", {"path": str(outside)}))
+    traversal = await rt.call(ToolCall("trav", "artifact_read", {"path": ".foreman/tool-logs/../secret.txt"}))
+    invalid = await rt.call(ToolCall("bad", "event_query", {"task_id": "t2"}))
+
+    assert events.ok is True
+    assert events.data["matched_count"] == 1
+    assert events.data["events"][0]["type"] == "tool_post"
+    assert "other session secret" not in json.dumps(events.data, ensure_ascii=False)
+    assert summary.ok is True
+    assert summary.data["runtime_state"]["last_tests"][-1]["command"] == "pytest tests"
+    assert summary.data["runtime_state"]["last_tests"][-1]["passed"] is True
+    assert store.get_context_frames("s1") == []
+    assert artifact_ok.ok is True and "pytest passed" in artifact_ok.data["text"]
+    assert artifact_ok.artifact_paths == [str(artifact.resolve(strict=False))]
+    assert outside_read.ok is False and outside_read.error == "path_outside_artifacts"
+    assert traversal.ok is False and traversal.error == "path_outside_artifacts"
+    assert invalid.ok is False and invalid.error == "invalid_args"
 
 
 def test_runtime_from_config_injects_worktree_dependencies(tmp_path: Path):

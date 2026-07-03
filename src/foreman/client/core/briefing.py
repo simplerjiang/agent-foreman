@@ -253,11 +253,14 @@ class BriefingService:
         )
         goal = getattr(session, "goal", "") if session else ""
         lines: list[str] = []
+        facts = _runtime_facts_for_briefing(self.store, session_id)
+        if facts:
+            lines.append("[structured_facts] " + json.dumps(facts, ensure_ascii=False, sort_keys=True))
         if hasattr(self.store, "get_events"):
             events = self.store.get_events(session_id)[-self.max_events :]
             for e in events:
                 payload = json.loads(getattr(e, "payload_json", "") or "{}")
-                snippet = json.dumps(payload, ensure_ascii=False)[:200]
+                snippet = json.dumps(_brief_payload(payload), ensure_ascii=False)[:220]
                 lines.append(f"[{e.ts or ''}] {e.type} ({getattr(e, 'source', '')}): {snippet}")
         return goal, "\n".join(lines)
 
@@ -306,6 +309,53 @@ class BriefingService:
             self.store.add_event(event)
         if self.bus is not None:
             await self.bus.publish(event)
+
+
+def _runtime_facts_for_briefing(store: Any, session_id: str) -> dict[str, Any]:
+    try:
+        from .context_v2 import extract_runtime_state, materialize_event, runtime_state_dict
+
+        session = store.get_session(session_id) if hasattr(store, "get_session") else None
+        if session is None:
+            return {}
+        events = store.get_events(session_id) if hasattr(store, "get_events") else []
+        frames = []
+        for event in events:
+            frames.extend(materialize_event(event))
+        state = runtime_state_dict(extract_runtime_state(session, frames))
+    except Exception:
+        return {}
+    return {
+        key: value
+        for key, value in {
+            "workspace": state.get("workspace"),
+            "main_workspace": state.get("main_workspace"),
+            "worktree": state.get("worktree"),
+            "branch": state.get("branch"),
+            "active_agents": state.get("active_agents"),
+            "changed_files": state.get("changed_files"),
+            "last_tests": state.get("last_tests"),
+            "next_steps": state.get("next_steps"),
+        }.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _brief_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"stdout", "stderr", "output", "aggregated_output"} and isinstance(item, str):
+                out[f"{key}_summary"] = item[:240]
+                out[f"{key}_truncated"] = len(item) > 240
+                continue
+            out[str(key)] = _brief_payload(item)
+        return out
+    if isinstance(value, list):
+        return [_brief_payload(item) for item in value[:30]]
+    if isinstance(value, str):
+        return value[:500]
+    return value
 
 
 __all__ = [

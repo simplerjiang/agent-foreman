@@ -89,6 +89,60 @@ async def test_generate_persists_report_and_event(tmp_path):
     assert "请始终用简体中文回答" in cap["json"]["messages"][0]["content"]
 
 
+async def test_generate_prompt_includes_structured_runtime_facts(tmp_path):
+    store = _store(tmp_path)
+    worktree = tmp_path / "wt"
+    store.add_session(Session(id="s1", goal="verify worktree", workspace=str(tmp_path)))
+    store.add_event(
+        make_event(
+            "agent_start",
+            "codex",
+            "s1",
+            payload={
+                "agent_id": "dev-1",
+                "cwd": str(worktree),
+                "worktree": str(worktree),
+                "branch": "pm/t14",
+                "status": "running",
+            },
+        )
+    )
+    store.add_event(
+        make_event(
+            "tool_post",
+            "pm-agent",
+            "s1",
+            payload={
+                "tool": "test_run",
+                "call_id": "call-1",
+                "ok": True,
+                "result": {
+                    "id": "call-1",
+                    "name": "test_run",
+                    "ok": True,
+                    "data": {
+                        "command": "pytest tests/test_pm_tools.py",
+                        "returncode": 0,
+                        "passed": True,
+                        "failed": False,
+                    },
+                },
+            },
+        )
+    )
+    cap: dict = {}
+    svc = BriefingService(_llm('{"title": "T", "body_md": "B"}', cap), store)
+
+    await svc.generate("s1")
+    await svc.llm.aclose()
+
+    user = cap["json"]["messages"][-1]["content"]
+    assert "[structured_facts]" in user
+    assert "active_agents" in user
+    assert "pm/t14" in user
+    assert "pytest tests/test_pm_tools.py" in user
+
+
 async def test_generate_language_directive_en(tmp_path):
     store = _store(tmp_path)
     store.add_session(Session(id="s1", goal="g"))
