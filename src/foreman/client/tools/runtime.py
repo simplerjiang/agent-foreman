@@ -276,6 +276,26 @@ class PMToolRuntime:
                 SAFE,
             ),
             ToolSpec(
+                "worktree_plan",
+                "Dry-run the create/reuse/reject decision for a PM worktree. This does not "
+                "create directories, branches, leases, or remote git state.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "goal": string,
+                        "slug": string,
+                        "base_ref": string,
+                        "reuse_policy": {
+                            "type": "string",
+                            "enum": ["reuse_clean_owned", "never"],
+                        },
+                        "custom_path": string,
+                    },
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
                 "worktree_bind_session",
                 "Bind the current PM session to a server-owned worktree lease. The current "
                 "session_id/task_id are injected by the runtime, never accepted from PM input.",
@@ -414,6 +434,8 @@ class PMToolRuntime:
                 return await self._web_search(call.id, args)
             if call.name == "ask_question":
                 return await self._ask_question(call.id, args)
+            if call.name == "worktree_plan":
+                return await self._worktree_plan(call.id, args)
             if call.name == "worktree_bind_session":
                 return await self._worktree_bind_session(call.id, args)
             if call.name == "worktree_list":
@@ -527,6 +549,44 @@ class PMToolRuntime:
         out["workspace"] = str(self.cfg.workspace)
         out["cwd"] = str(self.cfg.workspace)
         return ToolResult(cid, "worktree_bind_session", True, out, risk=NEEDS_STRATEGY)
+
+    async def _worktree_plan(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_plan", False, error="tool_disabled")
+        forbidden = {"session_id", "task_id", "path", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "worktree_plan", False, error="invalid_args")
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_plan", False, error=error)
+        plan = getattr(manager, "plan", None)
+        if not callable(plan):
+            return ToolResult(cid, "worktree_plan", False, error="worktree_manager_unavailable")
+        context = self.worktree_context()
+        context["allow_custom_worktree_path"] = bool(
+            getattr(self.cfg, "allow_custom_worktree_path", False)
+        )
+        data = await _maybe_await(
+            plan(
+                context,
+                goal=str(args.get("goal") or ""),
+                slug=str(args.get("slug") or ""),
+                base_ref=str(args.get("base_ref") or ""),
+                reuse_policy=str(args.get("reuse_policy") or "reuse_clean_owned"),
+                custom_path=str(args.get("custom_path") or ""),
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(cid, "worktree_plan", False, error="invalid_worktree_result")
+        if not data.get("ok", True):
+            return ToolResult(
+                cid,
+                "worktree_plan",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_plan_failed"),
+            )
+        return ToolResult(cid, "worktree_plan", True, data)
 
     async def _worktree_list(self, cid: str, args: dict[str, Any]) -> ToolResult:
         if not self.cfg.git_worktree:
