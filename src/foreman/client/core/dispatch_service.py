@@ -420,19 +420,24 @@ class DispatchService:
         # Mark terminal first so the task, as it unwinds from CancelledError, can't flip the status
         # back via `_mark_session_unless_terminal` (cancelled ∈ TERMINAL_SESSION_STATUSES).
         self._mark_session(session_id, "cancelled")
+        interrupted_agent = await self._interrupt_runner_handle(session_id)
         aborted = self._cancel_session_tasks(session_id)
         msg = (
-            "用户已取消会话：已请求中止正在运行的 PM 规划调用（关闭 ws）。"
-            "已启动的外部 CLI 进程不在本次强杀范围内。"
+            "用户已取消会话：已请求中止正在运行的 PM/执行 agent。"
             if aborted
-            else "用户已取消会话。当前没有正在运行的 PM 调用；已启动的外部 CLI 进程不在本次强杀范围内。"
+            else "用户已取消会话。当前没有正在运行的 PM 调用。"
         )
         await self._persist_then_publish(
             make_event(
                 "notification",
                 "dispatch",
                 session_id,
-                payload={"kind": "cancelled", "msg": msg, "aborted_tasks": aborted},
+                payload={
+                    "kind": "cancelled",
+                    "msg": msg,
+                    "aborted_tasks": aborted,
+                    "interrupted_agent": interrupted_agent,
+                },
             )
         )
         return {
@@ -440,6 +445,7 @@ class DispatchService:
             "session_id": session_id,
             "status": "cancelled",
             "aborted_tasks": aborted,
+            "interrupted_agent": interrupted_agent,
         }
 
     async def delete(self, session_id: str) -> dict:
@@ -833,8 +839,9 @@ class DispatchService:
                     summary=_direct_agent_summary(agent, language),
                 ),
             )
-            handle = await self.runner.launch(
-                agent, instruction, Path(workspace), session_id, model=model, effort=effort
+            handle = await _launch_runner(
+                self.runner, agent, instruction, Path(workspace), session_id,
+                model=model, effort=effort, task_id=task_id,
             )
             handles.append(handle)
         await asyncio.gather(*(self.runner.wait(handle) for handle in handles))
@@ -869,8 +876,9 @@ class DispatchService:
         )
         language = self._sync_pm_language()
         instruction = _workflow_step_instruction(step, language=language)
-        handle = await self.runner.launch(
-            resolved_agent, instruction, Path(workspace), session_id, model=model, effort=effort
+        handle = await _launch_runner(
+            self.runner, resolved_agent, instruction, Path(workspace), session_id,
+            model=model, effort=effort, task_id=f"workflow:{run_id}:{run.get('step_index', 0)}",
         )
         await self.runner.wait(handle)
         return {"ok": True, "run_id": run_id, "step_index": run.get("step_index", 0)}
@@ -1007,9 +1015,9 @@ class DispatchService:
         # CLI directly). Best-effort: an injection failure must never abort the dispatch.
         self._inject_work_modes_for_plan(workspace, task_id, plan, wm_index)
         agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
-        handle = await self.runner.launch(
-            plan.agent, plan.instruction, Path(workspace), session_id,
-            model=plan.model, effort=plan.effort,
+        handle = await _launch_runner(
+            self.runner, plan.agent, plan.instruction, Path(workspace), session_id,
+            model=plan.model, effort=plan.effort, task_id=task_id,
         )
         await self._emit_agent_input(session_id, task_id, handle, plan.instruction, plan)
         run_count = 1
@@ -1281,13 +1289,15 @@ class DispatchService:
         )
         self._inject_work_modes_for_plan(workspace, task_id, recovery_plan, wm_index)
         agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
-        handle = await self.runner.launch(
+        handle = await _launch_runner(
+            self.runner,
             recovery_plan.agent,
             recovery_plan.instruction,
             Path(workspace),
             session_id,
             model=recovery_plan.model,
             effort=recovery_plan.effort,
+            task_id=task_id,
         )
         self._mark_session_unless_terminal(session_id, "running")
         return handle, recovery_plan, agent_run_cursor, todo_status
@@ -1767,14 +1777,7 @@ class DispatchService:
         thinking/run is no longer allowed to continue writing concurrent state.
         """
         aborted = self._cancel_session_tasks(session_id)
-        runner = self.runner
-        if runner is not None and hasattr(runner, "handle_for_session"):
-            handle = runner.handle_for_session(session_id)
-            if handle is not None and hasattr(runner, "interrupt"):
-                try:
-                    await runner.interrupt(handle)
-                except Exception:  # noqa: BLE001 - interrupt is best-effort; new turn still proceeds
-                    pass
+        await self._interrupt_runner_handle(session_id)
         await self._persist_then_publish(
             make_event(
                 "notification",
@@ -1788,6 +1791,19 @@ class DispatchService:
             )
         )
         return aborted
+
+    async def _interrupt_runner_handle(self, session_id: str) -> bool:
+        runner = self.runner
+        if runner is None or not hasattr(runner, "handle_for_session"):
+            return False
+        handle = runner.handle_for_session(session_id)
+        if handle is None or not hasattr(runner, "interrupt"):
+            return False
+        try:
+            await runner.interrupt(handle)
+            return True
+        except Exception:  # noqa: BLE001 - interrupt is best-effort; cancellation still proceeds
+            return False
 
     def _cancel_session_tasks(self, session_id: str) -> int:
         """Cancel the session's in-flight launch tasks (e.g. a running PM ws plan call).
@@ -1914,6 +1930,23 @@ def _accepts_keyword(fn, name: str) -> bool:
     if name in sig.parameters:
         return True
     return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+
+async def _launch_runner(
+    runner: Any,
+    agent: str,
+    instruction: str,
+    workspace: Path,
+    session_id: str,
+    *,
+    model: str = "",
+    effort: str = "",
+    task_id: str | None = None,
+):
+    kwargs = {"model": model, "effort": effort}
+    if task_id and _accepts_keyword(runner.launch, "task_id"):
+        kwargs["task_id"] = task_id
+    return await runner.launch(agent, instruction, workspace, session_id, **kwargs)
 
 
 def _stream_delta(chunk: dict) -> str:

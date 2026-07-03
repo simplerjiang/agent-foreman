@@ -53,12 +53,14 @@ class Runner:
         session_id: str,
         model: str = "",
         effort: str = "",
+        task_id: str | None = None,
     ) -> AgentHandle:
         """Start an agent; stream its events to store+bus in the background. Returns immediately."""
         adapter = self.adapters.get(agent)
         if adapter is None:
             raise ValueError(f"agent not enabled: {agent!r} (enabled: {sorted(self.adapters)})")
         handle = await adapter.start(instruction, workspace, session_id, model=model, effort=effort)
+        handle.task_id = task_id or handle.task_id
         self.handles[handle.id] = handle
         self._adapter_by_handle[handle.id] = adapter
         self._handle_by_session[session_id] = handle
@@ -116,6 +118,8 @@ class Runner:
         """Persist each streamed event THEN publish it."""
         try:
             async for event in adapter.stream(handle):
+                if handle.task_id and not event.task_id:
+                    event.task_id = handle.task_id
                 self.store.add_event(event)
                 await self.bus.publish(event)
         except asyncio.CancelledError:
@@ -125,6 +129,7 @@ class Runner:
                 "error",
                 getattr(adapter, "name", "agent"),
                 handle.session_id,
+                task_id=handle.task_id,
                 payload={
                     "msg": f"{type(exc).__name__}: {str(exc)[:500]}",
                     "stream_error": True,

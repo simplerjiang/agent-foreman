@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.4.7",
+      en: "PM subagent runs now wait for real CLI completion across Codex, Claude, and Copilot, synthesize a final stop when Codex ends with turn.completed but no result, tag streamed runner events with task IDs, and keep separate UI cards for each subagent handle.",
+      zh: "PM 子 agent 运行现在会兼容 Codex、Claude、Copilot 的真实 CLI 完成事件；Codex 只有 turn.completed 没有 result 时会合成最终 stop；Runner 流式事件会带上 task ID，UI 也会按子 agent handle 分开显示卡片。",
+    },
+    {
       version: "v1.4.6",
       en: "Context V2 follow-up hardening now makes compact install atomic, materializes sessions incrementally from a durable cursor, adds hot-path DB indexes, reconciles subprocess terminal status with OS return codes, refreshes git refs on resume, and adds temp SQLite plus browser Context panel release gates.",
       zh: "Context V2 后续加固现在让 compact 安装保持事务原子性，基于持久 cursor 增量 materialize session，补充热路径数据库索引，按 OS return code 合并 subprocess 终态，resume 时刷新 git refs，并加入 temp SQLite 与浏览器 Context 面板 release gate。",
@@ -1179,7 +1184,11 @@
     const statusNodes = new Map(); // phase -> nodeIndex
     const pmActivityNodes = new Map(); // PM tool call id -> nodeIndex
 
-    const callKey = (e) => e.task_id || `${e.source || "agent"}-${e.session_id || ""}`;
+    const callKey = (e) => {
+      const p = e.payload || {};
+      const handleKey = p.handle_id || p.agent_id || "";
+      return e.task_id && handleKey ? `${e.task_id}:${handleKey}` : (handleKey || e.task_id || `${e.source || "agent"}-${e.session_id || ""}`);
+    };
     const hidePmStatus = (phase = "") => {
       for (const [key, idx] of statusNodes.entries()) {
         if (!phase || key === phase) {

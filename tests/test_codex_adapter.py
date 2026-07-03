@@ -147,6 +147,46 @@ async def test_stream_parses_lines(tmp_path):
     assert events[2].payload["result"] == "ok"
 
 
+async def test_stream_does_not_end_on_result_before_stdout_eof(tmp_path):
+    lines = [
+        b'{"type":"result","result":"early result"}\n',
+        b'{"type":"item.completed","item":{"type":"agent_message","text":"actual reply"}}\n',
+    ]
+    a = fake_adapter(CodexAdapter, _cfg(), FakeProc(stdout_lines=lines))
+    h = await a.start("x", tmp_path, "s")
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_start", "agent_output", "stop"]
+    assert events[1].payload["item"]["text"] == "actual reply"
+    assert events[2].payload["result"] == "early result"
+
+
+async def test_stream_synthesizes_stop_when_codex_omits_result_line(tmp_path):
+    lines = [
+        b'{"type":"thread.started","thread_id":"native-thread"}\n',
+        b'{"type":"turn.started"}\n',
+        b'{"type":"item.completed","item":{"type":"agent_message","text":"actual reply"}}\n',
+        b'{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}\n',
+    ]
+    a = fake_adapter(CodexAdapter, _cfg(), FakeProc(stdout_lines=lines))
+    h = await a.start("x", tmp_path, "s")
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == [
+        "agent_start", "agent_output", "agent_output", "agent_output", "agent_output", "stop",
+    ]
+    assert events[1].payload["protocol_event_type"] == "thread.started"
+    assert events[1].payload["protocol_phase"] == "start"
+    assert events[2].payload["protocol_event_type"] == "turn.started"
+    assert events[2].payload["protocol_phase"] == "start"
+    assert events[3].payload["item"]["text"] == "actual reply"
+    assert events[4].payload["protocol_event_type"] == "turn.completed"
+    assert events[4].payload["protocol_phase"] == "completed"
+    assert events[5].payload["result"] == "actual reply"
+    assert events[5].payload["status"] == "completed"
+    assert events[5].payload["completion_event_type"] == "turn.completed"
+
+
 async def test_stream_decodes_windows_console_cjk_bytes(tmp_path):
     line = (
         json.dumps(
@@ -210,7 +250,7 @@ async def test_stream_parses_large_json_line_split_across_chunks(tmp_path):
     h = await a.start("x", tmp_path, "s")
     events = [e async for e in a.stream(h)]
 
-    assert [e.type for e in events] == ["agent_start", "agent_output"]
+    assert [e.type for e in events] == ["agent_start", "agent_output", "stop"]
     assert events[1].payload["item"]["aggregated_output"] == big_output
 
 

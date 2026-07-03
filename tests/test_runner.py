@@ -68,6 +68,28 @@ async def test_launch_persists_and_publishes(tmp_path):
     assert [e.type for e in received] == ["agent_start", "agent_output", "stop"]
 
 
+async def test_launch_tags_stream_events_with_task_id(tmp_path):
+    store = _store(tmp_path)
+    runner = Runner(Config(), EventBus(), store)
+    proc = FakeProc(
+        stdout_lines=[
+            b'{"type":"assistant","message":{"content":"hi"}}\n',
+            b'{"type":"result","result":"done"}\n',
+        ]
+    )
+    runner.adapters["claude-code"] = fake_adapter(
+        ClaudeCodeAdapter, AgentCfg(command="claude"), proc
+    )
+
+    handle = await runner.launch("claude-code", "do x", tmp_path, "s1", task_id="t1")
+    await runner.wait(handle)
+
+    assert handle.task_id == "t1"
+    persisted = store.get_events("s1")
+    assert [e.type for e in persisted] == ["agent_start", "agent_output", "stop"]
+    assert all(e.task_id == "t1" for e in persisted)
+
+
 async def test_launch_unknown_agent_raises(tmp_path):
     runner = Runner(Config(), EventBus(), _store(tmp_path))
     with pytest.raises(ValueError, match="agent not enabled"):

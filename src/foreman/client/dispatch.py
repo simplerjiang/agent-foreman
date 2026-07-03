@@ -64,9 +64,12 @@ async def run_dispatch(
         store.init()
     bus = bus or EventBus()
     runner = runner or Runner(cfg, bus, store)
-    session, _task = build_session_task(store, task, workspace, agent)
+    session, task_row = build_session_task(store, task, workspace, agent)
     try:
-        handle = await runner.launch(agent, task, Path(workspace), session.id, model=model, effort=effort)
+        handle = await runner.launch(
+            agent, task, Path(workspace), session.id,
+            model=model, effort=effort, task_id=task_row.id,
+        )
         await runner.wait(handle)
     except Exception:
         store.update_session(session.id, status="failed", updated_at=utc_now_iso())

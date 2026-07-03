@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typer.testing import CliRunner
+from sqlmodel import select
 
 from _fakes import FakeProc, fake_adapter
 
@@ -10,6 +11,7 @@ from foreman.client.agents.claude_code import ClaudeCodeAdapter
 from foreman.client.agents.runner import Runner
 from foreman.client.dispatch import build_session_task, run_dispatch
 from foreman.client.store import Store
+from foreman.client.store.models import Task
 from foreman.shared.config import AgentCfg, Config
 from foreman.shared.events import EventBus
 
@@ -40,7 +42,11 @@ async def test_run_dispatch_persists_events(tmp_path):
         Config(), "do X", str(tmp_path), "claude-code", store=st, bus=bus, runner=runner
     )
     assert n == 3
-    assert [e.type for e in st.get_events(sid)] == ["agent_start", "agent_output", "stop"]
+    events = st.get_events(sid)
+    assert [e.type for e in events] == ["agent_start", "agent_output", "stop"]
+    with st.session() as session:
+        task = session.exec(select(Task).where(Task.session_id == sid)).one()
+    assert all(e.task_id == task.id for e in events)
 
 
 def test_cli_dispatch_wires(monkeypatch, tmp_path):
