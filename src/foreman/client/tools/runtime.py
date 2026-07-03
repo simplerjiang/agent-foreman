@@ -381,6 +381,35 @@ class PMToolRuntime:
                 NEEDS_STRATEGY,
             ),
             ToolSpec(
+                "worktree_promote",
+                "Prepare current-session worktree handoff/PR facts without pushing, merging, "
+                "deploying, or deleting branches. The current session_id/task_id/path are injected.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": [
+                                "prepare-pr",
+                                "commit",
+                                "push",
+                                "merge",
+                                "deploy",
+                                "delete-branch",
+                            ],
+                        },
+                        "title": string,
+                        "requirement_review": string,
+                        "code_review": string,
+                        "verification": string,
+                        "remaining_risks": string,
+                        "test_status": string,
+                    },
+                    "additionalProperties": False,
+                },
+                REQUIRES_APPROVAL,
+            ),
+            ToolSpec(
                 "checkpoint_create",
                 "Create a recoverable git checkpoint for the current runtime workspace. "
                 "The current session_id/task_id are injected by the runtime.",
@@ -551,6 +580,8 @@ class PMToolRuntime:
                 return await self._worktree_diff(call.id, args)
             if call.name == "worktree_cleanup":
                 return await self._worktree_cleanup(call.id, args)
+            if call.name == "worktree_promote":
+                return await self._worktree_promote(call.id, args)
             if call.name == "checkpoint_create":
                 return await self._checkpoint_create(call.id, args)
             if call.name == "checkpoint_undo":
@@ -929,6 +960,71 @@ class PMToolRuntime:
         ]
         risk = REQUIRES_APPROVAL if data.get("requires_approval") else NEEDS_STRATEGY
         return ToolResult(cid, "worktree_cleanup", True, data, risk=risk, artifact_paths=artifacts)
+
+    async def _worktree_promote(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_promote", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        if self._workspace_read_only:
+            return ToolResult(cid, "worktree_promote", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {
+            "session_id",
+            "task_id",
+            "path",
+            "workspace",
+            "worktree_path",
+            "lease_id",
+            "branch",
+            "base_ref",
+            "base_sha",
+        }
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "worktree_promote", False, error="invalid_args", risk=NEEDS_STRATEGY)
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_promote", False, error=error, risk=NEEDS_STRATEGY)
+        promote = getattr(manager, "promote", None)
+        if not callable(promote):
+            return ToolResult(
+                cid,
+                "worktree_promote",
+                False,
+                error="worktree_manager_unavailable",
+                risk=NEEDS_STRATEGY,
+            )
+        data = await _maybe_await(
+            promote(
+                self.worktree_context(),
+                mode=str(args.get("mode") or "prepare-pr"),
+                title=str(args.get("title") or ""),
+                requirement_review=str(args.get("requirement_review") or ""),
+                code_review=str(args.get("code_review") or ""),
+                verification=str(args.get("verification") or ""),
+                remaining_risks=str(args.get("remaining_risks") or ""),
+                test_status=str(args.get("test_status") or ""),
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(
+                cid, "worktree_promote", False, error="invalid_worktree_result", risk=NEEDS_STRATEGY
+            )
+        artifacts = [
+            str(path)
+            for path in (data.get("artifact_paths") or [data.get("diff_artifact_path")])
+            if str(path or "").strip()
+        ]
+        if not data.get("ok", True):
+            risk = REQUIRES_APPROVAL if data.get("requires_approval") else NEEDS_STRATEGY
+            return ToolResult(
+                cid,
+                "worktree_promote",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_promote_failed"),
+                risk=risk,
+                artifact_paths=artifacts,
+            )
+        risk = REQUIRES_APPROVAL if data.get("requires_approval") else NEEDS_STRATEGY
+        return ToolResult(cid, "worktree_promote", True, data, risk=risk, artifact_paths=artifacts)
 
     async def _checkpoint_create(self, cid: str, args: dict[str, Any]) -> ToolResult:
         if self._workspace_read_only:

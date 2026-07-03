@@ -615,6 +615,104 @@ class WorktreeManager:
             )
         return {"ok": True, "leases": stale_rows, "stale_count": len(stale_rows)}
 
+    def promote(
+        self,
+        context: dict[str, Any],
+        *,
+        mode: str = "prepare-pr",
+        title: str = "",
+        requirement_review: str = "",
+        code_review: str = "",
+        verification: str = "",
+        remaining_risks: str = "",
+        test_status: str = "",
+    ) -> dict[str, Any]:
+        mode = (mode or "prepare-pr").strip() or "prepare-pr"
+        if mode != "prepare-pr":
+            return _promote_requires_approval(mode)
+        session_id = str(context.get("session_id") or "").strip()
+        store = context.get("store")
+        lease = _active_lease_for_session(store, session_id)
+        if lease is None:
+            return _promote_error("no_active_worktree_lease", mode=mode)
+        if str(getattr(lease, "status", "") or "") != "active":
+            return _promote_error("lease_not_active", mode=mode, lease=lease)
+        diff_data = self._diff_for_lease(
+            context,
+            lease,
+            max_patch_chars=0,
+            include_patch=True,
+            write_patch_artifact=True,
+        )
+        if not diff_data.get("ok", True):
+            return _promote_error(
+                str(diff_data.get("error") or "worktree_diff_failed"),
+                mode=mode,
+                lease=lease,
+                detail=str(diff_data.get("detail") or ""),
+            )
+        worktree = _normalize_path(getattr(lease, "worktree_path", "") or "")
+        status = self.status(worktree, str(getattr(lease, "base_sha", "") or ""))
+        if not status.get("ok"):
+            return _promote_error(
+                str(status.get("error") or "worktree_status_failed"),
+                mode=mode,
+                lease=lease,
+                detail=str(status.get("detail") or ""),
+            )
+        commits = _worktree_commits(self, worktree, str(getattr(lease, "base_sha", "") or ""))
+        risks = _promote_risks(status, test_status)
+        ready_to_merge = not risks and bool(diff_data.get("changed_files") or commits)
+        pr_title = (title or str(getattr(lease, "branch", "") or "PM worktree changes")).strip()
+        pr_body = _pr_prepare_body(
+            title=pr_title,
+            requirement_review=requirement_review,
+            code_review=code_review,
+            verification=verification,
+            remaining_risks=remaining_risks,
+            risks=risks,
+            diff_data=diff_data,
+        )
+        handoff = _handoff_summary(
+            title=pr_title,
+            lease=lease,
+            diff_data=diff_data,
+            commits=commits,
+            risks=risks,
+            ready_to_merge=ready_to_merge,
+        )
+        patch_artifact = str(diff_data.get("patch_artifact") or "")
+        artifacts = [
+            str(path)
+            for path in (diff_data.get("artifact_paths") or [patch_artifact])
+            if str(path or "").strip()
+        ]
+        return {
+            "ok": True,
+            "mode": mode,
+            "branch": str(getattr(lease, "branch", "") or ""),
+            "base_ref": str(getattr(lease, "base_ref", "") or ""),
+            "base_sha": str(getattr(lease, "base_sha", "") or ""),
+            "head_sha": str(status.get("head_sha") or ""),
+            "lease_id": str(getattr(lease, "id", "") or ""),
+            "owner_session_id": str(getattr(lease, "session_id", "") or ""),
+            "owner_task_id": str(getattr(lease, "task_id", "") or ""),
+            "commits": commits,
+            "changed_files": diff_data.get("changed_files") or [],
+            "files_changed": int(diff_data.get("files_changed") or 0),
+            "diff_artifact_path": patch_artifact,
+            "patch_artifact": patch_artifact,
+            "artifact_paths": artifacts,
+            "handoff_summary": handoff,
+            "pr_title": pr_title,
+            "pr_body": pr_body,
+            "ready_to_merge": ready_to_merge,
+            "requires_approval": False,
+            "side_effects_performed": [],
+            "remote_side_effects": False,
+            "risks": risks,
+        }
+
     def cleanup(
         self,
         context: dict[str, Any],
@@ -1159,6 +1257,133 @@ def _parse_iso_datetime(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _worktree_commits(manager: WorktreeManager, worktree: Path, base_sha: str) -> list[dict[str, str]]:
+    if not base_sha:
+        return []
+    data = manager._git(worktree, "log", "--pretty=format:%H%x09%s", f"{base_sha}..HEAD")
+    if not data["ok"]:
+        return []
+    commits: list[dict[str, str]] = []
+    for line in data["stdout"].splitlines():
+        sha, _, subject = line.partition("\t")
+        if sha:
+            commits.append({"sha": sha.strip(), "subject": subject.strip()})
+    return commits
+
+
+def _promote_risks(status: dict[str, Any], test_status: str) -> list[str]:
+    risks: list[str] = []
+    if bool(status.get("dirty")):
+        risks.append("dirty_worktree")
+    normalized = str(test_status or "unknown").strip().lower()
+    if normalized not in {"passed", "pass", "ok", "success"}:
+        risks.append("tests_not_passed" if normalized else "tests_not_verified")
+    return risks
+
+
+def _promote_requires_approval(mode: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "mode": mode,
+        "error": "requires_approval",
+        "requires_approval": True,
+        "side_effects_performed": [],
+        "remote_side_effects": False,
+        "blocked_actions": [mode],
+        "risks": ["requires_approval"],
+    }
+
+
+def _promote_error(
+    code: str,
+    *,
+    mode: str,
+    lease: Any = None,
+    detail: str = "",
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "mode": mode,
+        "error": code,
+        "detail": detail.strip(),
+        "lease_id": str(getattr(lease, "id", "") or ""),
+        "owner_session_id": str(getattr(lease, "session_id", "") or ""),
+        "owner_task_id": str(getattr(lease, "task_id", "") or ""),
+        "requires_approval": False,
+        "side_effects_performed": [],
+        "remote_side_effects": False,
+        "risks": [code],
+    }
+
+
+def _handoff_summary(
+    *,
+    title: str,
+    lease: Any,
+    diff_data: dict[str, Any],
+    commits: list[dict[str, str]],
+    risks: list[str],
+    ready_to_merge: bool,
+) -> str:
+    files = [
+        str(item.get("path") or "")
+        for item in diff_data.get("changed_files") or []
+        if isinstance(item, dict) and str(item.get("path") or "")
+    ]
+    lines = [
+        f"Title: {title}",
+        f"Branch: {getattr(lease, 'branch', '') or ''}",
+        f"Base: {getattr(lease, 'base_sha', '') or ''}",
+        f"Commits: {len(commits)}",
+        f"Files changed: {len(files)}",
+    ]
+    if files:
+        lines.append("Changed files: " + ", ".join(files[:20]))
+    if ready_to_merge:
+        lines.append("Ready for PR review; no push, merge, deploy, or branch deletion was performed.")
+    else:
+        lines.append("Not ready to merge.")
+        lines.append("Risks: " + ", ".join(risks or ["not_verified"]))
+    return "\n".join(lines)
+
+
+def _pr_prepare_body(
+    *,
+    title: str,
+    requirement_review: str,
+    code_review: str,
+    verification: str,
+    remaining_risks: str,
+    risks: list[str],
+    diff_data: dict[str, Any],
+) -> str:
+    changed = [
+        str(item.get("path") or "")
+        for item in diff_data.get("changed_files") or []
+        if isinstance(item, dict) and str(item.get("path") or "")
+    ]
+    return "\n".join(
+        [
+            f"# {title}",
+            "",
+            "## Requirement Review",
+            requirement_review.strip() or "Not provided by PM.",
+            "",
+            "## Code Review",
+            code_review.strip() or "Not provided by PM.",
+            "",
+            "## Verification",
+            verification.strip() or "Not provided by PM.",
+            "",
+            "## Remaining Risk",
+            remaining_risks.strip() or (", ".join(risks) if risks else "None reported."),
+            "",
+            "## Changed Files",
+            "\n".join(f"- {path}" for path in changed[:50]) or "- None",
+        ]
+    )
 
 
 def _active_lease_for_session(store: Any, session_id: str) -> Any | None:

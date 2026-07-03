@@ -10,8 +10,9 @@ from pathlib import Path
 from threading import Thread
 
 from foreman.client.core.gate import Gate
+from foreman.client.core.worktree_manager import WorktreeManager
 from foreman.client.store import Store
-from foreman.client.store.models import Session
+from foreman.client.store.models import Session, WorktreeLease
 from foreman.client.tools import EXTERNAL_WEB, PMToolLoop, PMToolRuntime, ToolCall
 from foreman.client.tools.loop import (
     SUBMIT_PLAN_TOOL,
@@ -93,6 +94,7 @@ def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fi
     status_spec = by_name["worktree_status"]
     diff_spec = by_name["worktree_diff"]
     cleanup_spec = by_name["worktree_cleanup"]
+    promote_spec = by_name["worktree_promote"]
 
     assert plan_spec.risk == "safe"
     assert create_spec.risk == "needs-strategy"
@@ -100,23 +102,27 @@ def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fi
     assert status_spec.risk == "safe"
     assert diff_spec.risk == "safe"
     assert cleanup_spec.risk == "needs-strategy"
+    assert promote_spec.risk == "requires-approval"
     assert plan_spec.input_schema["additionalProperties"] is False
     assert create_spec.input_schema["additionalProperties"] is False
     assert list_spec.input_schema["additionalProperties"] is False
     assert status_spec.input_schema["additionalProperties"] is False
     assert diff_spec.input_schema["additionalProperties"] is False
     assert cleanup_spec.input_schema["additionalProperties"] is False
+    assert promote_spec.input_schema["additionalProperties"] is False
     assert "custom_path" in plan_spec.input_schema["properties"]
     assert "custom_path" in create_spec.input_schema["properties"]
     assert "dry_run" in create_spec.input_schema["properties"]
     assert "bind_session" in create_spec.input_schema["properties"]
     assert set(cleanup_spec.input_schema["properties"]) == {"dry_run", "reason"}
-    for spec in (plan_spec, create_spec, list_spec, status_spec, diff_spec, cleanup_spec):
+    assert "prepare-pr" in promote_spec.input_schema["properties"]["mode"]["enum"]
+    for spec in (plan_spec, create_spec, list_spec, status_spec, diff_spec, cleanup_spec, promote_spec):
         assert "session_id" not in spec.input_schema["properties"]
         assert "task_id" not in spec.input_schema["properties"]
         assert "path" not in spec.input_schema["properties"] or spec.name == "worktree_status"
         assert "worktree_path" not in spec.input_schema["properties"]
         assert "base_sha" not in spec.input_schema["properties"]
+    assert "lease_id" not in promote_spec.input_schema["properties"]
 
 
 def test_checkpoint_diff_and_test_tool_schemas_do_not_accept_pm_context_fields():
@@ -154,6 +160,7 @@ async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
         ToolCall("status", "worktree_status", {}),
         ToolCall("diff", "worktree_diff", {}),
         ToolCall("cleanup", "worktree_cleanup", {}),
+        ToolCall("promote", "worktree_promote", {}),
     ]
 
     for call in cases:
@@ -539,6 +546,7 @@ async def test_worktree_read_only_bind_disables_write_and_command_tools(tmp_path
     command = await rt.call(ToolCall("cmd", "run_command", {"command": "python --version"}))
     create = await rt.call(ToolCall("create", "worktree_create", {"goal": "new"}))
     cleanup = await rt.call(ToolCall("cleanup", "worktree_cleanup", {}))
+    promote = await rt.call(ToolCall("promote", "worktree_promote", {}))
     checkpoint = await rt.call(ToolCall("checkpoint", "checkpoint_create", {}))
     test_run = await rt.call(ToolCall("test", "test_run", {"command": "python --version"}))
     undo = await rt.call(ToolCall("undo", "checkpoint_undo", {"checkpoint_id": "c1"}))
@@ -550,6 +558,7 @@ async def test_worktree_read_only_bind_disables_write_and_command_tools(tmp_path
     assert command.error == "tool_disabled"
     assert create.error == "tool_disabled"
     assert cleanup.error == "tool_disabled"
+    assert promote.error == "tool_disabled"
     assert checkpoint.error == "tool_disabled"
     assert test_run.error == "tool_disabled"
     assert undo.error == "tool_disabled"
@@ -857,6 +866,194 @@ async def test_worktree_cleanup_requires_approval_risk_without_deleting(tmp_path
     assert result.risk == "requires-approval"
     assert result.data["requires_approval"] is True
     assert result.data["removed"] is False
+
+
+async def test_worktree_promote_injects_current_context_and_rejects_cross_session_fields(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+    artifact = main / ".foreman" / "tool-logs" / "promote.patch"
+    seen: dict[str, object] = {}
+
+    class FakeWorktreeManager:
+        def promote(self, context, **kwargs):
+            seen["context"] = context
+            seen["kwargs"] = kwargs
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text("diff", encoding="utf-8")
+            return {
+                "ok": True,
+                "mode": "prepare-pr",
+                "branch": "foreman/s1/task",
+                "commits": [],
+                "diff_artifact_path": str(artifact),
+                "artifact_paths": [str(artifact)],
+                "handoff_summary": "Not ready to merge.\nRisks: tests_not_verified",
+                "pr_body": "## Requirement Review\nok",
+                "requires_approval": False,
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=SimpleNamespace(),
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+        )
+    )
+
+    result = await rt.call(
+        ToolCall(
+            "promote",
+            "worktree_promote",
+            {
+                "mode": "prepare-pr",
+                "title": "Prepare handoff",
+                "requirement_review": "covered",
+                "code_review": "minimal",
+                "verification": "pytest",
+                "remaining_risks": "needs e2e",
+                "test_status": "passed",
+            },
+        )
+    )
+    invalid = await rt.call(ToolCall("bad", "worktree_promote", {"lease_id": "other"}))
+    invalid_path = await rt.call(ToolCall("bad-path", "worktree_promote", {"path": str(main)}))
+
+    assert result.ok is True
+    assert result.artifact_paths == [str(artifact)]
+    assert result.data["branch"] == "foreman/s1/task"
+    assert seen["context"]["session_id"] == "s1"
+    assert seen["context"]["task_id"] == "t1"
+    assert seen["context"]["main_workspace"] == str(main)
+    assert seen["kwargs"]["mode"] == "prepare-pr"
+    assert seen["kwargs"]["title"] == "Prepare handoff"
+    assert invalid.ok is False and invalid.error == "invalid_args"
+    assert invalid_path.ok is False and invalid_path.error == "invalid_args"
+
+
+async def test_worktree_promote_non_prepare_modes_are_approval_gated(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+
+    class FakeWorktreeManager:
+        def promote(self, context, **kwargs):
+            return {
+                "ok": False,
+                "mode": kwargs["mode"],
+                "error": "requires_approval",
+                "requires_approval": True,
+                "side_effects_performed": [],
+                "remote_side_effects": False,
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+        )
+    )
+
+    result = await rt.call(ToolCall("push", "worktree_promote", {"mode": "push"}))
+
+    assert result.ok is False
+    assert result.error == "requires_approval"
+    assert result.risk == "requires-approval"
+    assert result.data["side_effects_performed"] == []
+    assert result.data["remote_side_effects"] is False
+
+
+def test_worktree_promote_prepare_pr_generates_handoff_without_git_side_effects(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "foreman@example.test")
+    _git(repo, "config", "user.name", "Foreman Test")
+    (repo / "app.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "app.txt")
+    _git(repo, "commit", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    store = Store(str(tmp_path / "foreman.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="g", workspace=str(worktree), main_workspace=str(repo)))
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="lease-1",
+            repo_root=str(repo),
+            main_workspace=str(repo),
+            worktree_path=str(worktree),
+            branch="feature",
+            base_ref="HEAD",
+            base_sha=base_sha,
+            head_sha=base_sha,
+            session_id="s1",
+            task_id="t1",
+            locked=True,
+        )
+    )
+    (worktree / "app.txt").write_text("changed\n", encoding="utf-8")
+
+    class RecordingManager(WorktreeManager):
+        def __init__(self):
+            super().__init__()
+            self.commands: list[tuple[str, ...]] = []
+
+        def _git(self, cwd: Path, *args: str) -> dict[str, object]:
+            self.commands.append(args)
+            return super()._git(cwd, *args)
+
+    manager = RecordingManager()
+    result = manager.promote(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "workspace": str(worktree),
+            "main_workspace": str(repo),
+            "worktree_roots": [str(tmp_path)],
+        },
+        title="Prepare feature",
+        requirement_review="covered",
+        code_review="minimal",
+        verification="pytest failed",
+        remaining_risks="needs fix",
+        test_status="failed",
+    )
+    commit_mode = manager.promote(
+        {"store": store, "session_id": "s1", "task_id": "t1"},
+        mode="commit",
+    )
+
+    assert result["ok"] is True
+    assert result["mode"] == "prepare-pr"
+    assert result["branch"] == "feature"
+    assert result["commits"] == []
+    assert Path(result["diff_artifact_path"]).is_file()
+    assert result["ready_to_merge"] is False
+    assert "Not ready to merge." in result["handoff_summary"]
+    assert "dirty_worktree" in result["handoff_summary"]
+    assert "tests_not_passed" in result["handoff_summary"]
+    assert "## Requirement Review" in result["pr_body"]
+    assert "## Code Review" in result["pr_body"]
+    assert "## Verification" in result["pr_body"]
+    assert "## Remaining Risk" in result["pr_body"]
+    assert result["side_effects_performed"] == []
+    assert result["remote_side_effects"] is False
+    assert commit_mode["error"] == "requires_approval"
+    forbidden = {"add", "commit", "fetch", "pull", "push", "merge"}
+    assert not any(args and args[0] in forbidden for args in manager.commands)
 
 
 async def test_checkpoint_diff_and_undo_tools_use_current_session_worktree(tmp_path: Path):
