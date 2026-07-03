@@ -69,6 +69,22 @@ def test_worktree_bind_schema_rejects_pm_owned_context_fields():
     assert "worktree_path" not in schema["properties"]
 
 
+def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fields():
+    by_name = {item.name: item for item in PMToolRuntime.specs()}
+
+    list_spec = by_name["worktree_list"]
+    status_spec = by_name["worktree_status"]
+
+    assert list_spec.risk == "safe"
+    assert status_spec.risk == "safe"
+    assert list_spec.input_schema["additionalProperties"] is False
+    assert status_spec.input_schema["additionalProperties"] is False
+    assert "session_id" not in list_spec.input_schema["properties"]
+    assert "task_id" not in list_spec.input_schema["properties"]
+    assert "session_id" not in status_spec.input_schema["properties"]
+    assert "task_id" not in status_spec.input_schema["properties"]
+
+
 async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
     result = await _runtime(tmp_path, git_worktree=False).call(
         ToolCall("bind", "worktree_bind_session", {"lease_id": "lease-1"})
@@ -195,6 +211,210 @@ async def test_worktree_bind_rejects_pm_supplied_session_or_path(tmp_path: Path)
 
     assert result.ok is False
     assert result.error == "invalid_args"
+
+
+async def test_worktree_list_and_status_add_lease_ownership(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    lease = SimpleNamespace(
+        id="lease-1",
+        worktree_path=str(worktree),
+        session_id="s1",
+        task_id="t1",
+        status="active",
+    )
+
+    class FakeStore:
+        def get_active_worktree_lease(self, *, worktree_path: str, session_id: str | None = None):
+            if Path(worktree_path).resolve(strict=False) == worktree.resolve(strict=False):
+                return lease
+            return None
+
+        def get_worktree_leases(self, *, status: str | None = None):
+            return [lease] if status in {None, "active"} else []
+
+    class FakeWorktreeManager:
+        def __init__(self):
+            self.status_paths: list[Path] = []
+
+        def list(self, path):
+            return {
+                "ok": True,
+                "repo_root": str(main),
+                "worktrees": [
+                    {
+                        "path": str(main),
+                        "resolved_path": str(main.resolve(strict=False)),
+                        "branch": "main",
+                        "head_sha": "base",
+                        "locked": False,
+                        "exists": True,
+                    },
+                    {
+                        "path": str(worktree),
+                        "resolved_path": str(worktree.resolve(strict=False)),
+                        "branch": "feature",
+                        "head_sha": "head",
+                        "locked": False,
+                        "exists": True,
+                    },
+                ],
+            }
+
+        def status(self, path, compare_to: str = ""):
+            self.status_paths.append(Path(path))
+            return {
+                "ok": True,
+                "resolved_path": str(Path(path).resolve(strict=False)),
+                "dirty": False,
+                "changed_files": [],
+                "ahead": 0,
+                "behind": 0,
+                "base_ref": compare_to,
+                "head_sha": "head",
+            }
+
+    manager = FakeWorktreeManager()
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=FakeStore(),
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=manager,
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+            default_base_ref="main",
+        )
+    )
+
+    listed = await rt.call(ToolCall("list", "worktree_list", {}))
+    status = await rt.call(ToolCall("status", "worktree_status", {"path": str(worktree)}))
+
+    assert listed.ok is True
+    by_path = {row["resolved_path"]: row for row in listed.data["worktrees"]}
+    assert by_path[str(main.resolve(strict=False))]["owner_session_id"] == ""
+    assert by_path[str(worktree.resolve(strict=False))]["owner_session_id"] == "s1"
+    assert by_path[str(worktree.resolve(strict=False))]["owner_task_id"] == "t1"
+    assert by_path[str(worktree.resolve(strict=False))]["lease_id"] == "lease-1"
+    assert status.ok is True
+    assert status.data["owner_session_id"] == "s1"
+    assert status.data["base_ref"] == "main"
+    assert manager.status_paths == [worktree.resolve(strict=False)]
+
+
+async def test_worktree_status_rejects_arbitrary_path_before_manager_call(tmp_path: Path):
+    main = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    main.mkdir()
+    outside.mkdir()
+
+    class FakeWorktreeManager:
+        def status(self, path, compare_to: str = ""):
+            raise AssertionError("arbitrary paths must not reach the manager")
+
+    class FakeStore:
+        def get_active_worktree_lease(self, *, worktree_path: str, session_id: str | None = None):
+            if Path(worktree_path).resolve(strict=False) == outside.resolve(strict=False):
+                return SimpleNamespace(
+                    id="lease-other",
+                    worktree_path=str(outside),
+                    session_id="other-session",
+                    task_id="t2",
+                    status="active",
+                )
+            return None
+
+        def get_worktree_leases(self, *, status: str | None = None):
+            return []
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=FakeStore(),
+            session_id="s1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+        )
+    )
+
+    result = await rt.call(ToolCall("status", "worktree_status", {"path": str(outside)}))
+
+    assert result.ok is False
+    assert result.error == "path_outside_workspace"
+
+
+async def test_worktree_status_uses_existing_tool_events(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+    events: list[tuple[str, dict]] = []
+
+    class FakeWorktreeManager:
+        def status(self, path, compare_to: str = ""):
+            return {
+                "ok": True,
+                "resolved_path": str(Path(path).resolve(strict=False)),
+                "dirty": False,
+                "changed_files": [],
+                "ahead": 0,
+                "behind": 0,
+                "base_ref": compare_to,
+                "head_sha": "head",
+            }
+
+    class FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def tool_complete(self, messages, *, tools, model="", json_mode=False, tool_choice=None):
+            self.calls += 1
+            if self.calls == 1:
+                return LLMToolResponse(
+                    text="",
+                    tool_calls=[
+                        LLMToolCall(
+                            id="status-1",
+                            name="worktree_status",
+                            arguments={"path": str(main), "compare_to": "HEAD"},
+                        )
+                    ],
+                )
+            return LLMToolResponse(text="", tool_calls=[_submit_call(summary="done")])
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            default_base_ref="HEAD",
+        )
+    )
+
+    outcome = await PMToolLoop(
+        FakeLLM(),
+        rt,
+        max_rounds=3,
+        on_tool_event=lambda event_type, payload: events.append((event_type, payload)),
+    ).run(
+        [Message("user", "inspect worktree")],
+        fallback_plan={"agent": "codex", "model": "", "effort": "high", "instruction": "fallback"},
+        enabled_agents=["codex"],
+    )
+
+    assert outcome.final_plan["summary"] == "done"
+    tool_events = [(event_type, payload["tool"]) for event_type, payload in events]
+    assert tool_events == [("tool_pre", "worktree_status"), ("tool_post", "worktree_status")]
 
 
 async def test_pm_tool_loop_forwards_llm_stream_chunks(tmp_path: Path):

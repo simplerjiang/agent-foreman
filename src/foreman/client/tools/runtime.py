@@ -288,6 +288,26 @@ class PMToolRuntime:
                 NEEDS_STRATEGY,
             ),
             ToolSpec(
+                "worktree_list",
+                "List git worktrees for an allowed workspace and show server-recorded ownership.",
+                {
+                    "type": "object",
+                    "properties": {"main_workspace": string},
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "worktree_status",
+                "Show read-only git status for an allowed or current-session-owned worktree.",
+                {
+                    "type": "object",
+                    "properties": {"path": string, "compare_to": string},
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
                 "work_mode_search",
                 "Search applicable work-mode definitions (skills / code standards / QA rubrics) "
                 "for this task. Returns lightweight index entries (name + description), NOT full "
@@ -396,6 +416,10 @@ class PMToolRuntime:
                 return await self._ask_question(call.id, args)
             if call.name == "worktree_bind_session":
                 return await self._worktree_bind_session(call.id, args)
+            if call.name == "worktree_list":
+                return await self._worktree_list(call.id, args)
+            if call.name == "worktree_status":
+                return await self._worktree_status(call.id, args)
             if call.name.startswith("browser_"):
                 return await self._browser_call(ToolCall(call.id, call.name, args))
             if call.name == "work_mode_search":
@@ -504,6 +528,66 @@ class PMToolRuntime:
         out["cwd"] = str(self.cfg.workspace)
         return ToolResult(cid, "worktree_bind_session", True, out, risk=NEEDS_STRATEGY)
 
+    async def _worktree_list(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_list", False, error="tool_disabled")
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_list", False, error=error)
+        list_worktrees = getattr(manager, "list", None)
+        if not callable(list_worktrees):
+            return ToolResult(cid, "worktree_list", False, error="worktree_manager_unavailable")
+        path, path_error = self._resolve_worktree_tool_path(
+            args.get("main_workspace") or self.cfg.main_workspace or self.cfg.workspace
+        )
+        if path_error:
+            return ToolResult(cid, "worktree_list", False, error=path_error)
+        data = await _maybe_await(list_worktrees(path))
+        if not isinstance(data, dict):
+            return ToolResult(cid, "worktree_list", False, error="invalid_worktree_result")
+        if not data.get("ok"):
+            return ToolResult(
+                cid,
+                "worktree_list",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_list_failed"),
+            )
+        out = dict(data)
+        out["worktrees"] = [
+            {**item, **self._lease_fields(self._lease_for_path(item.get("resolved_path") or item.get("path")))}
+            for item in data.get("worktrees", [])
+            if isinstance(item, dict)
+        ]
+        return ToolResult(cid, "worktree_list", True, out)
+
+    async def _worktree_status(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_status", False, error="tool_disabled")
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_status", False, error=error)
+        status = getattr(manager, "status", None)
+        if not callable(status):
+            return ToolResult(cid, "worktree_status", False, error="worktree_manager_unavailable")
+        path, path_error = self._resolve_worktree_tool_path(args.get("path") or self.cfg.workspace)
+        if path_error:
+            return ToolResult(cid, "worktree_status", False, error=path_error)
+        compare_to = str(args.get("compare_to") or self.cfg.default_base_ref or "").strip()
+        data = await _maybe_await(status(path, compare_to))
+        if not isinstance(data, dict):
+            return ToolResult(cid, "worktree_status", False, error="invalid_worktree_result")
+        if not data.get("ok"):
+            return ToolResult(
+                cid,
+                "worktree_status",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_status_failed"),
+            )
+        lease = self._lease_for_path(data.get("resolved_path") or path)
+        return ToolResult(cid, "worktree_status", True, {**data, **self._lease_fields(lease)})
+
     def bind_workspace(self, workspace: str | Path, *, main_workspace: object = None) -> None:
         resolved = self.worktree_guard.resolve(str(workspace))
         self.cfg.workspace = resolved
@@ -522,6 +606,78 @@ class PMToolRuntime:
             "worktree_roots": [str(path) for path in self.cfg.worktree_roots],
             "branch_prefix": self.cfg.worktree_branch_prefix,
             "default_base_ref": self.cfg.default_base_ref,
+        }
+
+    def _worktree_manager(self) -> tuple[Any, str]:
+        manager = self.cfg.worktree_manager
+        if manager is None:
+            return None, "worktree_manager_unavailable"
+        return manager, ""
+
+    def _resolve_worktree_tool_path(self, value: object) -> tuple[Path | None, str]:
+        raw = str(value or "").strip()
+        try:
+            return self.guard.resolve(raw), ""
+        except ToolPolicyError:
+            pass
+        try:
+            candidate = Path(raw or ".").expanduser()
+            if not candidate.is_absolute():
+                candidate = self.cfg.workspace / candidate
+            resolved = candidate.resolve(strict=False)
+        except (OSError, ValueError):
+            return None, "invalid_path"
+        lease = self._lease_for_path(resolved)
+        if lease is not None and str(getattr(lease, "session_id", "") or "") == self._session_id:
+            return resolved, ""
+        return None, "path_outside_workspace"
+
+    def _lease_for_path(self, path: object) -> Any | None:
+        store = self.cfg.store
+        if store is None:
+            return None
+        try:
+            resolved = Path(str(path or "")).expanduser().resolve(strict=False)
+        except (OSError, ValueError):
+            return None
+        get_active = getattr(store, "get_active_worktree_lease", None)
+        if callable(get_active):
+            for candidate in {str(path or ""), str(resolved)}:
+                lease = get_active(worktree_path=candidate)
+                if lease is not None:
+                    return lease
+        get_many = getattr(store, "get_worktree_leases", None)
+        if not callable(get_many):
+            return None
+        try:
+            leases = get_many(status="active")
+        except TypeError:
+            leases = get_many()
+        for lease in leases or []:
+            try:
+                lease_path = Path(str(getattr(lease, "worktree_path", "") or "")).expanduser().resolve(
+                    strict=False
+                )
+            except (OSError, ValueError):
+                continue
+            if lease_path == resolved:
+                return lease
+        return None
+
+    @staticmethod
+    def _lease_fields(lease: Any | None) -> dict[str, str]:
+        if lease is None:
+            return {
+                "lease_id": "",
+                "owner_session_id": "",
+                "owner_task_id": "",
+                "lease_status": "",
+            }
+        return {
+            "lease_id": str(getattr(lease, "id", "") or ""),
+            "owner_session_id": str(getattr(lease, "session_id", "") or ""),
+            "owner_task_id": str(getattr(lease, "task_id", "") or ""),
+            "lease_status": str(getattr(lease, "status", "") or ""),
         }
 
     async def _work_mode_search(self, cid: str, args: dict[str, Any]) -> ToolResult:
