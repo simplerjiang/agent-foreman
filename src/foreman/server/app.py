@@ -466,14 +466,63 @@ def _compute_asset_ver() -> str:
 ASSET_VER = _compute_asset_ver()
 
 
-def _session_to_dict(s, *, context_compacted: bool = False) -> dict:
+def _same_workspace_path(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    try:
+        left_path = Path(left).expanduser().resolve(strict=False)
+        right_path = Path(right).expanduser().resolve(strict=False)
+        return os.path.normcase(str(left_path)) == os.path.normcase(str(right_path))
+    except OSError:
+        return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
+def _session_worktree_status(s, *, store=None, workspace: str = "", main_workspace: str = "") -> dict:
+    workspace_exists = bool(workspace and Path(workspace).expanduser().is_dir())
+    lease = None
+    get_active = getattr(store, "get_active_worktree_lease", None)
+    if callable(get_active):
+        try:
+            lease = get_active(session_id=str(getattr(s, "id", "") or ""))
+        except Exception:  # noqa: BLE001 - session listing is display-only
+            lease = None
+    worktree = str(getattr(lease, "worktree_path", "") or "") if lease is not None else ""
+    worktree_exists = bool(worktree and Path(worktree).expanduser().is_dir())
+    lease_status = str(getattr(lease, "status", "") or "none") if lease is not None else "none"
+    fallback_reason = ""
+    if lease is not None:
+        if lease_status != "active":
+            fallback_reason = "lease_not_active"
+        elif not worktree_exists:
+            fallback_reason = "worktree_missing"
+        elif not _same_workspace_path(workspace, worktree):
+            fallback_reason = "workspace_not_bound"
+    elif workspace and main_workspace and not workspace_exists and not _same_workspace_path(workspace, main_workspace):
+        fallback_reason = "workspace_missing"
+    return {
+        "worktree": worktree,
+        "worktree_exists": worktree_exists,
+        "branch": str(getattr(lease, "branch", "") or "") if lease is not None else "",
+        "lease_status": lease_status,
+        "fallback_reason": fallback_reason,
+    }
+
+
+def _session_to_dict(s, *, context_compacted: bool = False, store=None) -> dict:
     workspace = getattr(s, "workspace", "") or ""
     main_workspace = getattr(s, "main_workspace", "") or workspace
     context = (getattr(s, "plan", "") or "") if context_compacted else ""
+    worktree_status = _session_worktree_status(
+        s,
+        store=store,
+        workspace=workspace,
+        main_workspace=main_workspace,
+    )
     return {
         "id": s.id, "goal": s.goal, "status": s.status, "workspace": workspace,
         "main_workspace": main_workspace,
         "workspace_exists": bool(workspace and Path(workspace).expanduser().is_dir()),
+        **worktree_status,
         "agent_type": s.agent_type, "created_at": s.created_at, "updated_at": s.updated_at,
         "context_chars": len(context),
         "context_tokens": _approx_context_tokens(context),
@@ -1884,7 +1933,10 @@ def create_app(
                 and any(getattr(e, "type", "") == "context_compact" for e in store.get_events(session_id))
             )
 
-        return [_session_to_dict(s, context_compacted=compacted(s.id)) for s in store.get_sessions()]
+        return [
+            _session_to_dict(s, context_compacted=compacted(s.id), store=store)
+            for s in store.get_sessions()
+        ]
 
     @app.get("/api/sessions/{session_id}/events")
     async def list_events(session_id: str) -> list[dict]:
@@ -2068,7 +2120,7 @@ def create_app(
             hasattr(store, "get_events")
             and any(getattr(e, "type", "") == "context_compact" for e in store.get_events(session_id))
         )
-        return _session_to_dict(row, context_compacted=compacted)
+        return _session_to_dict(row, context_compacted=compacted, store=store)
 
     @app.post("/api/sessions/{session_id}/compact")
     async def compact_session(session_id: str) -> dict:
