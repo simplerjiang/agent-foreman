@@ -315,19 +315,30 @@ def test_workspace_thread_scrolls_to_bottom_on_new_messages():
     assert "const threadRef = useRef(null)" in js
     assert "lastThreadNodeId" in js
     assert "function scrollThreadToBottom()" in workspace
+    assert "function scrollThreadIfNeeded()" in workspace
     assert "el.scrollTop = el.scrollHeight" in workspace
     assert "lastForceScrollTokenRef" in workspace
     assert "pendingForceScrollRef" in workspace
+    assert "function cancelForceScroll()" in workspace
+    assert "pendingForceScrollRef.current = true;" in workspace
     assert (
         "const shouldScroll = switchedSession || stickToBottomRef.current || pendingForceScrollRef.current"
         in workspace
     )
     assert "if (!shouldScroll) return" in workspace
     assert (
-        "[sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId, forceScrollToken]"
+        "if (pendingForceScrollRef.current && threadNodes.length && !live) pendingForceScrollRef.current = false"
         in workspace
     )
-    assert 'className="thread" ref=${threadRef} onScroll=${onThreadScroll}' in js
+    assert "setTimeout(() => {" in workspace
+    assert (
+        "[sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId, forceScrollToken, live]"
+        in workspace
+    )
+    assert (
+        'className="thread" ref=${threadRef} onScroll=${onThreadScroll} onWheel=${cancelForceScroll} onPointerDown=${cancelForceScroll}'
+        in js
+    )
     assert 'data-testid="conversation-scroll-container"' in js
 
 
@@ -336,7 +347,7 @@ def test_desktop_send_forces_thread_scroll_without_touching_mobile_scroll():
     js = c.get("/app.js").text
     run_dispatch = js[
         js.index("async function runDispatch") : js.index("async function retrySession")
-    ]
+    ].replace("\r\n", "\n")
     mobile_start = js.index("function MobileWorkspace")
     mobile = js[
         mobile_start : js.index("// ===========================================================================", mobile_start)

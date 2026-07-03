@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.5.2",
+      en: "Desktop session force-scroll now stays armed across PM loading and first agent output after a user send, and session switches receive the same post-layout bottom correction without overriding explicit user scroll gestures.",
+      zh: "PC 端会话页在用户发送后会持续保持强制贴底，覆盖 PM loading 与首个 agent 输出；切换会话也会在布局稳定后校准到底部，同时不会覆盖用户明确滚动阅读旧消息的操作。",
+    },
+    {
       version: "v1.5.1",
       en: "Desktop session views now force-scroll to the bottom after a user sends or queues a message, including current-session timeline reloads, while background agent streaming still respects manual scrolling away from the bottom.",
       zh: "PC 端会话页现在会在用户发送或排队消息后强制滚动到底部，包括当前会话 timeline 重新灌入的场景；后台 agent 持续输出仍会尊重用户手动上翻阅读旧消息。",
@@ -1743,6 +1748,12 @@
       if (!el) return;
       el.scrollTop = el.scrollHeight;
     }
+    function cancelForceScroll() {
+      pendingForceScrollRef.current = false;
+    }
+    function scrollThreadIfNeeded() {
+      if (pendingForceScrollRef.current || stickToBottomRef.current) scrollThreadToBottom();
+    }
     useEffect(() => {
       const sid = sessionRow && sessionRow.id;
       const switchedSession = lastSessionIdRef.current !== sid;
@@ -1750,6 +1761,7 @@
       if (switchedSession) {
         lastSessionIdRef.current = sid;
         stickToBottomRef.current = true;
+        pendingForceScrollRef.current = true;
       }
       if (forceChanged) {
         lastForceScrollTokenRef.current = forceScrollToken;
@@ -1759,13 +1771,19 @@
       const shouldScroll = switchedSession || stickToBottomRef.current || pendingForceScrollRef.current;
       if (!shouldScroll) return;
       requestAnimationFrame(() => {
-        scrollThreadToBottom();
+        scrollThreadIfNeeded();
         requestAnimationFrame(() => {
-          scrollThreadToBottom();
-          if (pendingForceScrollRef.current && threadNodes.length) pendingForceScrollRef.current = false;
+          scrollThreadIfNeeded();
+          setTimeout(() => {
+            scrollThreadIfNeeded();
+            setTimeout(() => {
+              scrollThreadIfNeeded();
+              if (pendingForceScrollRef.current && threadNodes.length && !live) pendingForceScrollRef.current = false;
+            }, 350);
+          }, 100);
         });
       });
-    }, [sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId, forceScrollToken]);
+    }, [sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId, forceScrollToken, live]);
     function onThreadScroll() {
       const el = threadRef.current;
       if (!el) return;
@@ -1798,7 +1816,7 @@
 
         <div className="ws-body">
           <div className="ws-left">
-            <div className="thread" ref=${threadRef} onScroll=${onThreadScroll} data-testid="conversation-scroll-container">
+            <div className="thread" ref=${threadRef} onScroll=${onThreadScroll} onWheel=${cancelForceScroll} onPointerDown=${cancelForceScroll} data-testid="conversation-scroll-container">
               <div className="thread-inner">
                 ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
                   threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${openCalls} toggleCall=${toggleCall} onCard=${onCard} onApproval=${onApproval} openDetail=${openDetail} onCopy=${onCopy} helpers=${timelineHelpers} />`)}
