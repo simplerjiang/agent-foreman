@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.5.2
+
+English:
+
+- Desktop force-scroll now remains armed after user sends until the run settles or the user explicitly scrolls/presses the thread.
+- PM loading rows and first PM/agent output no longer move the conversation back to the middle of a long session.
+- Switching to a historical completed session now receives delayed post-layout bottom correction instead of stopping after the first render frame.
+
+中文：
+
+- PC 端用户发送后，强制贴底状态会保持到本次运行稳定，或直到用户明确滚动/点击会话区域取消。
+- PM loading 行和首个 PM/agent 输出不再把长会话滚回中部。
+- 切换到历史完成会话时，会在布局稳定后延迟校准到底部，不再只依赖首帧滚动。
+
 ## v1.5.1
 
 English:

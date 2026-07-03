@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.5.1`.
+Current documented release: `v1.5.2`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.5.2` | Desktop session force-scroll now stays armed across PM loading and first agent output after a user send, and session switches receive the same post-layout bottom correction without overriding explicit user scroll gestures. |
 | `v1.5.1` | Desktop session views now force-scroll to the bottom after a user sends or queues a message, including current-session timeline reloads, while background agent streaming still respects manual scrolling away from the bottom. |
 | `v1.5.0` | PM agent attempts now receive backend-generated `attempt_id` values across launch, resume, streamed output, stops, and errors, so repeated same-handle subagent runs render as distinct UI cards; PM plan, review, and recovery share the same tool runtime surface. |
 | `v1.4.9` | Session Stop now interrupts every live Runner handle in the session instead of only the latest subagent handle, so concurrent Codex/Claude/Copilot child processes are stopped together. |
@@ -297,7 +298,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.5.1`。
+当前文档版本：`v1.5.2`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -305,6 +306,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.5.2` | PC 端会话页在用户发送后会持续保持强制贴底，覆盖 PM loading 与首个 agent 输出；切换会话也会在布局稳定后校准到底部，同时不会覆盖用户明确滚动阅读旧消息的操作。 |
 | `v1.5.1` | PC 端会话页现在会在用户发送或排队消息后强制滚动到底部，包括当前会话 timeline 重新灌入的场景；后台 agent 持续输出仍会尊重用户手动上翻阅读旧消息。 |
 | `v1.5.0` | PM agent 每次 launch/resume 都会获得后端生成的 `attempt_id`，并贯穿输入、流式输出、stop/error，UI 不再把同 handle 的多次尝试合并；PM plan、review、recover 共用同一套工具上下文。 |
 | `v1.4.9` | Session Stop 现在会中断同一 session 内所有 live Runner handle，而不是只中断最后一个 subagent handle，确保并发的 Codex/Claude/Copilot 子进程一起停止。 |
