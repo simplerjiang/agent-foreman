@@ -390,7 +390,7 @@ def test_context_panel_renders_lane_usage():
     js = _dashboard_bundle(c)
     assert 'data-testid="context-lane-usage"' in js
     for lane in range(1, 8):
-        assert f"context-lane-${{lane}}" in js or f"context-lane-{lane}" in js
+        assert "context-lane-${lane}" in js or f"context-lane-{lane}" in js
     assert "Lane 7 noise is high" in js
 
 

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from foreman.client.core.context_v2 import ContextManager, estimate_context_usage
 from foreman.client.core.dispatch_service import (
     DispatchService,
