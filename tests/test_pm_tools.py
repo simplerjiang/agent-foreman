@@ -56,6 +56,147 @@ def test_pm_tool_schemas_allow_public_activity_note():
     assert spec.input_schema["additionalProperties"] is False
 
 
+def test_worktree_bind_schema_rejects_pm_owned_context_fields():
+    spec = next(item for item in PMToolRuntime.specs() if item.name == "worktree_bind_session")
+    schema = spec.to_prompt()["input_schema"]
+
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"lease_id"}
+    assert "lease_id" in schema["properties"]
+    assert "session_id" not in schema["properties"]
+    assert "task_id" not in schema["properties"]
+    assert "path" not in schema["properties"]
+    assert "worktree_path" not in schema["properties"]
+
+
+async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
+    result = await _runtime(tmp_path, git_worktree=False).call(
+        ToolCall("bind", "worktree_bind_session", {"lease_id": "lease-1"})
+    )
+
+    assert result.ok is False
+    assert result.error == "tool_disabled"
+
+
+def test_runtime_from_config_injects_worktree_dependencies(tmp_path: Path):
+    cfg = Config()
+    cfg.pm_tools.git_worktree = True
+    cfg.pm_tools.worktree_roots = [str(tmp_path / "worktrees")]
+    store = object()
+    manager = object()
+
+    rt = PMToolRuntime.from_config(
+        cfg,
+        tmp_path,
+        store=store,
+        session_id="s1",
+        task_id="t1",
+        main_workspace=tmp_path,
+        worktree_manager=manager,
+    )
+
+    assert rt.cfg.store is store
+    assert rt.cfg.session_id == "s1"
+    assert rt.cfg.task_id == "t1"
+    assert rt.cfg.main_workspace == tmp_path
+    assert rt.cfg.worktree_manager is manager
+    assert rt.cfg.git_worktree is True
+    assert rt.cfg.worktree_roots == [tmp_path / "worktrees"]
+    assert "session_id" not in rt.runtime_context()
+    assert "task_id" not in rt.runtime_context()
+    assert rt.worktree_context()["session_id"] == "s1"
+    assert rt.worktree_context()["task_id"] == "t1"
+
+
+async def test_worktree_bind_injects_context_and_switches_runtime_guard(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    (main / "main.txt").write_text("main", encoding="utf-8")
+    (worktree / "wt.txt").write_text("worktree", encoding="utf-8")
+    store = object()
+    seen: dict[str, object] = {}
+
+    class FakeWorktreeManager:
+        def bind_session(self, context, *, lease_id: str, reason: str = ""):
+            seen["context"] = context
+            seen["lease_id"] = lease_id
+            seen["reason"] = reason
+            return {
+                "ok": True,
+                "bound": True,
+                "lease_id": lease_id,
+                "main_workspace": str(main),
+                "workspace": str(worktree),
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+        )
+    )
+
+    bound = await rt.call(
+        ToolCall(
+            "bind",
+            "worktree_bind_session",
+            {"lease_id": "lease-1", "reason": "use isolated workspace"},
+        )
+    )
+    read_worktree = await rt.call(ToolCall("read", "read_file", {"path": "wt.txt"}))
+    read_main = await rt.call(ToolCall("main", "read_file", {"path": str(main / "main.txt")}))
+
+    assert bound.ok is True
+    assert bound.data["cwd"] == str(worktree.resolve(strict=False))
+    assert rt.runtime_context()["cwd"] == str(worktree.resolve(strict=False))
+    assert read_worktree.ok is True and read_worktree.data["text"] == "worktree"
+    assert read_main.ok is False and read_main.error == "path_outside_workspace"
+    context = seen["context"]
+    assert context["store"] is store
+    assert context["session_id"] == "s1"
+    assert context["task_id"] == "t1"
+    assert context["main_workspace"] == str(main)
+    assert context["worktree_roots"] == [str(worktree_root)]
+
+
+async def test_worktree_bind_rejects_pm_supplied_session_or_path(tmp_path: Path):
+    class FakeWorktreeManager:
+        def bind_session(self, context, *, lease_id: str, reason: str = ""):
+            raise AssertionError("manager must not be called for forbidden PM context fields")
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=tmp_path,
+            allowed_roots=[tmp_path],
+            main_workspace=tmp_path,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path],
+        )
+    )
+
+    result = await rt.call(
+        ToolCall(
+            "bind",
+            "worktree_bind_session",
+            {"lease_id": "lease-1", "session_id": "other", "worktree_path": str(tmp_path)},
+        )
+    )
+
+    assert result.ok is False
+    assert result.error == "invalid_args"
+
+
 async def test_pm_tool_loop_forwards_llm_stream_chunks(tmp_path: Path):
     chunks: list[dict] = []
 

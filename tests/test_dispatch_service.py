@@ -290,6 +290,74 @@ async def test_pm_plan_workspace_updates_session_and_launches_from_git_worktree(
     assert launched_workspaces == [str(worktree)]
 
 
+async def test_dispatch_injects_pm_runtime_context_dependencies(tmp_path):
+    store = _store(tmp_path)
+    launched = asyncio.Event()
+    manager = object()
+    seen: dict[str, object] = {}
+
+    class FakePM:
+        max_runs = 1
+
+        async def plan(
+            self,
+            goal,
+            *,
+            store=None,
+            session_id="",
+            task_id="",
+            workspace="",
+            main_workspace="",
+            worktree_manager=None,
+            **_kw,
+        ):
+            seen.update(
+                {
+                    "store": store,
+                    "session_id": session_id,
+                    "task_id": task_id,
+                    "workspace": workspace,
+                    "main_workspace": main_workspace,
+                    "worktree_manager": worktree_manager,
+                }
+            )
+            return PMPlan(agent="codex", model="", effort="", instruction="do it")
+
+        async def review(self, goal, plan, timeline, **_kw):
+            return PMReview(done=True, summary="done")
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            launched.set()
+            return object()
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(
+        cfg,
+        store,
+        bus=EventBus(),
+        runner=FakeRunner(),
+        pm_agent=FakePM(),
+        worktree_manager=manager,
+    )
+
+    res = await svc.create("inject context")
+    await asyncio.wait_for(launched.wait(), timeout=1)
+
+    assert seen["store"] is store
+    assert seen["session_id"] == res["session_id"]
+    assert seen["task_id"] == res["task_id"]
+    assert seen["workspace"] == str(tmp_path)
+    assert seen["main_workspace"] == str(tmp_path)
+    assert seen["worktree_manager"] is manager
+
+
 async def test_cancelled_session_is_not_overwritten_by_background_failure(tmp_path):
     store = _store(tmp_path)
     launched = asyncio.Event()
