@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import html
 import inspect
+import json
 import os
 import signal
 import uuid
@@ -379,6 +380,56 @@ class PMToolRuntime:
                 NEEDS_STRATEGY,
             ),
             ToolSpec(
+                "checkpoint_create",
+                "Create a recoverable git checkpoint for the current runtime workspace. "
+                "The current session_id/task_id are injected by the runtime.",
+                {
+                    "type": "object",
+                    "properties": {"label": string},
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "checkpoint_undo",
+                "Restore the current runtime workspace to a checkpoint owned by this session.",
+                {
+                    "type": "object",
+                    "properties": {"checkpoint_id": string},
+                    "required": ["checkpoint_id"],
+                    "additionalProperties": False,
+                },
+                NEEDS_STRATEGY,
+            ),
+            ToolSpec(
+                "git_diff_summary",
+                "Summarize the current workspace diff from a checkpoint owned by this session.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "checkpoint_id": string,
+                        "max_patch_chars": integer,
+                    },
+                    "required": ["checkpoint_id"],
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "test_run",
+                "Run a test command in the current workspace and write a log artifact.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "command": string,
+                        "timeout_s": integer,
+                    },
+                    "required": ["command"],
+                    "additionalProperties": False,
+                },
+                NEEDS_STRATEGY,
+            ),
+            ToolSpec(
                 "work_mode_search",
                 "Search applicable work-mode definitions (skills / code standards / QA rubrics) "
                 "for this task. Returns lightweight index entries (name + description), NOT full "
@@ -499,6 +550,14 @@ class PMToolRuntime:
                 return await self._worktree_diff(call.id, args)
             if call.name == "worktree_cleanup":
                 return await self._worktree_cleanup(call.id, args)
+            if call.name == "checkpoint_create":
+                return await self._checkpoint_create(call.id, args)
+            if call.name == "checkpoint_undo":
+                return await self._checkpoint_undo(call.id, args)
+            if call.name == "git_diff_summary":
+                return await self._git_diff_summary(call.id, args)
+            if call.name == "test_run":
+                return await self._test_run(call.id, args)
             if call.name.startswith("browser_"):
                 return await self._browser_call(ToolCall(call.id, call.name, args))
             if call.name == "work_mode_search":
@@ -864,6 +923,123 @@ class PMToolRuntime:
         risk = REQUIRES_APPROVAL if data.get("requires_approval") else NEEDS_STRATEGY
         return ToolResult(cid, "worktree_cleanup", True, data, risk=risk, artifact_paths=artifacts)
 
+    async def _checkpoint_create(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "checkpoint_create", False, error="invalid_args")
+        if not self._session_id:
+            return ToolResult(cid, "checkpoint_create", False, error="missing_session")
+        label = str(args.get("label") or "pm checkpoint").strip() or "pm checkpoint"
+        manager = self._checkpoint_manager()
+        step_index = manager.next_step(self._session_id)
+        sha = await _maybe_await(
+            manager.snapshot(
+                self._session_id,
+                step_index,
+                label=label,
+                task_id=self._task_id,
+            )
+        )
+        checkpoint_id = self._checkpoint_id_for_ref(str(sha), step_index)
+        return ToolResult(
+            cid,
+            "checkpoint_create",
+            True,
+            {
+                "checkpoint_id": checkpoint_id,
+                "vcs_ref": str(sha),
+                "step_index": step_index,
+                "label": label,
+                "workspace": str(self.cfg.workspace),
+            },
+        )
+
+    async def _checkpoint_undo(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path", "vcs_ref"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "checkpoint_undo", False, error="invalid_args", risk=NEEDS_STRATEGY)
+        checkpoint, error = self._checkpoint_for_current_session(args.get("checkpoint_id"))
+        if error:
+            return ToolResult(cid, "checkpoint_undo", False, error=error, risk=NEEDS_STRATEGY)
+        manager = self._checkpoint_manager()
+        redo_ref = await _maybe_await(
+            manager.undo_to(
+                str(getattr(checkpoint, "vcs_ref", "") or ""),
+                session_id=self._session_id,
+                task_id=self._task_id,
+            )
+        )
+        return ToolResult(
+            cid,
+            "checkpoint_undo",
+            True,
+            {
+                "checkpoint_id": str(getattr(checkpoint, "id", "") or ""),
+                "restored_ref": str(getattr(checkpoint, "vcs_ref", "") or ""),
+                "redo_ref": str(redo_ref or ""),
+                "redo_checkpoint_id": self._checkpoint_id_for_ref(str(redo_ref or ""), -1),
+                "workspace": str(self.cfg.workspace),
+            },
+            risk=NEEDS_STRATEGY,
+        )
+
+    async def _git_diff_summary(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path", "vcs_ref"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "git_diff_summary", False, error="invalid_args")
+        checkpoint, error = self._checkpoint_for_current_session(args.get("checkpoint_id"))
+        if error:
+            return ToolResult(cid, "git_diff_summary", False, error=error)
+        manager = self._checkpoint_manager()
+        data = manager.summarize_diff(
+            str(getattr(checkpoint, "vcs_ref", "") or ""),
+            max_patch_chars=_positive_int(args.get("max_patch_chars"), self.cfg.max_chars),
+            artifact_dir=self._tool_log_dir(),
+        )
+        data = {
+            **data,
+            "checkpoint_id": str(getattr(checkpoint, "id", "") or ""),
+            "base_ref": str(getattr(checkpoint, "vcs_ref", "") or ""),
+            "workspace": str(self.cfg.workspace),
+        }
+        artifacts = [str(path) for path in data.get("artifact_paths", []) if str(path or "").strip()]
+        return ToolResult(
+            cid,
+            "git_diff_summary",
+            True,
+            data,
+            truncated=bool(data.get("patch_truncated")),
+            artifact_paths=artifacts,
+        )
+
+    async def _test_run(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.shell:
+            return ToolResult(cid, "test_run", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "test_run", False, error="invalid_args", risk=NEEDS_STRATEGY)
+        command = normalize_command(str(args.get("command") or ""))
+        if not command:
+            return ToolResult(cid, "test_run", False, error="missing_command", risk=NEEDS_STRATEGY)
+        if self.gate is not None and getattr(self.gate, "classify", None):
+            if self.gate.classify(command) == REQUIRES_APPROVAL:
+                return ToolResult(cid, "test_run", False, error="requires_approval", risk=REQUIRES_APPROVAL)
+        timeout_s = min(max(_positive_int(args.get("timeout_s"), self.cfg.timeout_s), 1), 600)
+        data = await self._run_test_process(command, timeout_s=timeout_s)
+        return ToolResult(
+            cid,
+            "test_run",
+            True,
+            data,
+            truncated=bool(data.get("truncated")),
+            risk=NEEDS_STRATEGY,
+            artifact_paths=[
+                str(path)
+                for path in [data.get("log_path"), data.get("summary_artifact")]
+                if str(path or "").strip()
+            ],
+        )
+
     def bind_workspace(self, workspace: str | Path, *, main_workspace: object = None) -> None:
         resolved = self.worktree_guard.resolve(str(workspace))
         self.cfg.workspace = resolved
@@ -885,6 +1061,108 @@ class PMToolRuntime:
         self.cfg.workspace = main
         self.cfg.allowed_roots = [main]
         self.guard = PathGuard(main, [main])
+
+    def _checkpoint_manager(self):
+        from foreman.client.core.checkpoint import CheckpointManager
+
+        return CheckpointManager(self.cfg.workspace, store=self.cfg.store)
+
+    def _checkpoint_for_current_session(self, raw_id: object) -> tuple[Any | None, str]:
+        checkpoint_id = str(raw_id or "").strip()
+        if not checkpoint_id:
+            return None, "missing_checkpoint_id"
+        store = self.cfg.store
+        get_checkpoint = getattr(store, "get_checkpoint", None)
+        if store is None or not callable(get_checkpoint):
+            return None, "checkpoint_store_unavailable"
+        checkpoint = get_checkpoint(checkpoint_id)
+        if checkpoint is None:
+            return None, "checkpoint_not_found"
+        if str(getattr(checkpoint, "session_id", "") or "") != self._session_id:
+            return None, "checkpoint_session_mismatch"
+        return checkpoint, ""
+
+    def _checkpoint_id_for_ref(self, vcs_ref: str, step_index: int) -> str:
+        if not vcs_ref or self.cfg.store is None:
+            return ""
+        get_many = getattr(self.cfg.store, "get_checkpoints", None)
+        if not callable(get_many):
+            return ""
+        for checkpoint in reversed(list(get_many(self._session_id) or [])):
+            if str(getattr(checkpoint, "vcs_ref", "") or "") != vcs_ref:
+                continue
+            if step_index >= 0 and int(getattr(checkpoint, "step_index", -1)) != step_index:
+                continue
+            return str(getattr(checkpoint, "id", "") or "")
+        return ""
+
+    def _tool_log_dir(self) -> Path:
+        root = Path(str(self.cfg.main_workspace or self.cfg.workspace)).expanduser().resolve(strict=False)
+        log_dir = (root / ".foreman" / "tool-logs").resolve(strict=False)
+        if not (log_dir == root or root in log_dir.parents):
+            return (self.cfg.workspace / ".foreman" / "tool-logs").resolve(strict=False)
+        return log_dir
+
+    async def _run_test_process(self, command: str, *, timeout_s: int) -> dict[str, Any]:
+        log_dir = self._tool_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"test-run-{uuid.uuid4().hex[:12]}.log"
+        summary_path = log_dir / f"test-run-{uuid.uuid4().hex[:12]}.json"
+        kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            kwargs["start_new_session"] = True
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(self.cfg.workspace),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **kwargs,
+        )
+        timed_out = False
+        try:
+            stdout_raw, stderr_raw = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            timed_out = True
+            await _terminate_process(proc)
+            stdout_raw, stderr_raw = await proc.communicate()
+        stdout_full = stdout_raw.decode("utf-8", "replace")
+        stderr_full = stderr_raw.decode("utf-8", "replace")
+        returncode = proc.returncode if proc.returncode is not None else -1
+        stdout, out_trunc = _truncate(stdout_full, self.cfg.max_chars)
+        stderr, err_trunc = _truncate(stderr_full, self.cfg.max_chars)
+        passed = returncode == 0 and not timed_out
+        summary = _test_run_summary(
+            command=command,
+            returncode=returncode,
+            timed_out=timed_out,
+            timeout_s=timeout_s,
+            stdout=stdout_full,
+            stderr=stderr_full,
+        )
+        log_path.write_text(
+            f"$ {command}\n"
+            f"[system] timeout_s={timeout_s} returncode={returncode} timed_out={timed_out}\n"
+            f"[stdout]\n{stdout_full}\n[stderr]\n{stderr_full}",
+            encoding="utf-8",
+            newline="",
+        )
+        payload = {
+            "command": command,
+            "passed": passed,
+            "returncode": returncode,
+            "timed_out": timed_out,
+            "timeout_s": timeout_s,
+            "summary": summary,
+            "log_path": str(log_path),
+        }
+        summary_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        return {
+            **payload,
+            "stdout": stdout,
+            "stderr": stderr,
+            "truncated": out_trunc or err_trunc,
+            "summary_artifact": str(summary_path),
+        }
 
     def worktree_context(self) -> dict[str, Any]:
         return {
@@ -1447,6 +1725,28 @@ def _positive_int(value: object, default: int) -> int:
     except ValueError:
         return default
     return out if out > 0 else default
+
+
+def _test_run_summary(
+    *,
+    command: str,
+    returncode: int,
+    timed_out: bool,
+    timeout_s: int,
+    stdout: str,
+    stderr: str,
+) -> str:
+    if timed_out:
+        return f"Test command timed out after {timeout_s}s: {command}"
+    if returncode == 0:
+        return "Tests passed."
+    lines = [
+        line.strip()
+        for line in (stderr + "\n" + stdout).splitlines()
+        if line.strip()
+    ]
+    tail = " | ".join(lines[-4:])
+    return f"Tests failed with exit code {returncode}." + (f" {tail}" if tail else "")
 
 
 def _unwrap_tool_args(args: dict[str, Any]) -> dict[str, Any]:

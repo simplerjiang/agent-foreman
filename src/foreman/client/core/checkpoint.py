@@ -8,6 +8,7 @@ irreversible side-effects (network/DB/deploy) are blocked up front by the Gate, 
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import tempfile
 import uuid
@@ -171,6 +172,55 @@ class CheckpointManager:
             "-c", "core.autocrlf=false", "diff", from_tree, to_tree, env=base_env, check=False
         ).stdout
 
+    def summarize_diff(
+        self,
+        from_ref: str,
+        to_ref: str | None = None,
+        *,
+        max_patch_chars: int = 20000,
+        artifact_dir: str | Path | None = None,
+    ) -> dict:
+        """Return a compact, artifact-backed diff summary from a checkpoint to a ref/worktree."""
+        from .cards import diff_summary, parse_unified_diff
+
+        patch = self.diff(from_ref, to_ref)
+        files = parse_unified_diff(patch)
+        summary = diff_summary(files)
+        inline_patch, patch_truncated = _truncate_text(patch, max_patch_chars)
+        artifact_paths: list[str] = []
+        patch_artifact = ""
+        summary_artifact = ""
+        if artifact_dir is not None:
+            patch_artifact = _write_artifact(
+                Path(artifact_dir),
+                "git-diff-summary",
+                ".patch",
+                patch,
+            )
+            summary_payload = {
+                "summary": summary,
+                "files": [_diff_file_brief(file) for file in files],
+                "patch_artifact": patch_artifact,
+                "patch_truncated": patch_truncated,
+            }
+            summary_artifact = _write_artifact(
+                Path(artifact_dir),
+                "git-diff-summary",
+                ".json",
+                json.dumps(summary_payload, ensure_ascii=True, indent=2),
+            )
+            artifact_paths = [path for path in [summary_artifact, patch_artifact] if path]
+        return {
+            "ok": True,
+            "summary": summary,
+            "files": [_diff_file_brief(file) for file in files],
+            "patch": inline_patch,
+            "patch_truncated": patch_truncated,
+            "patch_artifact": patch_artifact,
+            "summary_artifact": summary_artifact,
+            "artifact_paths": artifact_paths,
+        }
+
     async def undo_to(
         self,
         vcs_ref: str,
@@ -246,3 +296,33 @@ class CheckpointManager:
                 break
             d.rmdir()
             d = d.parent
+
+
+def _diff_file_brief(file) -> dict:
+    return {
+        "path": file.path,
+        "old_path": file.old_path,
+        "additions": file.additions,
+        "deletions": file.deletions,
+        "binary": file.binary,
+    }
+
+
+def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
+    try:
+        limit = max(0, int(max_chars))
+    except (TypeError, ValueError):
+        limit = 0
+    if not limit or len(text) <= limit:
+        return text, False
+    marker = "\n...[diff truncated; see patch_artifact for full patch]...\n"
+    head = max(200, (limit - len(marker)) // 2)
+    tail = max(200, limit - len(marker) - head)
+    return text[:head].rstrip() + marker + text[-tail:].lstrip(), True
+
+
+def _write_artifact(directory: Path, prefix: str, suffix: str, content: str) -> str:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{prefix}-{uuid.uuid4().hex[:12]}{suffix}"
+    path.write_text(content, encoding="utf-8", newline="")
+    return str(path)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -9,6 +10,8 @@ from pathlib import Path
 from threading import Thread
 
 from foreman.client.core.gate import Gate
+from foreman.client.store import Store
+from foreman.client.store.models import Session
 from foreman.client.tools import EXTERNAL_WEB, PMToolLoop, PMToolRuntime, ToolCall
 from foreman.client.tools.loop import (
     SUBMIT_PLAN_TOOL,
@@ -39,6 +42,18 @@ def _serve_text() -> tuple[HTTPServer, str]:
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, f"http://127.0.0.1:{server.server_port}/x"
+
+
+def _git(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
 
 
 def _runtime(tmp_path: Path, *, cards=None, **kwargs) -> PMToolRuntime:
@@ -102,6 +117,32 @@ def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fi
         assert "path" not in spec.input_schema["properties"] or spec.name == "worktree_status"
         assert "worktree_path" not in spec.input_schema["properties"]
         assert "base_sha" not in spec.input_schema["properties"]
+
+
+def test_checkpoint_diff_and_test_tool_schemas_do_not_accept_pm_context_fields():
+    by_name = {item.name: item for item in PMToolRuntime.specs()}
+    specs = [
+        by_name["checkpoint_create"],
+        by_name["checkpoint_undo"],
+        by_name["git_diff_summary"],
+        by_name["test_run"],
+    ]
+
+    assert by_name["checkpoint_create"].risk == "safe"
+    assert by_name["git_diff_summary"].risk == "safe"
+    assert by_name["checkpoint_undo"].risk == "needs-strategy"
+    assert by_name["test_run"].risk == "needs-strategy"
+    assert set(by_name["checkpoint_create"].input_schema["properties"]) == {"label"}
+    assert set(by_name["checkpoint_undo"].input_schema["required"]) == {"checkpoint_id"}
+    assert set(by_name["git_diff_summary"].input_schema["required"]) == {"checkpoint_id"}
+    assert set(by_name["test_run"].input_schema["required"]) == {"command"}
+    for spec in specs:
+        assert spec.input_schema["additionalProperties"] is False
+        assert "session_id" not in spec.input_schema["properties"]
+        assert "task_id" not in spec.input_schema["properties"]
+        assert "path" not in spec.input_schema["properties"]
+        assert "workspace" not in spec.input_schema["properties"]
+        assert "worktree_path" not in spec.input_schema["properties"]
 
 
 async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
@@ -761,6 +802,137 @@ async def test_worktree_cleanup_requires_approval_risk_without_deleting(tmp_path
     assert result.data["removed"] is False
 
 
+async def test_checkpoint_diff_and_undo_tools_use_current_session_worktree(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "foreman@example.test")
+    _git(repo, "config", "user.name", "Foreman Test")
+    (repo / "app.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "app.txt")
+    _git(repo, "commit", "-m", "base")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), "HEAD")
+    store = Store(str(tmp_path / "foreman.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="g", workspace=str(worktree), main_workspace=str(repo)))
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=worktree,
+            allowed_roots=[worktree],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+            main_workspace=repo,
+            shell=True,
+        ),
+        gate=Gate(Config().gates),
+    )
+
+    checkpoint = await rt.call(
+        ToolCall("checkpoint", "checkpoint_create", {"label": "before change"})
+    )
+    (worktree / "app.txt").write_text("changed\n", encoding="utf-8")
+    (worktree / "new.txt").write_text("new\n", encoding="utf-8")
+    diff = await rt.call(
+        ToolCall(
+            "diff",
+            "git_diff_summary",
+            {"checkpoint_id": checkpoint.data["checkpoint_id"], "max_patch_chars": 80},
+        )
+    )
+    bad_diff = await rt.call(
+        ToolCall(
+            "bad-diff",
+            "git_diff_summary",
+            {"checkpoint_id": checkpoint.data["checkpoint_id"], "session_id": "other"},
+        )
+    )
+    undo = await rt.call(
+        ToolCall("undo", "checkpoint_undo", {"checkpoint_id": checkpoint.data["checkpoint_id"]})
+    )
+
+    assert checkpoint.ok is True
+    assert checkpoint.data["checkpoint_id"]
+    assert store.get_checkpoint(checkpoint.data["checkpoint_id"]).session_id == "s1"
+    assert diff.ok is True
+    assert diff.data["summary"]["files"] == 2
+    assert diff.data["patch_truncated"] is True
+    assert diff.artifact_paths
+    assert all(repo.resolve(strict=False) in Path(path).resolve(strict=False).parents for path in diff.artifact_paths)
+    assert bad_diff.ok is False and bad_diff.error == "invalid_args"
+    assert undo.ok is True
+    assert undo.data["redo_ref"]
+    assert (worktree / "app.txt").read_text(encoding="utf-8") == "base\n"
+    assert not (worktree / "new.txt").exists()
+    assert all(Path(path).is_file() for path in diff.artifact_paths)
+
+
+async def test_checkpoint_undo_rejects_cross_session_checkpoint(tmp_path: Path):
+    store = Store(str(tmp_path / "foreman.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="g", workspace=str(tmp_path)))
+    store.add_session(Session(id="other", goal="g", workspace=str(tmp_path)))
+    rt_other = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=tmp_path,
+            allowed_roots=[tmp_path],
+            store=store,
+            session_id="other",
+            task_id="t2",
+        )
+    )
+    checkpoint = await rt_other.call(ToolCall("checkpoint", "checkpoint_create", {}))
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=tmp_path,
+            allowed_roots=[tmp_path],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+        )
+    )
+
+    result = await rt.call(
+        ToolCall("undo", "checkpoint_undo", {"checkpoint_id": checkpoint.data["checkpoint_id"]})
+    )
+
+    assert result.ok is False
+    assert result.error == "checkpoint_session_mismatch"
+
+
+async def test_test_run_reports_failures_timeout_and_artifacts(tmp_path: Path):
+    command = f'"{sys.executable}" -c "import sys; print(\'bad test\'); sys.exit(2)"'
+    timeout_command = f'"{sys.executable}" -c "import time; time.sleep(3)"'
+    rt = _runtime(tmp_path, shell=True, timeout_s=5)
+
+    failed = await rt.call(ToolCall("test", "test_run", {"command": command}))
+    timed_out = await rt.call(
+        ToolCall("timeout", "test_run", {"command": timeout_command, "timeout_s": 1})
+    )
+
+    assert failed.ok is True
+    assert failed.data["passed"] is False
+    assert failed.data["returncode"] == 2
+    assert "Tests failed with exit code 2" in failed.data["summary"]
+    assert "bad test" in failed.data["summary"]
+    assert all(Path(path).is_file() for path in failed.artifact_paths)
+    assert timed_out.ok is True
+    assert timed_out.data["passed"] is False
+    assert timed_out.data["timed_out"] is True
+    assert "timed out" in timed_out.data["summary"]
+    assert all(Path(path).is_file() for path in timed_out.artifact_paths)
+
+
+async def test_test_run_rejects_requires_approval_command(tmp_path: Path):
+    rt = _runtime(tmp_path, shell=True)
+
+    result = await rt.call(ToolCall("test", "test_run", {"command": "git push origin main"}))
+
+    assert result.ok is False
+    assert result.error == "requires_approval"
+
+
 async def test_worktree_status_uses_existing_tool_events(tmp_path: Path):
     main = tmp_path / "repo"
     main.mkdir()
@@ -894,6 +1066,10 @@ async def test_disabled_write_run_command_gate_and_web_taint(tmp_path: Path):
         ToolCall("w", "write_file", {"path": "x.txt", "text": "x"})
     )
     assert disabled.error == "tool_disabled"
+    disabled_test = await _runtime(tmp_path).call(
+        ToolCall("test", "test_run", {"command": "python --version"})
+    )
+    assert disabled_test.error == "tool_disabled"
 
     rt = _runtime(tmp_path, shell=True)
     cmd = await rt.call(ToolCall("cmd", "run_command", {"command": "python --version"}))
