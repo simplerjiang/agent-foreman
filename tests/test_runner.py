@@ -185,6 +185,60 @@ async def test_subprocess_stop_failed_status_survives_zero_process_exit(tmp_path
     assert stop_payload["status"] == "failed"
 
 
+class _BlockingStreamAdapter:
+    name = "codex"
+
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped: list[str] = []
+
+    async def start(self, instruction, workspace, session_id, model="", effort=""):
+        self.started += 1
+        return AgentHandle(
+            id=f"{session_id}:{self.started}",
+            session_id=session_id,
+            pid=self.started,
+            cwd=str(workspace),
+        )
+
+    async def stream(self, handle):
+        yield make_event("agent_start", self.name, handle.session_id, payload={"pid": handle.pid})
+        await asyncio.Event().wait()
+
+    async def send(self, handle, text):
+        return None
+
+    async def interrupt(self, handle):
+        return None
+
+    async def stop(self, handle):
+        self.stopped.append(handle.id)
+
+
+async def test_handles_for_session_returns_all_live_handles(tmp_path):
+    runner = Runner(Config(), EventBus(), _store(tmp_path))
+    adapter = _BlockingStreamAdapter()
+    runner.adapters["codex"] = adapter
+
+    first = await runner.launch("codex", "do x", tmp_path, "s1")
+    second = await runner.launch("codex", "do y", tmp_path, "s1")
+
+    assert runner.handles_for_session("s1") == [first, second]
+    assert runner.handle_for_session("s1") is second
+
+    await runner.stop(second)
+    await asyncio.sleep(0)
+
+    assert runner.handles_for_session("s1") == [first]
+    assert runner.handle_for_session("s1") is first
+
+    await runner.stop(first)
+    await asyncio.sleep(0)
+
+    assert runner.handles_for_session("s1") == []
+    assert runner.handle_for_session("s1") is None
+
+
 async def test_interrupt_terminates_the_process(tmp_path):
     runner = Runner(Config(), EventBus(), _store(tmp_path))
     proc = FakeProc(pid=7, stdout_lines=[b'{"type":"result","result":"x"}\n'])

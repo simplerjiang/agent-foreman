@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.4.8`.
+Current documented release: `v1.4.9`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.4.9` | Session Stop now interrupts every live Runner handle in the session instead of only the latest subagent handle, so concurrent Codex/Claude/Copilot child processes are stopped together. |
 | `v1.4.8` | Subprocess terminal reconciliation now treats a non-zero OS process return code as authoritative over a CLI stop payload that reported success, while preserving CLI, process, and final return codes for diagnostics. |
 | `v1.4.7` | PM subagent runs now wait for real CLI completion across Codex, Claude, and Copilot, synthesize a final stop when Codex ends with `turn.completed` but no `result`, tag streamed runner events with task IDs, and keep separate UI cards for each subagent handle. |
 | `v1.4.6` | Context V2 follow-up hardening now makes compact install atomic, materializes sessions incrementally from a durable cursor, adds hot-path DB indexes, reconciles subprocess terminal status with OS return codes, refreshes git refs on resume, and adds temp SQLite plus browser Context panel release gates. |
@@ -294,7 +295,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.4.8`。
+当前文档版本：`v1.4.9`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -302,6 +303,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.4.9` | Session Stop 现在会中断同一 session 内所有 live Runner handle，而不是只中断最后一个 subagent handle，确保并发的 Codex/Claude/Copilot 子进程一起停止。 |
 | `v1.4.8` | subprocess 终态合并现在把非零 OS process return code 视为高于 CLI stop payload 成功码的权威结果，同时保留 CLI、process 和 final return code 便于排障。 |
 | `v1.4.7` | PM 子 agent 运行现在会兼容 Codex、Claude、Copilot 的真实 CLI 完成事件；Codex 只有 `turn.completed` 没有 `result` 时会合成最终 stop；Runner 流式事件会带上 task ID，UI 也会按子 agent handle 分开显示卡片。 |
 | `v1.4.6` | Context V2 后续加固现在让 compact 安装保持事务原子性，基于持久 cursor 增量 materialize session，补充热路径数据库索引，按 OS return code 合并 subprocess 终态，resume 时刷新 git refs，并加入 temp SQLite 与浏览器 Context 面板 release gate。 |

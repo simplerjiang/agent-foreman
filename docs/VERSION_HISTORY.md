@@ -4,6 +4,18 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.9
+
+English:
+
+- Session Stop now interrupts every live Runner handle in the session instead of only the latest subagent handle.
+- Concurrent direct Codex, Claude, and Copilot child processes now receive best-effort interrupts together when a session is stopped.
+
+中文：
+
+- Session Stop 现在会中断同一 session 内所有 live Runner handle，而不是只中断最后一个 subagent handle。
+- 同一会话中并发运行的 Codex、Claude、Copilot direct 子进程，现在会在停止会话时一起收到 best-effort interrupt。
+
 ## v1.4.8
 
 English:

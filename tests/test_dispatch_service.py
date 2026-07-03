@@ -193,6 +193,30 @@ async def test_cancel_interrupts_running_agent_handle(tmp_path):
     assert note["interrupted_agent"] is True
 
 
+async def test_interrupt_runner_handle_interrupts_all_live_session_handles(tmp_path):
+    store = _store(tmp_path)
+    interrupted = []
+
+    class Handle:
+        def __init__(self, handle_id):
+            self.id = handle_id
+
+    handles = [Handle("h1"), Handle("h2")]
+
+    class FakeRunner:
+        def handles_for_session(self, session_id):
+            assert session_id == "s1"
+            return handles
+
+        async def interrupt(self, handle):
+            interrupted.append(handle.id)
+
+    svc = DispatchService(Config(), store, bus=EventBus(), runner=FakeRunner())
+
+    assert await svc._interrupt_runner_handle("s1") is True
+    assert interrupted == ["h1", "h2"]
+
+
 async def test_pm_plan_workspace_updates_session_and_launches_from_git_worktree(tmp_path):
     store = _store(tmp_path)
     main = tmp_path / "main"
