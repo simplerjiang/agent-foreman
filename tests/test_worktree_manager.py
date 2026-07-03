@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -58,8 +59,13 @@ def _lease_context(
     worktree: Path,
     base_sha: str,
     branch: str = "feature",
+    session_id: str = "s1",
+    task_id: str = "t1",
+    status: str = "active",
 ) -> dict:
-    store.add_session(Session(id="s1", goal="goal", workspace=str(worktree), main_workspace=str(repo)))
+    store.add_session(
+        Session(id=session_id, goal="goal", workspace=str(worktree), main_workspace=str(repo))
+    )
     store.add_worktree_lease(
         WorktreeLease(
             id="lease-1",
@@ -70,15 +76,15 @@ def _lease_context(
             base_ref="main",
             base_sha=base_sha,
             head_sha=base_sha,
-            session_id="s1",
-            task_id="t1",
-            status="active",
+            session_id=session_id,
+            task_id=task_id,
+            status=status,
         )
     )
     return {
         "store": store,
-        "session_id": "s1",
-        "task_id": "t1",
+        "session_id": session_id,
+        "task_id": task_id,
         "workspace": str(worktree),
         "main_workspace": str(repo),
         "worktree_roots": [str(worktree.parent)],
@@ -204,6 +210,162 @@ def test_diff_reports_binary_and_truncates_large_patch_artifact(tmp_path: Path):
     assert result["patch_truncated"] is True
     assert "worktree diff truncated" in result["patch"]
     assert Path(result["patch_artifact"]).is_file()
+
+
+def test_cleanup_dry_run_and_delete_clean_merged_owned_worktree(tmp_path: Path):
+    repo = _repo(tmp_path)
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "--bare", str(remote))
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "origin", "main")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    _git(worktree, "push", "origin", "feature")
+    store = _store(tmp_path)
+    context = _lease_context(store, repo=repo, worktree=worktree, base_sha=base_sha)
+    manager = WorktreeManager()
+
+    dry_run = manager.cleanup(context, dry_run=True, reason="ready")
+
+    assert dry_run["ok"] is True
+    assert dry_run["safe"] is True
+    assert dry_run["would_remove"] is True
+    assert dry_run["removed"] is False
+    assert dry_run["dirty"] is False
+    assert dry_run["branch_merged"] is True
+    assert worktree.exists()
+    assert store.get_worktree_lease("lease-1").status == "active"
+    dry_artifact = Path(dry_run["cleanup_artifact"]).resolve(strict=True)
+    assert repo.resolve(strict=False) in dry_artifact.parents
+    assert json.loads(dry_artifact.read_text(encoding="utf-8"))["lease"]["base_sha"] == base_sha
+
+    removed = manager.cleanup(context, dry_run=False, reason="ready")
+
+    assert removed["ok"] is True
+    assert removed["safe"] is True
+    assert removed["removed"] is True
+    assert removed["would_remove"] is True
+    assert not worktree.exists()
+    assert store.get_worktree_lease("lease-1").status == "removed"
+    assert Path(removed["cleanup_artifact"]).is_file()
+    assert "feature" in _git(repo, "branch", "--list", "feature")
+    assert "refs/heads/feature" in _git(repo, "ls-remote", "--heads", "origin", "feature")
+
+
+def test_cleanup_allows_released_current_session_lease(tmp_path: Path):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    _commit(worktree, "feature.txt", "released\n", "released")
+    store = _store(tmp_path)
+    context = _lease_context(
+        store,
+        repo=repo,
+        worktree=worktree,
+        base_sha=base_sha,
+        status="released",
+    )
+
+    result = WorktreeManager().cleanup(context, dry_run=False)
+
+    assert result["ok"] is True
+    assert result["safe"] is True
+    assert result["branch_merged"] is True
+    assert result["removed"] is True
+    assert result["lease_status"] == "removed"
+    assert not worktree.exists()
+    assert store.get_worktree_lease("lease-1").status == "removed"
+
+
+def test_cleanup_rejects_dirty_worktree_and_preserves_artifact(tmp_path: Path):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    context = _lease_context(_store(tmp_path), repo=repo, worktree=worktree, base_sha=base_sha)
+    (worktree / "file.txt").write_text("dirty\n", encoding="utf-8")
+
+    result = WorktreeManager().cleanup(context, dry_run=False)
+
+    assert result["ok"] is True
+    assert result["safe"] is False
+    assert result["dirty"] is True
+    assert result["requires_approval"] is True
+    assert result["removed"] is False
+    assert worktree.exists()
+    artifact = Path(result["cleanup_artifact"]).resolve(strict=True)
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["diff"]["base_sha"] == base_sha
+    assert payload["diff"]["changed_files"][0]["path"] == "file.txt"
+
+
+def test_cleanup_rejects_unmerged_branch_without_deleting(tmp_path: Path):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    context = _lease_context(_store(tmp_path), repo=repo, worktree=worktree, base_sha=base_sha)
+    _commit(worktree, "feature.txt", "feature\n", "feature")
+
+    result = WorktreeManager().cleanup(context, dry_run=False)
+
+    assert result["ok"] is True
+    assert result["safe"] is False
+    assert result["dirty"] is False
+    assert result["branch_merged"] is False
+    assert result["requires_approval"] is True
+    assert result["error"] == "branch_unmerged"
+    assert result["removed"] is False
+    assert worktree.exists()
+
+
+def test_cleanup_rejects_cross_session_and_outside_root_leases(tmp_path: Path):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    outside = tmp_path / "outside"
+    root = tmp_path / "allowed"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    store = _store(tmp_path)
+    _lease_context(
+        store,
+        repo=repo,
+        worktree=worktree,
+        base_sha=base_sha,
+        session_id="other-session",
+        task_id="other-task",
+    )
+
+    cross_session = WorktreeManager().cleanup(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "workspace": str(worktree),
+            "main_workspace": str(repo),
+            "worktree_roots": [str(worktree.parent)],
+        },
+        dry_run=False,
+    )
+
+    assert cross_session["safe"] is False
+    assert cross_session["requires_approval"] is True
+    assert cross_session["error"] == "no_current_session_worktree"
+    assert worktree.exists()
+
+    outside_db = tmp_path / "outside-db"
+    outside_db.mkdir()
+    store2 = _store(outside_db)
+    context = _lease_context(store2, repo=repo, worktree=outside, base_sha=base_sha)
+    context["worktree_roots"] = [str(root)]
+
+    outside_root = WorktreeManager().cleanup(context, dry_run=False)
+
+    assert outside_root["safe"] is False
+    assert outside_root["requires_approval"] is True
+    assert outside_root["error"] == "path_outside_worktree_roots"
 
 
 def test_status_accepts_directory_symlink_when_available(tmp_path: Path):

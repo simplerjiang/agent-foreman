@@ -365,6 +365,20 @@ class PMToolRuntime:
                 SAFE,
             ),
             ToolSpec(
+                "worktree_cleanup",
+                "Cleanup the current session worktree after producing a checkpoint artifact. "
+                "The current session_id/task_id/path are injected by the runtime.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "dry_run": boolean,
+                        "reason": string,
+                    },
+                    "additionalProperties": False,
+                },
+                NEEDS_STRATEGY,
+            ),
+            ToolSpec(
                 "work_mode_search",
                 "Search applicable work-mode definitions (skills / code standards / QA rubrics) "
                 "for this task. Returns lightweight index entries (name + description), NOT full "
@@ -483,6 +497,8 @@ class PMToolRuntime:
                 return await self._worktree_status(call.id, args)
             if call.name == "worktree_diff":
                 return await self._worktree_diff(call.id, args)
+            if call.name == "worktree_cleanup":
+                return await self._worktree_cleanup(call.id, args)
             if call.name.startswith("browser_"):
                 return await self._browser_call(ToolCall(call.id, call.name, args))
             if call.name == "work_mode_search":
@@ -791,6 +807,63 @@ class PMToolRuntime:
         ]
         return ToolResult(cid, "worktree_diff", True, data, artifact_paths=artifacts)
 
+    async def _worktree_cleanup(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_cleanup", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {
+            "session_id",
+            "task_id",
+            "path",
+            "worktree_path",
+            "base_ref",
+            "base_sha",
+            "branch",
+        }
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "worktree_cleanup", False, error="invalid_args", risk=NEEDS_STRATEGY)
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_cleanup", False, error=error, risk=NEEDS_STRATEGY)
+        cleanup = getattr(manager, "cleanup", None)
+        if not callable(cleanup):
+            return ToolResult(
+                cid,
+                "worktree_cleanup",
+                False,
+                error="worktree_manager_unavailable",
+                risk=NEEDS_STRATEGY,
+            )
+        data = await _maybe_await(
+            cleanup(
+                self.worktree_context(),
+                dry_run=args.get("dry_run", True) is not False,
+                reason=str(args.get("reason") or ""),
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(
+                cid, "worktree_cleanup", False, error="invalid_worktree_result", risk=NEEDS_STRATEGY
+            )
+        if not data.get("ok", True):
+            return ToolResult(
+                cid,
+                "worktree_cleanup",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_cleanup_failed"),
+                risk=NEEDS_STRATEGY,
+            )
+        if data.get("removed"):
+            self._reset_workspace_to_main_if_deleted(data)
+            data = {**data, "cwd": str(self.cfg.workspace)}
+        artifacts = [
+            str(path)
+            for path in (data.get("artifact_paths") or [data.get("cleanup_artifact")])
+            if str(path or "").strip()
+        ]
+        risk = REQUIRES_APPROVAL if data.get("requires_approval") else NEEDS_STRATEGY
+        return ToolResult(cid, "worktree_cleanup", True, data, risk=risk, artifact_paths=artifacts)
+
     def bind_workspace(self, workspace: str | Path, *, main_workspace: object = None) -> None:
         resolved = self.worktree_guard.resolve(str(workspace))
         self.cfg.workspace = resolved
@@ -798,6 +871,20 @@ class PMToolRuntime:
         if main_workspace:
             self.cfg.main_workspace = Path(str(main_workspace)).expanduser()
         self.guard = PathGuard(resolved, [resolved])
+
+    def _reset_workspace_to_main_if_deleted(self, data: dict[str, Any]) -> None:
+        try:
+            removed_path = Path(str(data.get("workspace") or data.get("path") or "")).resolve(strict=False)
+            current = self.cfg.workspace.resolve(strict=False)
+        except (OSError, ValueError):
+            return
+        if removed_path != current:
+            return
+        main_raw = data.get("main_workspace") or self.cfg.main_workspace or self.cfg.workspace
+        main = Path(str(main_raw)).expanduser().resolve(strict=False)
+        self.cfg.workspace = main
+        self.cfg.allowed_roots = [main]
+        self.guard = PathGuard(main, [main])
 
     def worktree_context(self) -> dict[str, Any]:
         return {

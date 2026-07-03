@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -376,6 +377,22 @@ class WorktreeManager:
             return _clean_diff_result(error="no_active_worktree_lease")
         if str(getattr(lease, "status", "") or "") != "active":
             return _clean_diff_result(lease=lease, error="lease_not_active")
+        return self._diff_for_lease(
+            context,
+            lease,
+            max_patch_chars=max_patch_chars,
+            include_patch=include_patch,
+        )
+
+    def _diff_for_lease(
+        self,
+        context: dict[str, Any],
+        lease: Any,
+        *,
+        max_patch_chars: int = 20000,
+        include_patch: bool = True,
+        write_patch_artifact: bool = True,
+    ) -> dict[str, Any]:
         worktree = _normalize_path(getattr(lease, "worktree_path", "") or "")
         main_workspace = _normalize_path(
             getattr(lease, "main_workspace", "")
@@ -434,7 +451,7 @@ class WorktreeManager:
         deletions = sum(int(item.get("deletions") or 0) for item in files)
         patch_artifact = ""
         artifact_paths: list[str] = []
-        if files and include_patch and patch:
+        if files and include_patch and patch and write_patch_artifact:
             patch_artifact = _write_diff_artifact(worktree, patch)
             artifact_paths.append(patch_artifact)
         inline_patch, patch_truncated = _truncate_patch(patch if include_patch else "", max_patch_chars)
@@ -459,6 +476,115 @@ class WorktreeManager:
             "patch_artifact": patch_artifact,
             "artifact_paths": artifact_paths,
         }
+
+    def cleanup(
+        self,
+        context: dict[str, Any],
+        *,
+        dry_run: bool = True,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        session_id = str(context.get("session_id") or "").strip()
+        store = context.get("store")
+        lease = _cleanup_lease_for_session(store, session_id)
+        if lease is None:
+            return _cleanup_reject("no_current_session_worktree", requires_approval=True)
+        if str(getattr(lease, "session_id", "") or "") != session_id:
+            return _cleanup_reject("lease_session_mismatch", lease=lease, requires_approval=True)
+        if str(getattr(lease, "status", "") or "") == "removed":
+            return _cleanup_result(lease=lease, safe=True, already_removed=True, reason=reason)
+        worktree = _normalize_path(getattr(lease, "worktree_path", "") or "")
+        main_workspace = _normalize_path(
+            getattr(lease, "main_workspace", "")
+            or context.get("main_workspace")
+            or context.get("workspace")
+            or "."
+        )
+        root_error = _path_root_error(
+            worktree,
+            _worktree_roots(main_workspace, context.get("worktree_roots")),
+        )
+        if root_error:
+            return _cleanup_reject(root_error, lease=lease, requires_approval=True)
+        diff_data = self._diff_for_lease(
+            context,
+            lease,
+            max_patch_chars=0,
+            include_patch=True,
+            write_patch_artifact=False,
+        )
+        cleanup_artifact = _write_cleanup_artifact(main_workspace, lease, diff_data)
+        if not worktree.exists():
+            if not dry_run:
+                _mark_lease_removed(store, lease)
+            return _cleanup_result(
+                lease=lease,
+                safe=True,
+                would_remove=False,
+                removed=not dry_run,
+                already_removed=True,
+                cleanup_artifact=cleanup_artifact,
+                reason=reason,
+            )
+        listed = self.list(main_workspace)
+        if not listed.get("ok"):
+            return _cleanup_reject(str(listed.get("error") or "worktree_list_failed"), lease=lease)
+        rows = [row for row in listed.get("worktrees", []) if isinstance(row, dict)]
+        registered = _find_worktree(rows, worktree, str(getattr(lease, "branch", "") or ""))
+        if registered is None:
+            return _cleanup_reject("worktree_not_registered", lease=lease, requires_approval=True)
+        status = self.status(worktree, str(getattr(lease, "base_sha", "") or ""))
+        if not status.get("ok"):
+            return _cleanup_reject(str(status.get("error") or "worktree_status_failed"), lease=lease)
+        dirty = bool(status.get("dirty")) or bool(getattr(lease, "dirty", False))
+        lease_status = str(getattr(lease, "status", "") or "")
+        branch_merged = int(status.get("ahead") or 0) == 0 or lease_status == "released"
+        if dirty:
+            return _cleanup_result(
+                lease=lease,
+                safe=False,
+                dirty=True,
+                branch_merged=branch_merged,
+                requires_approval=True,
+                cleanup_artifact=cleanup_artifact,
+                reason=reason,
+            )
+        if not branch_merged:
+            return _cleanup_result(
+                lease=lease,
+                safe=False,
+                dirty=False,
+                branch_merged=False,
+                requires_approval=True,
+                cleanup_artifact=cleanup_artifact,
+                error="branch_unmerged",
+                reason=reason,
+            )
+        if dry_run:
+            return _cleanup_result(
+                lease=lease,
+                safe=True,
+                would_remove=True,
+                dirty=False,
+                branch_merged=True,
+                cleanup_artifact=cleanup_artifact,
+                reason=reason,
+            )
+        removed = self._git(main_workspace, "worktree", "remove", str(worktree))
+        if not removed["ok"]:
+            return _cleanup_reject("git_worktree_remove_failed", lease=lease, detail=removed["stderr"])
+        self._git(main_workspace, "worktree", "prune")
+        updated = _mark_lease_removed(store, lease)
+        return _cleanup_result(
+            lease=updated or lease,
+            safe=True,
+            removed=True,
+            would_remove=True,
+            dirty=False,
+            branch_merged=True,
+            cleanup_artifact=cleanup_artifact,
+            reason=reason,
+        )
 
     def _git(self, cwd: Path, *args: str) -> dict[str, Any]:
         env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
@@ -781,6 +907,31 @@ def _active_lease_for_session(store: Any, session_id: str) -> Any | None:
     return None
 
 
+def _cleanup_lease_for_session(store: Any, session_id: str) -> Any | None:
+    if store is None or not session_id:
+        return None
+    active = _active_lease_for_session(store, session_id)
+    if active is not None:
+        return active
+    get_many = getattr(store, "get_worktree_leases", None)
+    if not callable(get_many):
+        return None
+    try:
+        leases = get_many(session_id=session_id)
+    except TypeError:
+        leases = get_many()
+    owned = [
+        lease
+        for lease in (leases or [])
+        if str(getattr(lease, "session_id", "") or "") == session_id
+    ]
+    for status in ("released", "stale", "removed"):
+        for lease in owned:
+            if str(getattr(lease, "status", "") or "") == status:
+                return lease
+    return None
+
+
 def _lease_owned_by(lease: Any, session_id: str, task_id: str) -> bool:
     if lease is None:
         return False
@@ -813,6 +964,133 @@ def _clean_diff_result(*, lease: Any = None, error: str = "") -> dict[str, Any]:
         "patch_artifact": "",
         "artifact_paths": [],
     }
+
+
+def _cleanup_reject(
+    code: str,
+    *,
+    lease: Any = None,
+    requires_approval: bool = False,
+    detail: str = "",
+) -> dict[str, Any]:
+    return _cleanup_result(
+        lease=lease,
+        safe=False,
+        requires_approval=requires_approval,
+        error=code,
+        detail=detail,
+    )
+
+
+def _cleanup_result(
+    *,
+    lease: Any = None,
+    safe: bool,
+    would_remove: bool = False,
+    removed: bool = False,
+    already_removed: bool = False,
+    dirty: bool = False,
+    branch_merged: bool = False,
+    requires_approval: bool = False,
+    cleanup_artifact: str = "",
+    error: str = "",
+    detail: str = "",
+    reason: str = "",
+) -> dict[str, Any]:
+    artifact_paths = [cleanup_artifact] if cleanup_artifact else []
+    return {
+        "ok": True,
+        "decision": "cleanup",
+        "safe": safe,
+        "would_remove": would_remove,
+        "removed": removed,
+        "already_removed": already_removed,
+        "dirty": dirty,
+        "branch_merged": branch_merged,
+        "requires_approval": requires_approval,
+        "error": error,
+        "detail": detail.strip(),
+        "reason": reason,
+        "lease_id": str(getattr(lease, "id", "") or ""),
+        "lease_status": str(getattr(lease, "status", "") or ""),
+        "owner_session_id": str(getattr(lease, "session_id", "") or ""),
+        "owner_task_id": str(getattr(lease, "task_id", "") or ""),
+        "workspace": str(getattr(lease, "worktree_path", "") or ""),
+        "path": str(getattr(lease, "worktree_path", "") or ""),
+        "main_workspace": str(getattr(lease, "main_workspace", "") or ""),
+        "repo_root": str(getattr(lease, "repo_root", "") or ""),
+        "branch": str(getattr(lease, "branch", "") or ""),
+        "base_ref": str(getattr(lease, "base_ref", "") or ""),
+        "base_sha": str(getattr(lease, "base_sha", "") or ""),
+        "head_sha": str(getattr(lease, "head_sha", "") or ""),
+        "cleanup_artifact": cleanup_artifact,
+        "artifact_paths": artifact_paths,
+        "risks": [error] if error else [],
+    }
+
+
+def _mark_lease_removed(store: Any, lease: Any) -> Any | None:
+    if store is None or lease is None:
+        return lease
+    update = getattr(store, "update_worktree_lease", None)
+    lease_id = str(getattr(lease, "id", "") or "")
+    if callable(update) and lease_id:
+        try:
+            return update(lease_id, status="removed", dirty=False, locked=False)
+        except TypeError:
+            return update(lease_id, status="removed")
+    try:
+        setattr(lease, "status", "removed")
+        setattr(lease, "dirty", False)
+        setattr(lease, "locked", False)
+    except Exception:  # noqa: BLE001 - best-effort fallback for lightweight fakes
+        return lease
+    return lease
+
+
+def _write_cleanup_artifact(main_workspace: Path, lease: Any, diff_data: dict[str, Any]) -> str:
+    try:
+        root = main_workspace.resolve(strict=False)
+        log_dir = (root / ".foreman" / "tool-logs").resolve(strict=False)
+        if not (log_dir == root or root in log_dir.parents):
+            return ""
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"worktree-cleanup-{uuid.uuid4().hex[:12]}.json"
+        payload = {
+            "kind": "worktree_cleanup_checkpoint",
+            "lease": {
+                "id": str(getattr(lease, "id", "") or ""),
+                "repo_root": str(getattr(lease, "repo_root", "") or ""),
+                "main_workspace": str(getattr(lease, "main_workspace", "") or ""),
+                "worktree_path": str(getattr(lease, "worktree_path", "") or ""),
+                "branch": str(getattr(lease, "branch", "") or ""),
+                "base_ref": str(getattr(lease, "base_ref", "") or ""),
+                "base_sha": str(getattr(lease, "base_sha", "") or ""),
+                "head_sha": str(getattr(lease, "head_sha", "") or ""),
+                "session_id": str(getattr(lease, "session_id", "") or ""),
+                "task_id": str(getattr(lease, "task_id", "") or ""),
+                "status": str(getattr(lease, "status", "") or ""),
+            },
+            "diff": {
+                "ok": bool(diff_data.get("ok", True)),
+                "error": str(diff_data.get("error") or ""),
+                "base_ref": str(diff_data.get("base_ref") or ""),
+                "base_sha": str(diff_data.get("base_sha") or ""),
+                "compare_to": str(diff_data.get("compare_to") or ""),
+                "head_sha": str(diff_data.get("head_sha") or ""),
+                "clean": bool(diff_data.get("clean", False)),
+                "changed_files": diff_data.get("changed_files") or [],
+                "files_changed": int(diff_data.get("files_changed") or 0),
+                "additions": int(diff_data.get("additions") or 0),
+                "deletions": int(diff_data.get("deletions") or 0),
+                "patch": str(diff_data.get("patch") or ""),
+                "patch_truncated": bool(diff_data.get("patch_truncated", False)),
+            },
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(path)
+    except (OSError, ValueError, TypeError):
+        return ""
 
 
 def _parse_diff_files(name_status: str, numstat: str) -> list[dict[str, Any]]:

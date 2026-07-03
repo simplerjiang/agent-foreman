@@ -77,22 +77,26 @@ def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fi
     list_spec = by_name["worktree_list"]
     status_spec = by_name["worktree_status"]
     diff_spec = by_name["worktree_diff"]
+    cleanup_spec = by_name["worktree_cleanup"]
 
     assert plan_spec.risk == "safe"
     assert create_spec.risk == "needs-strategy"
     assert list_spec.risk == "safe"
     assert status_spec.risk == "safe"
     assert diff_spec.risk == "safe"
+    assert cleanup_spec.risk == "needs-strategy"
     assert plan_spec.input_schema["additionalProperties"] is False
     assert create_spec.input_schema["additionalProperties"] is False
     assert list_spec.input_schema["additionalProperties"] is False
     assert status_spec.input_schema["additionalProperties"] is False
     assert diff_spec.input_schema["additionalProperties"] is False
+    assert cleanup_spec.input_schema["additionalProperties"] is False
     assert "custom_path" in plan_spec.input_schema["properties"]
     assert "custom_path" in create_spec.input_schema["properties"]
     assert "dry_run" in create_spec.input_schema["properties"]
     assert "bind_session" in create_spec.input_schema["properties"]
-    for spec in (plan_spec, create_spec, list_spec, status_spec, diff_spec):
+    assert set(cleanup_spec.input_schema["properties"]) == {"dry_run", "reason"}
+    for spec in (plan_spec, create_spec, list_spec, status_spec, diff_spec, cleanup_spec):
         assert "session_id" not in spec.input_schema["properties"]
         assert "task_id" not in spec.input_schema["properties"]
         assert "path" not in spec.input_schema["properties"] or spec.name == "worktree_status"
@@ -108,6 +112,7 @@ async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
         ToolCall("list", "worktree_list", {}),
         ToolCall("status", "worktree_status", {}),
         ToolCall("diff", "worktree_diff", {}),
+        ToolCall("cleanup", "worktree_cleanup", {}),
     ]
 
     for call in cases:
@@ -649,6 +654,111 @@ async def test_worktree_diff_injects_runtime_context_and_rejects_pm_context_fiel
     assert manager.contexts[0]["main_workspace"] == str(main)
     assert rejected.ok is False and rejected.error == "invalid_args"
     assert rejected_base.ok is False and rejected_base.error == "invalid_args"
+
+
+async def test_worktree_cleanup_injects_current_context_and_resets_deleted_cwd(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    artifact = main / ".foreman" / "tool-logs" / "cleanup.json"
+    seen: dict[str, object] = {}
+
+    class FakeWorktreeManager:
+        def cleanup(self, context, *, dry_run: bool = True, reason: str = ""):
+            seen["context"] = context
+            seen["dry_run"] = dry_run
+            seen["reason"] = reason
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text("{}", encoding="utf-8")
+            return {
+                "ok": True,
+                "safe": True,
+                "removed": not dry_run,
+                "requires_approval": False,
+                "workspace": str(worktree),
+                "path": str(worktree),
+                "main_workspace": str(main),
+                "cleanup_artifact": str(artifact),
+                "artifact_paths": [str(artifact)],
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=worktree,
+            allowed_roots=[worktree],
+            store=SimpleNamespace(),
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+        )
+    )
+
+    result = await rt.call(
+        ToolCall("cleanup", "worktree_cleanup", {"dry_run": False, "reason": "done"})
+    )
+    rejected = await rt.call(
+        ToolCall("bad", "worktree_cleanup", {"worktree_path": str(worktree)})
+    )
+    rejected_base = await rt.call(
+        ToolCall("bad-base", "worktree_cleanup", {"base_ref": "origin/main"})
+    )
+
+    assert result.ok is True
+    assert result.risk == "needs-strategy"
+    assert result.artifact_paths == [str(artifact)]
+    assert result.data["cwd"] == str(main.resolve(strict=False))
+    assert rt.runtime_context()["cwd"] == str(main.resolve(strict=False))
+    context = seen["context"]
+    assert context["session_id"] == "s1"
+    assert context["task_id"] == "t1"
+    assert context["workspace"] == str(worktree)
+    assert context["main_workspace"] == str(main)
+    assert context["worktree_roots"] == [str(worktree_root)]
+    assert seen["dry_run"] is False
+    assert seen["reason"] == "done"
+    assert rejected.ok is False and rejected.error == "invalid_args"
+    assert rejected_base.ok is False and rejected_base.error == "invalid_args"
+
+
+async def test_worktree_cleanup_requires_approval_risk_without_deleting(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+
+    class FakeWorktreeManager:
+        def cleanup(self, context, *, dry_run: bool = True, reason: str = ""):
+            return {
+                "ok": True,
+                "safe": False,
+                "removed": False,
+                "requires_approval": True,
+                "error": "dirty_worktree",
+                "workspace": str(main),
+                "main_workspace": str(main),
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+        )
+    )
+
+    result = await rt.call(ToolCall("cleanup", "worktree_cleanup", {"dry_run": False}))
+
+    assert result.ok is True
+    assert result.risk == "requires-approval"
+    assert result.data["requires_approval"] is True
+    assert result.data["removed"] is False
 
 
 async def test_worktree_status_uses_existing_tool_events(tmp_path: Path):
