@@ -311,11 +311,52 @@ def test_workspace_chat_thread_and_right_panel_wired():
 def test_workspace_thread_scrolls_to_bottom_on_new_messages():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    workspace = js[js.index("function Workspace") : js.index("function WorkspaceGitStatus")]
     assert "const threadRef = useRef(null)" in js
     assert "lastThreadNodeId" in js
-    assert "el.scrollTop = el.scrollHeight" in js
+    assert "function scrollThreadToBottom()" in workspace
+    assert "el.scrollTop = el.scrollHeight" in workspace
+    assert "lastForceScrollTokenRef" in workspace
+    assert "pendingForceScrollRef" in workspace
+    assert (
+        "const shouldScroll = switchedSession || stickToBottomRef.current || pendingForceScrollRef.current"
+        in workspace
+    )
+    assert "if (!shouldScroll) return" in workspace
+    assert (
+        "[sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId, forceScrollToken]"
+        in workspace
+    )
     assert 'className="thread" ref=${threadRef} onScroll=${onThreadScroll}' in js
     assert 'data-testid="conversation-scroll-container"' in js
+
+
+def test_desktop_send_forces_thread_scroll_without_touching_mobile_scroll():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    run_dispatch = js[
+        js.index("async function runDispatch") : js.index("async function retrySession")
+    ]
+    mobile_start = js.index("function MobileWorkspace")
+    mobile = js[
+        mobile_start : js.index("// ===========================================================================", mobile_start)
+    ]
+    assert "const [threadScrollToken, setThreadScrollToken] = useState(0)" in js
+    assert "const forceThreadScroll = useCallback(() => {" in js
+    assert "setThreadScrollToken((n) => n + 1)" in js
+    assert "forceScrollToken=${threadScrollToken}" in js
+    assert run_dispatch.count("forceThreadScroll();") == 2
+    assert (
+        run_dispatch.index("if (!target)")
+        < run_dispatch.index("forceThreadScroll();")
+        < run_dispatch.index("setDispatching(true)")
+    )
+    assert (
+        "if (res.session_id) {\n          forceThreadScroll();\n          openTimeline(res.session_id);"
+        in run_dispatch
+    )
+    assert "forceScrollToken" not in mobile
+    assert "pendingForceScrollRef" not in mobile
 
 
 def test_workspace_user_and_pm_bubbles_have_copy_buttons():

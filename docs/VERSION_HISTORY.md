@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.5.1
+
+English:
+
+- Desktop session views now force-scroll to the bottom after a user sends a new message or queues a follow-up.
+- Current-session timeline reloads after `/api/tasks` no longer leave the conversation scrolled at the top.
+- Background agent streaming still respects manual scrolling away from the bottom unless the user just sent a message or switched sessions.
+
+中文：
+
+- PC 端会话页现在会在用户发送新消息或排队 follow-up 后强制滚动到底部。
+- `/api/tasks` 后当前会话 timeline 重新灌入时，不再把会话区域停在顶部。
+- 后台 agent 持续输出仍会尊重用户手动上翻阅读旧消息；只有刚发送消息或切换会话时才强制贴底。
+
 ## v1.5.0
 
 English:
