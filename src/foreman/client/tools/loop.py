@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable
 
 from foreman.shared.jsonscan import first_json_object
 from foreman.shared.llm import LLMClient, Message
-from foreman.shared.llm.trace import trace_context
+from foreman.shared.llm.trace import current_trace_context, trace_context
 from foreman.shared.config import PM_TOOLS_DEFAULT_ROUNDS, clamp_pm_tool_rounds
 from foreman.client.core.pm_contract import PlanContract
 
@@ -57,6 +57,13 @@ def _submit_plan_args(calls: list[ToolCall]) -> dict[str, Any] | None:
 @dataclass
 class ToolLoopOutcome:
     final_plan: dict[str, Any]
+    rounds: list[dict[str, Any]] = field(default_factory=list)
+    incomplete: bool = False
+
+
+@dataclass
+class ToolTextOutcome:
+    text: str
     rounds: list[dict[str, Any]] = field(default_factory=list)
     incomplete: bool = False
 
@@ -230,6 +237,93 @@ class PMToolLoop:
         plan["tool_loop_incomplete"] = True
         return ToolLoopOutcome(plan, rounds=rounds, incomplete=True)
 
+    async def run_text(
+        self,
+        messages: list[Message],
+        *,
+        model: str = "",
+        final_instruction: str = "Return the final JSON response when enough evidence exists.",
+    ) -> ToolTextOutcome:
+        """Run the shared PM tools for non-planning phases, then return the PM's JSON text."""
+        taint: list[str] = []
+        transcript = list(messages)
+        rounds: list[dict[str, Any]] = []
+        for round_no in range(1, self.max_rounds + 1):
+            base_phase = str(current_trace_context().get("phase") or "")
+            round_phase = (
+                f"{base_phase}:tool-round-{round_no}"
+                if base_phase
+                else f"tool-round-{round_no}"
+            )
+            with trace_context(phase=round_phase):
+                response = await self._complete(
+                    transcript,
+                    model=model,
+                    enabled_agents=[],
+                    include_submit_plan=False,
+                )
+            calls = response["tool_calls"]
+            raw = response["text"]
+            obj = _extract_json_object(raw)
+            if not calls:
+                calls = _calls_from_json(obj)
+            if not calls:
+                if obj is not None:
+                    return ToolTextOutcome(raw, rounds=rounds)
+                transcript.append(
+                    Message(
+                        "user",
+                        "Protocol error: return the final JSON response or request evidence tools. "
+                        "Do not invent tool results. " + final_instruction,
+                    )
+                )
+                rounds.append({"round": round_no, "error": "no_tool_calls_or_json"})
+                continue
+            results: list[ToolResult] = []
+            for idx, call in enumerate(calls, start=1):
+                if not call.id:
+                    call.id = f"call-{round_no}-{idx}"
+                await self._emit("tool_pre", _call_payload(call, taint))
+                result = await self.runtime.call(
+                    call,
+                    context_taint=taint,
+                    event_sink=self._emit,
+                )
+                if EXTERNAL_WEB in result.taint and EXTERNAL_WEB not in taint:
+                    taint.append(EXTERNAL_WEB)
+                await self._emit("tool_post", _result_payload(result))
+                results.append(result)
+            rounds.append(
+                {
+                    "round": round_no,
+                    "tool_calls": [_call_payload(call, taint) for call in calls],
+                    "tool_results": [result.to_dict() for result in results],
+                }
+            )
+            transcript.append(
+                Message(
+                    "assistant",
+                    json.dumps(
+                        {
+                            "type": "tool_calls",
+                            "tool_calls": [_transcript_call(call) for call in calls],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            transcript.append(
+                Message(
+                    "user",
+                    "# Runtime-generated tool_results\n"
+                    + json.dumps([result.to_dict() for result in results], ensure_ascii=False)
+                    + "\n"
+                    + final_instruction
+                    + " Never fabricate tool results.",
+                )
+            )
+        return ToolTextOutcome("", rounds=rounds, incomplete=True)
+
     async def _complete(
         self,
         messages: list[Message],
@@ -237,10 +331,12 @@ class PMToolLoop:
         model: str,
         enabled_agents: list[str],
         tool_choice: object = "auto",
+        include_submit_plan: bool = True,
     ) -> dict[str, Any]:
         if hasattr(self.llm, "tool_complete"):
             tools = [spec.to_native() for spec in self.runtime.specs()]
-            tools.append(submit_plan_tool_spec(enabled_agents, max_plan_items=self.max_rounds))
+            if include_submit_plan:
+                tools.append(submit_plan_tool_spec(enabled_agents, max_plan_items=self.max_rounds))
             kwargs: dict[str, Any] = {"tools": tools, "model": model, "json_mode": True}
             if _accepts_keyword(self.llm.tool_complete, "tool_choice"):
                 kwargs["tool_choice"] = tool_choice
@@ -271,48 +367,62 @@ class PMToolLoop:
             await res
 
 
-def build_tool_prompt_context(runtime: PMToolRuntime) -> str:
+def build_tool_prompt_context(
+    runtime: PMToolRuntime,
+    *,
+    final_json: dict[str, Any] | None = None,
+    final_rule: str = "",
+) -> str:
+    protocol: dict[str, Any] = {
+        "tool_call": {
+            "type": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "call_id",
+                    "name": "read_file",
+                    "arguments": {
+                        "path": "README.md",
+                        "public_note": "Reading README.md for the user-visible activity log",
+                    },
+                }
+            ],
+        },
+    }
+    if final_json is None:
+        protocol["final_plan"] = {
+            "type": "final_plan",
+            "summary": "evidence-backed summary",
+            "agent": "<enabled-agent-name>",
+            "model": "",
+            "effort": "high",
+            "workspace": "",
+            "instruction": "agent instruction",
+            "kind": "agent_task",
+            "reply": "",
+            "todo": ["inspect", "verify"],
+            "deliberation": ["short visible note"],
+            "ready": True,
+        }
+        protocol["rule"] = (
+            "Only runtime-generated tool_results are evidence. To finish, call the "
+            "submit_plan tool with the plan fields (preferred); the final_plan JSON above "
+            "is a legacy fallback for transports without native tool calls. "
+            "Tool arguments may include public_note or purpose for the visible activity log; "
+            "omit it if you do not have a concise user-facing sentence."
+        )
+    else:
+        protocol["final_json"] = final_json
+        protocol["rule"] = final_rule or (
+            "Only runtime-generated tool_results are evidence. To finish, return final_json. "
+            "Tool arguments may include public_note or purpose for the visible activity log; "
+            "omit it if you do not have a concise user-facing sentence."
+        )
     return json.dumps(
         {
             "tool_schema": runtime.tool_schema(),
             "runtime_context": runtime.runtime_context(),
             "policy_context": runtime.policy_context(),
-            "protocol": {
-                "tool_call": {
-                    "type": "tool_calls",
-                    "tool_calls": [
-                        {
-                            "id": "call_id",
-                            "name": "read_file",
-                            "arguments": {
-                                "path": "README.md",
-                                "public_note": "Reading README.md for the user-visible activity log",
-                            },
-                        }
-                    ],
-                },
-                "final_plan": {
-                    "type": "final_plan",
-                    "summary": "evidence-backed summary",
-                    "agent": "<enabled-agent-name>",
-                    "model": "",
-                    "effort": "high",
-                    "workspace": "",
-                    "instruction": "agent instruction",
-                    "kind": "agent_task",
-                    "reply": "",
-                    "todo": ["inspect", "verify"],
-                    "deliberation": ["short visible note"],
-                    "ready": True,
-                },
-                "rule": (
-                    "Only runtime-generated tool_results are evidence. To finish, call the "
-                    "submit_plan tool with the plan fields (preferred); the final_plan JSON above "
-                    "is a legacy fallback for transports without native tool calls. "
-                    "Tool arguments may include public_note or purpose for the visible activity log; "
-                    "omit it if you do not have a concise user-facing sentence."
-                ),
-            },
+            "protocol": protocol,
         },
         ensure_ascii=False,
     )

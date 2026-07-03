@@ -1080,6 +1080,36 @@ must(dig.subagents.map((s) => s.detail).join("|") === "first done|second done", 
     subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
 
 
+def test_subagent_digest_splits_same_handle_by_attempt_id():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    start = js.index("function extractTextParts")
+    end = js.index("function Empty", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const must = (cond, label, value) => { if (!cond) { console.error(label, value); process.exit(1); } };
+const d = { ev_stop: "Done" };
+const events = [
+  { id: "a-start", type: "agent_start", source: "codex", session_id: "s1", task_id: "t1", ts: "2026-01-01T00:00:00Z",
+    payload: { attempt_id: "a1", handle_id: "h1", agent_id: "h1", command: ["codex"] } },
+  { id: "a-stop", type: "stop", source: "codex", session_id: "s1", task_id: "t1", ts: "2026-01-01T00:00:01Z",
+    payload: { attempt_id: "a1", handle_id: "h1", agent_id: "h1", result: "first done" } },
+  { id: "b-start", type: "agent_start", source: "codex", session_id: "s1", task_id: "t1", ts: "2026-01-01T00:01:00Z",
+    payload: { attempt_id: "a2", handle_id: "h1", agent_id: "h1", command: ["codex"] } },
+  { id: "b-stop", type: "stop", source: "codex", session_id: "s1", task_id: "t1", ts: "2026-01-01T00:01:01Z",
+    payload: { attempt_id: "a2", handle_id: "h1", agent_id: "h1", result: "second done" } },
+  { id: "c-start", type: "agent_start", source: "codex", session_id: "s2", task_id: "t2", ts: "2026-01-01T00:02:00Z",
+    payload: { attempt_id: "a2", handle_id: "h1", agent_id: "h1", command: ["codex"] } },
+  { id: "c-stop", type: "stop", source: "codex", session_id: "s2", task_id: "t2", ts: "2026-01-01T00:02:01Z",
+    payload: { attempt_id: "a2", handle_id: "h1", agent_id: "h1", result: "third done" } },
+];
+const dig = digest(events, d, "en");
+must(dig.subagents.length === 3, "attempt ids split same handle and session prefixes avoid collision", dig.subagents);
+must(dig.subagents.map((s) => s.detail).join("|") === "first done|second done|third done", "results stay isolated", dig.subagents);
+'''
+    subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
+
+
 def test_first_substantive_line_skips_common_opening_meta_text():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

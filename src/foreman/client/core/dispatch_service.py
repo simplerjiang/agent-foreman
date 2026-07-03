@@ -956,16 +956,16 @@ class DispatchService:
         }
         if _accepts_keyword(self.pm_agent.plan, "on_stream"):
             plan_kwargs["on_stream"] = self._pm_stream_sink(session_id, task_id, "plan")
-        if _accepts_keyword(self.pm_agent.plan, "on_tool_event"):
-            plan_kwargs["on_tool_event"] = self._pm_tool_event_sink(session_id, task_id)
-        if _accepts_keyword(self.pm_agent.plan, "work_mode_index"):
-            plan_kwargs["work_mode_index"] = wm_index
-        if _accepts_keyword(self.pm_agent.plan, "work_mode_resolver"):
-            plan_kwargs["work_mode_resolver"] = work_mode_resolver
-        if _accepts_keyword(self.pm_agent.plan, "session_id"):
-            plan_kwargs["session_id"] = session_id
-        if _accepts_keyword(self.pm_agent.plan, "task_id"):
-            plan_kwargs["task_id"] = task_id
+        plan_kwargs.update(
+            self._pm_tool_kwargs(
+                self.pm_agent.plan,
+                session_id=session_id,
+                task_id=task_id,
+                workspace=workspace,
+                wm_index=wm_index,
+                work_mode_resolver=work_mode_resolver,
+            )
+        )
         if active_context is not None and _accepts_keyword(self.pm_agent.plan, "active_context"):
             plan_kwargs["active_context"] = active_context
         with trace_context(session_id=session_id, task_id=task_id, phase="plan"):
@@ -1051,6 +1051,7 @@ class DispatchService:
                 pm_model=pm_model,
                 language=language,
                 wm_index=wm_index,
+                work_mode_resolver=work_mode_resolver,
                 todo_status=todo_status,
             )
             if recovered is None:
@@ -1102,6 +1103,16 @@ class DispatchService:
                 )
             if _accepts_keyword(self.pm_agent.review, "state_key"):
                 review_kwargs["state_key"] = review_state_key
+            review_kwargs.update(
+                self._pm_tool_kwargs(
+                    self.pm_agent.review,
+                    session_id=session_id,
+                    task_id=task_id,
+                    workspace=workspace,
+                    wm_index=wm_index,
+                    work_mode_resolver=work_mode_resolver,
+                )
+            )
             if review_active_context is not None and _accepts_keyword(self.pm_agent.review, "active_context"):
                 review_kwargs["active_context"] = review_active_context
             if rubric_fed:
@@ -1147,8 +1158,9 @@ class DispatchService:
                 )
                 return
             agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+            attempt_id = _prepare_runner_attempt(self.runner, handle)
             await self._emit_agent_input(session_id, task_id, handle, review.follow_up, plan)
-            await self.runner.send(handle, review.follow_up)
+            await _send_runner(self.runner, handle, review.follow_up, attempt_id=attempt_id)
             self._mark_session_unless_terminal(session_id, "running")
             run_count += 1
             await self.runner.wait(handle)
@@ -1179,6 +1191,7 @@ class DispatchService:
                     pm_model=pm_model,
                     language=language,
                     wm_index=wm_index,
+                    work_mode_resolver=work_mode_resolver,
                     todo_status=todo_status,
                 )
                 if recovered is None:
@@ -1227,6 +1240,7 @@ class DispatchService:
         pm_model: str,
         language: str,
         wm_index: list[dict[str, Any]],
+        work_mode_resolver: Any,
         todo_status: list[dict[str, str]],
     ) -> tuple[Any, PMPlan, str, list[dict[str, str]]] | None:
         failed_agents.add(plan.agent)
@@ -1257,6 +1271,16 @@ class DispatchService:
             )
         if _accepts_keyword(self.pm_agent.recover, "state_key"):
             recover_kwargs["state_key"] = f"{session_id}:{task_id}:pm-recover"
+        recover_kwargs.update(
+            self._pm_tool_kwargs(
+                self.pm_agent.recover,
+                session_id=session_id,
+                task_id=task_id,
+                workspace=workspace,
+                wm_index=wm_index,
+                work_mode_resolver=work_mode_resolver,
+            )
+        )
         with trace_context(
             session_id=session_id, task_id=task_id, phase=f"recover-{len(failed_agents)}"
         ):
@@ -1298,6 +1322,9 @@ class DispatchService:
             model=recovery_plan.model,
             effort=recovery_plan.effort,
             task_id=task_id,
+        )
+        await self._emit_agent_input(
+            session_id, task_id, handle, recovery_plan.instruction, recovery_plan
         )
         self._mark_session_unless_terminal(session_id, "running")
         return handle, recovery_plan, agent_run_cursor, todo_status
@@ -1516,6 +1543,7 @@ class DispatchService:
                 payload={
                     "agent_id": str(getattr(handle, "id", "") or plan.agent),
                     "handle_id": str(getattr(handle, "id", "") or ""),
+                    "attempt_id": str(getattr(handle, "attempt_id", "") or ""),
                     "agent_role": "developer",
                     "agent_type": plan.agent,
                     "source": "pm-agent",
@@ -1606,6 +1634,31 @@ class DispatchService:
             )
 
         return emit
+
+    def _pm_tool_kwargs(
+        self,
+        method: Any,
+        *,
+        session_id: str,
+        task_id: str,
+        workspace: str,
+        wm_index: list[dict[str, Any]],
+        work_mode_resolver: Any,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        if _accepts_keyword(method, "on_tool_event"):
+            kwargs["on_tool_event"] = self._pm_tool_event_sink(session_id, task_id)
+        if _accepts_keyword(method, "workspace"):
+            kwargs["workspace"] = workspace
+        if _accepts_keyword(method, "work_mode_index"):
+            kwargs["work_mode_index"] = wm_index
+        if _accepts_keyword(method, "work_mode_resolver"):
+            kwargs["work_mode_resolver"] = work_mode_resolver
+        if _accepts_keyword(method, "session_id"):
+            kwargs["session_id"] = session_id
+        if _accepts_keyword(method, "task_id"):
+            kwargs["task_id"] = task_id
+        return kwargs
 
     async def _safe_launch(
         self, session_id: str, goal: str, workspace: str, agent: str, model: str, effort: str
@@ -1965,6 +2018,20 @@ async def _launch_runner(
     if task_id and _accepts_keyword(runner.launch, "task_id"):
         kwargs["task_id"] = task_id
     return await runner.launch(agent, instruction, workspace, session_id, **kwargs)
+
+
+def _prepare_runner_attempt(runner: Any, handle: Any) -> str:
+    prepare = getattr(runner, "prepare_attempt", None)
+    if callable(prepare):
+        return str(prepare(handle) or "")
+    return str(getattr(handle, "attempt_id", "") or "")
+
+
+async def _send_runner(runner: Any, handle: Any, text: str, *, attempt_id: str = "") -> Any:
+    kwargs: dict[str, Any] = {}
+    if attempt_id and _accepts_keyword(runner.send, "attempt_id"):
+        kwargs["attempt_id"] = attempt_id
+    return await runner.send(handle, text, **kwargs)
 
 
 def _stream_delta(chunk: dict) -> str:

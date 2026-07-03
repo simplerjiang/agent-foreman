@@ -58,12 +58,15 @@ async def test_launch_persists_and_publishes(tmp_path):
     assert len(persisted) == 3
     start_payload = json.loads(next(e.payload_json for e in persisted if e.type == "agent_start"))
     assert start_payload["handle_id"] == handle.id
+    assert start_payload["attempt_id"] == handle.attempt_id
     assert start_payload["status"] == "running"
     assert start_payload["cwd"] == str(tmp_path)
     assert start_payload["worktree"] == str(tmp_path)
     stop_payload = json.loads(next(e.payload_json for e in persisted if e.type == "stop"))
     assert stop_payload["handle_id"] == handle.id
+    assert stop_payload["attempt_id"] == handle.attempt_id
     assert stop_payload["status"] == "completed"
+    assert len({json.loads(e.payload_json)["attempt_id"] for e in persisted}) == 1
     # published in stream order
     assert [e.type for e in received] == ["agent_start", "agent_output", "stop"]
 
@@ -158,16 +161,27 @@ async def test_send_resumes_session_and_repumps(tmp_path):
     await runner.wait(handle)
     assert handle.native_session_id == "sess-abc"
     assert runner.handle_for_session("s1") is handle  # addressable by session id
+    first_attempt_id = handle.attempt_id
 
     await runner.send(handle, "now do y")
     await runner.wait(handle)
+    second_attempt_id = handle.attempt_id
 
     # the resume command carried --resume <captured id> and the follow-up text
     resume_cmd = adapter.spawned_cmds[1]
     assert "--resume" in resume_cmd and "sess-abc" in resume_cmd and "now do y" in resume_cmd
     # the resumed output streamed to the store too (re-pumped)
-    payloads = [e.payload_json for e in store.get_events("s1")]
+    events = store.get_events("s1")
+    payloads = [e.payload_json for e in events]
     assert any("resumed" in p for p in payloads)
+    assert first_attempt_id and second_attempt_id and first_attempt_id != second_attempt_id
+    by_result = {
+        json.loads(e.payload_json).get("result"): json.loads(e.payload_json).get("attempt_id")
+        for e in events
+        if e.type == "stop"
+    }
+    assert by_result["done"] == first_attempt_id
+    assert by_result["resumed"] == second_attempt_id
 
 
 async def test_subprocess_stop_failed_status_survives_zero_process_exit(tmp_path):
@@ -299,3 +313,88 @@ async def test_pump_records_stream_error_and_stops_adapter(tmp_path):
     assert adapter.stopped is True
     assert handle.id not in runner.handles
     assert runner.handle_for_session("s1") is None
+
+
+class _FailingStartAdapter:
+    name = "codex"
+
+    async def start(
+        self,
+        instruction,
+        workspace,
+        session_id,
+        model="",
+        effort="",
+    ):
+        raise RuntimeError("spawn failed")
+
+    async def stream(self, handle):
+        raise AssertionError("start failure must not stream")
+
+    async def send(self, handle, text):
+        return None
+
+    async def interrupt(self, handle):
+        return None
+
+    async def stop(self, handle):
+        return None
+
+
+async def test_launch_failure_records_attempt_error(tmp_path):
+    store = _store(tmp_path)
+    runner = Runner(Config(), EventBus(), store)
+    runner.adapters["codex"] = _FailingStartAdapter()
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await runner.launch("codex", "do x", tmp_path, "s1", task_id="t1")
+
+    [error] = store.get_events("s1")
+    assert error.type == "error"
+    assert error.task_id == "t1"
+    payload = json.loads(error.payload_json)
+    assert payload["attempt_id"]
+    assert payload["launch_error"] is True
+    assert "RuntimeError: spawn failed" in payload["msg"]
+
+
+class _FailingSendAdapter:
+    name = "codex"
+
+    async def start(self, instruction, workspace, session_id, model="", effort=""):
+        return AgentHandle(id=f"{session_id}:1", session_id=session_id, pid=1, cwd=str(workspace))
+
+    async def stream(self, handle):
+        yield make_event("agent_start", self.name, handle.session_id, payload={"pid": handle.pid})
+        yield make_event("stop", self.name, handle.session_id, payload={"result": "done"})
+
+    async def send(self, handle, text):
+        raise RuntimeError("resume failed")
+
+    async def interrupt(self, handle):
+        return None
+
+    async def stop(self, handle):
+        return None
+
+
+async def test_send_failure_records_new_attempt_error(tmp_path):
+    store = _store(tmp_path)
+    runner = Runner(Config(), EventBus(), store)
+    runner.adapters["codex"] = _FailingSendAdapter()
+
+    handle = await runner.launch("codex", "do x", tmp_path, "s1", task_id="t1")
+    await runner.wait(handle)
+    first_attempt_id = handle.attempt_id
+
+    with pytest.raises(RuntimeError, match="resume failed"):
+        await runner.send(handle, "do y")
+
+    errors = [e for e in store.get_events("s1") if e.type == "error"]
+    assert len(errors) == 1
+    assert errors[0].task_id == "t1"
+    payload = json.loads(errors[0].payload_json)
+    assert payload["attempt_id"] and payload["attempt_id"] != first_attempt_id
+    assert payload["resume_error"] is True
+    assert payload["handle_id"] == handle.id
+    assert "RuntimeError: resume failed" in payload["msg"]

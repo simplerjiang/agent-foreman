@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.5.0",
+      en: "PM agent attempts now receive backend-generated attempt_id values across launch, resume, streamed output, stops, and errors, so repeated same-handle subagent runs render as distinct UI cards; PM plan, review, and recovery share the same tool runtime surface.",
+      zh: "PM agent 每次 launch/resume 都会获得后端生成的 attempt_id，并贯穿输入、流式输出、stop/error，UI 不再把同 handle 的多次尝试合并；PM plan、review、recover 共用同一套工具上下文。",
+    },
+    {
       version: "v1.4.9",
       en: "Session Stop now interrupts every live Runner handle in the session instead of only the latest subagent handle, so concurrent Codex, Claude, and Copilot child processes are stopped together.",
       zh: "Session Stop 现在会中断同一 session 内所有 live Runner handle，而不是只中断最后一个 subagent handle，确保并发的 Codex、Claude、Copilot 子进程一起停止。",
@@ -1196,8 +1201,11 @@
 
     const callKey = (e) => {
       const p = e.payload || {};
+      const attemptKey = p.attempt_id || p.attemptId || "";
+      if (attemptKey) return `${e.session_id || ""}:attempt:${attemptKey}`;
       const handleKey = p.handle_id || p.agent_id || "";
-      return e.task_id && handleKey ? `${e.task_id}:${handleKey}` : (handleKey || e.task_id || `${e.source || "agent"}-${e.session_id || ""}`);
+      if (e.task_id && handleKey) return `${e.session_id || ""}:task:${e.task_id}:handle:${handleKey}`;
+      return handleKey ? `${e.session_id || ""}:handle:${handleKey}` : (e.task_id ? `${e.session_id || ""}:task:${e.task_id}` : `${e.source || "agent"}-${e.session_id || ""}`);
     };
     const hidePmStatus = (phase = "") => {
       for (const [key, idx] of statusNodes.entries()) {

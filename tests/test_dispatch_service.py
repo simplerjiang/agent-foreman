@@ -32,7 +32,7 @@ from foreman.client.store.models import (
 from foreman.client.tools import PMToolRuntime
 from foreman.shared.config import AgentCfg, Config, WorkspaceCfg
 from foreman.shared.events import EventBus, make_event
-from foreman.shared.llm import LLMStalledError
+from foreman.shared.llm import LLMStalledError, LLMToolCall, LLMToolResponse
 
 
 def _store(tmp_path) -> Store:
@@ -942,25 +942,47 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
 
     class FakeHandle:
         session_id = "s"
+        attempt_id = ""
 
     class FakeRunner:
         def __init__(self):
             self.launched = []
             self.sent = []
             self.handle = FakeHandle()
+            self.attempts = 0
+
+        def prepare_attempt(self, handle):
+            self.attempts += 1
+            handle.attempt_id = f"attempt-{self.attempts}"
+            return handle.attempt_id
 
         async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
             self.handle.session_id = session_id
+            self.prepare_attempt(self.handle)
             self.launched.append((agent, instruction, str(workspace), model, effort))
-            store.add_event(make_event("stop", agent, session_id, payload={"result": "first"}))
+            store.add_event(
+                make_event(
+                    "stop",
+                    agent,
+                    session_id,
+                    payload={"result": "first", "attempt_id": self.handle.attempt_id},
+                )
+            )
             return self.handle
 
         async def wait(self, handle):
             return None
 
-        async def send(self, handle, text):
-            self.sent.append(text)
-            store.add_event(make_event("stop", "codex", handle.session_id, payload={"result": text}))
+        async def send(self, handle, text, *, attempt_id=""):
+            self.sent.append((text, attempt_id))
+            store.add_event(
+                make_event(
+                    "stop",
+                    "codex",
+                    handle.session_id,
+                    payload={"result": text, "attempt_id": attempt_id},
+                )
+            )
 
     cfg = _cfg(
         agents={
@@ -981,14 +1003,115 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
     assert pm.plan_goal == "raw user task"
     assert pm.state_keys == [f"{res['session_id']}:{res['task_id']}:pm-review"] * 2
     assert runner.launched == [("codex", "PM planned instruction", str(tmp_path), "gpt-5", "high")]
-    assert runner.sent == ["PM follow-up"]
+    assert runner.sent == [("PM follow-up", "attempt-2")]
     events = store.get_events(res["session_id"])
     assert "pm_plan" in [e.type for e in events]
+    agent_inputs = [json.loads(e.payload_json) for e in events if e.type == "agent_input"]
+    assert [p["attempt_id"] for p in agent_inputs] == ["attempt-1", "attempt-2"]
     reviews = [json.loads(e.payload_json) for e in events if e.type == "pm_review"]
     assert len(reviews) == 2
     assert [x["status"] for x in reviews[0]["todo_status"]] == ["done", "in_progress"]
     assert [x["status"] for x in reviews[1]["todo_status"]] == ["done", "done"]
     assert store.get_session(res["session_id"]).status == "done"
+
+
+async def test_pm_review_and_recover_share_pm_tools_with_decision_context(tmp_path):
+    cfg = _cfg(workspaces=[WorkspaceCfg(path=str(tmp_path))])
+
+    class FakeCards:
+        def __init__(self):
+            self.calls = []
+
+        async def ask_question(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"ok": True, "choice": "continue", "label": "Continue"}
+
+    class FakeLLM:
+        def __init__(self):
+            self.round = 0
+            self.tools_seen = []
+            self.prompts = []
+
+        async def tool_complete(
+            self, messages, *, tools, model="", json_mode=False, tool_choice="auto", on_stream=None
+        ):
+            self.tools_seen.append([tool["name"] for tool in tools])
+            self.prompts.append(messages[-1].content)
+            self.round += 1
+            if self.round in {1, 3}:
+                return LLMToolResponse(
+                    text="",
+                    tool_calls=[
+                        LLMToolCall(
+                            id=f"q{self.round}",
+                            name="ask_question",
+                            arguments={
+                                "question": "Need user choice?",
+                                "options": [
+                                    {"label": "Continue", "value": "continue"},
+                                    {"label": "Stop", "value": "stop"},
+                                ],
+                            },
+                        )
+                    ],
+                )
+            if self.round == 2:
+                return LLMToolResponse(
+                    text=json.dumps({"done": False, "summary": "blocked", "reason": "needs user"}),
+                    tool_calls=[],
+                )
+            return LLMToolResponse(
+                text=json.dumps(
+                    {
+                        "action": "switch_agent",
+                        "summary": "switch",
+                        "reason": "failed",
+                        "agent": "codex",
+                        "model": "",
+                        "effort": "high",
+                        "instruction": "continue with evidence",
+                    }
+                ),
+                tool_calls=[],
+            )
+
+    cards = FakeCards()
+    pm = PMAgent(
+        FakeLLM(),
+        language="zh",
+        tool_runtime_factory=lambda workspace: PMToolRuntime.from_config(
+            cfg, workspace, cards=cards
+        ),
+    )
+    plan = PMPlan(agent="claude-code", model="", effort="high", instruction="do work")
+
+    review = await pm.review(
+        "goal",
+        plan,
+        "timeline",
+        run_count=1,
+        workspace=str(tmp_path),
+        session_id="s1",
+        task_id="t1",
+    )
+    recovery = await pm.recover(
+        "goal",
+        plan,
+        "failure",
+        failed_agent="claude-code",
+        available_agents=[{"name": "codex"}],
+        workspace=str(tmp_path),
+        session_id="s1",
+        task_id="t1",
+    )
+
+    assert review.done is False and review.summary == "blocked"
+    assert recovery.action == "switch_agent" and recovery.agent == "codex"
+    assert [call["session_id"] for call in cards.calls] == ["s1", "s1"]
+    assert all("ask_question" in tools for tools in pm.llm.tools_seen)
+    assert all("submit_plan" not in tools for tools in pm.llm.tools_seen)
+    assert "submit_plan" not in pm.llm.prompts[0]
+    assert "submit_plan" not in pm.llm.prompts[2]
 
 
 async def test_pm_direct_reply_does_not_launch_agent(tmp_path):

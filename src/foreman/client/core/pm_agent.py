@@ -679,6 +679,78 @@ class PMAgent:
         self.max_plan_rounds = max(self.min_plan_rounds, int(max_plan_rounds))
         self.tool_runtime_factory = tool_runtime_factory
 
+    def _make_tool_runtime(
+        self,
+        workspace: str,
+        *,
+        session_id: str = "",
+        task_id: str = "",
+        work_mode_resolver: Any = None,
+    ):
+        if self.tool_runtime_factory is None:
+            return None
+        runtime = self.tool_runtime_factory(workspace)
+        if work_mode_resolver is not None and hasattr(runtime, "set_work_mode_resolver"):
+            runtime.set_work_mode_resolver(work_mode_resolver)
+        if hasattr(runtime, "set_decision_context"):
+            runtime.set_decision_context(session_id, task_id)
+        return runtime
+
+    def _tool_prompt_block(
+        self,
+        runtime: Any,
+        *,
+        phase: str,
+        work_mode_index: list[dict[str, Any]] | None = None,
+    ) -> str:
+        if phase == "plan":
+            guidance = (
+                "Use tools for repository evidence before final_plan when useful. "
+                "Tool results are only valid when supplied by the runtime. "
+                "For simple greetings, status questions, or tasks that need no repository "
+                "evidence, return final_plan immediately without calling tools. "
+                "When the user's choice would materially change the plan, call "
+                "ask_question with short options and wait for the returned choice before "
+                "submitting the final plan."
+            )
+            tool_context = build_tool_prompt_context(runtime)
+        else:
+            guidance = (
+                "Use tools when they can verify the PM decision or clarify a blocker. "
+                "Tool results are only valid when supplied by the runtime. "
+                "When the user's choice would materially change this PM decision, call "
+                "ask_question with short options and wait for the returned choice before "
+                "returning the final JSON."
+            )
+            final_json: dict[str, Any]
+            if phase == "recover":
+                final_json = {
+                    "action": "switch_agent|stop",
+                    "summary": "evidence-backed recovery decision",
+                    "reason": "why recovery is needed",
+                    "agent": "codex",
+                    "model": "",
+                    "effort": "high",
+                    "instruction": "next agent instruction",
+                    "todo": ["continue safely"],
+                }
+            else:
+                final_json = {
+                    "done": False,
+                    "summary": "evidence-backed review decision",
+                    "reason": "specific gap or completion evidence",
+                    "follow_up": "next instruction when not done",
+                    "todo_status": [
+                        {"title": "inspect", "status": "done"},
+                        {"title": "verify", "status": "in_progress"},
+                    ],
+                }
+            tool_context = build_tool_prompt_context(runtime, final_json=final_json)
+        text = "\n\n# PM tool runtime\n" + tool_context + "\n\n" + guidance
+        if work_mode_index:
+            text += "\n\n" + work_mode_prompt_block(work_mode_index)
+        return text
+
     async def plan(
         self,
         goal: str,
@@ -709,14 +781,13 @@ class PMAgent:
         )
         if simple_plan is not None:
             return simple_plan
-        if self.tool_runtime_factory is not None:
-            runtime = self.tool_runtime_factory(workspace)
-            # Attach the per-task work-mode resolver so work_mode_search / work_mode_get can pull
-            # bodies during the loop (the factory built the runtime; we inject the task context here).
-            if work_mode_resolver is not None and hasattr(runtime, "set_work_mode_resolver"):
-                runtime.set_work_mode_resolver(work_mode_resolver)
-            if hasattr(runtime, "set_decision_context"):
-                runtime.set_decision_context(session_id, task_id)
+        runtime = self._make_tool_runtime(
+            workspace,
+            session_id=session_id,
+            task_id=task_id,
+            work_mode_resolver=work_mode_resolver,
+        )
+        if runtime is not None:
             try:
                 plan_item_limit = clamp_pm_tool_rounds(getattr(runtime.cfg, "max_rounds", 6))
                 fallback_plan = {
@@ -740,20 +811,10 @@ class PMAgent:
                 )
                 prompt = (
                     prompt
-                    + "\n\n# PM tool runtime\n"
-                    + build_tool_prompt_context(runtime)
-                    + "\n\nUse tools for repository evidence before final_plan when useful. "
-                    + "Tool results are only valid when supplied by the runtime. "
-                    + "For simple greetings, status questions, or tasks that need no repository "
-                    + "evidence, return final_plan immediately without calling tools. "
-                    + "When the user's choice would materially change the plan, call "
-                    + "ask_question with short options and wait for the returned choice before "
-                    + "submitting the final plan."
+                    + self._tool_prompt_block(
+                        runtime, phase="plan", work_mode_index=work_mode_index
+                    )
                 )
-                # L0 work-mode index → the ACTUAL messages sent to the LLM (not build_plan_prompt).
-                # Bodies are never inlined here; the PM pulls them on demand via work_mode_get (§6).
-                if work_mode_index:
-                    prompt = prompt + "\n\n" + work_mode_prompt_block(work_mode_index)
                 loop = PMToolLoop(
                     self.llm,
                     runtime,
@@ -861,8 +922,14 @@ class PMAgent:
         review_state: str = "",
         todo_status: list[dict[str, str]] | None = None,
         on_stream=None,
+        on_tool_event=None,
         state_key: str = "",
         qa_rubric: str = "",
+        workspace: str = "",
+        work_mode_index: list[dict[str, Any]] | None = None,
+        work_mode_resolver: Any = None,
+        session_id: str = "",
+        task_id: str = "",
         active_context: Any = None,
     ) -> PMReview:
         system = REVIEW_SYSTEM + "\n" + language_directive(self.language)
@@ -877,6 +944,48 @@ class PMAgent:
             todo_status=todo_status,
             qa_rubric=qa_rubric,
         )
+        runtime = self._make_tool_runtime(
+            workspace or plan.workspace,
+            session_id=session_id,
+            task_id=task_id,
+            work_mode_resolver=work_mode_resolver,
+        )
+        if runtime is not None:
+            try:
+                max_rounds = clamp_pm_tool_rounds(getattr(runtime.cfg, "max_rounds", 6))
+                prompt = prompt + self._tool_prompt_block(
+                    runtime, phase="review", work_mode_index=work_mode_index
+                )
+                final_instruction = (
+                    "Return ONLY JSON matching "
+                    '{"done": bool, "summary": str, "reason": str, "follow_up": str, '
+                    '"todo_status": [{"title": str, "status": "pending|in_progress|done|blocked"}]}.'
+                )
+                outcome = await PMToolLoop(
+                    self.llm,
+                    runtime,
+                    max_rounds=max_rounds,
+                    on_tool_event=on_tool_event,
+                    on_stream=on_stream,
+                ).run_text(
+                    [Message("system", system), Message("user", prompt)],
+                    model=pm_model,
+                    final_instruction=final_instruction,
+                )
+                if outcome.incomplete:
+                    return PMReview(
+                        done=False,
+                        summary=(
+                            "PM review could not finish within the configured tool loop limit."
+                            if normalize_lang(self.language) == "en"
+                            else "PM 复查未能在工具循环上限内完成。"
+                        ),
+                        reason="pm_tool_loop_incomplete",
+                    )
+                return parse_review(outcome.text, language=self.language)
+            finally:
+                if hasattr(runtime, "aclose"):
+                    await runtime.aclose()
         kwargs = {"json_mode": True, "model": pm_model, "on_stream": on_stream}
         if state_key and _accepts_keyword(self.llm.complete, "state_key"):
             kwargs["state_key"] = state_key
@@ -894,7 +1003,13 @@ class PMAgent:
         context: str = "",
         pm_model: str = "",
         on_stream=None,
+        on_tool_event=None,
         state_key: str = "",
+        workspace: str = "",
+        work_mode_index: list[dict[str, Any]] | None = None,
+        work_mode_resolver: Any = None,
+        session_id: str = "",
+        task_id: str = "",
     ) -> PMRecovery:
         system = RECOVERY_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_recovery_prompt(
@@ -905,21 +1020,71 @@ class PMAgent:
             available_agents=available_agents,
             context=context,
         )
+        runtime = self._make_tool_runtime(
+            workspace or plan.workspace,
+            session_id=session_id,
+            task_id=task_id,
+            work_mode_resolver=work_mode_resolver,
+        )
+        enabled = [_as_str(a.get("name")) for a in available_agents]
+        fallback_instruction = (
+            "Continue the original user task with a different available agent. "
+            f"Do not use the failed agent {failed_agent}. Failure evidence:\n"
+            f"{failure_timeline}\n\nOriginal instruction:\n{plan.instruction}"
+        )
+        if runtime is not None:
+            try:
+                max_rounds = clamp_pm_tool_rounds(getattr(runtime.cfg, "max_rounds", 6))
+                prompt = prompt + self._tool_prompt_block(
+                    runtime, phase="recover", work_mode_index=work_mode_index
+                )
+                final_instruction = (
+                    "Return ONLY JSON matching "
+                    '{"action": "switch_agent|stop", "summary": str, "reason": str, '
+                    '"agent": "claude-code|codex|copilot-cli", "model": str, '
+                    '"effort": "low|medium|high|", "instruction": str, "todo": [str]}.'
+                )
+                outcome = await PMToolLoop(
+                    self.llm,
+                    runtime,
+                    max_rounds=max_rounds,
+                    on_tool_event=on_tool_event,
+                    on_stream=on_stream,
+                ).run_text(
+                    [Message("system", system), Message("user", prompt)],
+                    model=pm_model,
+                    final_instruction=final_instruction,
+                )
+                if outcome.incomplete:
+                    return PMRecovery(
+                        action="stop",
+                        summary=(
+                            "PM recovery could not finish within the configured tool loop limit."
+                            if normalize_lang(self.language) == "en"
+                            else "PM 恢复决策未能在工具循环上限内完成。"
+                        ),
+                        reason="pm_tool_loop_incomplete",
+                    )
+                return parse_recovery(
+                    outcome.text,
+                    available_agents=enabled,
+                    fallback_agent=enabled[0] if enabled else "",
+                    fallback_effort=plan.effort,
+                    fallback_instruction=fallback_instruction,
+                )
+            finally:
+                if hasattr(runtime, "aclose"):
+                    await runtime.aclose()
         kwargs = {"json_mode": True, "model": pm_model, "on_stream": on_stream}
         if state_key and _accepts_keyword(self.llm.complete, "state_key"):
             kwargs["state_key"] = state_key
         raw = await self.llm.complete([Message("system", system), Message("user", prompt)], **kwargs)
-        enabled = [_as_str(a.get("name")) for a in available_agents]
         return parse_recovery(
             raw,
             available_agents=enabled,
             fallback_agent=enabled[0] if enabled else "",
             fallback_effort=plan.effort,
-            fallback_instruction=(
-                "Continue the original user task with a different available agent. "
-                f"Do not use the failed agent {failed_agent}. Failure evidence:\n"
-                f"{failure_timeline}\n\nOriginal instruction:\n{plan.instruction}"
-            ),
+            fallback_instruction=fallback_instruction,
         )
 
     async def compact(

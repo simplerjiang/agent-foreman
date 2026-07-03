@@ -700,6 +700,7 @@ def materialize_event(
                     **base,
                     **_workspace_payload(payload),
                     "agent_id": _text(payload.get("agent_id")),
+                    "attempt_id": _text(payload.get("attempt_id")),
                     "agent_role": _text(payload.get("agent_role")),
                     "agent_type": _text(payload.get("agent_type")),
                     "parent_agent_id": _text(payload.get("parent_agent_id")),
@@ -892,6 +893,7 @@ def materialize_event(
                     "summary": _text(payload.get("summary") or payload.get("result")),
                     "native_session_id": _text(payload.get("native_session_id")),
                     "handle_id": _text(payload.get("handle_id")),
+                    "attempt_id": _text(payload.get("attempt_id")),
                 },
                 role="assistant",
                 lane=LANE_RUNTIME,
@@ -918,6 +920,7 @@ def materialize_event(
                     "summary": _text(payload.get("summary") or payload.get("msg")),
                     "native_session_id": _text(payload.get("native_session_id")),
                     "handle_id": _text(payload.get("handle_id")),
+                    "attempt_id": _text(payload.get("attempt_id")),
                 },
                 role="assistant",
                 lane=LANE_RUNTIME,
@@ -1854,7 +1857,7 @@ def _workspace_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _agent_payload(payload: dict[str, Any], source: str) -> dict[str, Any]:
     out = _workspace_payload(payload)
     for key in (
-        "handle_id", "pid", "command", "model", "effort", "native_session_id", "transcript_path",
+        "attempt_id", "handle_id", "pid", "command", "model", "effort", "native_session_id", "transcript_path",
         "agent_id", "agent_role", "agent_type", "parent_agent_id",
         "status", "source", "base_ref", "head_sha",
     ):
@@ -2110,6 +2113,7 @@ def _new_agent(agent_id: str) -> dict[str, Any]:
     return {
         "agent_id": agent_id,
         "handle_id": "",
+        "attempt_id": "",
         "agent_role": "",
         "agent_type": "",
         "parent_agent_id": "",
@@ -2137,6 +2141,7 @@ def _new_agent(agent_id: str) -> dict[str, Any]:
 def _merge_agent_fields(agent: dict[str, Any], payload: dict[str, Any]) -> None:
     for key in (
         "handle_id",
+        "attempt_id",
         "agent_role",
         "agent_type",
         "parent_agent_id",
