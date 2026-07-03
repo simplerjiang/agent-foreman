@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.4.5",
+      en: "Context V2 M1 is accepted with structured frames/checkpoints, deterministic materialization, PM active context, compact/restore thresholds, subagent runtime state, Context UI/API, and the no-build JS split; PM Tool Surface remains tracked separately as M2.",
+      zh: "Context V2 M1 已验收通过，覆盖结构化 frames/checkpoints、确定性 materializer、PM active context、compact/restore 阈值、subagent runtime state、Context UI/API 和 no-build JS 拆分；PM Tool Surface 仍作为 M2 单独跟踪。",
+    },
+    {
       version: "v1.4.4",
       en: "Context v2 planning now has Codex-style design and implementation task docs covering recoverable checkpoints, PM active context envelopes, remote /responses/compact reuse, and review-ready branch handoff requirements; session views also keep new messages scrolled to the bottom.",
       zh: "Context v2 规划新增 Codex 风格设计书和实施任务书，覆盖可恢复 checkpoint、PM active context envelope、复用远端 /responses/compact、以及便于 GPT-5.5 pro review 的分支交付要求；会话视图发送新消息后也会保持滚动到底部。",

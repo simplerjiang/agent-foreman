@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.4.4`.
+Current documented release: `v1.4.5`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.4.5` | Context V2 M1 is accepted with structured frames/checkpoints, deterministic materialization, PM active context, compact/restore thresholds, subagent runtime state, Context UI/API, and the no-build JS split; PM Tool Surface remains tracked separately as M2. |
 | `v1.4.4` | Context v2 planning now has Codex-style design and implementation task docs covering recoverable checkpoints, PM active context envelopes, remote `/responses/compact` reuse, and review-ready branch handoff requirements; session views also keep new messages scrolled to the bottom. |
 | `v1.4.3` | Pytest maintenance now folds repetitive table-style checks into compact table-driven tests, removes a redundant client import smoke test, and keeps the full suite behavior covered with fewer collected pytest nodes. |
 | `v1.4.2` | PM plans can now explicitly carry a verified target workspace/worktree, so Foreman updates the session workspace and launches the coding agent from that worktree instead of only mentioning `Set-Location` in the prompt. |
@@ -290,7 +291,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.4.4`。
+当前文档版本：`v1.4.5`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -298,6 +299,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.4.5` | Context V2 M1 已验收通过，覆盖结构化 frames/checkpoints、确定性 materializer、PM active context、compact/restore 阈值、subagent runtime state、Context UI/API 和 no-build JS 拆分；PM Tool Surface 仍作为 M2 单独跟踪。 |
 | `v1.4.4` | Context v2 规划新增 Codex 风格设计书和实施任务书，覆盖可恢复 checkpoint、PM active context envelope、复用远端 `/responses/compact`、以及便于 GPT-5.5 pro review 的分支交付要求；会话视图发送新消息后也会保持滚动到底部。 |
 | `v1.4.3` | Pytest 维护整理将重复的表格型断言合并为更紧凑的表驱动测试，移除冗余的 client import smoke test，并在保留完整行为覆盖的同时减少 pytest 收集节点。 |
 | `v1.4.2` | PM 计划现在可以显式携带已验证的目标 workspace/worktree；Foreman 会同步更新会话 workspace，并从该 worktree 启动编码代理，不再只把 `Set-Location` 写进提示词。 |

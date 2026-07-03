@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.5
+
+English:
+
+- Context V2 M1 acceptance is documented and accepted with non-blocking notes.
+- The accepted M1 surface covers structured `ContextFrame` and `ContextCheckpoint` storage, deterministic materialization, replacement-history restore, PM active context envelopes, PM plan/review ContextManager integration, remote/local compact, soft/hard and run-count thresholds, subagent runtime state, Context UI/API, legacy/corruption fallback, and the no-build frontend split.
+- PM Tool Surface remains explicitly out of scope for M1 and is tracked as the follow-up M2 milestone.
+
+中文：
+
+- Context V2 M1 验收报告已落档，并以非阻塞备注通过。
+- 本次 M1 验收范围覆盖结构化 `ContextFrame` / `ContextCheckpoint` 存储、确定性 materializer、replacement-history restore、PM active context envelope、PM plan/review 接入 ContextManager、remote/local compact、soft/hard 与 run-count 阈值、subagent runtime state、Context UI/API、legacy/corruption fallback，以及 no-build 前端拆分。
+- PM Tool Surface 明确不属于 M1，继续作为后续 M2 里程碑单独跟踪。
+
 ## v1.4.4
 
 English:
