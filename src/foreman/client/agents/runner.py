@@ -33,6 +33,7 @@ class Runner:
         self._adapter_by_handle: dict[str, AgentAdapter] = {}
         # Most recent live handle per session — the decision loop addresses agents by session id.
         self._handle_by_session: dict[str, AgentHandle] = {}
+        self._handles_by_session: dict[str, dict[str, AgentHandle]] = {}
         self.sync_config()
 
     def sync_config(self) -> None:
@@ -64,12 +65,21 @@ class Runner:
         self.handles[handle.id] = handle
         self._adapter_by_handle[handle.id] = adapter
         self._handle_by_session[session_id] = handle
+        self._handles_by_session.setdefault(session_id, {})[handle.id] = handle
         self._pumps[handle.id] = asyncio.create_task(self._pump(adapter, handle))
         return handle
-
     def handle_for_session(self, session_id: str) -> AgentHandle | None:
         """The most recent live handle for a session (the decision loop's `agent_instruction` target)."""
         return self._handle_by_session.get(session_id)
+
+    def handles_for_session(self, session_id: str) -> list[AgentHandle]:
+        """All handles with active stream pumps for session-level Stop/interrupt."""
+        handles = []
+        for handle in self._handles_by_session.get(session_id, {}).values():
+            task = self._pumps.get(handle.id)
+            if task is not None and not task.done():
+                handles.append(handle)
+        return handles
 
     def _adapter_of(self, handle: AgentHandle) -> AgentAdapter:
         adapter = self._adapter_by_handle.get(handle.id)
@@ -109,10 +119,7 @@ class Runner:
         if adapter is not None:
             await adapter.stop(handle)
         self._pumps.pop(handle.id, None)
-        self.handles.pop(handle.id, None)
-        self._adapter_by_handle.pop(handle.id, None)
-        if self._handle_by_session.get(handle.session_id) is handle:
-            self._handle_by_session.pop(handle.session_id, None)
+        self._forget_handle(handle)
 
     async def _pump(self, adapter: AgentAdapter, handle: AgentHandle) -> None:
         """Persist each streamed event THEN publish it."""
@@ -140,10 +147,7 @@ class Runner:
             try:
                 await adapter.stop(handle)
             finally:
-                self.handles.pop(handle.id, None)
-                self._adapter_by_handle.pop(handle.id, None)
-                if self._handle_by_session.get(handle.session_id) is handle:
-                    self._handle_by_session.pop(handle.session_id, None)
+                self._forget_handle(handle)
             raise
 
     async def wait(self, handle: AgentHandle) -> None:
@@ -151,3 +155,18 @@ class Runner:
         task = self._pumps.get(handle.id)
         if task is not None:
             await task
+
+    def _forget_handle(self, handle: AgentHandle) -> None:
+        self.handles.pop(handle.id, None)
+        self._adapter_by_handle.pop(handle.id, None)
+        session_handles = self._handles_by_session.get(handle.session_id)
+        if session_handles is not None:
+            session_handles.pop(handle.id, None)
+            if not session_handles:
+                self._handles_by_session.pop(handle.session_id, None)
+        if self._handle_by_session.get(handle.session_id) is handle:
+            remaining = list((self._handles_by_session.get(handle.session_id) or {}).values())
+            if remaining:
+                self._handle_by_session[handle.session_id] = remaining[-1]
+            else:
+                self._handle_by_session.pop(handle.session_id, None)

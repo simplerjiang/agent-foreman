@@ -1794,16 +1794,34 @@ class DispatchService:
 
     async def _interrupt_runner_handle(self, session_id: str) -> bool:
         runner = self.runner
-        if runner is None or not hasattr(runner, "handle_for_session"):
+        if runner is None or not hasattr(runner, "interrupt"):
             return False
-        handle = runner.handle_for_session(session_id)
-        if handle is None or not hasattr(runner, "interrupt"):
-            return False
-        try:
-            await runner.interrupt(handle)
-            return True
-        except Exception:  # noqa: BLE001 - interrupt is best-effort; cancellation still proceeds
-            return False
+        handles = []
+        used_multi_handle_route = False
+        if hasattr(runner, "handles_for_session"):
+            try:
+                handles = [h for h in runner.handles_for_session(session_id) if h is not None]
+                used_multi_handle_route = True
+            except Exception:  # noqa: BLE001 - fall back to the legacy single-handle route
+                handles = []
+        if not used_multi_handle_route and hasattr(runner, "handle_for_session"):
+            handle = runner.handle_for_session(session_id)
+            if handle is not None:
+                handles = [handle]
+
+        interrupted = False
+        seen = set()
+        for handle in handles:
+            key = getattr(handle, "id", None) or id(handle)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                await runner.interrupt(handle)
+                interrupted = True
+            except Exception:  # noqa: BLE001 - interrupt is best-effort; cancellation still proceeds
+                continue
+        return interrupted
 
     def _cancel_session_tasks(self, session_id: str) -> int:
         """Cancel the session's in-flight launch tasks (e.g. a running PM ws plan call).

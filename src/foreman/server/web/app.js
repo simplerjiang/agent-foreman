@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.4.9",
+      en: "Session Stop now interrupts every live Runner handle in the session instead of only the latest subagent handle, so concurrent Codex, Claude, and Copilot child processes are stopped together.",
+      zh: "Session Stop 现在会中断同一 session 内所有 live Runner handle，而不是只中断最后一个 subagent handle，确保并发的 Codex、Claude、Copilot 子进程一起停止。",
+    },
+    {
       version: "v1.4.8",
       en: "Subprocess terminal reconciliation now treats a non-zero OS process return code as authoritative over a CLI stop payload that reported success, while preserving CLI, process, and final return codes for diagnostics.",
       zh: "subprocess 终态合并现在把非零 OS process return code 视为高于 CLI stop payload 成功码的权威结果，同时保留 CLI、process 和 final return code 便于排障。",
