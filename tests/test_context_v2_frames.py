@@ -71,6 +71,81 @@ def test_materialize_session_replay_twice_does_not_duplicate_frames(tmp_path):
     assert [row.id for row in store.get_context_frames("s1")] == [row.id for row in first]
 
 
+def test_materialize_session_uses_incremental_event_cursor(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    _add_event(store, _event("e1", "dispatch", {"goal": "fix bug", "workspace": "E:/repo"}))
+    manager = ContextManager(store)
+
+    first = manager.materialize_session("s1")
+    assert len(first) == 2
+    assert store.get_context_materialization_cursor("s1") == {
+        "event_ts": "2026-07-01T00:00:00Z",
+        "event_id": "e1",
+    }
+    monkeypatch.setattr(store, "get_events", lambda _session_id: (_ for _ in ()).throw(AssertionError("full replay")))
+    _add_event(
+        store,
+        _event(
+            "e2",
+            "tool_post",
+            {
+                "tool": "run_command",
+                "call_id": "cmd-1",
+                "ok": True,
+                "result": {"ok": True, "data": {"command": "pytest", "returncode": 0}},
+            },
+            ts="2026-07-01T00:00:01Z",
+        ),
+    )
+
+    second = manager.materialize_session("s1")
+
+    assert len(second) == 4
+    assert store.get_context_materialization_cursor("s1") == {
+        "event_ts": "2026-07-01T00:00:01Z",
+        "event_id": "e2",
+    }
+    assert any(row.type == "test_result" for row in second)
+
+
+def test_materialize_session_does_not_advance_cursor_when_frame_write_fails(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    _add_event(store, _event("e1", "dispatch", {"goal": "fix bug"}))
+
+    def fail_write(*_args, **_kwargs):
+        raise RuntimeError("frame write failed")
+
+    monkeypatch.setattr(store, "add_context_frames_and_update_materialization_cursor", fail_write)
+
+    with pytest.raises(RuntimeError, match="frame write failed"):
+        ContextManager(store).materialize_session("s1")
+
+    assert store.get_context_materialization_cursor("s1") == {}
+
+
+def test_materialize_session_force_rebuild_recalibrates_cursor(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(
+        Session(
+            id="s1",
+            goal="goal",
+            context_materialized_until_ts="2026-07-01T00:00:09Z",
+            context_materialized_until_event_id="stale",
+        )
+    )
+    _add_event(store, _event("e1", "dispatch", {"goal": "fix bug"}))
+
+    frames = ContextManager(store).materialize_session("s1", force=True)
+
+    assert frames
+    assert store.get_context_materialization_cursor("s1") == {
+        "event_ts": "2026-07-01T00:00:00Z",
+        "event_id": "e1",
+    }
+
+
 def test_record_event_uses_session_override_and_rejects_mismatch(tmp_path):
     store = _store(tmp_path)
     store.add_session(Session(id="s1", goal="goal"))

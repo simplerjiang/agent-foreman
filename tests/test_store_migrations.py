@@ -27,14 +27,14 @@ def _exec(engine, sql):
 
 
 # ── client ───────────────────────────────────────────────────────────────────────────────────
-def test_client_init_is_idempotent_and_at_v3(tmp_path):
+def test_client_init_is_idempotent_and_at_v5(tmp_path):
     st = Store(str(tmp_path / "c.db"))
     st.init()
     st.init()  # re-run must not duplicate ledger rows or raise
-    assert st.schema_version() == 3
+    assert st.schema_version() == 5
     with st.engine.connect() as conn:  # client ledger table is `schemaversion` (see migrations)
         rows = conn.execute(text(f"SELECT version FROM {CLIENT_VERSION_TABLE}")).fetchall()
-    assert sorted(r[0] for r in rows) == [1, 2, 3]
+    assert sorted(r[0] for r in rows) == [1, 2, 3, 4, 5]
 
 
 def test_client_migration_adds_diff_stat_to_legacy_decisioncard(tmp_path):
@@ -45,11 +45,11 @@ def test_client_migration_adds_diff_stat_to_legacy_decisioncard(tmp_path):
         assert not column_exists(conn, "decisioncard", "diff_stat")
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
-    assert applied == [1, 2, 3]
+    assert applied == [1, 2, 3, 4, 5]
     with engine.connect() as conn:
         assert column_exists(conn, "decisioncard", "diff_stat")
         assert column_exists(conn, "session", "latest_context_checkpoint_id") is False
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 3
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 5
 
 
 def test_client_migration_adds_session_main_workspace_and_backfills(tmp_path):
@@ -63,13 +63,15 @@ def test_client_migration_adds_session_main_workspace_and_backfills(tmp_path):
         assert not column_exists(conn, "session", "main_workspace")
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
-    assert applied == [2, 3]
+    assert applied == [2, 3, 4, 5]
     with engine.connect() as conn:
         assert column_exists(conn, "session", "main_workspace")
         assert column_exists(conn, "session", "latest_context_checkpoint_id")
+        assert column_exists(conn, "session", "context_materialized_until_ts")
+        assert column_exists(conn, "session", "context_materialized_until_event_id")
         row = conn.execute(text("SELECT workspace, main_workspace FROM session WHERE id='s1'")).first()
         assert row == ("E:/AutoWorkAgent", "E:/AutoWorkAgent")
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 3
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 5
 
 
 def test_client_migration_main_workspace_backfill_tolerates_null_workspace(tmp_path):
@@ -81,20 +83,39 @@ def test_client_migration_main_workspace_backfill_tolerates_null_workspace(tmp_p
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
 
-    assert applied == [2, 3]
+    assert applied == [2, 3, 4, 5]
     with engine.connect() as conn:
         row = conn.execute(text("SELECT workspace, main_workspace FROM session WHERE id='s1'")).first()
         assert row == (None, "")
         assert column_exists(conn, "session", "latest_context_checkpoint_id")
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 3
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 5
 
 
-def test_client_migration_v3_adds_latest_context_checkpoint_id(tmp_path):
+def test_client_migration_v3_to_v5_adds_context_checkpoint_cursor_and_indexes(tmp_path):
     engine = _engine(tmp_path / "legacy-context-v2.db")
     _exec(
         engine,
         "CREATE TABLE session ("
         "id TEXT PRIMARY KEY, goal TEXT, workspace TEXT, main_workspace TEXT"
+        ")",
+    )
+    _exec(
+        engine,
+        "CREATE TABLE event ("
+        "id TEXT PRIMARY KEY, session_id TEXT, task_id TEXT, type TEXT, source TEXT, "
+        "payload_json TEXT, ts TEXT"
+        ")",
+    )
+    _exec(
+        engine,
+        "CREATE TABLE context_frames ("
+        "id TEXT PRIMARY KEY, session_id TEXT, event_id TEXT, event_ts TEXT, created_at TEXT"
+        ")",
+    )
+    _exec(
+        engine,
+        "CREATE TABLE context_checkpoints ("
+        "id TEXT PRIMARY KEY, session_id TEXT, created_at TEXT"
         ")",
     )
     _exec(
@@ -110,14 +131,24 @@ def test_client_migration_v3_adds_latest_context_checkpoint_id(tmp_path):
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
 
-    assert applied == [3]
+    assert applied == [3, 4, 5]
     with engine.connect() as conn:
         assert column_exists(conn, "session", "latest_context_checkpoint_id")
+        assert column_exists(conn, "session", "context_materialized_until_ts")
+        assert column_exists(conn, "session", "context_materialized_until_event_id")
         value = conn.execute(
             text("SELECT latest_context_checkpoint_id FROM session WHERE id='s1'")
         ).scalar_one()
         assert value == ""
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 3
+        indexes = {
+            row[1]
+            for table in ("event", "context_frames", "context_checkpoints")
+            for row in conn.execute(text(f"PRAGMA index_list({table})")).fetchall()
+        }
+        assert "ix_event_session_ts_id" in indexes
+        assert "ix_context_frames_session_event_order" in indexes
+        assert "ix_context_checkpoints_session_created_id" in indexes
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 5
 
 
 # ── server ───────────────────────────────────────────────────────────────────────────────────

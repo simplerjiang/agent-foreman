@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.4.6
+
+English:
+
+- Context V2 follow-up hardening now installs checkpoints, compat snapshots, memory items, and completed compact events in one transaction.
+- Context materialization now advances from a durable event cursor, adds session/order indexes for long-session hot paths, and preserves force rebuild calibration.
+- Subprocess runtimes now emit one terminal result after OS return code reconciliation, refresh git refs on resume, and CI includes temp SQLite plus browser Context panel release-gate smoke tests.
+
+中文：
+
+- Context V2 后续加固现在把 checkpoint、兼容 snapshot、memory item 和 completed compact event 放进同一个事务安装。
+- Context materializer 现在基于持久 event cursor 增量推进，为长会话热路径补充 session/order 复合索引，并保留 force rebuild 的 cursor 校准。
+- subprocess runtime 现在等 OS return code 合并后只发一个终态结果，resume 时刷新 git refs，CI 也加入 temp SQLite 与浏览器 Context 面板 release-gate smoke。
+
 ## v1.4.5
 
 English:

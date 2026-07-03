@@ -96,6 +96,8 @@ class Store:
         workspace: str | None = None,
         main_workspace: str | None = None,
         latest_context_checkpoint_id: str | None = None,
+        context_materialized_until_ts: str | None = None,
+        context_materialized_until_event_id: str | None = None,
         status: str | None = None,
         updated_at: str | None = None,
     ) -> Session | None:
@@ -113,6 +115,10 @@ class Store:
                 row.main_workspace = main_workspace
             if latest_context_checkpoint_id is not None:
                 row.latest_context_checkpoint_id = latest_context_checkpoint_id
+            if context_materialized_until_ts is not None:
+                row.context_materialized_until_ts = context_materialized_until_ts
+            if context_materialized_until_event_id is not None:
+                row.context_materialized_until_event_id = context_materialized_until_event_id
             if status is not None:
                 row.status = status
             if updated_at is not None:
@@ -232,6 +238,38 @@ class Store:
                 s.refresh(row)
             return merged
 
+    def get_context_materialization_cursor(self, session_id: str) -> dict[str, str]:
+        with self.session() as s:
+            row = s.get(Session, session_id)
+            if row is None:
+                return {}
+            event_ts = row.context_materialized_until_ts or ""
+            event_id = row.context_materialized_until_event_id or ""
+            return {"event_ts": event_ts, "event_id": event_id} if event_ts or event_id else {}
+
+    def add_context_frames_and_update_materialization_cursor(
+        self,
+        session_id: str,
+        frames: list[ContextFrame],
+        cursor: dict | None,
+    ) -> list[ContextFrame]:
+        """Upsert Context v2 frames and advance the materializer cursor atomically."""
+        event_ts, event_id = _cursor_parts(cursor)
+        with self.session() as s:
+            row = s.get(Session, session_id)
+            if row is None:
+                raise ValueError("session_not_found")
+            merged = [s.merge(frame) for frame in frames]
+            if cursor is not None:
+                row.context_materialized_until_ts = event_ts
+                row.context_materialized_until_event_id = event_id
+                row.updated_at = utc_now_iso()
+                s.add(row)
+            s.commit()
+            for item in merged:
+                s.refresh(item)
+            return merged
+
     def get_context_frames(
         self,
         session_id: str,
@@ -333,8 +371,11 @@ class Store:
         checkpoint: ContextCheckpoint,
         plan_summary: str | None,
         compact_event_payload: dict,
+        *,
+        compat_snapshot: ContextSnapshot | None = None,
+        memory_items: list[MemoryItem] | None = None,
     ) -> tuple[ContextCheckpoint, Event]:
-        """Atomically install a Context v2 checkpoint and its compact event."""
+        """Atomically install a Context v2 checkpoint, compact event, and compat records."""
         now = utc_now_iso()
         if checkpoint.session_id and checkpoint.session_id != session_id:
             raise ValueError("checkpoint_session_mismatch")
@@ -367,6 +408,14 @@ class Store:
             row.updated_at = now
             s.add(row)
             s.add(event)
+            if compat_snapshot is not None:
+                compat_snapshot.session_id = session_id
+                s.add(compat_snapshot)
+            for item in memory_items or []:
+                item.session_id = session_id
+                if compat_snapshot is not None and not item.snapshot_id:
+                    item.snapshot_id = compat_snapshot.id
+                s.add(item)
             s.commit()
             s.refresh(checkpoint)
             s.refresh(event)

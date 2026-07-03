@@ -143,11 +143,27 @@ class ContextManager:
     def materialize_session(self, session_id: str, force: bool = False) -> list[ContextFrame]:
         if not hasattr(self.store, "get_events") or not hasattr(self.store, "add_context_frames"):
             return []
-        events = self.store.get_events(session_id)
+        if (
+            force
+            or not hasattr(self.store, "get_events_after_cursor")
+            or not hasattr(self.store, "get_context_materialization_cursor")
+        ):
+            events = self.store.get_events(session_id)
+        else:
+            cursor = self.store.get_context_materialization_cursor(session_id)
+            events = self.store.get_events_after_cursor(session_id, cursor)
         frames: list[ContextFrame] = []
         for event in events:
             frames.extend(materialize_event(event))
-        if frames:
+        if events and hasattr(self.store, "add_context_frames_and_update_materialization_cursor"):
+            self.store.add_context_frames_and_update_materialization_cursor(
+                session_id,
+                frames,
+                _event_cursor(events[-1]),
+            )
+        elif force and hasattr(self.store, "add_context_frames_and_update_materialization_cursor"):
+            self.store.add_context_frames_and_update_materialization_cursor(session_id, frames, {})
+        elif frames:
             self.store.add_context_frames(frames)
         return self.store.get_context_frames(session_id) if hasattr(self.store, "get_context_frames") else frames
 
@@ -248,7 +264,12 @@ class ContextManager:
             if provider_payload:
                 summary_json["provider_payload"] = _compact_payload(provider_payload)
                 replacement_history["provider_payload"] = _compact_payload(provider_payload)
-            snapshot_id = self._store_compat_snapshot(session_id, active, summary_text, summary_json)
+            snapshot_id, compat_snapshot, memory_items = self._build_compat_records(
+                session_id,
+                active,
+                summary_text,
+                summary_json,
+            )
             checkpoint = ContextCheckpoint(
                 id=f"ctxcp_{uuid.uuid4().hex}",
                 session_id=session_id,
@@ -264,11 +285,14 @@ class ContextManager:
                 token_usage_json=_dump(token_usage),
                 created_at=self._clock(),
             )
+            compact_event_cursor = _cursor_end(source_cursor)
             installed, _event = self.store.install_context_checkpoint(
                 session_id,
                 checkpoint,
                 summary_text,
                 {
+                    "event_id": f"zzzz_ctxcompact_{checkpoint.id}",
+                    "ts": _text(compact_event_cursor.get("event_ts")) or checkpoint.created_at,
                     "status": "completed",
                     "schema_version": 2,
                     "hard": bool(hard),
@@ -281,6 +305,8 @@ class ContextManager:
                     "method": method,
                     "source": "pm-agent",
                 },
+                compat_snapshot=compat_snapshot,
+                memory_items=memory_items,
             )
             try:
                 restored = self.build_active_context(session_id, purpose="pm_plan", window_tokens=window_tokens)
@@ -404,15 +430,15 @@ class ContextManager:
             )
         )
 
-    def _store_compat_snapshot(
+    def _build_compat_records(
         self,
         session_id: str,
         active: ActiveContext,
         summary_text: str,
         summary_json: dict[str, Any],
-    ) -> str:
+    ) -> tuple[str, ContextSnapshot | None, list[MemoryItem]]:
         if not hasattr(self.store, "add_context_snapshot"):
-            return ""
+            return "", None, []
         event_ids = [
             _text(frame.get("event_id"))
             for frame in active.frames_after_checkpoint
@@ -430,12 +456,12 @@ class ContextManager:
             summary_hash=hashlib.sha256(summary_text.encode("utf-8")).hexdigest(),
             created_at=self._clock(),
         )
-        self.store.add_context_snapshot(snapshot)
+        memory_items: list[MemoryItem] = []
         pack = extract_json_object(summary_text)
         if pack is not None and hasattr(self.store, "add_memory_item"):
             now = self._clock()
             for raw in memory_items_from_pack(pack):
-                self.store.add_memory_item(
+                memory_items.append(
                     MemoryItem(
                         id=uuid.uuid4().hex,
                         session_id=session_id,
@@ -457,7 +483,7 @@ class ContextManager:
                         updated_at=now,
                     )
                 )
-        return snapshot_id
+        return snapshot_id, snapshot, memory_items
 
     def restore_from_latest_checkpoint(
         self,
@@ -1415,6 +1441,13 @@ def _source_cursor_from_active_context(active_context: ActiveContext) -> dict[st
             "event_ts": _text(last.get("event_ts")),
             "event_id": _text(last.get("event_id")),
         },
+    }
+
+
+def _event_cursor(event: Event | Any) -> dict[str, str]:
+    return {
+        "event_ts": _event_attr(event, "ts"),
+        "event_id": _event_attr(event, "id"),
     }
 
 
