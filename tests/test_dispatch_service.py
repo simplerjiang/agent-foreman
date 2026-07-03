@@ -148,6 +148,51 @@ async def test_cancelled_session_is_not_overwritten_by_background_completion(tmp
     assert store.get_session(res["session_id"]) is None
 
 
+async def test_cancel_interrupts_running_agent_handle(tmp_path):
+    store = _store(tmp_path)
+    launched = asyncio.Event()
+    interrupted = asyncio.Event()
+    handle = object()
+
+    class FakePM:
+        max_runs = 1
+
+        async def plan(self, goal, **_kw):
+            return PMPlan(agent="codex", model="", effort="", instruction="do it")
+
+        async def review(self, goal, plan, timeline, **_kw):
+            return PMReview(done=True, summary="done")
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            launched.set()
+            return handle
+
+        async def wait(self, _handle):
+            await asyncio.Event().wait()
+
+        def handle_for_session(self, session_id):
+            return handle
+
+        async def interrupt(self, _handle):
+            interrupted.set()
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(tmp_path))],
+    )
+    svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
+
+    res = await svc.create("long task")
+    await asyncio.wait_for(launched.wait(), timeout=1)
+    out = await svc.cancel(res["session_id"])
+
+    assert out["interrupted_agent"] is True
+    assert interrupted.is_set()
+    note = json.loads(next(e.payload_json for e in store.get_events(res["session_id"]) if e.type == "notification"))
+    assert note["interrupted_agent"] is True
+
+
 async def test_pm_plan_workspace_updates_session_and_launches_from_git_worktree(tmp_path):
     store = _store(tmp_path)
     main = tmp_path / "main"

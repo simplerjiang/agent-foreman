@@ -17,9 +17,12 @@ from foreman.shared.events import AgentEvent, make_event
 
 from ._subprocess import (
     SubprocessCliAdapter,
+    _agent_reply_text,
+    _annotate_protocol_phase,
     _finalize_stop_event,
     _handle_event_payload,
     _process_error_message,
+    _protocol_completion_event_type,
     _read_pipe_text,
 )
 from .base import AgentHandle, detect_git_refs
@@ -181,6 +184,8 @@ class CopilotCliAdapter(SubprocessCliAdapter):
             else None
         )
         pending_stop: AgentEvent | None = None
+        last_reply_text = ""
+        completion_event_type = ""
         if proc.stdout is not None:
             async for raw in proc.stdout:
                 line = raw.decode("utf-8", "replace").strip()
@@ -196,14 +201,31 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                         **_handle_event_payload(handle, self.name),
                         **event.payload,
                     }
+                    _annotate_protocol_phase(event.payload)
                 if event.type == "stop":
+                    completion_event_type = (
+                        _protocol_completion_event_type(event.payload)
+                        or completion_event_type
+                    )
+                    if last_reply_text and not event.payload.get("result"):
+                        event.payload["result"] = last_reply_text
+                    event.payload.setdefault("completion_event_type", completion_event_type)
                     pending_stop = event
                     continue
+                else:
+                    completion_event_type = (
+                        _protocol_completion_event_type(event.payload)
+                        or completion_event_type
+                    )
+                    last_reply_text = _agent_reply_text(event.payload) or last_reply_text
                 yield event
 
         returncode = await proc.wait()
         stderr_text = await stderr_task if stderr_task is not None else ""
         if pending_stop is not None:
+            if last_reply_text and not pending_stop.payload.get("result"):
+                pending_stop.payload["result"] = last_reply_text
+            pending_stop.payload.setdefault("completion_event_type", completion_event_type)
             yield _finalize_stop_event(pending_stop, handle, self.name, returncode, stderr_text)
             return
         if returncode:
@@ -224,5 +246,10 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                 "stop",
                 self.name,
                 handle.session_id,
-                payload={**_handle_event_payload(handle, self.name, status="completed"), "result": "", "returncode": 0},
+                payload={
+                    **_handle_event_payload(handle, self.name, status="completed"),
+                    "result": last_reply_text,
+                    "returncode": 0,
+                    "completion_event_type": completion_event_type,
+                },
             )

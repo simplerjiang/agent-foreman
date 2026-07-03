@@ -25,6 +25,10 @@ from .base import AgentHandle, detect_git_refs
 
 
 _STDOUT_READ_CHUNK_BYTES = 64 * 1024
+# Observed local CLI JSONL protocols: Codex emits thread/turn started then turn.completed
+# without result; Claude emits system:init then result; Copilot emits assistant.turn_* then result.
+_PROTOCOL_START_EVENTS = {"thread.started", "turn.started", "assistant.turn_start", "system:init"}
+_PROTOCOL_COMPLETION_EVENTS = {"turn.completed", "assistant.turn_end", "result"}
 
 
 class SubprocessCliAdapter:
@@ -156,6 +160,8 @@ class SubprocessCliAdapter:
             else None
         )
         pending_stop: AgentEvent | None = None
+        last_reply_text = ""
+        completion_event_type = ""
         try:
             if proc.stdout is not None:
                 async for raw in _iter_pipe_lines(proc.stdout):
@@ -172,14 +178,27 @@ class SubprocessCliAdapter:
                             **_handle_event_payload(handle, self.name),
                             **event.payload,
                         }
+                        _annotate_protocol_phase(event.payload)
                     if event.type == "stop":
+                        completion_event_type = (
+                            _protocol_completion_event_type(event.payload)
+                            or completion_event_type
+                        )
                         pending_stop = event
                         continue
+                    completion_event_type = (
+                        _protocol_completion_event_type(event.payload)
+                        or completion_event_type
+                    )
+                    last_reply_text = _agent_reply_text(event.payload) or last_reply_text
                     yield event
 
             returncode = await proc.wait()
             stderr_text = await stderr_task if stderr_task is not None else ""
             if pending_stop is not None:
+                if last_reply_text and not pending_stop.payload.get("result"):
+                    pending_stop.payload["result"] = last_reply_text
+                pending_stop.payload.setdefault("completion_event_type", completion_event_type)
                 yield _finalize_stop_event(
                     pending_stop,
                     handle,
@@ -202,6 +221,17 @@ class SubprocessCliAdapter:
             else:
                 if handle.status not in {"failed", "cancelled", "interrupted"}:
                     handle.status = "completed"
+                yield make_event(
+                    "stop",
+                    self.name,
+                    handle.session_id,
+                    payload={
+                        **_handle_event_payload(handle, self.name, status=handle.status),
+                        "result": last_reply_text,
+                        "returncode": returncode,
+                        "completion_event_type": completion_event_type,
+                    },
+                )
         finally:
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()
@@ -368,9 +398,67 @@ def _finalize_stop_event(
 def _event_returncode(payload: dict) -> int | None:
     try:
         raw = payload.get("returncode")
+        if raw is None:
+            raw = payload.get("exitCode")
         return None if raw is None else int(raw)
     except (TypeError, ValueError):
         return None
+
+
+def _agent_reply_text(payload: dict) -> str:
+    if payload.get("type") == "assistant.message":
+        data = payload.get("data")
+        if isinstance(data, dict) and not data.get("toolRequests"):
+            content = data.get("content")
+            return content.strip() if isinstance(content, str) else ""
+    item = payload.get("item")
+    if isinstance(item, dict) and item.get("type") == "agent_message":
+        text = item.get("text")
+        return text.strip() if isinstance(text, str) else ""
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    if any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content):
+        return ""
+    parts = [
+        block.get("text", "").strip()
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+        and block.get("text", "").strip()
+    ]
+    return "\n".join(parts).strip()
+
+
+def _protocol_event_type(payload: dict) -> str:
+    raw_type = payload.get("type")
+    event_type = raw_type.strip() if isinstance(raw_type, str) else ""
+    if event_type == "system":
+        subtype = payload.get("subtype")
+        if isinstance(subtype, str) and subtype.strip():
+            return f"system:{subtype.strip()}"
+    return event_type
+
+
+def _protocol_completion_event_type(payload: dict) -> str:
+    event_type = _protocol_event_type(payload)
+    return event_type if event_type in _PROTOCOL_COMPLETION_EVENTS else ""
+
+
+def _annotate_protocol_phase(payload: dict) -> None:
+    event_type = _protocol_event_type(payload)
+    if event_type in _PROTOCOL_START_EVENTS:
+        payload.setdefault("protocol_event_type", event_type)
+        payload.setdefault("protocol_phase", "start")
+    elif event_type in _PROTOCOL_COMPLETION_EVENTS:
+        payload.setdefault("protocol_event_type", event_type)
+        payload.setdefault("protocol_phase", "completed")
 
 
 def _is_reasoning_payload(obj: dict) -> bool:

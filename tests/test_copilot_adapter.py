@@ -222,6 +222,33 @@ async def test_stream_text_and_json_result(tmp_path):
     assert events[2].payload["result"] == "ok"
 
 
+async def test_stream_parses_real_copilot_turn_events(tmp_path):
+    lines = [
+        b'{"type":"assistant.turn_start","data":{"turnId":"0"}}\n',
+        (
+            b'{"type":"assistant.message","data":{"content":"FOREMAN_CLI_PROBE_OK",'
+            b'"toolRequests":[],"phase":"final_answer"}}\n'
+        ),
+        b'{"type":"assistant.turn_end","data":{"turnId":"0"}}\n',
+        b'{"type":"result","sessionId":"native-copilot","exitCode":0,"usage":{}}\n',
+    ]
+    adapter = fake_adapter(CopilotCliAdapter, _cfg(), FakeProc(stdout_lines=lines))
+    handle = await adapter.start("x", tmp_path, "s")
+
+    events = [event async for event in adapter.stream(handle)]
+
+    assert [event.type for event in events] == [
+        "agent_start", "agent_output", "agent_output", "agent_output", "stop",
+    ]
+    assert events[1].payload["protocol_event_type"] == "assistant.turn_start"
+    assert events[1].payload["protocol_phase"] == "start"
+    assert events[3].payload["protocol_event_type"] == "assistant.turn_end"
+    assert events[3].payload["protocol_phase"] == "completed"
+    assert events[4].payload["result"] == "FOREMAN_CLI_PROBE_OK"
+    assert events[4].payload["returncode"] == 0
+    assert events[4].payload["completion_event_type"] == "result"
+
+
 async def test_success_without_json_result_emits_stop(tmp_path):
     adapter = fake_adapter(
         CopilotCliAdapter,

@@ -1179,7 +1179,11 @@
     const statusNodes = new Map(); // phase -> nodeIndex
     const pmActivityNodes = new Map(); // PM tool call id -> nodeIndex
 
-    const callKey = (e) => e.task_id || `${e.source || "agent"}-${e.session_id || ""}`;
+    const callKey = (e) => {
+      const p = e.payload || {};
+      const handleKey = p.handle_id || p.agent_id || "";
+      return e.task_id && handleKey ? `${e.task_id}:${handleKey}` : (handleKey || e.task_id || `${e.source || "agent"}-${e.session_id || ""}`);
+    };
     const hidePmStatus = (phase = "") => {
       for (const [key, idx] of statusNodes.entries()) {
         if (!phase || key === phase) {
