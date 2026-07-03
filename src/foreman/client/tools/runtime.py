@@ -68,6 +68,7 @@ class PMToolRuntime:
         self._work_mode_resolver = work_mode_resolver
         self._session_id = str(cfg.session_id or "")
         self._task_id = str(cfg.task_id or "")
+        self._workspace_read_only = False
 
     def set_work_mode_resolver(self, resolver: Any) -> None:
         """Attach the per-task work-mode resolver (the live path builds it per dispatch and sets it
@@ -657,6 +658,7 @@ class PMToolRuntime:
             )
         try:
             self.bind_workspace(workspace, main_workspace=data.get("main_workspace"))
+            self._apply_worktree_access_mode(data)
         except ToolPolicyError as exc:
             return ToolResult(
                 cid, "worktree_bind_session", False, data=data, error=exc.code, risk=NEEDS_STRATEGY
@@ -704,6 +706,8 @@ class PMToolRuntime:
 
     async def _worktree_create(self, cid: str, args: dict[str, Any]) -> ToolResult:
         if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_create", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        if self._workspace_read_only:
             return ToolResult(cid, "worktree_create", False, error="tool_disabled", risk=NEEDS_STRATEGY)
         forbidden = {"session_id", "task_id", "path", "worktree_path"}
         if any(key in args for key in forbidden):
@@ -758,6 +762,7 @@ class PMToolRuntime:
                 )
             try:
                 self.bind_workspace(workspace, main_workspace=data.get("main_workspace"))
+                self._apply_worktree_access_mode(data)
             except ToolPolicyError as exc:
                 return ToolResult(
                     cid,
@@ -869,6 +874,8 @@ class PMToolRuntime:
     async def _worktree_cleanup(self, cid: str, args: dict[str, Any]) -> ToolResult:
         if not self.cfg.git_worktree:
             return ToolResult(cid, "worktree_cleanup", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        if self._workspace_read_only:
+            return ToolResult(cid, "worktree_cleanup", False, error="tool_disabled", risk=NEEDS_STRATEGY)
         forbidden = {
             "session_id",
             "task_id",
@@ -924,6 +931,8 @@ class PMToolRuntime:
         return ToolResult(cid, "worktree_cleanup", True, data, risk=risk, artifact_paths=artifacts)
 
     async def _checkpoint_create(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if self._workspace_read_only:
+            return ToolResult(cid, "checkpoint_create", False, error="tool_disabled")
         forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path"}
         if any(key in args for key in forbidden):
             return ToolResult(cid, "checkpoint_create", False, error="invalid_args")
@@ -955,6 +964,8 @@ class PMToolRuntime:
         )
 
     async def _checkpoint_undo(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if self._workspace_read_only:
+            return ToolResult(cid, "checkpoint_undo", False, error="tool_disabled", risk=NEEDS_STRATEGY)
         forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path", "vcs_ref"}
         if any(key in args for key in forbidden):
             return ToolResult(cid, "checkpoint_undo", False, error="invalid_args", risk=NEEDS_STRATEGY)
@@ -1047,6 +1058,12 @@ class PMToolRuntime:
         if main_workspace:
             self.cfg.main_workspace = Path(str(main_workspace)).expanduser()
         self.guard = PathGuard(resolved, [resolved])
+
+    def _apply_worktree_access_mode(self, data: dict[str, Any]) -> None:
+        if data.get("read_only") is True:
+            self._workspace_read_only = True
+            self.cfg.file_write = False
+            self.cfg.shell = False
 
     def _reset_workspace_to_main_if_deleted(self, data: dict[str, Any]) -> None:
         try:

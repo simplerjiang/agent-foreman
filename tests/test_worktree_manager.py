@@ -62,6 +62,7 @@ def _lease_context(
     session_id: str = "s1",
     task_id: str = "t1",
     status: str = "active",
+    locked: bool = False,
 ) -> dict:
     store.add_session(
         Session(id=session_id, goal="goal", workspace=str(worktree), main_workspace=str(repo))
@@ -79,6 +80,7 @@ def _lease_context(
             session_id=session_id,
             task_id=task_id,
             status=status,
+            locked=locked,
         )
     )
     return {
@@ -89,6 +91,33 @@ def _lease_context(
         "main_workspace": str(repo),
         "worktree_roots": [str(worktree.parent)],
     }
+
+
+def test_store_allows_read_only_share_but_rejects_second_write_lock(tmp_path: Path):
+    store = _store(tmp_path)
+    path = str(tmp_path / "worktree")
+    base = {
+        "repo_root": str(tmp_path / "repo"),
+        "main_workspace": str(tmp_path / "repo"),
+        "worktree_path": path,
+        "branch": "feature",
+        "base_ref": "main",
+        "base_sha": "base",
+        "head_sha": "base",
+        "task_id": "t1",
+    }
+
+    store.add_worktree_lease(WorktreeLease(id="write-1", session_id="s1", locked=True, **base))
+    store.add_worktree_lease(
+        WorktreeLease(id="read-1", session_id="s2", locked=False, task_id="t2", **{k: v for k, v in base.items() if k != "task_id"})
+    )
+
+    with pytest.raises(ValueError, match="active_worktree_lease_exists"):
+        store.add_worktree_lease(
+            WorktreeLease(id="write-2", session_id="s3", locked=True, task_id="t3", **{k: v for k, v in base.items() if k != "task_id"})
+        )
+    with pytest.raises(ValueError, match="active_worktree_lease_exists"):
+        store.update_worktree_lease("read-1", locked=True)
 
 
 def test_list_reports_main_locked_and_deleted_real_worktrees(tmp_path: Path):
@@ -212,6 +241,93 @@ def test_diff_reports_binary_and_truncates_large_patch_artifact(tmp_path: Path):
     assert Path(result["patch_artifact"]).is_file()
 
 
+def test_merge_risk_check_reports_overlap_and_low_risk_different_files(tmp_path: Path):
+    repo = _repo(tmp_path)
+    (repo / "other.txt").write_text("other\n", encoding="utf-8")
+    _git(repo, "add", "other.txt")
+    _git(repo, "commit", "-m", "add other")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree_a = tmp_path / "feature-a"
+    worktree_b = tmp_path / "feature-b"
+    worktree_c = tmp_path / "feature-c"
+    _git(repo, "worktree", "add", "-b", "feature-a", str(worktree_a), base_sha)
+    _git(repo, "worktree", "add", "-b", "feature-b", str(worktree_b), base_sha)
+    _git(repo, "worktree", "add", "-b", "feature-c", str(worktree_c), base_sha)
+    store = _store(tmp_path)
+    for session_id, lease_id, branch, path in (
+        ("s1", "lease-a", "feature-a", worktree_a),
+        ("s2", "lease-b", "feature-b", worktree_b),
+        ("s3", "lease-c", "feature-c", worktree_c),
+    ):
+        store.add_session(Session(id=session_id, goal="g", workspace=str(path), main_workspace=str(repo)))
+        store.add_worktree_lease(
+            WorktreeLease(
+                id=lease_id,
+                repo_root=str(repo),
+                main_workspace=str(repo),
+                worktree_path=str(path),
+                branch=branch,
+                base_ref="HEAD",
+                base_sha=base_sha,
+                head_sha=base_sha,
+                session_id=session_id,
+                task_id=f"t-{session_id}",
+                locked=True,
+            )
+        )
+    (worktree_a / "file.txt").write_text("a\n", encoding="utf-8")
+    (worktree_b / "file.txt").write_text("b\n", encoding="utf-8")
+    (worktree_c / "other.txt").write_text("c\n", encoding="utf-8")
+    manager = WorktreeManager()
+    context = {
+        "store": store,
+        "session_id": "s1",
+        "task_id": "t-s1",
+        "main_workspace": str(repo),
+        "worktree_roots": [str(tmp_path)],
+    }
+
+    high = manager.merge_risk_check(context, other_lease_id="lease-b")
+    low = manager.merge_risk_check(context, other_lease_id="lease-c")
+
+    assert high["ok"] is True
+    assert high["risk_level"] == "high"
+    assert high["overlapping_files"] == ["file.txt"]
+    assert low["ok"] is True
+    assert low["risk_level"] == "low"
+    assert low["overlapping_files"] == []
+    assert low["current_files"] == ["file.txt"]
+    assert low["other_files"] == ["other.txt"]
+
+
+def test_find_stale_leases_reports_dirty_without_auto_takeover(tmp_path: Path):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    store = _store(tmp_path)
+    context = _lease_context(
+        store,
+        repo=repo,
+        worktree=worktree,
+        base_sha=base_sha,
+        locked=True,
+    )
+    store.update_worktree_lease("lease-1", last_seen_at="2000-01-01T00:00:00+00:00")
+    (worktree / "file.txt").write_text("dirty\n", encoding="utf-8")
+
+    result = WorktreeManager().find_stale_leases(context, stale_after_seconds=1)
+
+    assert result["ok"] is True
+    assert result["stale_count"] == 1
+    stale = result["leases"][0]
+    assert stale["lease_id"] == "lease-1"
+    assert stale["dirty"] is True
+    assert stale["takeover_allowed"] is False
+    assert stale["auto_takeover_allowed"] is False
+    assert stale["reason"] == "dirty_worktree"
+
+
 def test_cleanup_dry_run_and_delete_clean_merged_owned_worktree(tmp_path: Path):
     repo = _repo(tmp_path)
     remote = tmp_path / "remote.git"
@@ -223,7 +339,7 @@ def test_cleanup_dry_run_and_delete_clean_merged_owned_worktree(tmp_path: Path):
     _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
     _git(worktree, "push", "origin", "feature")
     store = _store(tmp_path)
-    context = _lease_context(store, repo=repo, worktree=worktree, base_sha=base_sha)
+    context = _lease_context(store, repo=repo, worktree=worktree, base_sha=base_sha, locked=True)
     manager = WorktreeManager()
 
     dry_run = manager.cleanup(context, dry_run=True, reason="ready")
@@ -236,6 +352,7 @@ def test_cleanup_dry_run_and_delete_clean_merged_owned_worktree(tmp_path: Path):
     assert dry_run["branch_merged"] is True
     assert worktree.exists()
     assert store.get_worktree_lease("lease-1").status == "active"
+    assert store.get_worktree_lease("lease-1").locked is True
     dry_artifact = Path(dry_run["cleanup_artifact"]).resolve(strict=True)
     assert repo.resolve(strict=False) in dry_artifact.parents
     assert json.loads(dry_artifact.read_text(encoding="utf-8"))["lease"]["base_sha"] == base_sha
@@ -248,6 +365,7 @@ def test_cleanup_dry_run_and_delete_clean_merged_owned_worktree(tmp_path: Path):
     assert removed["would_remove"] is True
     assert not worktree.exists()
     assert store.get_worktree_lease("lease-1").status == "removed"
+    assert store.get_worktree_lease("lease-1").locked is False
     assert Path(removed["cleanup_artifact"]).is_file()
     assert "feature" in _git(repo, "branch", "--list", "feature")
     assert "refs/heads/feature" in _git(repo, "ls-remote", "--heads", "origin", "feature")
@@ -658,6 +776,7 @@ def test_create_success_registers_worktree_and_active_lease(tmp_path: Path):
     assert lease.head_sha == result["head_sha"]
     assert lease.session_id == "s1"
     assert lease.task_id == "t1"
+    assert lease.locked is True
     forbidden = {"fetch", "pull", "push", "merge"}
     assert not any(args and args[0] in forbidden for args in manager.commands)
 
@@ -838,6 +957,73 @@ def test_create_bind_session_uses_same_binding_logic(tmp_path: Path):
     assert result["session_bound"] is True
     assert result["workspace_switched"] is True
     assert store.get_session("s1").workspace == result["workspace"]
+
+
+def test_bind_session_allows_read_only_share_and_blocks_dirty_write_bind(tmp_path: Path):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    store = _store(tmp_path)
+    store.add_session(Session(id="writer", goal="g", workspace=str(repo), main_workspace=str(repo)))
+    store.add_session(Session(id="reader", goal="g", workspace=str(repo), main_workspace=str(repo)))
+    common = {
+        "repo_root": str(repo),
+        "main_workspace": str(repo),
+        "worktree_path": str(worktree.resolve(strict=False)),
+        "branch": "feature",
+        "base_ref": "HEAD",
+        "base_sha": base_sha,
+        "head_sha": base_sha,
+    }
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="writer-lease",
+            session_id="writer",
+            task_id="tw",
+            locked=True,
+            **common,
+        )
+    )
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="reader-lease",
+            session_id="reader",
+            task_id="tr",
+            locked=False,
+            **common,
+        )
+    )
+    (worktree / "file.txt").write_text("dirty\n", encoding="utf-8")
+    manager = WorktreeManager()
+
+    writer = manager.bind_session(
+        {
+            "store": store,
+            "session_id": "writer",
+            "task_id": "tw",
+            "main_workspace": str(repo),
+            "worktree_roots": [str(tmp_path)],
+        },
+        lease_id="writer-lease",
+    )
+    reader = manager.bind_session(
+        {
+            "store": store,
+            "session_id": "reader",
+            "task_id": "tr",
+            "main_workspace": str(repo),
+            "worktree_roots": [str(tmp_path)],
+        },
+        lease_id="reader-lease",
+    )
+
+    assert writer["error"] == "dirty_worktree"
+    assert reader["ok"] is True
+    assert reader["read_only"] is True
+    assert reader["write_lock"] is False
+    assert reader["dirty"] is True
+    assert store.get_session("reader").workspace == str(worktree.resolve(strict=False))
 
 
 def test_bind_session_rejects_wrong_session_missing_unregistered_and_dirty(tmp_path: Path):

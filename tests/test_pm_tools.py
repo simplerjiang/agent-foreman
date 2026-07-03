@@ -498,6 +498,63 @@ async def test_worktree_create_bind_session_switches_runtime_guard(tmp_path: Pat
     assert read_main.ok is False and read_main.error == "path_outside_workspace"
 
 
+async def test_worktree_read_only_bind_disables_write_and_command_tools(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    (worktree / "wt.txt").write_text("worktree", encoding="utf-8")
+
+    class FakeWorktreeManager:
+        def bind_session(self, context, *, lease_id: str, reason: str = ""):
+            return {
+                "ok": True,
+                "bound": True,
+                "lease_id": lease_id,
+                "main_workspace": str(main),
+                "workspace": str(worktree),
+                "read_only": True,
+                "write_lock": False,
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            file_write=True,
+            shell=True,
+            worktree_roots=[worktree_root],
+        )
+    )
+
+    bound = await rt.call(ToolCall("bind", "worktree_bind_session", {"lease_id": "lease-1"}))
+    read_worktree = await rt.call(ToolCall("read", "read_file", {"path": "wt.txt"}))
+    write = await rt.call(ToolCall("write", "write_file", {"path": "x.txt", "text": "x"}))
+    command = await rt.call(ToolCall("cmd", "run_command", {"command": "python --version"}))
+    create = await rt.call(ToolCall("create", "worktree_create", {"goal": "new"}))
+    cleanup = await rt.call(ToolCall("cleanup", "worktree_cleanup", {}))
+    checkpoint = await rt.call(ToolCall("checkpoint", "checkpoint_create", {}))
+    test_run = await rt.call(ToolCall("test", "test_run", {"command": "python --version"}))
+    undo = await rt.call(ToolCall("undo", "checkpoint_undo", {"checkpoint_id": "c1"}))
+
+    assert bound.ok is True
+    assert bound.data["read_only"] is True
+    assert read_worktree.ok is True and read_worktree.data["text"] == "worktree"
+    assert write.error == "tool_disabled"
+    assert command.error == "tool_disabled"
+    assert create.error == "tool_disabled"
+    assert cleanup.error == "tool_disabled"
+    assert checkpoint.error == "tool_disabled"
+    assert test_run.error == "tool_disabled"
+    assert undo.error == "tool_disabled"
+
+
 async def test_worktree_list_and_status_add_lease_ownership(tmp_path: Path):
     main = tmp_path / "repo"
     worktree_root = tmp_path / ".foreman-worktrees" / "repo"

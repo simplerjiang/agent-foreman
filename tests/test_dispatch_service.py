@@ -29,6 +29,7 @@ from foreman.client.store.models import (
     DecisionCard,
     Session,
     Task,
+    WorktreeLease,
 )
 from foreman.client.tools import PMToolRuntime
 from foreman.shared.config import AgentCfg, Config, WorkspaceCfg
@@ -147,6 +148,39 @@ async def test_cancelled_session_is_not_overwritten_by_background_completion(tmp
     assert store.get_session(res["session_id"]).status == "cancelled"
     assert (await svc.delete(res["session_id"]))["ok"] is True
     assert store.get_session(res["session_id"]) is None
+
+
+async def test_session_done_and_delete_release_active_worktree_lock(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="g", workspace=str(tmp_path), status="running"))
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="lease-1",
+            repo_root=str(tmp_path),
+            main_workspace=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+            branch="feature",
+            base_ref="main",
+            base_sha="base",
+            head_sha="head",
+            session_id="s1",
+            task_id="t1",
+            locked=True,
+        )
+    )
+    svc = DispatchService(_cfg(workspaces=[WorkspaceCfg(path=str(tmp_path))]), store)
+
+    svc._mark_session("s1", "done")
+    released = store.get_worktree_lease("lease-1")
+
+    assert released.status == "released"
+    assert released.locked is False
+
+    store.update_worktree_lease("lease-1", status="active", locked=True)
+    assert (await svc.delete("s1"))["ok"] is True
+    deleted_release = store.get_worktree_lease("lease-1")
+    assert deleted_release.status == "released"
+    assert deleted_release.locked is False
 
 
 async def test_cancel_interrupts_running_agent_handle(tmp_path):

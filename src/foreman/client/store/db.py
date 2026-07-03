@@ -147,11 +147,12 @@ class Store:
         lease.updated_at = lease.updated_at or lease.created_at
         lease.last_seen_at = lease.last_seen_at or lease.updated_at
         with self.session() as s:
-            if lease.status == "active":
+            if lease.status == "active" and lease.locked:
                 existing = s.exec(
                     select(WorktreeLease).where(
                         WorktreeLease.worktree_path == lease.worktree_path,
                         WorktreeLease.status == "active",
+                        WorktreeLease.locked == True,  # noqa: E712
                         WorktreeLease.id != lease.id,
                     )
                 ).first()
@@ -176,6 +177,7 @@ class Store:
         session_id: str | None = None,
         worktree_path: str | None = None,
         status: str | None = None,
+        locked: bool | None = None,
     ) -> list[WorktreeLease]:
         with self.session() as s:
             stmt = select(WorktreeLease)
@@ -187,6 +189,8 @@ class Store:
                 if status not in WORKTREE_LEASE_STATUSES:
                     raise ValueError("invalid_worktree_lease_status")
                 stmt = stmt.where(WorktreeLease.status == status)
+            if locked is not None:
+                stmt = stmt.where(WorktreeLease.locked == locked)
             stmt = stmt.order_by(
                 col(WorktreeLease.updated_at).desc(),
                 col(WorktreeLease.id).desc(),
@@ -224,11 +228,14 @@ class Store:
             row = s.get(WorktreeLease, lease_id)
             if row is None:
                 return None
-            if status == "active":
+            next_status = status if status is not None else row.status
+            next_locked = locked if locked is not None else row.locked
+            if next_status == "active" and next_locked:
                 existing = s.exec(
                     select(WorktreeLease).where(
                         WorktreeLease.worktree_path == row.worktree_path,
                         WorktreeLease.status == "active",
+                        WorktreeLease.locked == True,  # noqa: E712
                         WorktreeLease.id != row.id,
                     )
                 ).first()
@@ -1082,6 +1089,7 @@ def _raise_worktree_lease_integrity(exc: IntegrityError) -> None:
     message = str(getattr(exc, "orig", exc))
     if (
         "ux_worktree_leases_active_path" in message
+        or "ux_worktree_leases_active_write_path" in message
         or "worktree_leases.worktree_path" in message
     ):
         raise ValueError("active_worktree_lease_exists") from exc

@@ -460,6 +460,7 @@ class DispatchService:
             return {"ok": False, "error": "session_not_found"}
         if _is_live_session_status(session.status) or self._session_has_live_task(session_id):
             return {"ok": False, "error": "session_busy"}
+        self._release_session_worktree_leases(session_id)
         if not self.store.delete_session(session_id):
             return {"ok": False, "error": "session_not_found"}
         return {"ok": True, "session_id": session_id}
@@ -1858,6 +1859,8 @@ class DispatchService:
         return _fallback_compact(active_context.rendered_text, existing)
 
     def _mark_session(self, session_id: str, status: str) -> None:
+        if status in {"done", *TERMINAL_SESSION_STATUSES}:
+            self._release_session_worktree_leases(session_id)
         if self.store is not None and hasattr(self.store, "update_session"):
             self.store.update_session(session_id, status=status, updated_at=self._clock())
 
@@ -1867,6 +1870,34 @@ class DispatchService:
             if session is not None and (session.status or "").strip().lower() in TERMINAL_SESSION_STATUSES:
                 return
         self._mark_session(session_id, status)
+
+    def _release_session_worktree_leases(self, session_id: str) -> None:
+        if self.store is None or not session_id:
+            return
+        get_many = getattr(self.store, "get_worktree_leases", None)
+        update = getattr(self.store, "update_worktree_lease", None)
+        if not callable(get_many) or not callable(update):
+            return
+        try:
+            leases = get_many(session_id=session_id, status="active")
+        except TypeError:
+            try:
+                leases = get_many(status="active")
+            except TypeError:
+                leases = get_many()
+        for lease in leases or []:
+            if str(getattr(lease, "session_id", "") or "") != session_id:
+                continue
+            lease_id = str(getattr(lease, "id", "") or "")
+            if not lease_id:
+                continue
+            try:
+                update(lease_id, status="released", locked=False, last_seen_at=self._clock())
+            except TypeError:
+                try:
+                    update(lease_id, status="released", locked=False)
+                except TypeError:
+                    update(lease_id, status="released")
 
     def _track_launch_task(self, session_id: str, task: asyncio.Task) -> None:
         self._tasks.add(task)

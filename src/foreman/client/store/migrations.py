@@ -123,8 +123,20 @@ def _v6_worktree_leases(conn) -> None:
     )
     conn.execute(
         text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_worktree_leases_active_path "
-            "ON worktree_leases (worktree_path) WHERE status = 'active'"
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_worktree_leases_active_write_path "
+            "ON worktree_leases (worktree_path) WHERE status = 'active' AND locked = 1"
+        )
+    )
+
+
+def _v7_worktree_active_write_lock(conn) -> None:
+    if not table_exists(conn, "worktree_leases"):
+        return
+    conn.execute(text("DROP INDEX IF EXISTS ux_worktree_leases_active_path"))
+    conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_worktree_leases_active_write_path "
+            "ON worktree_leases (worktree_path) WHERE status = 'active' AND locked = 1"
         )
     )
 
@@ -151,5 +163,10 @@ CLIENT_MIGRATIONS: list[Migration] = [
         6,
         "worktree_leases ownership table",
         _v6_worktree_leases,
+    ),
+    Migration(
+        7,
+        "worktree active write lease uniqueness",
+        _v7_worktree_active_write_lock,
     ),
 ]

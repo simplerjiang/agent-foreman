@@ -8,11 +8,13 @@ import re
 import shutil
 import subprocess
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from foreman.client.store.models import WorktreeLease
 from foreman.shared.config import default_worktree_root
+from foreman.shared.events import utc_now_iso
 
 
 _SAFE_TOKEN_RE = re.compile(r"[^a-z0-9._-]+")
@@ -200,7 +202,7 @@ class WorktreeManager:
                 session_id=session_id,
                 task_id=task_id,
                 dirty=bool(status.get("dirty")),
-                locked=bool(registered.get("locked")),
+                locked=True,
             )
         )
         out = {
@@ -216,6 +218,8 @@ class WorktreeManager:
             "owner_session_id": session_id,
             "owner_task_id": task_id,
             "lease_status": str(getattr(lease, "status", "") or ""),
+            "read_only": False,
+            "write_lock": True,
         }
         if bind_session:
             return _with_bind_result(out, self.bind_session(context, lease_id=str(getattr(lease, "id", "") or "")))
@@ -271,10 +275,24 @@ class WorktreeManager:
         registered = _find_worktree(rows, worktree_path, str(getattr(lease, "branch", "") or ""))
         if registered is None:
             return _bind_error("worktree_not_registered", lease=lease)
+        write_lock = bool(getattr(lease, "locked", False))
+        read_only = not write_lock
+        if write_lock:
+            conflict = _active_write_lease_for_path(
+                store,
+                worktree_path,
+                exclude_id=str(getattr(lease, "id", "") or ""),
+            )
+            if conflict is not None:
+                return _bind_error(
+                    "workspace_write_locked",
+                    lease=lease,
+                    detail=str(getattr(conflict, "id", "") or ""),
+                )
         status = self.status(worktree_path, str(getattr(lease, "base_sha", "") or getattr(lease, "base_ref", "") or ""))
         if not status.get("ok"):
             return _bind_error(str(status.get("error") or "worktree_status_failed"), lease=lease, detail=str(status.get("detail") or ""))
-        if bool(status.get("dirty")) or bool(getattr(lease, "dirty", False)):
+        if write_lock and (bool(status.get("dirty")) or bool(getattr(lease, "dirty", False))):
             return _bind_error("dirty_worktree", lease=lease)
         updated = update_session(
             session_id,
@@ -289,7 +307,8 @@ class WorktreeManager:
                 str(getattr(lease, "id", "") or ""),
                 head_sha=str(status.get("head_sha") or ""),
                 dirty=bool(status.get("dirty")),
-                locked=bool(registered.get("locked")),
+                locked=write_lock,
+                last_seen_at=utc_now_iso(),
             )
         return {
             "ok": True,
@@ -307,6 +326,9 @@ class WorktreeManager:
             "owner_session_id": session_id,
             "owner_task_id": str(getattr(lease, "task_id", "") or ""),
             "lease_status": str(getattr(lease, "status", "") or ""),
+            "dirty": bool(status.get("dirty")),
+            "read_only": read_only,
+            "write_lock": write_lock,
             "reason": str(reason or ""),
         }
 
@@ -477,6 +499,122 @@ class WorktreeManager:
             "artifact_paths": artifact_paths,
         }
 
+    def merge_risk_check(
+        self,
+        context: dict[str, Any],
+        *,
+        other_lease_id: str = "",
+        other_session_id: str = "",
+    ) -> dict[str, Any]:
+        session_id = str(context.get("session_id") or "").strip()
+        store = context.get("store")
+        current = _active_lease_for_session(store, session_id)
+        if current is None:
+            return _merge_risk_result(error="no_active_worktree_lease")
+        other = _other_active_lease(
+            store,
+            current,
+            other_lease_id=other_lease_id,
+            other_session_id=other_session_id,
+        )
+        if other is None:
+            return _merge_risk_result(current=current, error="other_active_lease_not_found")
+
+        current_diff = self._diff_for_lease(
+            context,
+            current,
+            max_patch_chars=0,
+            include_patch=False,
+            write_patch_artifact=False,
+        )
+        if not current_diff.get("ok", True):
+            return _merge_risk_result(
+                current=current,
+                other=other,
+                error=str(current_diff.get("error") or "current_diff_failed"),
+                detail=str(current_diff.get("detail") or ""),
+            )
+        other_diff = self._diff_for_lease(
+            context,
+            other,
+            max_patch_chars=0,
+            include_patch=False,
+            write_patch_artifact=False,
+        )
+        if not other_diff.get("ok", True):
+            return _merge_risk_result(
+                current=current,
+                other=other,
+                error=str(other_diff.get("error") or "other_diff_failed"),
+                detail=str(other_diff.get("detail") or ""),
+            )
+
+        current_files = _diff_file_paths(current_diff.get("changed_files") or [])
+        other_files = _diff_file_paths(other_diff.get("changed_files") or [])
+        overlapping = sorted(current_files & other_files)
+        if overlapping:
+            risk_level = "high"
+        elif current_files or other_files:
+            risk_level = "low"
+        else:
+            risk_level = "none"
+        return _merge_risk_result(
+            current=current,
+            other=other,
+            risk_level=risk_level,
+            overlapping_files=overlapping,
+            current_files=sorted(current_files),
+            other_files=sorted(other_files),
+        )
+
+    def find_stale_leases(
+        self,
+        context: dict[str, Any],
+        *,
+        stale_after_seconds: int = 3600,
+    ) -> dict[str, Any]:
+        store = context.get("store")
+        get_many = getattr(store, "get_worktree_leases", None)
+        if store is None or not callable(get_many):
+            return {"ok": False, "error": "worktree_store_unavailable", "leases": []}
+        try:
+            leases = get_many(status="active")
+        except TypeError:
+            leases = get_many()
+        now = datetime.now(timezone.utc)
+        threshold = max(0, int(stale_after_seconds))
+        stale_rows: list[dict[str, Any]] = []
+        for lease in leases or []:
+            age_seconds = _lease_age_seconds(lease, now)
+            if age_seconds < threshold:
+                continue
+            worktree = _normalize_path(getattr(lease, "worktree_path", "") or "")
+            status = self.status(
+                worktree,
+                str(getattr(lease, "base_sha", "") or getattr(lease, "base_ref", "") or ""),
+            )
+            dirty = bool(getattr(lease, "dirty", False))
+            if status.get("ok"):
+                dirty = dirty or bool(status.get("dirty"))
+            stale_rows.append(
+                {
+                    "lease_id": str(getattr(lease, "id", "") or ""),
+                    "session_id": str(getattr(lease, "session_id", "") or ""),
+                    "task_id": str(getattr(lease, "task_id", "") or ""),
+                    "workspace": str(worktree),
+                    "path": str(worktree),
+                    "branch": str(getattr(lease, "branch", "") or ""),
+                    "status": str(getattr(lease, "status", "") or ""),
+                    "locked": bool(getattr(lease, "locked", False)),
+                    "dirty": dirty,
+                    "age_seconds": age_seconds,
+                    "takeover_allowed": not dirty,
+                    "auto_takeover_allowed": False,
+                    "reason": "dirty_worktree" if dirty else "manual_review_required",
+                }
+            )
+        return {"ok": True, "leases": stale_rows, "stale_count": len(stale_rows)}
+
     def cleanup(
         self,
         context: dict[str, Any],
@@ -624,7 +762,7 @@ class WorktreeManager:
         compare_to: str,
         reuse_policy: str,
     ) -> dict[str, Any]:
-        lease = _active_lease_for_path(store, path)
+        lease = _active_lease_for_path(store, path, session_id=session_id, task_id=task_id)
         if not _lease_owned_by(lease, session_id, task_id):
             return _reject(out, "unowned_worktree")
         status = self.status(path, compare_to)
@@ -859,15 +997,86 @@ def _find_worktree(
     return branch_match
 
 
-def _active_lease_for_path(store: Any, path: Path) -> Any | None:
+def _active_lease_for_path(
+    store: Any,
+    path: Path,
+    *,
+    session_id: str = "",
+    task_id: str = "",
+) -> Any | None:
+    leases = _active_leases_for_path(store, path)
+    if session_id:
+        for lease in leases:
+            if _lease_owned_by(lease, session_id, task_id):
+                return lease
+    return leases[0] if leases else None
+
+
+def _active_leases_for_path(store: Any, path: Path) -> list[Any]:
     if store is None:
-        return None
+        return []
+    get_many = getattr(store, "get_worktree_leases", None)
+    if callable(get_many):
+        raw_leases: list[Any] = []
+        for candidate in {str(path), str(path.resolve(strict=False))}:
+            try:
+                raw_leases.extend(get_many(worktree_path=candidate, status="active"))
+            except TypeError:
+                raw_leases = []
+                break
+        if not raw_leases:
+            try:
+                raw_leases = list(get_many(status="active") or [])
+            except TypeError:
+                raw_leases = list(get_many() or [])
+        target = path.resolve(strict=False)
+        leases: list[Any] = []
+        seen: set[str] = set()
+        for lease in raw_leases:
+            lease_id = str(getattr(lease, "id", "") or id(lease))
+            if lease_id in seen:
+                continue
+            try:
+                lease_path = Path(str(getattr(lease, "worktree_path", "") or "")).resolve(
+                    strict=False
+                )
+            except (OSError, ValueError):
+                continue
+            if lease_path == target and str(getattr(lease, "status", "") or "") == "active":
+                seen.add(lease_id)
+                leases.append(lease)
+        return leases
     get_active = getattr(store, "get_active_worktree_lease", None)
     if callable(get_active):
         for candidate in {str(path), str(path.resolve(strict=False))}:
             lease = get_active(worktree_path=candidate)
             if lease is not None:
-                return lease
+                return [lease]
+    return []
+
+
+def _active_write_lease_for_path(store: Any, path: Path, *, exclude_id: str = "") -> Any | None:
+    for lease in _active_leases_for_path(store, path):
+        if str(getattr(lease, "id", "") or "") == exclude_id:
+            continue
+        if bool(getattr(lease, "locked", False)):
+            return lease
+    return None
+
+
+def _other_active_lease(
+    store: Any,
+    current: Any,
+    *,
+    other_lease_id: str = "",
+    other_session_id: str = "",
+) -> Any | None:
+    get_lease = getattr(store, "get_worktree_lease", None)
+    lease_id = str(other_lease_id or "").strip()
+    if lease_id and callable(get_lease):
+        lease = get_lease(lease_id)
+        if lease is not None and str(getattr(lease, "status", "") or "") == "active":
+            return lease
     get_many = getattr(store, "get_worktree_leases", None)
     if not callable(get_many):
         return None
@@ -875,14 +1084,81 @@ def _active_lease_for_path(store: Any, path: Path) -> Any | None:
         leases = get_many(status="active")
     except TypeError:
         leases = get_many()
+    current_id = str(getattr(current, "id", "") or "")
     for lease in leases or []:
-        try:
-            lease_path = Path(str(getattr(lease, "worktree_path", "") or "")).resolve(strict=False)
-        except (OSError, ValueError):
+        if str(getattr(lease, "id", "") or "") == current_id:
             continue
-        if lease_path == path.resolve(strict=False):
-            return lease
+        if other_session_id and str(getattr(lease, "session_id", "") or "") != other_session_id:
+            continue
+        return lease
     return None
+
+
+def _diff_file_paths(files: list[Any]) -> set[str]:
+    paths: set[str] = set()
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        old_path = str(item.get("old_path") or "").strip()
+        if path:
+            paths.add(path)
+        if old_path:
+            paths.add(old_path)
+    return paths
+
+
+def _merge_risk_result(
+    *,
+    current: Any = None,
+    other: Any = None,
+    risk_level: str = "none",
+    overlapping_files: list[str] | None = None,
+    current_files: list[str] | None = None,
+    other_files: list[str] | None = None,
+    error: str = "",
+    detail: str = "",
+) -> dict[str, Any]:
+    return {
+        "ok": not bool(error),
+        "error": error,
+        "detail": detail.strip(),
+        "risk_level": risk_level,
+        "overlapping_files": overlapping_files or [],
+        "current_files": current_files or [],
+        "other_files": other_files or [],
+        "current_lease_id": str(getattr(current, "id", "") or ""),
+        "other_lease_id": str(getattr(other, "id", "") or ""),
+        "current_session_id": str(getattr(current, "session_id", "") or ""),
+        "other_session_id": str(getattr(other, "session_id", "") or ""),
+    }
+
+
+def _lease_age_seconds(lease: Any, now: datetime) -> int:
+    timestamp = (
+        str(getattr(lease, "last_seen_at", "") or "")
+        or str(getattr(lease, "updated_at", "") or "")
+        or str(getattr(lease, "created_at", "") or "")
+    )
+    seen = _parse_iso_datetime(timestamp)
+    if seen is None:
+        return 0
+    return max(0, int((now - seen).total_seconds()))
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _active_lease_for_session(store: Any, session_id: str) -> Any | None:
