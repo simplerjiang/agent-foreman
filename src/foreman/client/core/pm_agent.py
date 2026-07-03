@@ -42,7 +42,13 @@ PLAN_SYSTEM = (
     "the user explicitly requested it. Never tell one coding agent to launch or shell out to another "
     "coding agent; Foreman owns all coding-agent process launches. Assume the selected "
     "coding agent may use its available file read/write/edit, shell command, and web/search tools "
-    "when its full_access setting is true. Human-facing JSON string "
+    "when its full_access setting is true. For tasks that may change files, prefer a dedicated "
+    "Foreman worktree before dispatch. Never create, delete, bind, or switch worktrees through "
+    "run_command unless the dedicated worktree tool is unavailable and the user explicitly approves "
+    "the fallback. Treat `workspace` as the current effective execution directory and "
+    "`main_workspace` as the original checkout/fallback. In submit_plan, leave workspace empty unless "
+    "you are referencing the current workspace or a workspace already verified/bound by a runtime "
+    "worktree tool. Human-facing JSON string "
     "values must follow the selected output language; keep only identifiers, paths, commands, code, "
     "and quoted user text as-is. If the user's request only needs a direct answer and no coding CLI, "
     "set kind='direct_reply' and put the user-facing answer in reply. Respond with ONLY JSON: "
@@ -378,6 +384,7 @@ def build_plan_prompt(
     requested_agent: str,
     pm_model: str,
     requested_effort: str,
+    main_workspace: str = "",
     context: str = "",
     planning_rounds: list[dict[str, Any]] | None = None,
     round_no: int = 1,
@@ -386,7 +393,29 @@ def build_plan_prompt(
 ) -> str:
     parts = [
         f"# User task\n{goal}",
-        f"# Workspace\n{workspace}",
+        "# Workspace\n"
+        + json.dumps(
+            {
+                "workspace": workspace,
+                "main_workspace": main_workspace or workspace,
+                "workspace_rule": (
+                    "`workspace` is the current effective execution directory. "
+                    "`main_workspace` is the original checkout/fallback and must not be treated "
+                    "as the current cwd after a worktree is bound."
+                ),
+                "submit_plan_workspace_rule": (
+                    "Leave submit_plan.workspace empty unless it is the current workspace or a "
+                    "workspace already verified/bound by worktree_status, worktree_create, or "
+                    "worktree_bind_session."
+                ),
+                "worktree_tool_rule": (
+                    "For file-changing tasks, prefer dedicated worktree tools. Do not create, "
+                    "delete, bind, or switch worktrees with run_command unless those dedicated "
+                    "tools are unavailable and the user approved the fallback."
+                ),
+            },
+            ensure_ascii=False,
+        ),
         "# PM planning round\n"
         + json.dumps(
             {
@@ -829,6 +858,7 @@ class PMAgent:
                     round_no=1,
                     min_rounds=1,
                     max_rounds=plan_item_limit,
+                    main_workspace=main_workspace,
                 )
                 prompt = (
                     prompt
@@ -884,6 +914,7 @@ class PMAgent:
             prompt = build_plan_prompt(
                 goal,
                 workspace=workspace,
+                main_workspace=main_workspace,
                 available_agents=available_agents,
                 requested_agent=requested_agent,
                 pm_model=pm_model,
