@@ -332,7 +332,8 @@ def _handle_event_payload(handle: AgentHandle, source: str, *, status: str = "")
 
 def _event_returncode(payload: dict) -> int | None:
     try:
-        return int(payload.get("returncode"))
+        raw = payload.get("returncode")
+        return None if raw is None else int(raw)
     except (TypeError, ValueError):
         return None
 

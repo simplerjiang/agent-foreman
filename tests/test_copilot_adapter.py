@@ -217,7 +217,8 @@ async def test_stream_text_and_json_result(tmp_path):
 
     assert [event.type for event in events] == ["agent_start", "agent_output", "stop"]
     assert events[1].source == "copilot-cli"
-    assert events[1].payload == {"text": "plain copilot text"}
+    assert events[1].payload["text"] == "plain copilot text"
+    assert events[1].payload["agent_id"]
     assert events[2].payload["result"] == "ok"
 
 
@@ -232,7 +233,9 @@ async def test_success_without_json_result_emits_stop(tmp_path):
     events = [event async for event in adapter.stream(handle)]
 
     assert [event.type for event in events] == ["agent_start", "agent_output", "stop"]
-    assert events[-1].payload == {"result": "", "returncode": 0}
+    assert events[-1].payload["result"] == ""
+    assert events[-1].payload["returncode"] == 0
+    assert events[-1].payload["agent_id"]
 
 
 async def test_nonzero_exit_emits_error_without_synthetic_stop(tmp_path):

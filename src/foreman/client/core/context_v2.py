@@ -1279,7 +1279,7 @@ def frames_to_replacement_history(
                 }
             )
     for idx, frame in enumerate(_anchor_frames(frames)[:12]):
-        payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+        payload = _as_dict(frame.get("payload"))
         content = _anchor_content(frame, payload, frames)
         if not content:
             continue
@@ -1356,7 +1356,7 @@ def _summary_from_local_text(text: str) -> dict[str, Any]:
         raise ContextCompactError("no_context")
     parsed = extract_json_object(raw)
     if isinstance(parsed, dict):
-        session_state = parsed.get("session_state") if isinstance(parsed.get("session_state"), dict) else {}
+        session_state = _as_dict(parsed.get("session_state"))
         summary = _text(session_state.get("summary") or parsed.get("summary") or parsed.get("text"))
         out = dict(parsed)
         out["summary"] = summary or _summarize_text(raw, max_chars=1400)
@@ -1460,13 +1460,13 @@ def _anchor_content(frame: dict[str, Any], payload: dict[str, Any], frames: list
 
 def _paired_frame_ids(frame: dict[str, Any], frames: list[dict[str, Any]]) -> list[str]:
     ids = [_text(frame.get("id"))]
-    payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    payload = _as_dict(frame.get("payload"))
     call_id = _text(payload.get("call_id") or payload.get("tool_call_id"))
     if call_id:
         for candidate in frames:
             if candidate is frame:
                 continue
-            candidate_payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+            candidate_payload = _as_dict(candidate.get("payload"))
             if _text(candidate_payload.get("call_id") or candidate_payload.get("tool_call_id")) == call_id:
                 ids.append(_text(candidate.get("id")))
     return _dedupe(ids)
@@ -1497,12 +1497,12 @@ def _prior_replacement_history_items(active_context: ActiveContext) -> list[dict
 
 def _paired_source_refs(frame: dict[str, Any], frames: list[dict[str, Any]]) -> list[str]:
     refs: list[str] = []
-    payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    payload = _as_dict(frame.get("payload"))
     call_id = _text(payload.get("call_id") or payload.get("tool_call_id"))
     if not call_id:
         return refs
     for candidate in frames:
-        candidate_payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+        candidate_payload = _as_dict(candidate.get("payload"))
         if _text(candidate_payload.get("call_id") or candidate_payload.get("tool_call_id")) != call_id:
             continue
         refs.extend(_as_list(candidate.get("source_refs")))
@@ -1513,12 +1513,12 @@ def _paired_source_refs(frame: dict[str, Any], frames: list[dict[str, Any]]) -> 
 
 
 def _paired_command_payload(frame: dict[str, Any], frames: list[dict[str, Any]]) -> dict[str, Any]:
-    payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    payload = _as_dict(frame.get("payload"))
     call_id = _text(payload.get("call_id") or payload.get("tool_call_id"))
     if not call_id:
         return {}
     for candidate in frames:
-        candidate_payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+        candidate_payload = _as_dict(candidate.get("payload"))
         if _text(candidate_payload.get("call_id") or candidate_payload.get("tool_call_id")) != call_id:
             continue
         if _text(candidate.get("type")) not in {"command_call", "tool_call"}:
@@ -1533,7 +1533,7 @@ def _paired_command_payload(frame: dict[str, Any], frames: list[dict[str, Any]])
 def _recent_frame_summary(frames: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for frame in _anchor_frames(frames)[-8:]:
-        payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+        payload = _as_dict(frame.get("payload"))
         content = _anchor_content(frame, payload, frames)
         if content:
             parts.append(f"{_text(frame.get('type'))}: {content}")
@@ -1566,7 +1566,7 @@ def _has_english_word(text: str, words: tuple[str, ...]) -> bool:
 
 
 def _stable_prefix(session: Session, runtime: dict[str, Any], purpose: str) -> list[dict[str, Any]]:
-    prefix = [
+    prefix: list[dict[str, Any]] = [
         {
             "type": "task",
             "purpose": _text(purpose),
@@ -1677,7 +1677,8 @@ def _loads_or_none(raw: str) -> dict[str, Any] | None:
 
 
 def _cursor_end(cursor: dict[str, Any]) -> dict[str, Any]:
-    end = cursor.get("end") if isinstance(cursor.get("end"), dict) else cursor
+    raw_end = cursor.get("end")
+    end = _as_dict(raw_end) if isinstance(raw_end, dict) else cursor
     return {
         "event_ts": _text(
             end.get("event_ts")

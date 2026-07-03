@@ -141,7 +141,8 @@ async def test_stream_parses_lines(tmp_path):
         "x",
     ]
     assert events[1].source == "codex"
-    assert events[1].payload == {"text": "plain codex output line"}
+    assert events[1].payload["text"] == "plain codex output line"
+    assert events[1].payload["agent_id"]
     assert events[2].payload["result"] == "ok"
 
 

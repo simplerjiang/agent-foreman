@@ -591,7 +591,7 @@ def _summary_list(value: Any) -> list[Any]:
 
 
 def _safe_checkpoint_summary(raw: dict[str, Any]) -> dict[str, list[Any]]:
-    summary = {key: [] for key in _CONTEXT_SUMMARY_KEYS}
+    summary: dict[str, list[Any]] = {key: [] for key in _CONTEXT_SUMMARY_KEYS}
     aliases = {
         "last_tests": "tests",
         "test_results": "tests",
@@ -624,7 +624,8 @@ def _checkpoint_row_dict(checkpoint: Any, *, events: list[Any] | None = None) ->
     token_usage = _sanitize_context_value(_json_obj(getattr(checkpoint, "token_usage_json", ""))) or {}
     source_cursor = _sanitize_context_value(_json_obj(getattr(checkpoint, "source_cursor_json", ""))) or {}
     replacement = _json_obj(getattr(checkpoint, "replacement_history_json", ""))
-    items = replacement.get("items") if isinstance(replacement.get("items"), list) else []
+    raw_items = replacement.get("items")
+    items = raw_items if isinstance(raw_items, list) else []
     payloads = _checkpoint_payloads(events or [], getattr(checkpoint, "id", ""))
     status = "completed"
     warnings: list[str] = []
@@ -654,7 +655,8 @@ def _checkpoint_row_dict(checkpoint: Any, *, events: list[Any] | None = None) ->
 
 def _checkpoint_detail_dict(checkpoint: Any, *, events: list[Any] | None = None) -> dict[str, Any]:
     replacement = _json_obj(getattr(checkpoint, "replacement_history_json", ""))
-    items = replacement.get("items") if isinstance(replacement.get("items"), list) else []
+    raw_items = replacement.get("items")
+    items = raw_items if isinstance(raw_items, list) else []
     input_frame_ids = _json_list(getattr(checkpoint, "input_frame_ids_json", ""))
     row = _checkpoint_row_dict(checkpoint, events=events)
     return {
@@ -701,7 +703,8 @@ def _usage_from_active_context(active_context: Any, window_tokens: int) -> dict[
     window = max(0, int(token_usage.get("window_tokens") or window_tokens or 0))
     soft_threshold = float(token_usage.get("soft_threshold") or 0.70)
     hard_threshold = float(token_usage.get("hard_threshold") or 0.90)
-    lane_usage = token_usage.get("lane_usage") if isinstance(token_usage.get("lane_usage"), dict) else {}
+    raw_lane_usage = token_usage.get("lane_usage")
+    lane_usage = raw_lane_usage if isinstance(raw_lane_usage, dict) else {}
     return {
         "used_tokens": used,
         "window_tokens": window,
@@ -1931,7 +1934,8 @@ def create_app(
         events = _checkpoint_events(session_id)
         runtime = _sanitize_context_value(getattr(active, "runtime_state", {}) or {}) or {}
         envelope = getattr(active, "envelope", {}) if isinstance(getattr(active, "envelope", {}), dict) else {}
-        context = envelope.get("context") if isinstance(envelope.get("context"), dict) else {}
+        raw_context = envelope.get("context")
+        context = raw_context if isinstance(raw_context, dict) else {}
         return {
             "usage": _usage_from_active_context(active, window_tokens),
             "latest_checkpoint": _checkpoint_row_dict(checkpoint, events=events) if checkpoint is not None else None,

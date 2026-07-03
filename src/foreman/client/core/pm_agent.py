@@ -550,20 +550,20 @@ def _content_summary(value: object) -> str:
         return content.strip()
     if not isinstance(content, list):
         return ""
-    parts: list[str] = []
+    content_parts: list[str] = []
     for block in content:
         if not isinstance(block, dict):
             continue
         for key in ("text", "delta", "thinking", "reasoning", "summary"):
             text = _as_str(block.get(key))
             if text:
-                parts.append(text)
+                content_parts.append(text)
                 break
         else:
             nested = _content_summary(block)
             if nested:
-                parts.append(nested)
-    return "\n".join(parts).strip()
+                content_parts.append(nested)
+    return "\n".join(content_parts).strip()
 
 
 def build_review_prompt(

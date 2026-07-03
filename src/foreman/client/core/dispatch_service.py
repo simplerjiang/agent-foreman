@@ -2267,7 +2267,8 @@ def _frame_event_id(frame: dict[str, Any]) -> str:
 
 def _render_review_timeline_frame(frame: dict[str, Any], event_id: str) -> str:
     frame_type = str(frame.get("type") or "").strip()
-    payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    raw_payload: Any = frame.get("payload")
+    payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
     bits = [frame_type]
     if event_id:
         bits.append(f"event:{event_id}")
@@ -2315,7 +2316,8 @@ def _advance_reviewed_event_id_from_active_context(
     if active_context is None:
         return reviewed_event_id
     cursor = active_context.source_cursor or {}
-    end = cursor.get("end") if isinstance(cursor.get("end"), dict) else cursor
+    raw_end: Any = cursor.get("end")
+    end: dict[str, Any] = raw_end if isinstance(raw_end, dict) else cursor
     checkpoint_event_id = str(
         end.get("event_id") or end.get("id") or cursor.get("end_event_id") or ""
     ).strip()

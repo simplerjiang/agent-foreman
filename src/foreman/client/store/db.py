@@ -208,12 +208,12 @@ class Store:
                 if event_id:
                     stmt = stmt.where(
                         or_(
-                            Event.ts > event_ts,
-                            and_(Event.ts == event_ts, Event.id > event_id),
+                            col(Event.ts) > event_ts,
+                            and_(col(Event.ts) == event_ts, col(Event.id) > event_id),
                         )
                     )
                 else:
-                    stmt = stmt.where(Event.ts > event_ts)
+                    stmt = stmt.where(col(Event.ts) > event_ts)
             return list(s.exec(stmt.order_by(Event.ts, Event.id)).all())
 
     # -- derived context views ---------------------------------------------------------------
@@ -245,15 +245,15 @@ class Store:
                 if event_id:
                     stmt = stmt.where(
                         or_(
-                            ContextFrame.event_ts > event_ts,
+                            col(ContextFrame.event_ts) > event_ts,
                             and_(
-                                ContextFrame.event_ts == event_ts,
-                                ContextFrame.event_id > event_id,
+                                col(ContextFrame.event_ts) == event_ts,
+                                col(ContextFrame.event_id) > event_id,
                             ),
                         )
                     )
                 else:
-                    stmt = stmt.where(ContextFrame.event_ts > event_ts)
+                    stmt = stmt.where(col(ContextFrame.event_ts) > event_ts)
             stmt = stmt.order_by(
                 ContextFrame.event_ts,
                 ContextFrame.event_id,
