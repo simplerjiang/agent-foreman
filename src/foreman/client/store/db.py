@@ -9,6 +9,7 @@ import json
 import uuid
 
 from sqlalchemy import and_, or_
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel, col, create_engine, select
 
@@ -36,6 +37,8 @@ from .models import (
     Review,
     Session,
     Task,
+    WORKTREE_LEASE_STATUSES,
+    WorktreeLease,
     WorkflowRun,
 )
 
@@ -132,6 +135,126 @@ class Store:
             s.add(task)
             s.commit()
         return task
+
+    # ── PM worktree leases ───────────────────────────────────────────────────────────────
+    def add_worktree_lease(self, lease: WorktreeLease) -> WorktreeLease:
+        if lease.status not in WORKTREE_LEASE_STATUSES:
+            raise ValueError("invalid_worktree_lease_status")
+        if not lease.id:
+            lease.id = uuid.uuid4().hex
+        now = utc_now_iso()
+        lease.created_at = lease.created_at or now
+        lease.updated_at = lease.updated_at or lease.created_at
+        lease.last_seen_at = lease.last_seen_at or lease.updated_at
+        with self.session() as s:
+            if lease.status == "active":
+                existing = s.exec(
+                    select(WorktreeLease).where(
+                        WorktreeLease.worktree_path == lease.worktree_path,
+                        WorktreeLease.status == "active",
+                        WorktreeLease.id != lease.id,
+                    )
+                ).first()
+                if existing is not None:
+                    raise ValueError("active_worktree_lease_exists")
+            s.add(lease)
+            try:
+                s.commit()
+            except IntegrityError as exc:
+                s.rollback()
+                _raise_worktree_lease_integrity(exc)
+            s.refresh(lease)
+        return lease
+
+    def get_worktree_lease(self, lease_id: str) -> WorktreeLease | None:
+        with self.session() as s:
+            return s.get(WorktreeLease, lease_id)
+
+    def get_worktree_leases(
+        self,
+        *,
+        session_id: str | None = None,
+        worktree_path: str | None = None,
+        status: str | None = None,
+    ) -> list[WorktreeLease]:
+        with self.session() as s:
+            stmt = select(WorktreeLease)
+            if session_id is not None:
+                stmt = stmt.where(WorktreeLease.session_id == session_id)
+            if worktree_path is not None:
+                stmt = stmt.where(WorktreeLease.worktree_path == worktree_path)
+            if status is not None:
+                if status not in WORKTREE_LEASE_STATUSES:
+                    raise ValueError("invalid_worktree_lease_status")
+                stmt = stmt.where(WorktreeLease.status == status)
+            stmt = stmt.order_by(
+                col(WorktreeLease.updated_at).desc(),
+                col(WorktreeLease.id).desc(),
+            )
+            return list(s.exec(stmt).all())
+
+    def get_active_worktree_lease(
+        self,
+        *,
+        session_id: str | None = None,
+        worktree_path: str | None = None,
+    ) -> WorktreeLease | None:
+        rows = self.get_worktree_leases(
+            session_id=session_id,
+            worktree_path=worktree_path,
+            status="active",
+        )
+        return rows[0] if rows else None
+
+    def update_worktree_lease(
+        self,
+        lease_id: str,
+        *,
+        status: str | None = None,
+        head_sha: str | None = None,
+        dirty: bool | None = None,
+        locked: bool | None = None,
+        last_seen_at: str | None = None,
+        metadata_json: str | None = None,
+        updated_at: str | None = None,
+    ) -> WorktreeLease | None:
+        if status is not None and status not in WORKTREE_LEASE_STATUSES:
+            raise ValueError("invalid_worktree_lease_status")
+        with self.session() as s:
+            row = s.get(WorktreeLease, lease_id)
+            if row is None:
+                return None
+            if status == "active":
+                existing = s.exec(
+                    select(WorktreeLease).where(
+                        WorktreeLease.worktree_path == row.worktree_path,
+                        WorktreeLease.status == "active",
+                        WorktreeLease.id != row.id,
+                    )
+                ).first()
+                if existing is not None:
+                    raise ValueError("active_worktree_lease_exists")
+            if status is not None:
+                row.status = status
+            if head_sha is not None:
+                row.head_sha = head_sha
+            if dirty is not None:
+                row.dirty = dirty
+            if locked is not None:
+                row.locked = locked
+            if last_seen_at is not None:
+                row.last_seen_at = last_seen_at
+            if metadata_json is not None:
+                row.metadata_json = metadata_json
+            row.updated_at = updated_at or utc_now_iso()
+            s.add(row)
+            try:
+                s.commit()
+            except IntegrityError as exc:
+                s.rollback()
+                _raise_worktree_lease_integrity(exc)
+            s.refresh(row)
+            return row
 
     # ── events ─────────────────────────────────────────────────────────────────────────────
     def add_event(self, event: AgentEvent) -> Event:
@@ -953,3 +1076,13 @@ def _cursor_parts(cursor: dict | None) -> tuple[str, str]:
     event_ts = str(raw.get("event_ts") or raw.get("ts") or "").strip()
     event_id = str(raw.get("event_id") or raw.get("id") or "").strip()
     return event_ts, event_id
+
+
+def _raise_worktree_lease_integrity(exc: IntegrityError) -> None:
+    message = str(getattr(exc, "orig", exc))
+    if (
+        "ux_worktree_leases_active_path" in message
+        or "worktree_leases.worktree_path" in message
+    ):
+        raise ValueError("active_worktree_lease_exists") from exc
+    raise exc
