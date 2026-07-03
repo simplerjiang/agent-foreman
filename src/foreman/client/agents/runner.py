@@ -9,6 +9,7 @@ See docs/DESIGN.zh-CN.md §4.2.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
 
 from foreman.shared.config import Config
@@ -60,13 +61,30 @@ class Runner:
         adapter = self.adapters.get(agent)
         if adapter is None:
             raise ValueError(f"agent not enabled: {agent!r} (enabled: {sorted(self.adapters)})")
-        handle = await adapter.start(instruction, workspace, session_id, model=model, effort=effort)
+        attempt_id = self._new_attempt_id()
+        try:
+            handle = await adapter.start(
+                instruction, workspace, session_id, model=model, effort=effort
+            )
+        except Exception as exc:
+            await self._publish_attempt_error(
+                adapter,
+                session_id,
+                task_id,
+                attempt_id,
+                exc,
+                "launch_error",
+            )
+            raise
         handle.task_id = task_id or handle.task_id
+        handle.attempt_id = attempt_id
         self.handles[handle.id] = handle
         self._adapter_by_handle[handle.id] = adapter
         self._handle_by_session[session_id] = handle
         self._handles_by_session.setdefault(session_id, {})[handle.id] = handle
-        self._pumps[handle.id] = asyncio.create_task(self._pump(adapter, handle))
+        self._pumps[handle.id] = asyncio.create_task(
+            self._pump(adapter, handle, handle.attempt_id)
+        )
         return handle
     def handle_for_session(self, session_id: str) -> AgentHandle | None:
         """The most recent live handle for a session (the decision loop's `agent_instruction` target)."""
@@ -87,19 +105,45 @@ class Runner:
             raise ValueError(f"no live adapter for handle {handle.id!r}")
         return adapter
 
-    async def send(self, handle: AgentHandle, text: str) -> None:
+    def prepare_attempt(self, handle: AgentHandle) -> str:
+        """Reserve the next process-attempt id before a resumed agent input is emitted."""
+        handle.attempt_id = self._new_attempt_id()
+        return handle.attempt_id
+
+    def _new_attempt_id(self) -> str:
+        return uuid.uuid4().hex
+
+    async def send(
+        self, handle: AgentHandle, text: str, *, attempt_id: str | None = None
+    ) -> None:
         """Append a follow-up instruction to a running agent — two-way control (DESIGN §4.2).
 
         Delegates to the per-handle adapter (which resumes the session, e.g. `--resume`), then
         restarts the background pump so the resumed output streams to store+bus like the first run.
         """
         adapter = self._adapter_of(handle)
-        await adapter.send(handle, text)
+        if not attempt_id:
+            attempt_id = self.prepare_attempt(handle)
+        else:
+            handle.attempt_id = attempt_id
+        try:
+            await adapter.send(handle, text)
+        except Exception as exc:
+            await self._publish_attempt_error(
+                adapter,
+                handle.session_id,
+                handle.task_id,
+                attempt_id,
+                exc,
+                "resume_error",
+                handle=handle,
+            )
+            raise
         # The original stream ended when the one-shot run finished; resume produced a fresh process,
         # so re-pump to wire its output back to store+bus. Cancel any still-running prior pump first
         # so two pumps never write the same handle's stream concurrently.
         self._cancel_pump(handle.id)
-        self._pumps[handle.id] = asyncio.create_task(self._pump(adapter, handle))
+        self._pumps[handle.id] = asyncio.create_task(self._pump(adapter, handle, attempt_id))
 
     async def interrupt(self, handle: AgentHandle) -> None:
         """Pause/interrupt a running agent (e.g. while awaiting approval). DESIGN §4.2 / §5.6."""
@@ -121,12 +165,17 @@ class Runner:
         self._pumps.pop(handle.id, None)
         self._forget_handle(handle)
 
-    async def _pump(self, adapter: AgentAdapter, handle: AgentHandle) -> None:
+    async def _pump(
+        self, adapter: AgentAdapter, handle: AgentHandle, attempt_id: str | None = None
+    ) -> None:
         """Persist each streamed event THEN publish it."""
         try:
             async for event in adapter.stream(handle):
                 if handle.task_id and not event.task_id:
                     event.task_id = handle.task_id
+                if attempt_id:
+                    event.payload = dict(event.payload or {})
+                    event.payload["attempt_id"] = attempt_id
                 self.store.add_event(event)
                 await self.bus.publish(event)
         except asyncio.CancelledError:
@@ -138,6 +187,7 @@ class Runner:
                 handle.session_id,
                 task_id=handle.task_id,
                 payload={
+                    "attempt_id": attempt_id or handle.attempt_id,
                     "msg": f"{type(exc).__name__}: {str(exc)[:500]}",
                     "stream_error": True,
                 },
@@ -149,6 +199,40 @@ class Runner:
             finally:
                 self._forget_handle(handle)
             raise
+
+    async def _publish_attempt_error(
+        self,
+        adapter: AgentAdapter,
+        session_id: str,
+        task_id: str | None,
+        attempt_id: str,
+        exc: Exception,
+        flag: str,
+        *,
+        handle: AgentHandle | None = None,
+    ) -> None:
+        payload = {
+            "attempt_id": attempt_id,
+            "msg": f"{type(exc).__name__}: {str(exc)[:500]}",
+            flag: True,
+        }
+        if handle is not None:
+            payload.update(
+                {
+                    "agent_id": handle.id,
+                    "handle_id": handle.id,
+                    "pid": handle.pid,
+                }
+            )
+        event = make_event(
+            "error",
+            getattr(adapter, "name", "agent"),
+            session_id,
+            task_id=task_id,
+            payload=payload,
+        )
+        self.store.add_event(event)
+        await self.bus.publish(event)
 
     async def wait(self, handle: AgentHandle) -> None:
         """Await the background pump for a handle (shutdown / tests)."""

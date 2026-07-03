@@ -21,6 +21,7 @@ class AgentHandle:
     id: str
     session_id: str
     task_id: str | None = None
+    attempt_id: str = ""
     pid: int | None = None
     native_session_id: str | None = None  # e.g. Claude Code --resume id
     model: str = ""

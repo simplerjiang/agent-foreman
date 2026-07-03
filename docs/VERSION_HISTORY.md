@@ -4,6 +4,22 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.5.0
+
+English:
+
+- Runner launch and resume attempts now receive backend-generated `attempt_id` values before the agent process starts or resumes.
+- PM `agent_input`, streamed `agent_start` / `agent_output` / `agent_reasoning`, terminal `stop`, and launch/resume/stream `error` events now carry the attempt ID for reliable same-handle retry tracking.
+- The web UI keys subagent cards by session-scoped `attempt_id` first, so repeated attempts in one session and identical attempt IDs across different sessions stay distinct.
+- PM plan, review, and recovery phases now share the same PM tool runtime context, including user-question tools and work-mode lookup context.
+
+中文：
+
+- Runner 在 launch 与 resume 前都会先生成后端 `attempt_id`。
+- PM 的 `agent_input`、流式 `agent_start` / `agent_output` / `agent_reasoning`、终态 `stop`，以及 launch/resume/stream `error` 事件都会携带该 attempt ID，便于可靠区分同 handle 的多次尝试。
+- Web UI 优先使用带 session 前缀的 `attempt_id` 作为 subagent 卡片 key，同一会话的重复尝试和不同会话里的同名 attempt 都不会再合并。
+- PM plan、review、recovery 阶段现在共用同一套 PM tool runtime 上下文，包括用户提问工具和 work-mode 查询上下文。
+
 ## v1.4.9
 
 English:
