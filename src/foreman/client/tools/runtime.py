@@ -312,6 +312,7 @@ class PMToolRuntime:
                         },
                         "custom_path": string,
                         "dry_run": boolean,
+                        "bind_session": boolean,
                     },
                     "additionalProperties": False,
                 },
@@ -639,6 +640,7 @@ class PMToolRuntime:
                 reuse_policy=str(args.get("reuse_policy") or "reuse_clean_owned"),
                 custom_path=str(args.get("custom_path") or ""),
                 dry_run=args.get("dry_run") is True,
+                bind_session=args.get("bind_session") is True,
             )
         )
         if not isinstance(data, dict):
@@ -652,6 +654,29 @@ class PMToolRuntime:
                 error=str(data.get("error") or "worktree_create_failed"),
                 risk=NEEDS_STRATEGY,
             )
+        if data.get("session_bound") or data.get("workspace_switched"):
+            workspace = str(data.get("workspace") or data.get("path") or "").strip()
+            if not workspace:
+                return ToolResult(
+                    cid,
+                    "worktree_create",
+                    False,
+                    data=data,
+                    error="missing_workspace",
+                    risk=NEEDS_STRATEGY,
+                )
+            try:
+                self.bind_workspace(workspace, main_workspace=data.get("main_workspace"))
+            except ToolPolicyError as exc:
+                return ToolResult(
+                    cid,
+                    "worktree_create",
+                    False,
+                    data=data,
+                    error=exc.code,
+                    risk=NEEDS_STRATEGY,
+                )
+            data = {**data, "workspace": str(self.cfg.workspace), "cwd": str(self.cfg.workspace)}
         return ToolResult(cid, "worktree_create", True, data, risk=NEEDS_STRATEGY)
 
     async def _worktree_list(self, cid: str, args: dict[str, Any]) -> ToolResult:

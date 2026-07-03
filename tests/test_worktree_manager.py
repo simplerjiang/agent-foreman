@@ -8,7 +8,7 @@ import pytest
 
 from foreman.client.core.worktree_manager import WorktreeManager
 from foreman.client.store.db import Store
-from foreman.client.store.models import WorktreeLease
+from foreman.client.store.models import Session, WorktreeLease
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -505,3 +505,144 @@ def test_create_rejects_custom_path_symlink_escape_when_available(tmp_path: Path
     assert result["decision"] == "reject"
     assert result["error"] == "path_outside_worktree_roots"
     assert store.get_worktree_leases() == []
+
+
+def test_bind_session_updates_session_workspace_and_preserves_main_workspace(tmp_path: Path):
+    repo = _repo(tmp_path)
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal", workspace=str(repo), main_workspace=str(repo)))
+    manager = WorktreeManager()
+    created = manager.create(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "main_workspace": str(repo),
+            "branch_prefix": "foreman/",
+            "default_base_ref": "HEAD",
+        },
+        goal="Bind Me",
+    )
+
+    bound = manager.bind_session(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "workspace": str(repo),
+            "main_workspace": str(repo),
+        },
+        lease_id=created["lease_id"],
+        reason="use isolated workspace",
+    )
+    session = store.get_session("s1")
+
+    assert bound["ok"] is True
+    assert bound["workspace_switched"] is True
+    assert session is not None
+    assert session.workspace == created["path"]
+    assert session.main_workspace == str(repo)
+    assert bound["main_workspace"] == str(repo)
+    assert bound["owner_session_id"] == "s1"
+    assert bound["owner_task_id"] == "t1"
+
+
+def test_create_bind_session_uses_same_binding_logic(tmp_path: Path):
+    repo = _repo(tmp_path)
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal", workspace=str(repo), main_workspace=str(repo)))
+
+    result = WorktreeManager().create(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "main_workspace": str(repo),
+            "branch_prefix": "foreman/",
+            "default_base_ref": "HEAD",
+        },
+        goal="Create Bound",
+        bind_session=True,
+    )
+
+    assert result["ok"] is True
+    assert result["created"] is True
+    assert result["session_bound"] is True
+    assert result["workspace_switched"] is True
+    assert store.get_session("s1").workspace == result["workspace"]
+
+
+def test_bind_session_rejects_wrong_session_missing_unregistered_and_dirty(tmp_path: Path):
+    repo = _repo(tmp_path)
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal", workspace=str(repo), main_workspace=str(repo)))
+    store.add_session(Session(id="s2", goal="goal", workspace=str(repo), main_workspace=str(repo)))
+    manager = WorktreeManager()
+    created = manager.create(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "main_workspace": str(repo),
+            "branch_prefix": "foreman/",
+            "default_base_ref": "HEAD",
+        },
+        goal="Reject Bind",
+    )
+    wrong_session = manager.bind_session(
+        {"store": store, "session_id": "s2", "task_id": "t2", "main_workspace": str(repo)},
+        lease_id=created["lease_id"],
+    )
+    missing = store.add_worktree_lease(
+        WorktreeLease(
+            id="missing",
+            repo_root=str(repo),
+            main_workspace=str(repo),
+            worktree_path=str(tmp_path / "missing"),
+            branch="foreman/s1/missing",
+            base_ref="HEAD",
+            base_sha=_git(repo, "rev-parse", "HEAD"),
+            head_sha=_git(repo, "rev-parse", "HEAD"),
+            session_id="s1",
+            task_id="t1",
+        )
+    )
+    other_repo = tmp_path / ".foreman-worktrees" / "repo" / "other"
+    other_repo.mkdir(parents=True)
+    _git(other_repo, "init", "-b", "main")
+    _git(other_repo, "config", "user.email", "foreman@example.test")
+    _git(other_repo, "config", "user.name", "Foreman Test")
+    (other_repo / "file.txt").write_text("other\n", encoding="utf-8")
+    _git(other_repo, "add", "file.txt")
+    _git(other_repo, "commit", "-m", "other")
+    unregistered = store.add_worktree_lease(
+        WorktreeLease(
+            id="unregistered",
+            repo_root=str(repo),
+            main_workspace=str(repo),
+            worktree_path=str(other_repo),
+            branch="foreman/s1/unregistered",
+            base_ref="HEAD",
+            base_sha=_git(repo, "rev-parse", "HEAD"),
+            head_sha=_git(other_repo, "rev-parse", "HEAD"),
+            session_id="s1",
+            task_id="t1",
+        )
+    )
+    (Path(created["path"]) / "file.txt").write_text("dirty\n", encoding="utf-8")
+    dirty = manager.bind_session(
+        {"store": store, "session_id": "s1", "task_id": "t1", "main_workspace": str(repo)},
+        lease_id=created["lease_id"],
+    )
+
+    assert wrong_session["error"] == "lease_session_mismatch"
+    assert manager.bind_session(
+        {"store": store, "session_id": "s1", "task_id": "t1", "main_workspace": str(repo)},
+        lease_id=missing.id,
+    )["error"] == "worktree_missing"
+    assert manager.bind_session(
+        {"store": store, "session_id": "s1", "task_id": "t1", "main_workspace": str(repo)},
+        lease_id=unregistered.id,
+    )["error"] == "worktree_not_registered"
+    assert dirty["error"] == "dirty_worktree"
+    assert store.get_session("s1").workspace == str(repo)

@@ -22,6 +22,7 @@ from foreman.client.core.pm_agent import (
     events_to_text,
     parse_plan,
 )
+from foreman.client.core.worktree_manager import WorktreeManager
 from foreman.client.store import Store
 from foreman.client.store.models import (
     Approval,
@@ -217,10 +218,127 @@ async def test_interrupt_runner_handle_interrupts_all_live_session_handles(tmp_p
     assert interrupted == ["h1", "h2"]
 
 
-async def test_pm_plan_workspace_updates_session_and_launches_from_git_worktree(tmp_path):
+async def test_pm_tool_bind_updates_session_and_launches_from_git_worktree(tmp_path):
     store = _store(tmp_path)
     main = tmp_path / "main"
-    worktree = tmp_path / "pm-worktree"
+    main.mkdir()
+    subprocess.run(["git", "init"], cwd=main, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=main,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=main,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (main / "README.md").write_text("main\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=main, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=main, check=True, capture_output=True, text=True)
+    launched = asyncio.Event()
+    launched_workspaces: list[str] = []
+    bind_results: list[dict] = []
+
+    class FakePM:
+        max_runs = 1
+
+        async def plan(
+            self,
+            goal,
+            *,
+            store=None,
+            session_id="",
+            task_id="",
+            workspace="",
+            main_workspace="",
+            worktree_manager=None,
+            **_kw,
+        ):
+            bound = worktree_manager.create(
+                {
+                    "store": store,
+                    "session_id": session_id,
+                    "task_id": task_id,
+                    "workspace": workspace,
+                    "main_workspace": main_workspace,
+                    "branch_prefix": "foreman/",
+                    "default_base_ref": "HEAD",
+                },
+                goal="Selected Worktree",
+                bind_session=True,
+            )
+            bind_results.append(bound)
+            assert bound["ok"] is True
+            assert bound["session_bound"] is True
+            return PMPlan(
+                agent="codex",
+                model="",
+                effort="",
+                workspace="",
+                instruction="do it from the selected worktree",
+            )
+
+        async def review(self, goal, plan, timeline, **_kw):
+            return PMReview(done=True, summary="done")
+
+    class FakeRunner:
+        async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
+            launched_workspaces.append(str(workspace))
+            launched.set()
+            return type(
+                "Handle",
+                (),
+                {
+                    "id": "h1",
+                    "cwd": str(workspace),
+                    "worktree": str(workspace),
+                    "branch": "foreman/test",
+                },
+            )()
+
+        async def wait(self, handle):
+            return None
+
+    cfg = _cfg(
+        agents={"codex": AgentCfg(command="codex", enabled=True)},
+        workspaces=[WorkspaceCfg(path=str(main))],
+    )
+    svc = DispatchService(
+        cfg,
+        store,
+        bus=EventBus(),
+        runner=FakeRunner(),
+        pm_agent=FakePM(),
+        worktree_manager=WorktreeManager(),
+    )
+
+    res = await svc.create("use the existing worktree", workspace=str(main))
+    await asyncio.wait_for(launched.wait(), timeout=1)
+
+    worktree = bind_results[0]["workspace"]
+    session = store.get_session(res["session_id"])
+    assert session is not None
+    assert session.workspace == worktree
+    assert session.main_workspace == str(main)
+    assert launched_workspaces == [worktree]
+    agent_input = [
+        json.loads(event.payload_json)
+        for event in store.get_events(res["session_id"])
+        if event.type == "agent_input"
+    ][-1]
+    assert agent_input["cwd"] == worktree
+    assert agent_input["worktree"] == worktree
+
+
+async def test_existing_session_worktree_workspace_is_used_for_followup_launch(tmp_path):
+    store = _store(tmp_path)
+    main = tmp_path / "main"
+    worktree = tmp_path / "followup-worktree"
     main.mkdir()
     subprocess.run(["git", "init"], cwd=main, check=True, capture_output=True, text=True)
     subprocess.run(
@@ -241,11 +359,21 @@ async def test_pm_plan_workspace_updates_session_and_launches_from_git_worktree(
     subprocess.run(["git", "add", "README.md"], cwd=main, check=True, capture_output=True, text=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=main, check=True, capture_output=True, text=True)
     subprocess.run(
-        ["git", "worktree", "add", "-b", "feature/worktree", str(worktree)],
+        ["git", "worktree", "add", "-b", "feature/followup", str(worktree)],
         cwd=main,
         check=True,
         capture_output=True,
         text=True,
+    )
+    session = store.add_session(
+        Session(
+            id="s1",
+            goal="existing",
+            workspace=str(worktree),
+            main_workspace=str(main),
+            agent_type="pm-agent",
+            status="idle",
+        )
     )
     launched = asyncio.Event()
     launched_workspaces: list[str] = []
@@ -254,13 +382,7 @@ async def test_pm_plan_workspace_updates_session_and_launches_from_git_worktree(
         max_runs = 1
 
         async def plan(self, goal, **_kw):
-            return PMPlan(
-                agent="codex",
-                model="",
-                effort="",
-                workspace=str(worktree),
-                instruction="do it from the selected worktree",
-            )
+            return PMPlan(agent="codex", model="", effort="", instruction="continue in worktree")
 
         async def review(self, goal, plan, timeline, **_kw):
             return PMReview(done=True, summary="done")
@@ -269,7 +391,11 @@ async def test_pm_plan_workspace_updates_session_and_launches_from_git_worktree(
         async def launch(self, agent, instruction, workspace, session_id, model="", effort=""):
             launched_workspaces.append(str(workspace))
             launched.set()
-            return object()
+            return type(
+                "Handle",
+                (),
+                {"id": "h1", "cwd": str(workspace), "worktree": str(workspace)},
+            )()
 
         async def wait(self, handle):
             return None
@@ -280,14 +406,19 @@ async def test_pm_plan_workspace_updates_session_and_launches_from_git_worktree(
     )
     svc = DispatchService(cfg, store, bus=EventBus(), runner=FakeRunner(), pm_agent=FakePM())
 
-    res = await svc.create("use the existing worktree", workspace=str(main))
+    res = await svc.create("follow up", session_id=session.id)
     await asyncio.wait_for(launched.wait(), timeout=1)
 
-    session = store.get_session(res["session_id"])
-    assert session is not None
-    assert session.workspace == str(worktree)
-    assert session.main_workspace == str(main)
+    assert res["continued"] is True
+    assert res["workspace"] == str(worktree)
     assert launched_workspaces == [str(worktree)]
+    agent_input = [
+        json.loads(event.payload_json)
+        for event in store.get_events(session.id)
+        if event.type == "agent_input"
+    ][-1]
+    assert agent_input["cwd"] == str(worktree)
+    assert agent_input["worktree"] == str(worktree)
 
 
 async def test_dispatch_injects_pm_runtime_context_dependencies(tmp_path):

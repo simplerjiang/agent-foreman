@@ -88,6 +88,7 @@ def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fi
     assert "custom_path" in plan_spec.input_schema["properties"]
     assert "custom_path" in create_spec.input_schema["properties"]
     assert "dry_run" in create_spec.input_schema["properties"]
+    assert "bind_session" in create_spec.input_schema["properties"]
     for spec in (plan_spec, create_spec, list_spec, status_spec):
         assert "session_id" not in spec.input_schema["properties"]
         assert "task_id" not in spec.input_schema["properties"]
@@ -367,6 +368,7 @@ async def test_worktree_create_injects_runtime_context_and_rejects_pm_context_fi
                 "reuse_policy": "reuse_clean_owned",
                 "custom_path": str(worktree_root / "s1-task"),
                 "dry_run": False,
+                "bind_session": True,
             },
         )
     )
@@ -391,7 +393,58 @@ async def test_worktree_create_injects_runtime_context_and_rejects_pm_context_fi
         "reuse_policy": "reuse_clean_owned",
         "custom_path": str(worktree_root / "s1-task"),
         "dry_run": False,
+        "bind_session": True,
     }
+
+
+async def test_worktree_create_bind_session_switches_runtime_guard(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    (main / "main.txt").write_text("main", encoding="utf-8")
+    (worktree / "wt.txt").write_text("worktree", encoding="utf-8")
+
+    class FakeWorktreeManager:
+        def create(self, context, **kwargs):
+            assert kwargs["bind_session"] is True
+            return {
+                "ok": True,
+                "decision": "create",
+                "created": True,
+                "session_bound": True,
+                "workspace_switched": True,
+                "lease_id": "lease-1",
+                "main_workspace": str(main),
+                "workspace": str(worktree),
+                "path": str(worktree),
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+        )
+    )
+
+    created = await rt.call(
+        ToolCall("create", "worktree_create", {"goal": "x", "bind_session": True})
+    )
+    read_worktree = await rt.call(ToolCall("read", "read_file", {"path": "wt.txt"}))
+    read_main = await rt.call(ToolCall("main", "read_file", {"path": str(main / "main.txt")}))
+
+    assert created.ok is True
+    assert created.data["cwd"] == str(worktree.resolve(strict=False))
+    assert rt.runtime_context()["cwd"] == str(worktree.resolve(strict=False))
+    assert read_worktree.ok is True and read_worktree.data["text"] == "worktree"
+    assert read_main.ok is False and read_main.error == "path_outside_workspace"
 
 
 async def test_worktree_list_and_status_add_lease_ownership(tmp_path: Path):

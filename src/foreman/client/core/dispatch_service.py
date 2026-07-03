@@ -21,7 +21,6 @@ import hashlib
 import inspect
 import json
 import re
-import subprocess
 import uuid
 from collections.abc import Awaitable
 from pathlib import Path
@@ -656,8 +655,16 @@ class DispatchService:
             return workspace
         return (getattr(session, "main_workspace", "") or workspace).strip()
 
-    def _resolve_plan_workspace(self, requested: str, current: str) -> tuple[str, str]:
-        """Accept a PM-selected workspace only when it is an allowed root or git worktree."""
+    def _refresh_workspace_from_session(self, session_id: str, current: str) -> str:
+        if self.store is None or not hasattr(self.store, "get_session"):
+            return current
+        session = self.store.get_session(session_id)
+        return self._effective_session_workspace(session) or current
+
+    def _resolve_plan_workspace(
+        self, requested: str, current: str, *, session_id: str = ""
+    ) -> tuple[str, str]:
+        """Accept a PM-selected workspace only when it is allowed or already bound."""
         candidate = str(requested or "").strip()
         if not candidate:
             return current, ""
@@ -672,39 +679,18 @@ class DispatchService:
             return current, "PM selected workspace is not a valid path."
         if candidate_resolved == current_resolved:
             return current, ""
+        session = self.store.get_session(session_id) if (
+            session_id and self.store is not None and hasattr(self.store, "get_session")
+        ) else None
+        if self._is_recorded_session_workspace(str(candidate_resolved), session):
+            return str(candidate_path), ""
         roots = [w.path for w in self.cfg.workspaces]
         if roots and _within_any(str(candidate_resolved), roots):
             return str(candidate_path), ""
-        if self._is_git_worktree_of(str(candidate_resolved), str(current_resolved)):
-            return str(candidate_path), ""
-        return current, "PM selected workspace is outside the configured workspace roots."
-
-    def _is_git_worktree_of(self, candidate: str, main_workspace: str) -> bool:
-        try:
-            result = subprocess.run(
-                ["git", "-C", main_workspace, "worktree", "list", "--porcelain"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        if result.returncode != 0:
-            return False
-        try:
-            candidate_path = Path(candidate).resolve(strict=False)
-            for line in result.stdout.splitlines():
-                if not line.startswith("worktree "):
-                    continue
-                worktree = Path(line[len("worktree "):].strip()).expanduser()
-                if worktree.resolve(strict=False) == candidate_path:
-                    return True
-        except (OSError, ValueError):
-            return False
-        return False
+        return current, (
+            "PM selected workspace is outside the configured workspace roots. "
+            "Use worktree_bind_session before switching to a worktree."
+        )
 
     async def _emit_dispatch(
         self,
@@ -980,6 +966,7 @@ class DispatchService:
             session_memory_tokens=_ctx_approx_tokens(context),
         )
         plan = self._sanitize_pm_plan(plan, pm_model)
+        workspace = self._refresh_workspace_from_session(session_id, workspace)
         if plan.kind == "direct_reply":
             if not (plan.reply or "").strip():
                 await self._emit_pm_error(
@@ -992,7 +979,11 @@ class DispatchService:
         if plan.kind in {"blocked", "error"}:
             await self._emit_pm_error(session_id, task_id, _terminal_plan_text(plan, language))
             return
-        plan_workspace, workspace_error = self._resolve_plan_workspace(plan.workspace, workspace)
+        plan_workspace, workspace_error = self._resolve_plan_workspace(
+            plan.workspace,
+            workspace,
+            session_id=session_id,
+        )
         if workspace_error:
             await self._emit_pm_error(session_id, task_id, workspace_error)
             return
@@ -1004,6 +995,7 @@ class DispatchService:
                     workspace=workspace,
                     updated_at=self._clock(),
                 )
+        plan.workspace = workspace
         todo_status = _initial_todo_status(plan.todo)
         await self._emit_pm_plan(session_id, task_id, plan, todo_status=todo_status)
         await self._emit_pm_status(

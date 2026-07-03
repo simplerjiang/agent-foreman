@@ -122,6 +122,7 @@ class WorktreeManager:
         reuse_policy: str = "reuse_clean_owned",
         custom_path: str = "",
         dry_run: bool = False,
+        bind_session: bool = False,
     ) -> dict[str, Any]:
         planned = self.plan(
             context,
@@ -131,8 +132,15 @@ class WorktreeManager:
             reuse_policy=reuse_policy,
             custom_path=custom_path,
         )
-        if dry_run or planned.get("decision") != "create":
+        if dry_run:
             return {**planned, "dry_run": bool(dry_run), "created": False}
+        if planned.get("decision") == "reuse":
+            out = {**planned, "dry_run": False, "created": False}
+            if bind_session:
+                return _with_bind_result(out, self.bind_session(context, lease_id=str(out.get("lease_id") or "")))
+            return out
+        if planned.get("decision") != "create":
+            return {**planned, "dry_run": False, "created": False}
         session_id = str(context.get("session_id") or "").strip()
         task_id = str(context.get("task_id") or "").strip()
         if not session_id:
@@ -193,7 +201,7 @@ class WorktreeManager:
                 locked=bool(registered.get("locked")),
             )
         )
-        return {
+        out = {
             **planned,
             "ok": True,
             "decision": "create",
@@ -206,6 +214,98 @@ class WorktreeManager:
             "owner_session_id": session_id,
             "owner_task_id": task_id,
             "lease_status": str(getattr(lease, "status", "") or ""),
+        }
+        if bind_session:
+            return _with_bind_result(out, self.bind_session(context, lease_id=str(getattr(lease, "id", "") or "")))
+        out["session_bound"] = False
+        out["workspace_switched"] = False
+        return out
+
+    def bind_session(
+        self,
+        context: dict[str, Any],
+        *,
+        lease_id: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        session_id = str(context.get("session_id") or "").strip()
+        if not session_id:
+            return _bind_error("missing_session", lease_id=lease_id)
+        store = context.get("store")
+        get_lease = getattr(store, "get_worktree_lease", None)
+        get_session = getattr(store, "get_session", None)
+        update_session = getattr(store, "update_session", None)
+        if store is None or not callable(get_lease) or not callable(get_session) or not callable(update_session):
+            return _bind_error("worktree_store_unavailable", lease_id=lease_id)
+        lease = get_lease(str(lease_id or "").strip())
+        if lease is None:
+            return _bind_error("lease_not_found", lease_id=lease_id)
+        if str(getattr(lease, "status", "") or "") != "active":
+            return _bind_error("lease_not_active", lease=lease)
+        if str(getattr(lease, "session_id", "") or "") != session_id:
+            return _bind_error("lease_session_mismatch", lease=lease)
+        session = get_session(session_id)
+        if session is None:
+            return _bind_error("session_not_found", lease=lease)
+        worktree_path = _normalize_path(getattr(lease, "worktree_path", "") or "")
+        if not worktree_path.exists() or not worktree_path.is_dir():
+            return _bind_error("worktree_missing", lease=lease)
+        main_workspace = str(
+            getattr(session, "main_workspace", "")
+            or getattr(lease, "main_workspace", "")
+            or context.get("main_workspace")
+            or context.get("workspace")
+            or ""
+        ).strip()
+        if not main_workspace:
+            return _bind_error("missing_main_workspace", lease=lease)
+        root_error = _path_root_error(worktree_path, _worktree_roots(Path(main_workspace), context.get("worktree_roots")))
+        if root_error:
+            return _bind_error(root_error, lease=lease)
+        listed = self.list(main_workspace)
+        if not listed.get("ok"):
+            return _bind_error(str(listed.get("error") or "worktree_list_failed"), lease=lease, detail=str(listed.get("detail") or ""))
+        rows = [row for row in listed.get("worktrees", []) if isinstance(row, dict)]
+        registered = _find_worktree(rows, worktree_path, str(getattr(lease, "branch", "") or ""))
+        if registered is None:
+            return _bind_error("worktree_not_registered", lease=lease)
+        status = self.status(worktree_path, str(getattr(lease, "base_sha", "") or getattr(lease, "base_ref", "") or ""))
+        if not status.get("ok"):
+            return _bind_error(str(status.get("error") or "worktree_status_failed"), lease=lease, detail=str(status.get("detail") or ""))
+        if bool(status.get("dirty")) or bool(getattr(lease, "dirty", False)):
+            return _bind_error("dirty_worktree", lease=lease)
+        updated = update_session(
+            session_id,
+            workspace=str(worktree_path),
+            main_workspace=main_workspace,
+        )
+        if updated is None:
+            return _bind_error("session_update_failed", lease=lease)
+        update_lease = getattr(store, "update_worktree_lease", None)
+        if callable(update_lease):
+            update_lease(
+                str(getattr(lease, "id", "") or ""),
+                head_sha=str(status.get("head_sha") or ""),
+                dirty=bool(status.get("dirty")),
+                locked=bool(registered.get("locked")),
+            )
+        return {
+            "ok": True,
+            "bound": True,
+            "session_bound": True,
+            "workspace_switched": True,
+            "lease_id": str(getattr(lease, "id", "") or ""),
+            "workspace": str(worktree_path),
+            "path": str(worktree_path),
+            "main_workspace": main_workspace,
+            "branch": str(getattr(lease, "branch", "") or registered.get("branch") or ""),
+            "base_ref": str(getattr(lease, "base_ref", "") or ""),
+            "base_sha": str(getattr(lease, "base_sha", "") or ""),
+            "head_sha": str(status.get("head_sha") or ""),
+            "owner_session_id": session_id,
+            "owner_task_id": str(getattr(lease, "task_id", "") or ""),
+            "lease_status": str(getattr(lease, "status", "") or ""),
+            "reason": str(reason or ""),
         }
 
     def list(self, main_workspace: str | Path) -> dict[str, Any]:
@@ -441,6 +541,40 @@ def _create_error(out: dict[str, Any], code: str, *, detail: str = "") -> dict[s
     result["ok"] = False
     result["created"] = False
     return result
+
+
+def _bind_error(code: str, *, lease: Any = None, lease_id: str = "", detail: str = "") -> dict[str, Any]:
+    return {
+        "ok": False,
+        "bound": False,
+        "session_bound": False,
+        "workspace_switched": False,
+        "error": code,
+        "lease_id": str(getattr(lease, "id", "") or lease_id or ""),
+        "workspace": str(getattr(lease, "worktree_path", "") or ""),
+        "owner_session_id": str(getattr(lease, "session_id", "") or ""),
+        "owner_task_id": str(getattr(lease, "task_id", "") or ""),
+        "lease_status": str(getattr(lease, "status", "") or ""),
+        "detail": detail.strip(),
+    }
+
+
+def _with_bind_result(out: dict[str, Any], bound: dict[str, Any]) -> dict[str, Any]:
+    if not bound.get("ok"):
+        result = dict(out)
+        result["ok"] = False
+        result["session_bound"] = False
+        result["workspace_switched"] = False
+        result["bind_error"] = str(bound.get("error") or "bind_failed")
+        result["error"] = str(bound.get("error") or "bind_failed")
+        result["bind_result"] = bound
+        return result
+    return {
+        **out,
+        **bound,
+        "ok": True,
+        "bind_result": bound,
+    }
 
 
 def _slug(value: str, *, max_len: int = 48) -> str:
