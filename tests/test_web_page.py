@@ -19,13 +19,24 @@ from foreman.shared.config import WorkspaceCfg, load_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _dashboard_bundle(c: TestClient) -> str:
+    return "\n".join(
+        [
+            c.get("/app-core.js").text,
+            c.get("/app-context.js").text,
+            c.get("/app-timeline.js").text,
+            c.get("/app.js").text,
+        ]
+    )
+
+
 def test_index_served():
     c = TestClient(create_app(load_config()))
     r = c.get("/")
     assert r.status_code == 200
     assert "Foreman" in r.text
     assert '<div id="root" data-admin-root="1">' in r.text
-    assert "/admin-app.js" in r.text and "/app.js" in r.text
+    assert "/admin-app.js" in r.text and "/app-core.js" in r.text and "/app-context.js" in r.text and "/app-timeline.js" in r.text and "/app.js" in r.text
     assert "/index-redirect.js" not in r.text
 
 
@@ -38,7 +49,7 @@ def test_index_ships_slim_vendor_and_self_hosted_fonts():
     assert "/vendor/react-dom.production.min.js" in html
     assert "/vendor/htm.umd.js" in html
     assert "/vendor/antd.min.js" in html
-    assert "/app.css" in html and "/app.js" in html and "/admin-app.js" in html
+    assert "/app.css" in html and "/app-core.js" in html and "/app-context.js" in html and "/app-timeline.js" in html and "/app.js" in html and "/admin-app.js" in html
     # self-hosted variable fonts, preloaded
     assert "plus-jakarta-sans-latin.woff2" in html
     assert "jetbrains-mono-latin.woff2" in html
@@ -47,6 +58,72 @@ def test_index_ships_slim_vendor_and_self_hosted_fonts():
         r = c.get(f"/vendor/fonts/{font}")
         assert r.status_code == 200, font
         assert r.content[:4] == b"wOF2", font
+
+
+def test_app_split_scripts_are_served_without_build_step():
+    c = TestClient(create_app(load_config()))
+    html = c.get("/app.html").text
+    assert '<script src="/app-core.js?v=' in html
+    assert '<script src="/app-context.js?v=' in html
+    assert '<script src="/app-timeline.js?v=' in html
+    assert '<script src="/app.js?v=' in html
+    assert html.index("/app-core.js") < html.index("/app-context.js") < html.index("/app-timeline.js") < html.index("/app.js")
+    for path in ("/app-core.js", "/app-context.js", "/app-timeline.js", "/app.js"):
+        res = c.get(path)
+        assert res.status_code == 200, path
+        assert "type=\"module\"" not in html
+    lower = html.lower()
+    for word in ("vite", "webpack", "babel", "tsx", "jsx"):
+        assert word not in lower
+
+
+def test_app_core_exports_shared_helpers():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app-core.js").text
+    assert "window.ForemanApp" in js
+    for name in (
+        "api",
+        "friendlyError",
+        "tokenK",
+        "shortPath",
+        "formatTime",
+        "getToken",
+        "setToken",
+        "redirectToLogin",
+        "SERVER_API_PREFIXES",
+        "PROCESS_KEY",
+    ):
+        assert name in js
+
+
+def test_app_js_consumes_foreman_app_helpers():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "window.ForemanApp" in js
+    for name in (
+        "api",
+        "friendlyError",
+        "tokenK",
+        "shortPath",
+        "formatTime",
+        "getToken",
+        "setToken",
+        "redirectToLogin",
+        "PROCESS_KEY",
+    ):
+        assert name in js
+
+
+def test_no_duplicate_api_helper_in_app_js_if_removed():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert "async function api(" not in js
+    assert "function friendlyError(" not in js
+    assert "function tokenK(" not in js
+    assert "function shortPath(" not in js
+    assert "function formatTime(" not in js
+    assert "function getToken(" not in js
+    assert "window.fetch = async" not in js
 
 
 def test_legacy_index_redirects_to_console_control_view():
@@ -62,9 +139,10 @@ def test_legacy_index_redirects_to_console_control_view():
 def test_app_js_wires_api_and_ws_and_is_xss_safe():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    bundle = _dashboard_bundle(c)
     assert "/api/overview" in js and "/api/sessions" in js
     assert "/ws?session_id=" in js
-    assert "ReactDOM.createRoot" in js and "htm.bind" in js
+    assert "ReactDOM.createRoot" in js and "htm.bind" in bundle
     # React renders agent/PM output; never assign event payloads to raw HTML (XSS).
     assert ".innerHTML" not in js
     assert "dangerouslySetInnerHTML" not in js
@@ -103,9 +181,9 @@ def test_ui_language_defaults_to_browser_language_when_unset():
 
 def test_friendly_error_maps_backend_codes_and_network_errors():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = c.get("/app-core.js").text
     start = js.index("function friendlyError")
-    end = js.index("function jsonObjectError", start)
+    end = js.index("window.ForemanApp", start)
     helper = js[start:end]
     script = helper + r'''
 const d = {
@@ -202,8 +280,9 @@ def test_autonomy_dial_wired_in_page():
     """The PWA exposes the autonomy dial (0/1/2/3) and syncs it to the backend (§6.4)."""
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    bundle = _dashboard_bundle(c)
     css = c.get("/app.css").text
-    assert "/api/settings/autonomy" in js and "/api/remote/api" in js and "saveAutonomy" in js
+    assert "/api/settings/autonomy" in js and "/api/remote/api" in bundle and "saveAutonomy" in js
     assert "/api/remote/settings/autonomy" not in js
     assert "slider-wrap" in js and "autoExec" in js
     assert "自动执行权限" in js
@@ -219,9 +298,11 @@ def test_workspace_chat_thread_and_right_panel_wired():
     terminal), all derived from the live event stream."""
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    timeline_js = c.get("/app-timeline.js").text
     css = c.get("/app.css").text
     assert "function digest" in js  # events -> thread/todos/subagents/terminal
-    assert "function ThreadNode" in js
+    assert "function ThreadNode" in timeline_js
+    assert "function ThreadNode" not in js
     assert "function TodoPanel" in js and "function SubPanel" in js and "function TermPanel" in js
     assert "rightTab" in js and "tabTodos" in js and "tabSubagents" in js and "tabTerminal" in js
     assert ".thread" in css and ".ws-right" in css and ".composer-box" in css
@@ -233,16 +314,18 @@ def test_workspace_thread_scrolls_to_bottom_on_new_messages():
     assert "const threadRef = useRef(null)" in js
     assert "lastThreadNodeId" in js
     assert "el.scrollTop = el.scrollHeight" in js
-    assert '<div className="thread" ref=${threadRef}>' in js
+    assert 'className="thread" ref=${threadRef} onScroll=${onThreadScroll}' in js
+    assert 'data-testid="conversation-scroll-container"' in js
 
 
 def test_workspace_user_and_pm_bubbles_have_copy_buttons():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    timeline_js = c.get("/app-timeline.js").text
     css = c.get("/app.css").text
-    assert "function BubbleCopy" in js
-    assert "<${BubbleCopy} text=${n.goal}" in js
-    assert "<${BubbleCopy} text=${n.text}" in js
+    assert "function BubbleCopy" in timeline_js
+    assert "<${BubbleCopy} text=${n.goal}" in timeline_js
+    assert "<${BubbleCopy} text=${n.text}" in timeline_js
     assert "onCopy=${onCopy}" in js and "onCopy=${mainProps.onCopy}" in js
     assert ".bubble-copy" in css and ".bubble-copy.invert" in css
 
@@ -265,7 +348,7 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert "context_tokens" in js and "context_compacted" in js
     assert "contextLength - outputReserve" not in js
     assert ".ctx-meter" in css and ".effort-pick" in css
-    assert ".context-pack" in css and "function ContextPackPanel" in js
+    assert ".context-pack" in css and "function ContextPackPanel" in _dashboard_bundle(c)
     assert 'kind: "context-pack"' in js and "contextPackView(p)" in js
     assert 'e.key === "@"' in js and "addAttach(); return;" in js
     assert 'attachments.map((a) => `@${a.name}`).join(" ")' in js
@@ -273,6 +356,225 @@ def test_composer_dispatch_with_effort_and_context_meter():
     assert 'runDispatch("interrupt")' not in js
     assert "onCancelSession" in js and "busy-chip" in css
     assert "clipboardImageFiles" in js and "addPastedImages" in js and "onPaste" in js
+
+
+def test_context_panel_renders_usage_meter():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    css = c.get("/app.css").text
+    assert 'data-testid="context-tab"' in js
+    assert 'data-testid="context-panel"' in js
+    assert 'data-testid="context-usage-card"' in js
+    assert 'data-testid="context-usage-percent"' in js
+    assert 'data-testid="context-usage-used"' in js
+    assert 'data-testid="context-usage-window"' in js
+    assert 'data-testid="context-soft-remaining"' in js
+    assert 'data-testid="context-hard-remaining"' in js
+    assert ".context-meter-track" in css
+
+
+def test_context_tab_selector_exists():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    idx = js.find('data-testid="context-tab"')
+    assert idx != -1
+    start = js.rfind("<button", 0, idx)
+    end = js.find("</button>", idx)
+    snippet = js[start:end]
+    assert 'setRightTab("ctx")' in snippet
+    assert "${d.context}" in snippet
+
+
+def test_context_panel_renders_lane_usage():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'data-testid="context-lane-usage"' in js
+    for lane in range(1, 8):
+        assert "context-lane-${lane}" in js or f"context-lane-{lane}" in js
+    assert "Lane 7 noise is high" in js
+
+
+def test_context_panel_renders_runtime_state():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'data-testid="context-runtime-state"' in js
+    assert 'data-testid="context-runtime-workspace"' in js
+    assert 'data-testid="context-runtime-cwd"' in js
+    assert 'data-testid="context-runtime-worktree"' in js
+    assert 'data-testid="context-runtime-branch"' in js
+    assert 'data-testid="context-runtime-base-ref"' in js
+    assert 'data-testid="context-runtime-head-sha"' in js
+
+
+def test_context_panel_renders_active_agents():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    css = c.get("/app.css").text
+    assert 'data-testid="context-agents-card"' in js
+    assert 'data-testid="context-agent-row"' in js
+    assert 'data-testid="context-agent-status"' in js
+    assert 'data-testid="context-agent-cwd"' in js
+    assert 'data-testid="context-agent-worktree"' in js
+    assert 'data-testid="context-agent-branch"' in js
+    assert 'data-testid="context-agent-native-session"' in js
+    assert ".agent-status.failed" in css
+
+
+def test_context_panel_agent_last_meaningful_output_object_is_stringified():
+    c = TestClient(create_app(load_config()))
+    context_js = c.get("/app-context.js").text
+    assert "function contextText" in context_js
+    assert "sanitizeContextTextValue" in context_js
+    assert "HIDDEN_CONTEXT_KEYS" in context_js
+    assert '"std" + "out"' in context_js and '"std" + "err"' in context_js
+    assert '"provider" + "_" + "payload"' in context_js
+    assert '"encrypted" + "_" + "content"' in context_js
+    assert "contextText(a.last_meaningful_output)" in context_js
+    assert '${a.last_meaningful_output || ""}' not in context_js
+
+
+def test_context_panel_sanitizer_redacts_reasoning_and_secret_keys():
+    c = TestClient(create_app(load_config()))
+    context_js = c.get("/app-context.js").text
+    assert "function isHiddenContextKey" in context_js
+    assert "HIDDEN_CONTEXT_KEY_PARTS" in context_js
+    assert "k.includes(part)" in context_js
+    assert '"reason" + "ing"' in context_js
+    assert '"sec" + "ret"' in context_js
+    assert '"tok" + "en"' in context_js
+    assert '"api" + "_" + "key"' in context_js
+    assert '"author" + "ization"' in context_js
+    assert '"raw" + "_" + "output"' in context_js
+    assert '"aggregated" + "_" + "output"' in context_js
+    assert '${a.last_meaningful_output || ""}' not in context_js
+
+
+def test_context_panel_renders_latest_checkpoint():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'data-testid="latest-checkpoint-card"' in js
+    assert 'data-testid="latest-checkpoint-id"' in js
+    assert 'data-testid="latest-checkpoint-trigger"' in js
+    assert 'data-testid="latest-checkpoint-method"' in js
+    assert 'data-testid="latest-checkpoint-before-tokens"' in js
+    assert 'data-testid="latest-checkpoint-after-tokens"' in js
+    assert 'data-testid="latest-checkpoint-items-count"' in js
+
+
+def test_context_panel_renders_checkpoint_list():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'data-testid="checkpoint-list"' in js
+    assert 'data-testid="checkpoint-row"' in js
+    assert 'data-testid="checkpoint-row-created"' in js
+    assert 'data-testid="checkpoint-row-trigger"' in js
+    assert 'data-testid="checkpoint-row-reason"' in js
+    assert 'data-testid="checkpoint-row-method"' in js
+    assert 'data-testid="checkpoint-row-before"' in js
+    assert 'data-testid="checkpoint-row-after"' in js
+    assert 'data-testid="checkpoint-row-status"' in js
+
+
+def test_context_panel_renders_checkpoint_detail():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'data-testid="checkpoint-detail"' in js
+    assert 'data-testid="checkpoint-summary"' in js
+    assert 'data-testid="checkpoint-runtime"' in js
+    assert 'data-testid="checkpoint-token-usage"' in js
+    assert 'data-testid="checkpoint-source-cursor"' in js
+    assert 'data-testid="checkpoint-warnings"' in js
+    assert 'data-testid="active-context-preview"' in js
+
+
+def test_context_panel_hides_provider_payload_by_default():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert "provider_payload" not in js
+    assert "raw replacement_history full JSON" not in js
+
+
+def test_context_panel_hides_encrypted_content():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert "encrypted_content" not in js
+
+
+def test_context_panel_hides_hidden_reasoning():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert "hidden_reasoning" not in js
+    assert "pm_reasoning raw" not in js
+
+
+def test_compact_now_button_calls_manual_compact_endpoint():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'data-testid="context-compact-now"' in js
+    assert "/context/compact" in js
+    assert 'trigger: "manual", reason: "user_requested"' in js
+
+
+def test_compact_now_button_disabled_while_running():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'disabled=${state === "compacting" || !sessionId}' in js
+    assert "Compacting..." in js
+
+
+def test_compact_now_success_refreshes_context():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'setCompactMsg("Context compacted.")' in js
+    assert "await loadContext();" in js
+
+
+def test_compact_now_failure_shows_error():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert "Context compact failed." in js
+    assert "Latest checkpoint was not changed." in js
+    assert 'data-testid="context-compact-error"' in js
+
+
+def test_compact_progress_started_completed_visible():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'data-testid="context-compact-loading"' in js
+    assert 'data-testid="timeline-context-compaction"' in js
+    assert 'data-testid="timeline-context-compaction-started"' in js
+    assert 'data-testid="timeline-context-compaction-completed"' in js
+
+
+def test_compact_progress_failed_visible():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert 'data-testid="timeline-context-compaction-failed"' in js
+
+
+def test_new_message_scrolls_conversation_to_bottom():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    assert 'data-testid="conversation-scroll-container"' in js
+    assert "stickToBottomRef" in js
+    assert "el.scrollTop = el.scrollHeight" in js
+    assert 'data-testid="message-composer"' in js
+    assert 'data-testid="send-message"' in js
+
+
+def test_context_panel_refresh_does_not_jump_conversation_to_top():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert "function ContextPanel" in js
+    assert "setState((prev) => prev === \"ready\" || prev === \"degraded\" ? prev : \"loading\")" in js
+    assert "threadNodes.length" in js and "loadContext" in js
+
+
+def test_compact_progress_item_does_not_break_bottom_scroll():
+    c = TestClient(create_app(load_config()))
+    js = _dashboard_bundle(c)
+    assert "stickToBottomRef.current" in js
+    assert "timeline-context-compaction" in js
 
 
 def test_context_meter_and_context_pack_helpers_match_provider_context():
@@ -342,13 +644,14 @@ def test_pm_brain_timeout_setting_wired():
 def test_remote_control_ui_wires_process_target_and_approve_endpoint():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    bundle = _dashboard_bundle(c)
     css = c.get("/app.css").text
     assert "/api/processes" in js and "loadProcesses" in js
     assert "selectedProcessId" in js and "process_id" in js
     assert "/api/snapshot" in js and "snapshot_req" not in js  # browser calls REST, server builds frame
-    assert "/api/remote/api" in js and "SERVER_API_PREFIXES" in js
+    assert "/api/remote/api" in bundle and "SERVER_API_PREFIXES" in bundle
     assert "card_choice" not in js
-    assert "machine_offline" in js and "relay_unavailable" in js
+    assert "machine_offline" in bundle and "relay_unavailable" in bundle
     assert "machine-select" in js and ".m-machine" in css
 
 
@@ -366,6 +669,7 @@ def test_member_console_has_control_entry_into_dashboard():
     c = TestClient(create_app(load_config()))
     admin_js = c.get("/admin-app.js").text
     app_js = c.get("/app.js").text
+    core_js = c.get("/app-core.js").text
     # MemberView/Admin processes: per-machine 控制 button → seed the dashboard target and switch view.
     assert "控制" in admin_js
     assert "function ControlView" in admin_js and "ForemanControlApp" in admin_js
@@ -378,12 +682,12 @@ def test_member_console_has_control_entry_into_dashboard():
     assert 'location.href = "/index.html"' not in admin_js
     # The control handoff refreshes the dashboard's canonical token before navigation; the dashboard
     # still accepts the old console key as a fallback for already-open tabs.
-    token_start = app_js.index("const getToken =")
-    token_end = app_js.index("const setToken", token_start)
-    assert "localStorage.getItem(TOKEN_KEY) || localStorage.getItem(CONSOLE_TOKEN_KEY)" in app_js[token_start:token_end]
+    token_start = core_js.index("const getToken =")
+    token_end = core_js.index("const setToken", token_start)
+    assert "localStorage.getItem(TOKEN_KEY) || localStorage.getItem(CONSOLE_TOKEN_KEY)" in core_js[token_start:token_end]
     assert "window.ForemanControlApp = { Root: Shell }" in app_js and "dataset.adminRoot" in app_js
-    assert "/app.html?next=" in app_js and "/api/auth/me" in app_js
-    assert '!path.startsWith("/api/auth/")' in app_js
+    assert "/app.html?next=" in core_js and "/api/auth/me" in app_js
+    assert '!path.startsWith("/api/auth/")' in core_js
     assert "Access token required" not in app_js and "window.prompt" not in app_js
     assert "nextUrl()" in admin_js and "finishAuth(onAuthed)" in admin_js
 
@@ -455,11 +759,12 @@ def test_pm_review_rendered_in_thread():
     """pm_review stays an internal diagnostic, while pm_reply is the user-visible PM bubble."""
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    timeline_js = c.get("/app-timeline.js").text
     assert 't === "pm_review"' in js and "follow_up" in js
     assert "todo_status" in js and "mergeTodoRows" in js
     assert 't === "pm_reply"' in js
     assert 'nodes.push({ kind: "pm-review"' in js
-    assert 'className=${`pm-review${n.done ? " done" : ""}`}' in js
+    assert 'className=${`pm-review${n.done ? " done" : ""}`}' in timeline_js
 
 
 def test_pm_stream_replaces_starting_status():
@@ -591,6 +896,7 @@ must(dig.calls.size === 0 && dig.subagents.length === 0, "pm tools are not subag
 def test_tool_stream_and_icon_stop_controls_are_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    timeline_js = c.get("/app-timeline.js").text
     css = c.get("/app.css").text
     assert 't === "tool_stream"' in js
     assert 'p.stream === "stderr" ? "err" : "out"' in js
@@ -603,16 +909,16 @@ def test_tool_stream_and_icon_stop_controls_are_wired():
     assert 'className="term-input"' in js
     assert ".term-input-row" in css and ".term-input" in css
     assert ".stop-icon" in css and "background: currentColor" in css
-    assert "function ThinkingPanel" in js
-    assert 'className=${`pm-thinking${open ? " open" : ""}`}' in js
-    assert 'className="pm-thinking-head"' in js and "aria-expanded=${open}" in js
-    assert "const parts = pmThinkingParts(text, d.thinkingTrace)" in js and 'className="pm-thinking-title"' in js
+    assert "function ThinkingPanel" in timeline_js
+    assert 'className=${`pm-thinking${open ? " open" : ""}`}' in timeline_js
+    assert 'className="pm-thinking-head"' in timeline_js and "aria-expanded=${open}" in timeline_js
+    assert "pmThinkingParts(text, d.thinkingTrace)" in timeline_js and 'className="pm-thinking-title"' in timeline_js
     assert 'const txt = t === "pm_reasoning" ? formatPmReasoningText(cleaned) : displayPmStreamText(cleaned, lang, d);' in js
-    assert "<${MD} text=${parts.body} maxChars=${4000} />" in js
+    assert "<${MD} text=${parts.body} maxChars=${4000} />" in timeline_js
     assert ".pm-thinking-head:hover .pm-thinking-icon" in css and ".pm-thinking.open .pm-thinking-icon" in css
     assert ".pm-thinking .markdown-body" in css
     assert ".pm-thinking .markdown-body p" in css and "white-space: normal" in css
-    assert "function PmActivity" in js and 'kind: "pm-activity"' in js
+    assert "function PmActivity" in timeline_js and 'kind: "pm-activity"' in js
     assert "isPmToolEvent(e, p)" in js and "upsertPmActivityPost(e, p)" in js
     assert ".pm-activity" in css and ".pm-activity-body" in css
 
@@ -800,9 +1106,10 @@ if (displayPmStreamText(codeish, "zh", d) !== codeish) {
 def test_session_controls_and_custom_delete_confirm_wired():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text
+    bundle = _dashboard_bundle(c)
     assert "/api/sessions/${encodeURIComponent(id)}/cancel" in js
     assert 'api(`/api/sessions/${encodeURIComponent(id)}`' in js
-    assert "session_busy" in js and "!live" in js and "waiting_approval" in js
+    assert "session_busy" in bundle and "!live" in js and "waiting_approval" in js
     assert "async function retrySession(row)" in js
     assert "onRetrySession(sessionRow)" in js and "${d.retry}" in js
     assert "const body = { goal: row.goal, workspace: target, source: clientSource(), effort }" in js
@@ -1024,7 +1331,7 @@ def test_team_snapshot_drives_dashboard_state_and_decision_count():
 
 def test_team_api_wrapper_proxies_local_api_but_not_console_api():
     c = TestClient(create_app(load_config()))
-    js = c.get("/app.js").text
+    js = c.get("/app-core.js").text
     assert "function shouldRouteLocal" in js
     assert 'requestJson("/api/remote/api"' in js
     assert 'path,' in js and 'body: opts.body' in js

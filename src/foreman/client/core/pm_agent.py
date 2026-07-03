@@ -550,20 +550,20 @@ def _content_summary(value: object) -> str:
         return content.strip()
     if not isinstance(content, list):
         return ""
-    parts: list[str] = []
+    content_parts: list[str] = []
     for block in content:
         if not isinstance(block, dict):
             continue
         for key in ("text", "delta", "thinking", "reasoning", "summary"):
             text = _as_str(block.get(key))
             if text:
-                parts.append(text)
+                content_parts.append(text)
                 break
         else:
             nested = _content_summary(block)
             if nested:
-                parts.append(nested)
-    return "\n".join(parts).strip()
+                content_parts.append(nested)
+    return "\n".join(content_parts).strip()
 
 
 def build_review_prompt(
@@ -696,6 +696,7 @@ class PMAgent:
         work_mode_resolver: Any = None,
         session_id: str = "",
         task_id: str = "",
+        active_context: Any = None,
     ) -> PMPlan:
         system = PLAN_SYSTEM + "\n" + language_directive(self.language)
         enabled = [_as_str(a.get("name")) for a in available_agents]
@@ -862,6 +863,7 @@ class PMAgent:
         on_stream=None,
         state_key: str = "",
         qa_rubric: str = "",
+        active_context: Any = None,
     ) -> PMReview:
         system = REVIEW_SYSTEM + "\n" + language_directive(self.language)
         prompt = build_review_prompt(

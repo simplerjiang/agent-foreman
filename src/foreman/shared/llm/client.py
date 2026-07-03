@@ -54,6 +54,10 @@ class LLMConfigError(RuntimeError):
     """Raised before a request when the PM brain is not configured enough to call."""
 
 
+class LLMCompactUnsupported(RuntimeError):
+    """Raised when the configured provider does not expose /responses/compact."""
+
+
 class LLMStalledError(RuntimeError):
     """Raised when a streaming LLM turn is aborted by Foreman's call-level watchdog."""
 
@@ -401,6 +405,43 @@ class LLMClient:
         vecs = [list(item.get("embedding") or []) if isinstance(item, dict) else []
                 for _, item in ordered]
         return vecs[: len(texts)] if len(vecs) >= len(texts) else vecs + [[]] * (len(texts) - len(vecs))
+
+    async def responses_compact(
+        self,
+        input_items,
+        *,
+        instructions: str = "",
+        model: str = "",
+        metadata: dict | None = None,
+    ) -> dict:
+        provider, base_url, model = self._resolve(model)
+        if provider == "anthropic":
+            raise LLMCompactUnsupported("anthropic provider has no /responses/compact")
+        payload = {
+            "model": model,
+            "input": input_items,
+            "instructions": instructions,
+            "metadata": metadata or {},
+        }
+        r = await self._client.post(
+            f"{base_url}/responses/compact",
+            headers={"Authorization": f"Bearer {self._api_key()}"},
+            json=payload,
+            timeout=self._request_timeout(),
+        )
+        if r.status_code in {404, 405}:
+            raise LLMCompactUnsupported(f"/responses/compact unsupported: HTTP {r.status_code}")
+        r.raise_for_status()
+        data = r.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("responses_compact_invalid_response")
+        error = data.get("error")
+        if isinstance(error, dict):
+            code = str(error.get("code") or error.get("type") or "").lower()
+            message = str(error.get("message") or "")
+            if "unsupported" in code or "not_found" in code or "not supported" in message.lower():
+                raise LLMCompactUnsupported(message or "responses_compact_unsupported")
+        return data
 
     async def _openai(
         self,

@@ -152,8 +152,10 @@ async def test_stream_parses_stream_json(tmp_path):
     ]
     assert all(e.source == "claude-code" and e.session_id == "s" and e.ts for e in events)
     assert events[0].payload["command"][:2] == ["claude", "-p"]
-    assert events[3].payload == {"text": "not json at all"}
-    assert events[4].payload == {"text": "42"}
+    assert events[3].payload["text"] == "not json at all"
+    assert events[3].payload["agent_id"]
+    assert events[4].payload["text"] == "42"
+    assert events[4].payload["agent_id"]
     assert events[5].payload["result"] == "done"
 
 

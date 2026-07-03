@@ -1,31 +1,31 @@
 (function () {
   "use strict";
 
-  const { useCallback, useEffect, useMemo, useRef, useState } = React;
-  const html = htm.bind(React.createElement);
+  const {
+    html,
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    api,
+    friendlyError,
+    tokenK,
+    shortPath,
+    formatTime,
+    getToken,
+    setToken,
+    redirectToLogin,
+    PROCESS_KEY,
+  } = window.ForemanApp;
 
-  const TOKEN_KEY = "foreman.token";
-  const CONSOLE_TOKEN_KEY = "foreman_token";
   const LANG_KEY = "foreman.lang";
   const THEME_KEY = "foreman.theme";
   const WORKSPACE_KEY = "foreman.workspace";
-  const PROCESS_KEY = "foreman.process";
   const DEFAULT_CONTEXT_TOKENS = 272000;
   const PM_TOOLS_MIN_ROUNDS = 1;
   const PM_TOOLS_DEFAULT_ROUNDS = 6;
   const PM_TOOLS_MAX_ROUNDS = 999;
-  const SERVER_API_PREFIXES = [
-    "/api/admin",
-    "/api/auth",
-    "/api/keys",
-    "/api/processes",
-    "/api/notifications",
-    "/api/push",
-    "/api/remote",
-    "/api/snapshot",
-    "/api/dispatch",
-    "/api/approve",
-  ];
 
   // ---------------------------------------------------------------------------
   // i18n
@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.4.5",
+      en: "Context V2 M1 is accepted with structured frames/checkpoints, deterministic materialization, PM active context, compact/restore thresholds, subagent runtime state, Context UI/API, and the no-build JS split; PM Tool Surface remains tracked separately as M2.",
+      zh: "Context V2 M1 已验收通过，覆盖结构化 frames/checkpoints、确定性 materializer、PM active context、compact/restore 阈值、subagent runtime state、Context UI/API 和 no-build JS 拆分；PM Tool Surface 仍作为 M2 单独跟踪。",
+    },
+    {
       version: "v1.4.4",
       en: "Context v2 planning now has Codex-style design and implementation task docs covering recoverable checkpoints, PM active context envelopes, remote /responses/compact reuse, and review-ready branch handoff requirements; session views also keep new messages scrolled to the bottom.",
       zh: "Context v2 规划新增 Codex 风格设计书和实施任务书，覆盖可恢复 checkpoint、PM active context envelope、复用远端 /responses/compact、以及便于 GPT-5.5 pro review 的分支交付要求；会话视图发送新消息后也会保持滚动到底部。",
@@ -482,96 +487,8 @@
   ];
 
   // ---------------------------------------------------------------------------
-  // token + fetch
-  // ---------------------------------------------------------------------------
-  // Team members may reach this dashboard from the console (admin-app.js, served at /app.html),
-  // which used to store its session token under "foreman_token". The handoff now syncs the current
-  // login into the dashboard's canonical key; keep the old key as a fallback for already-open tabs.
-  const getToken = () => localStorage.getItem(TOKEN_KEY) || localStorage.getItem(CONSOLE_TOKEN_KEY) || "";
-  const setToken = (t) => {
-    if (t) {
-      localStorage.setItem(TOKEN_KEY, t);
-      localStorage.setItem(CONSOLE_TOKEN_KEY, t);
-    } else {
-      localStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(CONSOLE_TOKEN_KEY);
-    }
-  };
-  const rawFetch = window.fetch.bind(window);
-  function loginUrl() {
-    const next = `${location.pathname}${location.search}${location.hash}`;
-    return `/app.html?next=${encodeURIComponent(next || "/app.html")}`;
-  }
-  function redirectToLogin() {
-    setToken("");
-    location.replace(loginUrl());
-  }
-  window.fetch = async (input, init = {}) => {
-    const url = typeof input === "string" ? input : (input && input.url) || "";
-    const sameOrigin = url.startsWith("/") || url.startsWith(location.origin);
-    const headers = new Headers(init.headers || {});
-    const token = getToken();
-    if (sameOrigin && token) headers.set("Authorization", `Bearer ${token}`);
-    const res = await rawFetch(input, { ...init, headers });
-    let path = "";
-    try { path = sameOrigin ? new URL(url, location.origin).pathname : ""; } catch (e) { path = ""; }
-    if (res.status === 401 && sameOrigin && !path.startsWith("/api/auth/")) redirectToLogin();
-    return res;
-  };
-  class ApiError extends Error {
-    constructor(message, status, data) { super(message); this.status = status; this.data = data || {}; }
-  }
-  function pathnameOf(path) {
-    try { return new URL(path, location.origin).pathname; }
-    catch (e) { return String(path || ""); }
-  }
-  function shouldRouteLocal(path, opts = {}) {
-    if (opts.server || opts.local === false) return false;
-    const token = getToken();
-    const processId = localStorage.getItem(PROCESS_KEY) || "";
-    const name = pathnameOf(path);
-    if (!token || !processId || !name.startsWith("/api/")) return false;
-    return !SERVER_API_PREFIXES.some((prefix) => name === prefix || name.startsWith(`${prefix}/`));
-  }
-  async function requestJson(path, opts = {}) {
-    const { server, local, ...fetchOpts } = opts;
-    const headers = new Headers(opts.headers || {});
-    let body = opts.body;
-    if (body !== undefined && typeof body !== "string") { headers.set("Content-Type", "application/json"); body = JSON.stringify(body); }
-    const res = await fetch(path, { ...fetchOpts, headers, body });
-    const ct = res.headers.get("content-type") || "";
-    let data = ct.includes("application/json") ? await res.json().catch(() => null) : await res.text().catch(() => "");
-    if (!res.ok) {
-      const detail = data && typeof data === "object" ? data.detail : "";
-      throw new ApiError(detail || res.statusText || `HTTP ${res.status}`, res.status, data);
-    }
-    return data;
-  }
-  async function api(path, opts = {}) {
-    if (shouldRouteLocal(path, opts)) {
-      return requestJson("/api/remote/api", {
-        method: "POST",
-        server: true,
-        body: {
-          process_id: localStorage.getItem(PROCESS_KEY) || "",
-          method: (opts.method || "GET").toUpperCase(),
-          path,
-          body: opts.body,
-        },
-      });
-    }
-    return requestJson(path, opts);
-  }
-
-  // ---------------------------------------------------------------------------
   // helpers
   // ---------------------------------------------------------------------------
-  function formatTime(value, lang) {
-    if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" }).format(date);
-  }
   function formatDateTime(value, lang) {
     if (!value) return "-";
     const date = new Date(value);
@@ -579,11 +496,6 @@
     return new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
       month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
     }).format(date);
-  }
-  function shortPath(p, d) {
-    if (!p) return (d && d.workspaceMissing) || "-";
-    const parts = String(p).replace(/\\/g, "/").split("/").filter(Boolean);
-    return parts[parts.length - 1] || p;
   }
   function isWideWorkspace(p) {
     const v = String(p || "").trim().replace(/\//g, "\\");
@@ -595,29 +507,6 @@
     const current = row.workspace || "";
     if (current && row.workspace_exists !== false) return current;
     return main || current || fallback || "";
-  }
-  function friendlyError(error, d) {
-    const detail = String(error && error.message ? error.message : error || "");
-    if (/failed to fetch|networkerror|network error|load failed/i.test(detail)) return d.networkError;
-    const map = {
-      empty_goal: d.emptyGoal, no_workspace: d.dispatchNoWorkspace, workspace_not_allowed: d.workspaceMissing,
-      unknown_agent: d.noEnabledAgent, no_enabled_agent: d.noEnabledAgent, no_dispatcher: d.noDispatcher,
-      "no dispatcher": d.noDispatcher, no_llm: d.briefNoLlm, bad_scope_json: d.badScopeJson,
-      not_configured: d.cloudNotConfigured, cloud_unavailable: d.cloudUnavailable,
-      session_busy: d.sessionBusy, no_context: d.noContext, no_store: d.noStore,
-      session_not_found: d.sessionNotFound, decline: d.requestDeclined,
-      file_not_found: d.fileNotFound, file_too_large: d.fileTooLarge, file_not_text: d.fileNotText,
-      file_open_failed: d.fileOpenFailed, file_outside_workspace: d.workspaceMissing, not_file: d.fileNotText,
-      machine_offline: d.machineOffline, relay_unavailable: d.relayUnavailable,
-      disabled: d.remoteDisabled, process_required: d.remoteProcessRequired,
-      rate_limited: d.remoteRateLimited, auth: d.cloudAuthFailed,
-      timeout: d.cloudTimeout, unreachable: d.cloudUnreachable,
-      missing_description: d.missingDescription, description_too_long: d.descriptionTooLong,
-      title_too_long: d.sessionTitleTooLong, git_unavailable: d.gitInitFailed,
-      git_init_failed: d.gitInitFailed, git_checkout_failed: d.branchSwitchFailed,
-      workspace_dirty: d.workspaceDirty, bad_branch: d.badBranch, bad_workspace: d.workspaceMissing,
-    };
-    return map[detail] || detail || `${(error && error.status) || ""}`;
   }
   function jsonObjectError(text) {
     try {
@@ -663,11 +552,6 @@
       return contextLength;
     }
     return DEFAULT_CONTEXT_TOKENS;
-  }
-  function tokenK(value) {
-    const n = Math.max(0, Number(value) || 0);
-    if (n >= 1000) return `${Math.round(n / 100) / 10}k`;
-    return `${Math.round(n)}`;
   }
   function parseObject(text) {
     try {
@@ -1648,120 +1532,13 @@
   // ---------------------------------------------------------------------------
   function Empty({ icon, text }) { return html`<div className="empty"><div className="empty-icon">${icon || "✶"}</div><div>${text}</div></div>`; }
   function Switch({ on, onChange }) { return html`<button className=${`switch${on ? " on" : ""}`} onClick=${() => onChange(!on)} aria-pressed=${on} type="button"></button>`; }
-  // Self-ticking elapsed counter for the live plan phase: shows the PM step is alive even when no
-  // new reasoning delta has arrived for a while, so it never reads as a frozen "正在规划…" (T2.2).
-  function PmElapsed({ start, lang }) {
-    const startMs = useMemo(() => { const t = new Date(start).getTime(); return Number.isNaN(t) ? Date.now() : t; }, [start]);
-    const [now, setNow] = useState(() => Date.now());
-    useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
-    const secs = Math.max(0, Math.round((now - startMs) / 1000));
-    return html`<span className="pm-elapsed">· ${lang === "zh" ? `已 ${secs} 秒` : `${secs}s`}</span>`;
-  }
-
-  // One process-step row in the 执行过程 timeline: a category chip + the action (command / file /
-  // query / tool / plan / thought), with a file-kind chip, a command exit badge, and a live spinner
-  // or failure mark. Kind → chip label + color class.
   const STEP_META = {
     cmd: { k: "kCmd", cls: "st-cmd" }, edit: { k: "kEdit", cls: "st-edit" },
     read: { k: "kRead", cls: "st-read" }, find: { k: "kFind", cls: "st-find" },
     web: { k: "kWeb", cls: "st-web" }, tool: { k: "kTool", cls: "st-tool" },
     plan: { k: "kPlan", cls: "st-plan" }, think: { k: "kThink", cls: "st-think" },
   };
-  function StepRow({ s, d }) {
-    const meta = STEP_META[s.kind] || STEP_META.tool;
-    const active = s.status === "active";
-    const failed = s.status === "failed";
-    const fk = s.fileKind ? (s.fileKind === "add" ? d.fkAdd : s.fileKind === "delete" ? d.fkDelete : d.fkUpdate) : "";
-    return html`<div className=${`proc-step ${meta.cls}${active ? " active" : ""}${failed ? " failed" : ""}`}>
-      <span className="step-chip">${d[meta.k]}</span>
-      <div className="step-main">
-        ${s.kind === "plan" && Array.isArray(s.todos)
-          ? html`<div className="step-todos">${s.todos.map((t, i) => html`<div className=${`step-todo${t.done ? " done" : ""}`} key=${i}><span className="tk">${t.done ? "✓" : "○"}</span>${t.text}</div>`)}</div>`
-          : html`<div className="step-title">${s.title || d[meta.k]}</div>`}
-        ${s.detail ? html`<div className="step-detail">${clip(s.detail, 300)}</div>` : null}
-      </div>
-      ${fk ? html`<span className=${`fk fk-${s.fileKind}`}>${fk}</span>` : null}
-      ${s.kind === "cmd" && s.exit != null ? html`<span className=${`exitb${s.exit === 0 ? " ok" : " bad"}`}>${s.exit === 0 ? "✓ 0" : `✗ ${s.exit}`}</span>` : null}
-      ${active ? html`<span className="step-spin"></span>` : failed ? html`<span className="step-x">!</span>` : null}
-    </div>`;
-  }
-
-  // Subagent execution card: one chronological timeline. Ordinary agent_output stays in-place as
-  // a reply item; only an explicit stop/result payload is labeled as the final reply.
-  function callTimelineItems(c, running) {
-    const items = Array.isArray(c.timeline) && c.timeline.length ? [...c.timeline] : [];
-    if (!items.length) {
-      for (const cmd of c.commands || []) items.push({ kind: "cmd", command: cmd, launch: true });
-      for (const step of c.steps || []) items.push({ kind: "step", step });
-      if (c.reply) items.push({ kind: "reply", text: c.reply, final: true });
-    }
-    const hasActive = items.some((item) => item.kind === "step" && item.step && item.step.status === "active");
-    if (running && !hasActive) items.push({ kind: "live", status: "active" });
-    return items;
-  }
-
-  function timelineLabel(item, d) {
-    if (item.kind === "cmd") return d.commandsRun;
-    if (item.kind === "reply") return item.final ? d.finalReply : d.reply;
-    if (item.kind === "live") return d.processLabel;
-    if (item.kind === "step") {
-      const meta = STEP_META[(item.step && item.step.kind) || "tool"] || STEP_META.tool;
-      return d[meta.k] || d.processLabel;
-    }
-    return d.processLabel;
-  }
-
-  function CallTimelineItem({ item, i, d }) {
-    const step = item.step || {};
-    const stepKind = item.kind === "step" ? (step.kind || "tool") : item.kind;
-    const active = item.kind === "live" || item.status === "active" || (item.kind === "step" && step.status === "active");
-    const failed = item.status === "failed" || (item.kind === "step" && step.status === "failed");
-    const badge = failed
-      ? html`<span className="stage-badge failed">!</span>`
-      : active ? html`<span className="stage-badge active"><span className="stage-spin"></span></span>`
-      : html`<span className="stage-badge done">✓</span>`;
-    return html`<div className=${`call-stage timeline-${item.kind} st-${stepKind}`} key=${i}>
-      ${badge}
-      <div className="stage-body">
-        <div className="stage-name">${timelineLabel(item, d)}</div>
-        ${item.kind === "cmd" ? html`<div className="term-block"><div className=${item.launch ? "cmd-launch" : ""}><span className="cmd-prompt">$</span> ${item.command || ""}</div></div>` : null}
-        ${item.kind === "step" ? html`<div className="proc-steps single"><${StepRow} s=${step} d=${d} /></div>` : null}
-        ${item.kind === "reply" ? html`<div className=${`stage-reply${item.final ? " final" : ""}`}><${MD} text=${item.text || ""} maxChars=${item.final ? 6000 : 2400} /></div>` : null}
-        ${item.kind === "live" ? html`<div className="proc-live"><span className="proc-bar"><span></span></span><span className="proc-txt">${d.executing}...</span></div>` : null}
-      </div>
-    </div>`;
-  }
-
-  function CallCard({ c, d, lang, open, onToggle }) {
-    const running = c.status === "active";
-    const avatarColor = c.agent && c.agent.toLowerCase().includes("codex") ? "var(--violet)" : "var(--accent)";
-    const avatar = (c.agent || "A").slice(0, 1).toUpperCase();
-    const timeline = callTimelineItems(c, running);
-    const visibleReply = c.reply || c.lastReply || "";
-    const replySummary = firstSubstantiveLine(visibleReply);
-    return html`<div className=${`call${open ? " open" : ""}${running ? " running" : ""}`}>
-      <div className="call-head" onClick=${() => onToggle(c.id)}>
-        <span className="call-avatar" style=${{ background: avatarColor }}>${avatar}</span>
-        <div style=${{ flex: 1, minWidth: 0 }}>
-          <div className="call-title">
-            <span className="call-agent">${c.agent}</span>
-            ${running
-              ? html`<span className="tag accent live"><span className="call-live-dot"></span>${d.running}</span>`
-              : html`<span className="tag green">${d.done}</span>`}
-            ${running && c.started ? html`<${PmElapsed} start=${c.started} lang=${lang} />` : null}
-          </div>
-          <div className="call-summary">${Math.max(0, timeline.length - (running ? 1 : 0))} ${d.stepsWord}${c.diffs.length ? ` · ${c.diffs.length} diff` : ""}${replySummary ? ` · ${replySummary.slice(0, 42)}` : ""}</div>
-        </div>
-        <span className="call-toggle">${open ? d.hide : d.open}${open ? " ▾" : " ▸"}</span>
-      </div>
-      ${running ? html`<div className="call-progress"><span></span></div>` : null}
-      ${open ? html`<div className="call-detail timeline">
-        ${timeline.length ? timeline.map((item, i) => html`<${CallTimelineItem} key=${i} item=${item} i=${i} d=${d} />`) : html`<div className="stage-muted">${d.noSteps}</div>`}
-        ${c.diffs.length ? html`<div className="proc-diffs"><div className="step-sub">${d.changeDetail}</div>${c.diffs.map((df, i) => html`<div className="diff-file" key=${i}><div className="fhead"><span className="muted" style=${{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${df.file}</span><span className="stat">${df.stat}</span></div>${(df.lines || []).slice(0, 30).map((l, j) => html`<div className=${`diff-line ${l.kind === "add" ? "add" : l.kind === "del" ? "del" : ""}`} key=${j}>${l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}${l.text || ""}</div>`)}</div>`)}</div>` : null}
-      </div>` : null}
-    </div>`;
-  }
-
+  const ThreadNode = window.ForemanTimelineUI && window.ForemanTimelineUI.ThreadNode;
   // ---------------------------------------------------------------------------
   // Launch overlay
   // ---------------------------------------------------------------------------
@@ -1902,6 +1679,8 @@
       cards, approvals, onCancelSession, onRetrySession, onDeleteSession, onRenameSession, topControls, onCopy } = props;
     const threadNodes = threadExtras(dig, cards, approvals, sessionRow);
     const threadRef = useRef(null);
+    const stickToBottomRef = useRef(true);
+    const lastSessionIdRef = useRef(sessionRow && sessionRow.id);
     const lastThreadNodeId = threadNodes.length ? threadNodes[threadNodes.length - 1].id : "";
     const agentType = displayAgent(sessionRow && sessionRow.agent_type, d);
     const status = String((sessionRow && sessionRow.status) || "").toLowerCase();
@@ -1911,6 +1690,8 @@
     const stalled = status.includes("stall");
     const cancelled = status.includes("cancel");
     const done = status.includes("done") || status.includes("complete");
+    const ContextPanel = window.ForemanContextUI && window.ForemanContextUI.ContextPanel;
+    const timelineHelpers = { MD, STEP_META, clip, firstSubstantiveLine, pmThinkingParts, tokenK, formatTime };
     // A watchdog-aborted PM turn lands as `stalled`; surface it as a terminal failure (red tag +
     // retry) so a hung plan never shows as a perpetual "running" spinner (T0.4 → T0.5).
     const terminalFail = failed || stalled;
@@ -1921,8 +1702,20 @@
     useEffect(() => {
       const el = threadRef.current;
       if (!el) return;
+      const sid = sessionRow && sessionRow.id;
+      const switchedSession = lastSessionIdRef.current !== sid;
+      if (switchedSession) {
+        lastSessionIdRef.current = sid;
+        stickToBottomRef.current = true;
+      }
+      if (!stickToBottomRef.current && !switchedSession) return;
       requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
     }, [sessionRow && sessionRow.id, threadNodes.length, lastThreadNodeId]);
+    function onThreadScroll() {
+      const el = threadRef.current;
+      if (!el) return;
+      stickToBottomRef.current = (el.scrollHeight - el.scrollTop - el.clientHeight) < 72;
+    }
     return html`
       <div className="main">
         <div className="sess-header">
@@ -1950,10 +1743,10 @@
 
         <div className="ws-body">
           <div className="ws-left">
-            <div className="thread" ref=${threadRef}>
+            <div className="thread" ref=${threadRef} onScroll=${onThreadScroll} data-testid="conversation-scroll-container">
               <div className="thread-inner">
                 ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
-                  threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${openCalls} toggleCall=${toggleCall} onCard=${onCard} onApproval=${onApproval} openDetail=${openDetail} onCopy=${onCopy} />`)}
+                  threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${openCalls} toggleCall=${toggleCall} onCard=${onCard} onApproval=${onApproval} openDetail=${openDetail} onCopy=${onCopy} helpers=${timelineHelpers} />`)}
               </div>
             </div>
             <${Composer} ...${composer} d=${d} lang=${lang} events=${events} compacting=${compacting} runCompact=${runCompact} compactStatus=${compactStatus} sessionRow=${sessionRow} />
@@ -1972,152 +1765,22 @@
               <button className=${`rp-tab${rightTab === "todo" ? " on" : ""}`} onClick=${() => setRightTab("todo")}>${d.tabTodos} <span style=${{ opacity: 0.7 }}>${dig.todos.length}</span></button>
               <button className=${`rp-tab${rightTab === "sub" ? " on" : ""}`} onClick=${() => setRightTab("sub")}>${d.tabSubagents} <span style=${{ opacity: 0.7 }}>${dig.subagents.length}</span></button>
               <button className=${`rp-tab${rightTab === "term" ? " on" : ""}`} onClick=${() => setRightTab("term")}>${d.tabTerminal}</button>
+              <button
+                className=${`rp-tab${rightTab === "ctx" ? " on" : ""}`}
+                data-testid="context-tab"
+                onClick=${() => setRightTab("ctx")}
+              >${d.context}</button>
             </div>
             <div className="rp-body">
               ${rightTab === "todo" ? html`<${TodoPanel} key=${sessionRow ? sessionRow.id : "none"} d=${d} todos=${dig.todos} onAddStep=${composer.onAddStep} />` : null}
               ${rightTab === "sub" ? html`<${SubPanel} d=${d} subagents=${dig.subagents} expandedSub=${expandedSub} toggleSub=${toggleSub} />` : null}
               ${rightTab === "term" ? html`<${TermPanel} d=${d} terminal=${dig.terminal} agentType=${agentType} sessionRow=${sessionRow} onCancelSession=${onCancelSession} />` : null}
+              ${rightTab === "ctx" && ContextPanel ? html`<${ContextPanel} d=${d} lang=${lang} sessionRow=${sessionRow} />` : null}
+              ${rightTab === "ctx" && !ContextPanel ? html`<div className="alert error">Context panel failed to load.</div>` : null}
             </div>
           </aside>
         </div>
       </div>`;
-  }
-
-  function BubbleCopy({ text, d, onCopy, inverted = false }) {
-    const copyText = String(text || "");
-    if (!copyText.trim() || !onCopy) return null;
-    return html`<div className="bubble-actions">
-      <button type="button" className=${`bubble-copy${inverted ? " invert" : ""}`} aria-label=${d.copy} title=${d.copy} onClick=${(ev) => { ev.stopPropagation(); onCopy(copyText); }}>⧉</button>
-    </div>`;
-  }
-
-  function ThinkingPanel({ d, text }) {
-    const [open, setOpen] = useState(false);
-    const parts = pmThinkingParts(text, d.thinkingTrace);
-    return html`<div className=${`pm-thinking${open ? " open" : ""}`}>
-      <button type="button" className="pm-thinking-head" aria-expanded=${open} onClick=${() => setOpen((v) => !v)}>
-        <span className="pm-thinking-icon" aria-hidden="true">▸</span>
-        <span className="pm-thinking-title">${parts.title}</span>
-      </button>
-      ${open && parts.body ? html`<div className="pm-thinking-body"><${MD} text=${parts.body} maxChars=${4000} /></div>` : null}
-    </div>`;
-  }
-
-  function PmActivity({ n, d }) {
-    const meta = STEP_META[n.stepKind] || STEP_META.tool;
-    const active = n.status === "active";
-    const failed = n.status === "failed";
-    return html`<details className=${`pm-activity ${meta.cls}${active ? " active" : ""}${failed ? " failed" : ""}`}>
-      <summary>
-        <span className="pm-activity-icon" aria-hidden="true">▸</span>
-        <span className="step-chip">${d[meta.k]}</span>
-        <span className="pm-activity-title">${n.title}</span>
-        ${active ? html`<span className="step-spin"></span>` : failed ? html`<span className="step-x">!</span>` : null}
-      </summary>
-      ${n.detail ? html`<pre className="pm-activity-body">${n.detail}</pre>` : null}
-    </details>`;
-  }
-
-  function ContextPackPanel({ n, d, lang }) {
-    return html`<details className="context-pack">
-      <summary>
-        <span className="context-pack-icon" aria-hidden="true">▸</span>
-        <span className="context-pack-title">${n.label || d.compactDone}</span>
-        ${n.afterTokens ? html`<span className="context-pack-stat">≈${tokenK(n.afterTokens)}</span>` : null}
-        ${n.summaryChars ? html`<span className="context-pack-stat">${n.summaryChars} chars</span>` : null}
-        <span className="context-pack-time">${formatTime(n.ts, lang)}</span>
-      </summary>
-      ${n.preview ? html`<div className="context-pack-preview">${n.preview}</div>` : null}
-      <pre className="context-pack-json"><code>${n.json || ""}</code></pre>
-    </details>`;
-  }
-
-  function ThreadNode({ n, dig, d, lang, openCalls, toggleCall, onCard, onApproval, openDetail, onCopy }) {
-    if (n.kind === "user") {
-      return html`<div className="bubble-user"><div className="body">
-        ${n.goal}
-        ${n.chips.length ? html`<div className="chips">${n.chips.map((c, i) => html`<span className="chip" key=${i}>${c}</span>`)}</div>` : null}
-        <${BubbleCopy} text=${n.goal} d=${d} onCopy=${onCopy} inverted=${true} />
-      </div></div>`;
-    }
-    if (n.kind === "plan") {
-      const notes = Array.isArray(n.deliberation) ? n.deliberation.filter(Boolean) : [];
-      return html`<div className="plan-card">
-        <div className="plan-head">
-          <span className="badge">PM</span><span className="ttl">${d.plan}</span>
-          <span className="meta">${n.steps.length} ${lang === "zh" ? "步" : "steps"}</span>
-        </div>
-        <div className="plan-body">
-          ${n.summary ? html`<div className="plan-summary"><${MD} text=${n.summary} maxChars=${1200} /></div>` : null}
-          ${notes.length ? html`<div className="plan-notes">${notes.map((x, i) => html`<div key=${i}>${x}</div>`)}</div>` : null}
-          ${n.steps.length ? html`
-          ${n.steps.map((s, i) => html`<div className="plan-step" key=${i}><span className="num">${i + 1}</span><span className="txt">${s}</span></div>`)}
-          ` : null}
-        </div>
-      </div>`;
-    }
-    if (n.kind === "pm-status") {
-      return html`<div className="pm-status"><span className="spin"></span><span>${n.text}</span>${n.started ? html`<${PmElapsed} start=${n.started} lang=${lang} />` : null}</div>`;
-    }
-    if (n.kind === "pm-review") {
-      const detail = [n.summary, n.reason, n.followUp ? `→ ${n.followUp}` : ""].filter(Boolean).join("\n\n");
-      return html`<details className=${`pm-review${n.done ? " done" : ""}`}>
-        <summary><span>${d.pmReviewDiag}</span><span className="pm-review-status">${n.status}</span></summary>
-        ${detail ? html`<div className="pm-review-body"><${MD} text=${detail} maxChars=${2400} /></div>` : null}
-      </details>`;
-    }
-    if (n.kind === "pm") {
-      return html`<div className="pm-note"><div className="pm-avatar">PM</div><div className="body"><${MD} text=${n.text} maxChars=${4000} /><${BubbleCopy} text=${n.text} d=${d} onCopy=${onCopy} /></div></div>`;
-    }
-    if (n.kind === "pm-thinking") {
-      return html`<${ThinkingPanel} d=${d} text=${n.text} />`;
-    }
-    if (n.kind === "pm-activity") {
-      return html`<${PmActivity} n=${n} d=${d} />`;
-    }
-    if (n.kind === "context-pack") {
-      return html`<${ContextPackPanel} n=${n} d=${d} lang=${lang} />`;
-    }
-    if (n.kind === "call") {
-      const c = dig.calls.get(n.callId);
-      if (!c) return null;
-      return html`<${CallCard} c=${c} d=${d} lang=${lang} open=${!!openCalls[c.id]} onToggle=${toggleCall} />`;
-    }
-    if (n.kind === "card") {
-      const p = n.payload || {};
-      const opts = Array.isArray(p.options) ? p.options : [];
-      const isQuestion = !p.action_id;
-      return html`<div className="dcard">
-        <div className="dcard-head"><span>${isQuestion ? "PM" : "⚠️"}</span><span className="ttl">${isQuestion ? "PM question" : d.decisionNeeded}</span>${isQuestion ? null : html`<span className="risk tag amber">${d.riskMedium}</span>`}</div>
-        <div className="dcard-body">
-          <div className="q"><${MD} text=${p.summary || ""} className="markdown-compact" /></div>
-          ${p.audit_note ? html`<div className="d"><${MD} text=${p.audit_note} className="markdown-compact" /></div>` : null}
-          <div className="dcard-actions">
-            ${opts.map((o, i) => html`<button key=${i} className=${`btn${i === 0 ? " primary" : ""}`} onClick=${() => onCard(n.cardId, o.action)}>${o.label || o.action}</button>`)}
-            ${p.action_id ? html`<button className="btn ghost" onClick=${() => openDetail(p.action_id)}>${d.showDiff}</button>` : null}
-          </div>
-        </div>
-      </div>`;
-    }
-    if (n.kind === "approval") {
-      const p = n.payload || {};
-      return html`<div className=${`appr${(p.risk_level || "").includes("medium") ? " amber" : ""}`}>
-        <span className="ava" style=${{ background: "var(--accent)" }}>${(p.agent || "C").slice(0, 1).toUpperCase()}</span>
-        <div className="mid">
-          <div style=${{ fontSize: 13, fontWeight: 600 }}>${lang === "zh" ? "想执行命令" : "wants to run"}</div>
-          <code>${p.action || p.diff_summary || ""}</code>
-        </div>
-        <span className="tag red">${p.risk_level || d.riskHigh}</span>
-        <div style=${{ display: "flex", gap: 8 }}>
-          <button className="btn success sm" onClick=${() => onApproval(n.approvalId, "approve", p.nonce)}>${d.approve}</button>
-          <button className="btn sm" onClick=${() => onApproval(n.approvalId, "reject", p.nonce)}>${d.reject}</button>
-        </div>
-      </div>`;
-    }
-    if (n.kind === "system") {
-      return html`<div className="thread-divider"><div className="line"></div>${n.label}${n.text ? ` · ${String(n.text).slice(0, 80)}` : ""} · ${formatTime(n.ts, lang)}<div className="line"></div></div>`;
-    }
-    return null;
   }
 
   function TodoPanel({ d, todos, onAddStep }) {
@@ -2339,7 +2002,7 @@
         <${WorkspaceGitStatus} d=${d} workspace=${effectiveWorkspace} hasSession=${!!sessionRow} />
         <div className="composer-box">
           ${attachments.length ? html`<div className="composer-attach">${attachments.map((a) => html`<div className="attach-chip" key=${a.id}><span className=${`ic ${a.isImage ? "img" : "file"}`}>${a.isImage ? "🖼" : "📄"}</span><span className="nm">${a.name}</span><span className="rm" onClick=${() => removeAttach(a.id)}>×</span></div>`)}</div>` : null}
-          <textarea className="composer-input" rows="2" value=${task} onChange=${(e) => setTask(e.target.value)} onKeyDown=${onKey} onPaste=${onPaste} placeholder=${d.composerPlaceholder}></textarea>
+          <textarea className="composer-input" data-testid="message-composer" rows="2" value=${task} onChange=${(e) => setTask(e.target.value)} onKeyDown=${onKey} onPaste=${onPaste} placeholder=${d.composerPlaceholder}></textarea>
           <div className="composer-tools">
             <button className="tool-chip" onClick=${addAttach}>📎 ${d.attach}</button>
             ${teamMode ? html`<select className="ws-select machine-select" value=${selectedProcessId || ""} onChange=${(e) => setSelectedProcessId(e.target.value)}>
@@ -2372,8 +2035,8 @@
             ${busy ? html`
               <span className="busy-chip"><span className="spin"></span>${d.pmThinking}</span>
               <button className="btn danger icon stop-btn" aria-label=${d.cancelSession} title=${d.cancelSession} onClick=${() => onCancelSession && sessionRow && onCancelSession(sessionRow.id)} disabled=${sendBusy || !sessionRow}><span className="stop-icon" aria-hidden="true"></span></button>
-              <button className="btn primary" title=${d.queueHelp} onClick=${() => runDispatch("queue")} disabled=${sendBusy || !task.trim()}>${sendBusy ? d.queueing : html`${d.send} ↑`}</button>
-            ` : html`<button className="btn primary" onClick=${() => runDispatch()} disabled=${sendBusy}>${sendBusy ? html`<span className="spin"></span>` : null}${d.send} ↑</button>`}
+              <button className="btn primary" data-testid="send-message" title=${d.queueHelp} onClick=${() => runDispatch("queue")} disabled=${sendBusy || !task.trim()}>${sendBusy ? d.queueing : html`${d.send} ↑`}</button>
+            ` : html`<button className="btn primary" data-testid="send-message" onClick=${() => runDispatch()} disabled=${sendBusy}>${sendBusy ? html`<span className="spin"></span>` : null}${d.send} ↑</button>`}
           </div>
         </div>
       </div>
@@ -2953,7 +2616,7 @@
       </div>` : null}
       <div className="thread" ref=${threadRef} style=${{ padding: 13 }}><div className="thread-inner">
         ${!threadNodes.length ? html`<${Empty} icon="◳" text=${d.selectSessionHint} />` :
-          threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${mainProps.openCalls} toggleCall=${mainProps.toggleCall} onCard=${mainProps.onCard} onApproval=${mainProps.onApproval} openDetail=${mainProps.openDetail} onCopy=${mainProps.onCopy} />`)}
+          threadNodes.map((n) => html`<${ThreadNode} key=${n.id} n=${n} dig=${dig} d=${d} lang=${lang} openCalls=${mainProps.openCalls} toggleCall=${mainProps.toggleCall} onCard=${mainProps.onCard} onApproval=${mainProps.onApproval} openDetail=${mainProps.openDetail} onCopy=${mainProps.onCopy} helpers=${mainProps.timelineHelpers} />`)}
       </div></div>
     </div>`;
     if (mTab === "todo") return html`<div style=${{ padding: 13 }}><${TodoPanel} key=${mainProps.sessionRow ? mainProps.sessionRow.id : "none"} d=${d} todos=${dig.todos} onAddStep=${mainProps.composer.onAddStep} /></div>`;
@@ -3875,6 +3538,7 @@
       onDeleteSession: deleteSession,
       onRenameSession: openRenameSession,
       onCopy,
+      timelineHelpers: { MD, STEP_META, clip, firstSubstantiveLine, pmThinkingParts, tokenK, formatTime },
       topControls: html`<${TopCtrls} d=${d} lang=${lang} dark=${theme === "dark"} onToggleTheme=${() => setTheme(theme === "dark" ? "light" : "dark")} onToggleLang=${() => setLang(lang === "zh" ? "en" : "zh")} onPush=${enablePush} />`,
     };
 
@@ -3913,6 +3577,7 @@
             composer=${composerProps} runCompact=${runCompact} compacting=${compacting} compactStatus=${compactStatus} onBriefing=${runBriefing}
             cards=${openCards} approvals=${approvals} onCancelSession=${cancelSession} onDeleteSession=${deleteSession}
             onRetrySession=${retrySession} onRenameSession=${openRenameSession} onCopy=${onCopy}
+            timelineHelpers=${mainProps.timelineHelpers}
             topControls=${mainProps.topControls} />`
           : html`<div className="main">
               <div className="page-head">

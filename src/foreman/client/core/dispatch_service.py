@@ -38,9 +38,9 @@ from ..store.models import ContextSnapshot, MemoryItem, Task
 from .context_budget import (
     approx_tokens as _ctx_approx_tokens,
     resolve_window_tokens,
-    should_auto_compact,
 )
 from .context_compression import extract_json_object, memory_items_from_pack
+from .context_v2 import ActiveContext, ContextCompactError, ContextManager
 from .pm_agent import PMPlan, events_to_text
 from .supervisor import ERRORED, classify_tail
 from .work_mode_context import (
@@ -124,6 +124,7 @@ class DispatchService:
         injector=None,
         embedder=None,
         workflow_engine=None,
+        context_manager=None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -143,6 +144,15 @@ class DispatchService:
         self.workflow_engine = workflow_engine
         self.language_getter = language_getter
         self._clock = clock or utc_now_iso
+        self.context_manager = context_manager
+        if self.context_manager is None and self.store is not None:
+            self.context_manager = ContextManager(
+                self.store,
+                runner=runner,
+                clock=self._clock,
+                llm=getattr(pm_agent, "llm", None) if pm_agent is not None else None,
+                local_compactor=self._local_compact_active_context,
+            )
         self._tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget launches aren't GC'd
         self._session_tasks: dict[str, set[asyncio.Task]] = {}
         self._session_queue_tails: dict[str, asyncio.Future[None]] = {}
@@ -326,12 +336,38 @@ class DispatchService:
         session = self.store.get_session(session_id)
         if session is None:
             return {"ok": False, "error": "session_not_found"}
+        if window_tokens is None:
+            window_tokens = await self._resolve_window_tokens("")
+        if self.context_manager is not None and hasattr(self.context_manager, "compact_now"):
+            try:
+                checkpoint = await self.context_manager.compact_now(
+                    session_id,
+                    trigger="manual",
+                    reason="api_compact",
+                    window_tokens=window_tokens,
+                    hard=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - API returns structured failure.
+                return {"ok": False, "error": str(exc) or type(exc).__name__}
+            refreshed = self.store.get_session(session_id)
+            summary = (getattr(refreshed, "plan", "") or "").strip() if refreshed else ""
+            token_usage = json.loads(checkpoint.token_usage_json or "{}")
+            compact_events = [e for e in self.store.get_events(session_id) if e.type == "context_compact"]
+            payload = json.loads(compact_events[-1].payload_json) if compact_events else {}
+            return {
+                "ok": True,
+                "session_id": session_id,
+                "summary": summary,
+                "original_chars": max(0, int(token_usage.get("before_tokens") or 0) * 4),
+                "summary_chars": len(summary),
+                "snapshot_id": payload.get("snapshot_id", ""),
+                "checkpoint_id": checkpoint.id,
+                "method": checkpoint.method,
+            }
         rows = self.store.get_events(session_id) if hasattr(self.store, "get_events") else []
         timeline = events_to_text(rows)
         if not timeline:
             return {"ok": False, "error": "no_context"}
-        if window_tokens is None:
-            window_tokens = await self._resolve_window_tokens("")
         existing = (session.plan or "").strip()
         if self.pm_agent is not None and hasattr(self.pm_agent, "compact"):
             kwargs = {"existing_context": existing}
@@ -862,16 +898,22 @@ class DispatchService:
             for name, cfg in sorted(self.cfg.agents.items())
             if cfg.enabled
         ] or [{"name": agent, "model": "", "effort": effort, "full_access": True}]
-        context = self._session_context(session_id)
         # Resolve the PM model window ONCE per dispatch (§8B.8; never per-loop — it can hit /models).
         window_tokens = await self._resolve_window_tokens(pm_model)
-        # Pre-plan auto-compact: if the carried session memory alone is already near the window,
-        # compact before planning so the plan call doesn't start over budget.
-        if should_auto_compact(
-            _ctx_approx_tokens(context), 0, 0, window_tokens=window_tokens, run_count=0
+        if not await self._maybe_compact_pm(
+            session_id,
+            task_id,
+            reason="pre_turn",
+            purpose="pm_plan",
+            window_tokens=window_tokens,
+            run_count=0,
         ):
-            await self._safe_compact(session_id, window_tokens)
-            context = self._session_context(session_id)
+            return
+        context, active_context = await self._pm_context_text(
+            session_id,
+            purpose="pm_plan",
+            window_tokens=window_tokens,
+        )
         await self._emit_pm_status(
             session_id,
             task_id,
@@ -916,6 +958,8 @@ class DispatchService:
             plan_kwargs["session_id"] = session_id
         if _accepts_keyword(self.pm_agent.plan, "task_id"):
             plan_kwargs["task_id"] = task_id
+        if active_context is not None and _accepts_keyword(self.pm_agent.plan, "active_context"):
+            plan_kwargs["active_context"] = active_context
         with trace_context(session_id=session_id, task_id=task_id, phase="plan"):
             plan = await self.pm_agent.plan(goal, **plan_kwargs)
         # Telemetry: one work_mode event per dispatch (after plan, so pulls/body_tokens are counted).
@@ -967,6 +1011,7 @@ class DispatchService:
             plan.agent, plan.instruction, Path(workspace), session_id,
             model=plan.model, effort=plan.effort,
         )
+        await self._emit_agent_input(session_id, task_id, handle, plan.instruction, plan)
         run_count = 1
         reviewed_event_id = ""
         review_notes: list[dict[str, Any]] = []
@@ -1008,12 +1053,35 @@ class DispatchService:
                 self._mark_session_unless_terminal(session_id, "running")
                 return
         while True:
+            if not await self._maybe_compact_pm(
+                session_id,
+                task_id,
+                reason="pre_review",
+                purpose="pm_review",
+                window_tokens=window_tokens,
+                run_count=run_count,
+            ):
+                return
             rows = self.store.get_events(session_id)
-            timeline = events_to_text(_events_after(rows, reviewed_event_id))
+            review_context, review_active_context = await self._pm_context_text(
+                session_id,
+                purpose="pm_review",
+                window_tokens=window_tokens,
+            )
+            reviewed_event_id = _advance_reviewed_event_id_from_active_context(
+                rows,
+                reviewed_event_id,
+                review_active_context,
+            )
+            timeline = _review_timeline_from_active_context(
+                review_active_context,
+                rows,
+                reviewed_event_id,
+            )
             review_cutoff_id = _last_event_id(rows)
             review_kwargs = {
                 "run_count": run_count,
-                "context": context,
+                "context": review_context,
                 "pm_model": pm_model,
             }
             if _accepts_keyword(self.pm_agent.review, "review_state"):
@@ -1026,6 +1094,8 @@ class DispatchService:
                 )
             if _accepts_keyword(self.pm_agent.review, "state_key"):
                 review_kwargs["state_key"] = review_state_key
+            if review_active_context is not None and _accepts_keyword(self.pm_agent.review, "active_context"):
+                review_kwargs["active_context"] = review_active_context
             if rubric_fed:
                 review_kwargs["qa_rubric"] = review_guidance
             with trace_context(
@@ -1068,22 +1138,8 @@ class DispatchService:
                     _empty_followup_text(language),
                 )
                 return
-            # Auto-compact (§8B.8) BETWEEN rounds — AFTER this review consumed its raw increment, and
-            # BEFORE the next follow-up runs. Compact when (session memory + pulled bodies + the
-            # just-reviewed timeline) crosses the window threshold OR every N runs, then fold history
-            # into Session.plan and advance the cursor (no double-count; no review ever loses its
-            # increment — the rolling-plan ↔ incremental-review reconciliation).
-            if should_auto_compact(
-                _ctx_approx_tokens(context),
-                (work_mode_resolver.body_chars + 3) // 4,
-                _ctx_approx_tokens(timeline),
-                window_tokens=window_tokens,
-                run_count=run_count,
-            ):
-                await self._safe_compact(session_id, window_tokens)
-                context = self._session_context(session_id)
-                reviewed_event_id = _last_event_id(self.store.get_events(session_id))
             agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+            await self._emit_agent_input(session_id, task_id, handle, review.follow_up, plan)
             await self.runner.send(handle, review.follow_up)
             self._mark_session_unless_terminal(session_id, "running")
             run_count += 1
@@ -1433,6 +1489,41 @@ class DispatchService:
         await self._persist_then_publish(event)
         return event.id
 
+    async def _emit_agent_input(
+        self,
+        session_id: str,
+        task_id: str,
+        handle: Any,
+        instruction: str,
+        plan: PMPlan,
+    ) -> None:
+        await self._persist_then_publish(
+            make_event(
+                "agent_input",
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload={
+                    "agent_id": str(getattr(handle, "id", "") or plan.agent),
+                    "handle_id": str(getattr(handle, "id", "") or ""),
+                    "agent_role": "developer",
+                    "agent_type": plan.agent,
+                    "source": "pm-agent",
+                    "message": instruction,
+                    "instruction": instruction,
+                    "expected_output": plan.summary or "",
+                    "cwd": str(getattr(handle, "cwd", "") or plan.workspace or ""),
+                    "worktree": str(getattr(handle, "worktree", "") or getattr(handle, "cwd", "") or plan.workspace or ""),
+                    "branch": str(getattr(handle, "branch", "") or ""),
+                    "base_ref": str(getattr(handle, "base_ref", "") or ""),
+                    "head_sha": str(getattr(handle, "head_sha", "") or ""),
+                    "model": plan.model,
+                    "effort": plan.effort,
+                    "native_session_id": str(getattr(handle, "native_session_id", "") or ""),
+                },
+            )
+        )
+
     async def _emit_pm_status(
         self, session_id: str, task_id: str, phase: str, text: str
     ) -> None:
@@ -1492,7 +1583,7 @@ class DispatchService:
 
     def _pm_tool_event_sink(self, session_id: str, task_id: str | None):
         async def emit(event_type: str, payload: dict[str, Any]) -> None:
-            if event_type not in {"tool_pre", "tool_post", "tool_stream"}:
+            if event_type not in {"tool_pre", "tool_post", "tool_stream", "pm_validation_error"}:
                 return
             await self._persist_then_publish(
                 make_event(
@@ -1527,6 +1618,117 @@ class DispatchService:
             return ""
         session = self.store.get_session(session_id)
         return (session.plan or "").strip()[:MAX_CONTEXT_CHARS] if session else ""
+
+    async def _build_pm_active_context(
+        self,
+        session_id: str,
+        *,
+        purpose: str,
+        window_tokens: int,
+    ) -> ActiveContext | None:
+        if self.context_manager is None:
+            return None
+        try:
+            return self.context_manager.build_active_context(
+                session_id,
+                purpose=purpose,
+                window_tokens=window_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 - active-context restore is a soft dependency.
+            await self._persist_then_publish(
+                make_event(
+                    "notification",
+                    "pm-agent",
+                    session_id,
+                    payload={
+                        "kind": "context_restore_failed",
+                        "purpose": purpose,
+                        "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                        "fallback": "legacy_session_context",
+                    },
+                )
+            )
+            return None
+
+    async def _pm_context_text(
+        self,
+        session_id: str,
+        *,
+        purpose: str,
+        window_tokens: int,
+    ) -> tuple[str, ActiveContext | None]:
+        active_context = await self._build_pm_active_context(
+            session_id,
+            purpose=purpose,
+            window_tokens=window_tokens,
+        )
+        if active_context is not None and (active_context.rendered_text or "").strip():
+            return active_context.rendered_text, active_context
+        return self._session_context(session_id), None
+
+    async def _maybe_compact_pm(
+        self,
+        session_id: str,
+        task_id: str,
+        *,
+        reason: str,
+        purpose: str,
+        window_tokens: int,
+        run_count: int = 0,
+    ) -> bool:
+        if self.context_manager is None or not hasattr(self.context_manager, "maybe_compact"):
+            return True
+        try:
+            await self.context_manager.maybe_compact(
+                session_id,
+                reason=reason,
+                purpose=purpose,
+                window_tokens=window_tokens,
+                run_count=run_count,
+            )
+            return True
+        except ContextCompactError as exc:
+            await self._emit_pm_error(
+                session_id,
+                task_id,
+                f"Context compaction failed before PM call: {str(exc)[:400]}",
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001 - restore/usage failure is a soft dependency.
+            await self._persist_then_publish(
+                make_event(
+                    "notification",
+                    "pm-agent",
+                    session_id,
+                    payload={
+                        "kind": "context_restore_failed",
+                        "purpose": purpose,
+                        "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                        "fallback": "legacy_session_context",
+                    },
+                )
+            )
+            return True
+
+    async def _local_compact_active_context(self, active_context: ActiveContext) -> str:
+        session_id = active_context.session_id
+        session = self.store.get_session(session_id) if self.store is not None else None
+        goal = getattr(session, "goal", "") if session is not None else ""
+        existing = (getattr(session, "plan", "") or "").strip() if session is not None else ""
+        if self.pm_agent is not None and hasattr(self.pm_agent, "compact"):
+            kwargs = {"existing_context": existing}
+            if _accepts_keyword(self.pm_agent.compact, "on_stream"):
+                kwargs["on_stream"] = self._pm_stream_sink(session_id, None, "compact")
+            if _accepts_keyword(self.pm_agent.compact, "window_tokens"):
+                window_tokens = int((active_context.token_usage or {}).get("window_tokens") or 0)
+                kwargs["window_tokens"] = window_tokens
+            with trace_context(session_id=session_id, phase="compact"):
+                return await self.pm_agent.compact(
+                    goal,
+                    active_context.rendered_text,
+                    **kwargs,
+                )
+        return _fallback_compact(active_context.rendered_text, existing)
 
     def _mark_session(self, session_id: str, status: str) -> None:
         if self.store is not None and hasattr(self.store, "update_session"):
@@ -2007,6 +2209,128 @@ def _events_after(rows: list[Any], event_id: str) -> list[Any]:
         if _event_id(row) == marker:
             return rows[idx + 1:]
     return rows
+
+
+_REVIEW_TIMELINE_FRAME_TYPES = {
+    "command_result",
+    "tool_result",
+    "test_result",
+    "file_change",
+    "agent_output",
+    "agent_stop",
+    "previous_validation_error",
+    "context_compaction",
+}
+
+
+def _review_timeline_from_active_context(
+    active_context: ActiveContext | None,
+    rows: list[Any],
+    reviewed_event_id: str,
+) -> str:
+    if active_context is None:
+        return events_to_text(_events_after(rows, reviewed_event_id))
+    order = {_event_id(row): idx for idx, row in enumerate(rows) if _event_id(row)}
+    reviewed_idx = order.get((reviewed_event_id or "").strip(), -1)
+    lines: list[str] = []
+    for frame in active_context.frames_after_checkpoint or []:
+        if not isinstance(frame, dict):
+            continue
+        frame_type = str(frame.get("type") or "").strip()
+        if frame_type not in _REVIEW_TIMELINE_FRAME_TYPES:
+            continue
+        if int(frame.get("lane") or 0) == 7:
+            continue
+        event_id = _frame_event_id(frame)
+        if reviewed_event_id and not event_id:
+            continue
+        if event_id and event_id in order and order[event_id] <= reviewed_idx:
+            continue
+        if event_id and event_id not in order and reviewed_event_id:
+            continue
+        line = _render_review_timeline_frame(frame, event_id)
+        if line:
+            lines.append(line)
+    return "\n".join(lines) if lines else "(no new agent output captured)"
+
+
+def _frame_event_id(frame: dict[str, Any]) -> str:
+    event_id = str(frame.get("event_id") or "").strip()
+    if event_id:
+        return event_id
+    for ref in frame.get("source_refs") or []:
+        text = str(ref or "")
+        if text.startswith("event:"):
+            return text.split(":", 1)[1].strip()
+    return ""
+
+
+def _render_review_timeline_frame(frame: dict[str, Any], event_id: str) -> str:
+    frame_type = str(frame.get("type") or "").strip()
+    raw_payload: Any = frame.get("payload")
+    payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+    bits = [frame_type]
+    if event_id:
+        bits.append(f"event:{event_id}")
+    agent_id = str(frame.get("agent_id") or payload.get("agent_id") or "").strip()
+    if agent_id:
+        bits.append(f"agent:{agent_id}")
+    call_id = str(payload.get("call_id") or payload.get("tool_call_id") or "").strip()
+    if call_id:
+        bits.append(f"call:{call_id}")
+    summary = _review_payload_summary(frame_type, payload)
+    return f"- {' '.join(bits)}: {summary}" if summary else f"- {' '.join(bits)}"
+
+
+def _review_payload_summary(frame_type: str, payload: dict[str, Any]) -> str:
+    keys_by_type = {
+        "command_result": ["command", "exit_code", "cwd", "important_lines", "stdout_summary", "stderr_summary"],
+        "tool_result": ["tool", "name", "status", "result", "summary", "important_lines"],
+        "test_result": ["command", "status", "passed", "failed", "exit_code", "failures", "important_lines"],
+        "file_change": ["changed_files", "files", "paths", "diff_stat", "truncated"],
+        "agent_output": ["summary", "text", "message", "important_lines"],
+        "agent_stop": ["status", "summary", "result", "payload", "next_actions", "next_steps"],
+        "previous_validation_error": ["error", "round", "arguments"],
+        "context_compaction": ["summary", "checkpoint_id", "event_id"],
+    }
+    picked = {
+        key: payload.get(key)
+        for key in keys_by_type.get(frame_type, [])
+        if payload.get(key) not in (None, "", [], {})
+    }
+    if not picked:
+        picked = {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+    try:
+        text = json.dumps(picked, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        text = str(picked)
+    text = " ".join(text.split())
+    return text[:900] + "...[truncated]" if len(text) > 900 else text
+
+
+def _advance_reviewed_event_id_from_active_context(
+    rows: list[Any],
+    reviewed_event_id: str,
+    active_context: ActiveContext | None,
+) -> str:
+    if active_context is None:
+        return reviewed_event_id
+    cursor = active_context.source_cursor or {}
+    raw_end: Any = cursor.get("end")
+    end: dict[str, Any] = raw_end if isinstance(raw_end, dict) else cursor
+    checkpoint_event_id = str(
+        end.get("event_id") or end.get("id") or cursor.get("end_event_id") or ""
+    ).strip()
+    if not checkpoint_event_id:
+        return reviewed_event_id
+    order = {_event_id(row): idx for idx, row in enumerate(rows) if _event_id(row)}
+    checkpoint_idx = order.get(checkpoint_event_id)
+    if checkpoint_idx is None:
+        return reviewed_event_id
+    reviewed_idx = order.get((reviewed_event_id or "").strip())
+    if reviewed_idx is None:
+        return checkpoint_event_id
+    return checkpoint_event_id if checkpoint_idx > reviewed_idx else reviewed_event_id
 
 
 def _last_event_id(rows: list[Any]) -> str:

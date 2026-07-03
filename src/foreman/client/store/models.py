@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from sqlmodel import Field, SQLModel
 
 
@@ -9,6 +11,7 @@ class Session(SQLModel, table=True):
     id: str = Field(primary_key=True)
     goal: str
     plan: str = ""
+    latest_context_checkpoint_id: str = ""
     # planning|running|idle|blocked|waiting_approval|done|failed|stalled|cancelled|paused
     status: str = "planning"
     workspace: str = ""
@@ -53,6 +56,49 @@ class ContextSnapshot(SQLModel, table=True):
     input_tokens: int = 0
     output_tokens: int = 0
     summary_hash: str = ""
+    created_at: str = ""
+
+
+class ContextFrame(SQLModel, table=True):
+    """One provider-neutral active-context item materialized from raw events."""
+
+    __tablename__: ClassVar[str] = "context_frames"
+
+    id: str = Field(primary_key=True)
+    session_id: str = Field(index=True, foreign_key="session.id")
+    event_id: str = ""
+    event_ts: str = ""
+    turn_id: str = ""
+    type: str = Field(index=True)
+    role: str = ""
+    lane: int = 6
+    agent_id: str = ""
+    agent_role: str = ""
+    agent_type: str = ""
+    parent_agent_id: str = ""
+    payload_json: str = "{}"
+    source_refs_json: str = "[]"
+    payload_hash: str = ""
+    created_at: str = ""
+
+
+class ContextCheckpoint(SQLModel, table=True):
+    """A recoverable PM active-context checkpoint, distinct from git undo Checkpoint."""
+
+    __tablename__: ClassVar[str] = "context_checkpoints"
+
+    id: str = Field(primary_key=True)
+    session_id: str = Field(index=True, foreign_key="session.id")
+    schema_version: int = 2
+    trigger: str = Field(index=True)
+    reason: str = Field(index=True)
+    method: str = "local"
+    source_cursor_json: str = "{}"
+    input_frame_ids_json: str = "[]"
+    summary_json: str = "{}"
+    replacement_history_json: str = "{}"
+    runtime_state_json: str = "{}"
+    token_usage_json: str = "{}"
     created_at: str = ""
 
 

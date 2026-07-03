@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import uuid
 
+from sqlalchemy import and_, or_
 from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel, col, create_engine, select
 
@@ -22,6 +23,8 @@ from .models import (
     Audit,
     Checkpoint,
     ConfigKV,
+    ContextCheckpoint,
+    ContextFrame,
     ContextSnapshot,
     DecisionCard,
     Definition,
@@ -92,6 +95,7 @@ class Store:
         plan: str | None = None,
         workspace: str | None = None,
         main_workspace: str | None = None,
+        latest_context_checkpoint_id: str | None = None,
         status: str | None = None,
         updated_at: str | None = None,
     ) -> Session | None:
@@ -107,6 +111,8 @@ class Store:
                 row.workspace = workspace
             if main_workspace is not None:
                 row.main_workspace = main_workspace
+            if latest_context_checkpoint_id is not None:
+                row.latest_context_checkpoint_id = latest_context_checkpoint_id
             if status is not None:
                 row.status = status
             if updated_at is not None:
@@ -166,6 +172,8 @@ class Store:
             for model, field in (
                 (Approval, Approval.session_id),
                 (Checkpoint, Checkpoint.session_id),
+                (ContextCheckpoint, ContextCheckpoint.session_id),
+                (ContextFrame, ContextFrame.session_id),
                 (ContextSnapshot, ContextSnapshot.session_id),
                 (DecisionCard, DecisionCard.session_id),
                 (Event, Event.session_id),
@@ -187,11 +195,183 @@ class Store:
         with self.session() as s:
             return list(
                 s.exec(
-                    select(Event).where(Event.session_id == session_id).order_by(Event.ts)
+                    select(Event).where(Event.session_id == session_id).order_by(Event.ts, Event.id)
                 ).all()
             )
 
+    def get_events_after_cursor(self, session_id: str, cursor: dict | None) -> list[Event]:
+        """Events after a Context v2 cursor, ordered by string `(event_ts, event_id)`."""
+        event_ts, event_id = _cursor_parts(cursor)
+        with self.session() as s:
+            stmt = select(Event).where(Event.session_id == session_id)
+            if event_ts:
+                if event_id:
+                    stmt = stmt.where(
+                        or_(
+                            col(Event.ts) > event_ts,
+                            and_(col(Event.ts) == event_ts, col(Event.id) > event_id),
+                        )
+                    )
+                else:
+                    stmt = stmt.where(col(Event.ts) > event_ts)
+            return list(s.exec(stmt.order_by(Event.ts, Event.id)).all())
+
     # -- derived context views ---------------------------------------------------------------
+    def add_context_frame(self, frame: ContextFrame) -> ContextFrame:
+        """Persist or update one deterministic Context v2 frame."""
+        return self.add_context_frames([frame])[0]
+
+    def add_context_frames(self, frames: list[ContextFrame]) -> list[ContextFrame]:
+        """Upsert deterministic Context v2 frames; duplicate ids replay cleanly."""
+        if not frames:
+            return []
+        with self.session() as s:
+            merged = [s.merge(frame) for frame in frames]
+            s.commit()
+            for row in merged:
+                s.refresh(row)
+            return merged
+
+    def get_context_frames(
+        self,
+        session_id: str,
+        after_cursor: dict | None = None,
+        limit: int | None = None,
+    ) -> list[ContextFrame]:
+        event_ts, event_id = _cursor_parts(after_cursor)
+        with self.session() as s:
+            stmt = select(ContextFrame).where(ContextFrame.session_id == session_id)
+            if event_ts:
+                if event_id:
+                    stmt = stmt.where(
+                        or_(
+                            col(ContextFrame.event_ts) > event_ts,
+                            and_(
+                                col(ContextFrame.event_ts) == event_ts,
+                                col(ContextFrame.event_id) > event_id,
+                            ),
+                        )
+                    )
+                else:
+                    stmt = stmt.where(col(ContextFrame.event_ts) > event_ts)
+            stmt = stmt.order_by(
+                ContextFrame.event_ts,
+                ContextFrame.event_id,
+                ContextFrame.created_at,
+                ContextFrame.id,
+            )
+            if limit is not None:
+                stmt = stmt.limit(max(0, int(limit)))
+            return list(s.exec(stmt).all())
+
+    def get_context_frame(self, frame_id: str) -> ContextFrame | None:
+        with self.session() as s:
+            return s.get(ContextFrame, frame_id)
+
+    def add_context_checkpoint(
+        self, checkpoint: ContextCheckpoint
+    ) -> ContextCheckpoint:
+        with self.session() as s:
+            s.add(checkpoint)
+            s.commit()
+            s.refresh(checkpoint)
+        return checkpoint
+
+    def get_context_checkpoints(
+        self, session_id: str, limit: int | None = None
+    ) -> list[ContextCheckpoint]:
+        with self.session() as s:
+            stmt = (
+                select(ContextCheckpoint)
+                .where(ContextCheckpoint.session_id == session_id)
+                .order_by(
+                    col(ContextCheckpoint.created_at).desc(),
+                    col(ContextCheckpoint.id).desc(),
+                )
+            )
+            if limit is not None:
+                stmt = stmt.limit(max(0, int(limit)))
+            return list(s.exec(stmt).all())
+
+    def get_context_checkpoint(self, checkpoint_id: str) -> ContextCheckpoint | None:
+        with self.session() as s:
+            return s.get(ContextCheckpoint, checkpoint_id)
+
+    def get_latest_context_checkpoint(self, session_id: str) -> ContextCheckpoint | None:
+        session = self.get_session(session_id)
+        if session is None or not session.latest_context_checkpoint_id:
+            return None
+        return self.get_context_checkpoint(session.latest_context_checkpoint_id)
+
+    def set_latest_context_checkpoint(
+        self,
+        session_id: str,
+        checkpoint_id: str,
+        plan_summary: str | None = None,
+    ) -> Session | None:
+        with self.session() as s:
+            row = s.get(Session, session_id)
+            if row is None:
+                return None
+            checkpoint = s.get(ContextCheckpoint, checkpoint_id)
+            if checkpoint is None:
+                return None
+            if checkpoint.session_id != session_id:
+                raise ValueError("checkpoint_session_mismatch")
+            row.latest_context_checkpoint_id = checkpoint_id
+            if plan_summary is not None:
+                row.plan = plan_summary
+            row.updated_at = utc_now_iso()
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            return row
+
+    def install_context_checkpoint(
+        self,
+        session_id: str,
+        checkpoint: ContextCheckpoint,
+        plan_summary: str | None,
+        compact_event_payload: dict,
+    ) -> tuple[ContextCheckpoint, Event]:
+        """Atomically install a Context v2 checkpoint and its compact event."""
+        now = utc_now_iso()
+        if checkpoint.session_id and checkpoint.session_id != session_id:
+            raise ValueError("checkpoint_session_mismatch")
+        checkpoint.session_id = session_id
+        if not checkpoint.created_at:
+            checkpoint.created_at = now
+        payload = dict(compact_event_payload or {})
+        event_id = str(payload.pop("event_id", "") or uuid.uuid4().hex)
+        event_source = str(payload.pop("source", "") or "foreman")
+        event_ts = str(payload.pop("ts", "") or now)
+        payload.setdefault("checkpoint_id", checkpoint.id)
+        payload.setdefault("schema_version", checkpoint.schema_version)
+        event = Event(
+            id=event_id,
+            session_id=session_id,
+            task_id=None,
+            type="context_compact",
+            source=event_source,
+            payload_json=json.dumps(payload, ensure_ascii=False),
+            ts=event_ts,
+        )
+        with self.session() as s:
+            row = s.get(Session, session_id)
+            if row is None:
+                raise ValueError("session_not_found")
+            s.add(checkpoint)
+            row.latest_context_checkpoint_id = checkpoint.id
+            if plan_summary is not None:
+                row.plan = plan_summary
+            row.updated_at = now
+            s.add(row)
+            s.add(event)
+            s.commit()
+            s.refresh(checkpoint)
+            s.refresh(event)
+        return checkpoint, event
+
     def add_context_snapshot(self, snapshot: ContextSnapshot) -> ContextSnapshot:
         """Persist a rebuildable ContextPack derived from raw events."""
         with self.session() as s:
@@ -712,3 +892,15 @@ class Store:
                 row.value = value
                 s.add(row)
             s.commit()
+
+
+def _cursor_parts(cursor: dict | None) -> tuple[str, str]:
+    """Return `(event_ts, event_id)` from flat or `{end: ...}` cursor JSON."""
+    if not isinstance(cursor, dict):
+        return "", ""
+    raw = cursor.get("end") if isinstance(cursor.get("end"), dict) else cursor
+    if not isinstance(raw, dict):
+        return "", ""
+    event_ts = str(raw.get("event_ts") or raw.get("ts") or "").strip()
+    event_id = str(raw.get("event_id") or raw.get("id") or "").strip()
+    return event_ts, event_id

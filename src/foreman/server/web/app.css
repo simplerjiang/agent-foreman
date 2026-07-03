@@ -508,6 +508,33 @@ a { color: var(--accent-text); }
 .ctx-meter { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; font-size: 11px; color: var(--faint); font-family: var(--mono); }
 .ctx-meter .track { flex: 1; max-width: 160px; height: 5px; border-radius: 5px; background: var(--bg2); overflow: hidden; }
 .ctx-meter .track > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--violet)); }
+.context-panel { display: flex; flex-direction: column; gap: 10px; font-size: 12px; }
+.context-card { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 12px; box-shadow: var(--shadow-sm); }
+.context-card-title { display: flex; align-items: center; gap: 8px; justify-content: space-between; font-size: 12px; font-weight: 800; margin-bottom: 9px; }
+.context-card-title span { color: var(--faint); font-family: var(--mono); font-size: 10.5px; }
+.context-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+.context-meter { display: flex; flex-direction: column; gap: 5px; margin-bottom: 8px; }
+.context-meter-track { position: relative; height: 8px; border-radius: 8px; background: var(--bg2); overflow: hidden; }
+.context-meter-track > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--amber)); }
+.context-meter-track > i { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--text); opacity: 0.42; }
+.context-meter-labels { display: flex; justify-content: space-between; color: var(--faint); font-family: var(--mono); font-size: 9.5px; }
+.context-kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; }
+.context-kv > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.context-lanes > div { display: flex; justify-content: space-between; gap: 8px; padding: 5px 7px; border-radius: 6px; background: var(--bg2); font-family: var(--mono); }
+.context-agent-table, .checkpoint-table { display: flex; flex-direction: column; gap: 5px; overflow-x: auto; }
+.context-agent-row { display: grid; grid-template-columns: 1.1fr 0.9fr 0.8fr 1fr 1fr 0.8fr 0.9fr 0.9fr 1.3fr; gap: 7px; align-items: center; min-width: 760px; padding: 6px 7px; border-radius: 6px; background: var(--bg2); }
+.context-agent-row > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-status { display: inline-flex; width: fit-content; border-radius: 999px; padding: 2px 7px; background: var(--surface2); color: var(--muted); font-weight: 700; }
+.agent-status.running { color: var(--accent-text); background: var(--accent-soft); }
+.agent-status.completed, .agent-status.done { color: var(--green); background: rgba(32, 160, 106, 0.12); }
+.agent-status.failed, .agent-status.cancelled, .agent-status.interrupted { color: var(--red); background: rgba(219, 67, 67, 0.12); }
+.context-evidence ul { margin: 5px 0 9px; padding-left: 18px; color: var(--muted); }
+.checkpoint-row { display: grid; grid-template-columns: 1.3fr 0.8fr 1fr 0.7fr 0.7fr 0.7fr 0.7fr 0.5fr 0.8fr; gap: 7px; text-align: left; border: none; border-radius: 6px; background: var(--bg2); color: var(--text); padding: 7px; cursor: pointer; min-width: 760px; }
+.checkpoint-row:hover { background: var(--accent-soft); }
+.checkpoint-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.active-context-preview pre, .context-card pre { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: var(--bg2); border-radius: 6px; padding: 8px; font-family: var(--mono); font-size: 11px; }
+.emptyline { color: var(--faint); font-size: 12px; }
 .workspace-status { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 9px; font-size: 11.5px; color: var(--muted); }
 .workspace-status-label { font-weight: 800; color: var(--text); }
 .workspace-status-path { max-width: min(260px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-text); }

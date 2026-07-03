@@ -56,6 +56,14 @@ async def test_launch_persists_and_publishes(tmp_path):
     persisted = store.get_events("s1")
     assert {e.type for e in persisted} == {"agent_start", "agent_output", "stop"}
     assert len(persisted) == 3
+    start_payload = json.loads(next(e.payload_json for e in persisted if e.type == "agent_start"))
+    assert start_payload["handle_id"] == handle.id
+    assert start_payload["status"] == "running"
+    assert start_payload["cwd"] == str(tmp_path)
+    assert start_payload["worktree"] == str(tmp_path)
+    stop_payload = json.loads(next(e.payload_json for e in persisted if e.type == "stop"))
+    assert stop_payload["handle_id"] == handle.id
+    assert stop_payload["status"] == "completed"
     # published in stream order
     assert [e.type for e in received] == ["agent_start", "agent_output", "stop"]
 
@@ -138,6 +146,21 @@ async def test_send_resumes_session_and_repumps(tmp_path):
     # the resumed output streamed to the store too (re-pumped)
     payloads = [e.payload_json for e in store.get_events("s1")]
     assert any("resumed" in p for p in payloads)
+
+
+async def test_subprocess_stop_failed_status_survives_zero_process_exit(tmp_path):
+    store = _store(tmp_path)
+    runner = Runner(Config(), EventBus(), store)
+    proc = FakeProc(pid=1, stdout_lines=[b'{"type":"result","returncode":2,"result":"failed"}\n'])
+    adapter = fake_adapter(ClaudeCodeAdapter, AgentCfg(command="claude"), proc)
+    runner.adapters["claude-code"] = adapter
+
+    handle = await runner.launch("claude-code", "do x", tmp_path, "s1")
+    await runner.wait(handle)
+
+    assert handle.status == "failed"
+    stop_payload = json.loads(next(e.payload_json for e in store.get_events("s1") if e.type == "stop"))
+    assert stop_payload["status"] == "failed"
 
 
 async def test_interrupt_terminates_the_process(tmp_path):

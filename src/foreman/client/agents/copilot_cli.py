@@ -15,8 +15,8 @@ from pathlib import Path
 
 from foreman.shared.events import AgentEvent, make_event
 
-from ._subprocess import SubprocessCliAdapter, _process_error_message, _read_pipe_text
-from .base import AgentHandle
+from ._subprocess import SubprocessCliAdapter, _event_returncode, _handle_event_payload, _process_error_message, _read_pipe_text
+from .base import AgentHandle, detect_git_refs
 
 
 class CopilotCliAdapter(SubprocessCliAdapter):
@@ -118,6 +118,7 @@ class CopilotCliAdapter(SubprocessCliAdapter):
             workspace,
             self._env_overrides(effective_model, effective_effort),
         )
+        git_refs = detect_git_refs(workspace)
         handle = AgentHandle(
             id=f"{session_id}:{proc.pid}",
             session_id=session_id,
@@ -125,7 +126,13 @@ class CopilotCliAdapter(SubprocessCliAdapter):
             model=effective_model,
             command=cmd,
             cwd=str(workspace),
+            worktree=str(workspace),
             effort=effective_effort,
+            branch=git_refs.get("branch", ""),
+            base_ref=git_refs.get("base_ref", ""),
+            head_sha=git_refs.get("head_sha", ""),
+            agent_type=self.name,
+            source=self.name,
         )
         self._procs[handle.id] = proc
         self._workspaces[handle.id] = workspace
@@ -145,6 +152,8 @@ class CopilotCliAdapter(SubprocessCliAdapter):
         handle.pid = proc.pid
         handle.command = cmd
         handle.cwd = str(workspace)
+        handle.worktree = str(workspace)
+        handle.status = "running"
 
     async def stream(self, handle: AgentHandle) -> AsyncIterator[AgentEvent]:
         proc = self._procs.get(handle.id)
@@ -154,13 +163,7 @@ class CopilotCliAdapter(SubprocessCliAdapter):
             "agent_start",
             self.name,
             handle.session_id,
-            payload={
-                "pid": handle.pid,
-                "command": handle.command,
-                "cwd": handle.cwd,
-                "model": handle.model,
-                "effort": handle.effort,
-            },
+            payload=_handle_event_payload(handle, self.name, status="running"),
         )
         stderr_task = (
             asyncio.create_task(_read_pipe_text(proc.stderr))
@@ -178,6 +181,20 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                     sid = event.payload.get("session_id")
                     if sid:
                         handle.native_session_id = sid
+                if event.type in {"agent_output", "agent_reasoning", "stop"}:
+                    event.payload = {
+                        **_handle_event_payload(handle, self.name),
+                        **event.payload,
+                    }
+                if event.type == "stop":
+                    returncode = _event_returncode(event.payload)
+                    explicit_status = str(event.payload.get("status") or "").strip().lower()
+                    if returncode not in (None, 0) and explicit_status not in {"cancelled", "interrupted"}:
+                        event.payload["status"] = "failed"
+                    elif not event.payload.get("status") or event.payload.get("status") == "running":
+                        event.payload["status"] = "completed"
+                    handle.status = str(event.payload.get("status") or handle.status or "")
+                    event.payload.setdefault("returncode", 0)
                 if event.type == "stop":
                     emitted_stop = True
                 yield event
@@ -190,6 +207,7 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                 self.name,
                 handle.session_id,
                 payload={
+                    **_handle_event_payload(handle, self.name, status="failed"),
                     "msg": _process_error_message(self.name, returncode, stderr_text),
                     "returncode": returncode,
                     "stderr": stderr_text[-4000:],
@@ -201,5 +219,8 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                 "stop",
                 self.name,
                 handle.session_id,
-                payload={"result": "", "returncode": 0},
+                payload={**_handle_event_payload(handle, self.name, status="completed"), "result": "", "returncode": 0},
             )
+        else:
+            if handle.status not in {"failed", "cancelled", "interrupted"}:
+                handle.status = "completed"
