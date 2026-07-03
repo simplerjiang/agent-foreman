@@ -1,6 +1,6 @@
 # PM Worktree 连续开发任务拆分
 
-本文件从 `PM_WORKTREE_PLAN.md` 拆出，专门维护连续开发任务、验收标准和测试标准。
+本文件从 `PM_WORKTREE_PLAN.md` 拆出，专门维护连续开发任务、验收标准、测试标准和 E2E 标准。
 
 下面的拆分按“每个任务都可以独立 review、独立回滚、独立补测”的粒度设计。每一步都默认遵守本仓库规约：从最新 `origin/main` 新建隔离 worktree，做最小改动，提交前二次阅读 requirement 和 diff；如果进入 PR/merge/release 阶段，再按当时最新 `main` 领取版本号和补版本说明。
 
@@ -13,6 +13,16 @@
 3. 二次阅读新写代码，确认没有把 main checkout、任意路径、dirty cleanup、push/merge/delete 等危险动作绕过 Gate。
 4. PM-visible 状态不能只靠自然语言：workspace、worktree、branch、lease、dirty、approval 等关键事实必须结构化保存或结构化事件化。
 5. 如果没有真实 E2E 证据，只能留下 `needs-e2e` handoff，不能声称已经端到端完成。
+
+## 全局 E2E 标准
+
+每个任务的“测试标准”都继承本节。E2E 可以只覆盖本任务新增或修改的代码路径，不要求每一步都跑完整产品回归；但必须是从公开入口或相邻真实边界进入，而不是只测一个孤立函数。
+
+1. **代码级 E2E 适用范围:** store/model/tool/dispatch/runner/context 这类底层改动，可以用真实 SQLite Store、真实 git repo/worktree、真实 `PMToolRuntime` 或 `DispatchService`，配 fake PM/fake runner 跑完整链路。证据要覆盖“输入 -> 新代码路径 -> 持久化/事件/runner 参数/结构化输出”。
+2. **产品级 E2E 适用范围:** 改了 UI、API、用户可见 session/workspace 状态、approval card、浏览器流程或 exe 行为时，必须用浏览器/Playwright/`foreman-e2e` 或 packaged exe smoke 走真实用户入口。只验证新改路径即可，但必须有截图、事件日志或 API 响应证据。
+3. **工作区类 E2E:** 涉及 worktree 创建、绑定、fallback、cleanup、diff、lock 的任务，至少要创建真实临时 git repo，并用 `git worktree add` 生成真实 worktree；普通临时目录不能替代 worktree E2E。
+4. **安全类 E2E:** 涉及删除、branch 操作、push/merge/deploy、dirty cleanup、approval 的任务，必须包含拒绝路径 E2E：dirty/unowned/out-of-root/缺失路径等危险输入不能产生副作用。
+5. **证据标准:** 最终说明或 review issue 必须列出 E2E 入口、操作步骤、期望行为、实际结果、命令输出或截图/日志 artifact。没有跑 E2E 时，要说明阻塞原因并保留 `needs-e2e`，不能写成通过。
 
 ## T0：当前行为基线与防回归
 
@@ -477,6 +487,8 @@ pytest tests/test_pm_tools.py tests/test_context_v2_dispatch.py tests/test_conte
 
 ## 合并前总验证
 
+每个阶段至少要有一个覆盖本阶段新增代码路径的 E2E 证据。底层任务可以是代码级 E2E；UI/API/用户路径必须是产品级 E2E。
+
 任一阶段准备开 PR 或合并前，至少跑：
 
 ```powershell
@@ -497,6 +509,8 @@ pytest tests/test_runner.py tests/test_codex_adapter.py tests/test_claude_adapte
 $env:PYTHONPATH='src'
 pytest tests/test_context_v2_dispatch.py tests/test_context_v2_subagents.py tests/test_context_v2_realistic_session.py tests/test_reviewer.py -q
 ```
+
+如果改了 worktree/session/agent dispatch 链路，补一条真实 git worktree 的代码级 E2E：从任务入口或 tool call 进入，断言 `session.workspace`、lease、timeline event、runner cwd/worktree 或结构化 tool result。
 
 如果改了 UI 或用户可见流程，除了 pytest，还要创建 `needs-e2e` review issue，写清入口、验收点、截图/日志证据；没有真实点击测试时不能移除 `needs-e2e`。
 

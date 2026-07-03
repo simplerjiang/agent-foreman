@@ -976,7 +976,7 @@ rubric_evaluate
 
 ---
 
-任务拆分已单独维护在 [`PM_WORKTREE_TASK_BREAKDOWN.md`](PM_WORKTREE_TASK_BREAKDOWN.md)，包括 T0-T14、验收标准、测试标准和合并前总验证。
+任务拆分已单独维护在 [`PM_WORKTREE_TASK_BREAKDOWN.md`](PM_WORKTREE_TASK_BREAKDOWN.md)，包括 T0-T14、验收标准、测试标准、E2E 标准和合并前总验证。
 
 ---
 
