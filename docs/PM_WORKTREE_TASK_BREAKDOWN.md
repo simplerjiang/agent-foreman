@@ -14,6 +14,16 @@
 4. PM-visible 状态不能只靠自然语言：workspace、worktree、branch、lease、dirty、approval 等关键事实必须结构化保存或结构化事件化。
 5. 如果没有真实 E2E 证据，只能留下 `needs-e2e` handoff，不能声称已经端到端完成。
 
+## 全局 Worktree 安全约束
+
+每个实现任务都必须继承这些约束：
+
+1. mutation tools 不接受 PM 传入 `session_id` / `task_id`；当前 session/task 必须由服务端 runtime context 注入。
+2. PM 不能跨 session bind、cleanup、promote worktree；mutation tool 默认只能作用于当前 session 的 lease。
+3. worktree path 默认由 Foreman 生成；自定义 path 只有在配置显式允许时才可用，并且必须通过 worktree root、symlink、normalized path、registered git worktree 校验。
+4. diff/review/cleanup 默认以 `WorktreeLease.base_sha` 为比较基准；`base_ref` 只作为人类可读标签，不得默认依赖会移动的 `main` / `origin/main`。
+5. worktree tools 不自动 `git fetch` / `pull` / `push` / `merge`，也不删除 remote branch；远端或 destructive 操作必须拆成单独 approval-gated action。
+
 ## 全局 E2E 标准
 
 每个任务的“测试标准”都继承本节。E2E 可以只覆盖本任务新增或修改的代码路径，不要求每一步都跑完整产品回归；但必须是从公开入口或相邻真实边界进入，而不是只测一个孤立函数。
@@ -75,7 +85,9 @@ tests/test_client_store.py
 2. 迁移幂等：旧 DB 升级后既保留 `session.workspace/main_workspace`，又能创建 lease。
 3. lease 状态至少支持 `active | released | stale | removed`。
 4. DB helper 支持按 `session_id`、`worktree_path`、`status` 查询 active lease。
-5. 不改变已有 session 创建、任务派发、context restore 的行为。
+5. `session_id` / `task_id` 只作为服务端写入的 ownership 字段，不得从 PM tool input 透传。
+6. `base_sha` 是 diff/review/cleanup 的稳定基准；`base_ref` 只是创建时标签。
+7. 不改变已有 session 创建、任务派发、context restore 的行为。
 
 **测试标准:**
 
@@ -101,7 +113,7 @@ tests/test_worktree_manager.py
 
 1. `list(main_workspace)` 解析 `git worktree list --porcelain`，返回 main 与所有 worktree 的 `path/branch/head_sha/locked/exists`。
 2. `status(worktree_path, compare_to)` 返回 `dirty/changed_files/ahead/behind/base_ref/head_sha`。
-3. 路径必须 normalize/resolve，但输出保留可读路径；Windows drive/path separator 不导致误判。
+3. 路径必须 normalize/resolve，并显式处理 symlink；输出保留可读路径；Windows drive/path separator 不导致误判。
 4. 非 git repo、损坏 worktree、缺失路径返回结构化错误，不抛未处理异常。
 5. 只读方法不得写 DB、不得修改文件系统。
 
@@ -133,7 +145,8 @@ tests/test_pm_tools.py
 2. tool input 只接受 allowed root 或 session-owned worktree，任意路径返回结构化拒绝。
 3. tool result 进入已有 `tool_pre/tool_post` timeline，不走旁路日志。
 4. 返回值包含 lease/session 占用信息；没有 lease 时明确 `owner_session_id=""`。
-5. 外部 web taint、shell approval、write tools 逻辑不受影响。
+5. 只读 tools 可以展示 ownership，但不得允许 PM 用这些字段跨 session mutation。
+6. 外部 web taint、shell approval、write tools 逻辑不受影响。
 
 **测试标准:**
 
@@ -160,10 +173,11 @@ tests/test_pm_tools.py
 **验收标准:**
 
 1. `worktree_plan` 不改 DB、不创建目录、不创建 branch。
-2. 输出 `decision/create|reuse|reject`、`proposed_path`、`proposed_branch`、`base_ref`、`requires_approval`、`risks`。
-3. 默认路径使用 repo 外 sibling root，且必须在配置的 `worktree_roots` 或可派生 allowlist 内。
+2. 输出 `decision/create|reuse|reject`、`proposed_path`、`proposed_branch`、`base_ref`、`base_sha`、`requires_approval`、`risks`。
+3. 默认路径使用 Foreman 生成的 repo 外 sibling root，且必须在配置的 `worktree_roots` 或可派生 allowlist 内。
 4. slug/branch 命名稳定，非法字符被拒绝或规范化。
 5. 已存在 clean owned worktree 时按 `reuse_policy` 复用；dirty/unowned worktree 默认 reject。
+6. PM 不能通过 `worktree_plan` 指定任意 path；自定义 path 只有配置显式开启时才进入校验分支。
 
 **测试标准:**
 
@@ -172,7 +186,7 @@ $env:PYTHONPATH='src'
 pytest tests/test_worktree_manager.py tests/test_pm_tools.py -q
 ```
 
-测试必须断言 dry-run 后 `git worktree list --porcelain`、DB lease 数量、文件系统目录都没有变化。
+测试必须断言 dry-run 后 `git worktree list --porcelain`、DB lease 数量、文件系统目录都没有变化，并覆盖 custom path 默认拒绝、symlink escape 拒绝、normalized path 越界拒绝。
 
 ## T5：worktree_create 最小 mutation
 
@@ -192,10 +206,13 @@ tests/test_pm_tools.py
 
 1. `worktree_create(dry_run=true)` 与 `worktree_plan` 一样不修改文件系统。
 2. `dry_run=false` 时内部执行 `git worktree add -b <branch> <path> <base_ref>`，不经通用 `run_command`。
-3. 创建前校验 `main_workspace` allowlist、`path` worktree root、branch prefix、目标路径不存在。
+3. 创建前校验 `main_workspace` allowlist、Foreman 生成的 `path` worktree root、branch prefix、目标路径不存在。
 4. 创建后再次用 `git worktree list --porcelain` 验证路径登记成功。
-5. 创建成功写入 active `WorktreeLease`，记录 `base_sha/head_sha/session_id/task_id`。
-6. branch 已存在时只允许复用 clean 且 owned 的 worktree；否则结构化拒绝。
+5. 创建成功写入 active `WorktreeLease`，记录 `base_sha/head_sha/session_id/task_id`，其中 session/task 只能来自 runtime context。
+6. tool input schema 不包含 `session_id` / `task_id`，默认也不包含 `path`。
+7. 自定义 path 只有 `allow_custom_worktree_path=true` 时可用，且必须通过 root、symlink、normalized path、registered git worktree 校验。
+8. branch 已存在时只允许复用 clean 且 owned 的 worktree；否则结构化拒绝。
+9. `worktree_create` 不自动 fetch/pull/push/merge，也不删除 remote branch。
 
 **测试标准:**
 
@@ -204,7 +221,7 @@ $env:PYTHONPATH='src'
 pytest tests/test_worktree_manager.py tests/test_pm_tools.py -q
 ```
 
-测试必须覆盖：成功创建、路径越界、branch 前缀非法、目标已存在、base ref 不存在、git 命令失败回滚 lease。
+测试必须覆盖：成功创建、schema 拒收 PM 传入 `session_id/task_id`、默认路径生成、custom path 默认拒绝、路径越界、symlink escape、branch 前缀非法、目标已存在、base ref 不存在、git 命令失败回滚 lease。
 
 ## T6：worktree_bind_session 与 workspace 切换
 
@@ -226,7 +243,8 @@ tests/test_pm_tools.py
 2. bind 成功必须更新 `session.workspace=<worktree>`，保留 `session.main_workspace=<original checkout>`。
 3. `worktree_create(bind_session=true)` 创建成功后必须调用同一绑定逻辑；`bind_session=false` 不切 workspace。
 4. 绑定后 PM follow-up、PM tools、coding agent launch cwd、`agent_input.cwd/worktree` 全部指向 worktree。
-5. 绑定任意路径、缺失路径、非登记 worktree、unowned dirty worktree 都拒绝。
+5. tool input schema 不接受 PM 传入 `session_id` / `task_id`，也不接受任意 path 跨 session bind。
+6. 只能绑定当前 runtime session 允许绑定的 lease；其它 session lease、任意路径、缺失路径、非登记 worktree、unowned dirty worktree 都拒绝。
 
 **测试标准:**
 
@@ -235,7 +253,7 @@ $env:PYTHONPATH='src'
 pytest tests/test_dispatch_service.py tests/test_pm_tools.py tests/test_context_v2_subagents.py -q
 ```
 
-必须新增两个真实 git worktree 测试：一个验证 PM plan 选择 worktree 后 subagent cwd 是 worktree；一个验证已有 session workspace 已是 worktree 时 follow-up 仍在 worktree。
+必须新增两个真实 git worktree 测试：一个验证 PM plan 选择 worktree 后 subagent cwd 是 worktree；一个验证已有 session workspace 已是 worktree 时 follow-up 仍在 worktree。另加 schema/安全测试确认 PM 不能传 `session_id/task_id` 跨 session bind。
 
 ## T7：PM prompt 与 submit_plan 规则收紧
 
@@ -315,11 +333,12 @@ tests/test_reviewer.py
 
 **验收标准:**
 
-1. `worktree_diff` 返回相对 `base_ref` 的 changed files、additions/deletions、可选 patch artifact。
+1. `worktree_diff` 默认返回相对 `WorktreeLease.base_sha` 的 changed files、additions/deletions、可选 patch artifact。
 2. patch artifact 写在 `.foreman/tool-logs` 或明确 artifact 目录，不污染源码目录。
 3. PM review 前能拿到 diff summary；大型 patch 有截断标记，不能误报完整。
 4. 无 diff 时返回 clean 状态，review 不生成虚假变更。
-5. 新文件、删除文件、重命名文件都有结构化状态。
+5. 输出同时包含 `base_sha` 和人类可读 `base_ref`，但不因 `main` / `origin/main` 前进改变默认比较结果。
+6. 新文件、删除文件、重命名文件都有结构化状态。
 
 **测试标准:**
 
@@ -328,7 +347,7 @@ $env:PYTHONPATH='src'
 pytest tests/test_worktree_manager.py tests/test_pm_tools.py tests/test_reviewer.py -q
 ```
 
-测试必须覆盖 untracked file、deleted tracked file、binary/large patch 截断、artifact 路径不越界。
+测试必须覆盖 untracked file、deleted tracked file、binary/large patch 截断、artifact 路径不越界，以及 `origin/main` 前进后 diff 仍基于 lease `base_sha`。
 
 ## T10：worktree_cleanup 安全删除
 
@@ -350,8 +369,10 @@ tests/test_gate.py
 1. `dry_run=true` 返回 `would_remove/safe/dirty/branch_merged/requires_approval`，不删除。
 2. clean、merged、released、owned 的 worktree 可走 `needs-strategy` 清理。
 3. dirty、unmerged、unknown owner、路径越界必须 `requires-approval` 或直接 reject。
-4. 删除前生成 diff/checkpoint artifact。
-5. 删除成功后 lease 状态变 `removed`，`git worktree prune` 只在安全路径内执行。
+4. cleanup 默认只作用于当前 session 的 lease，不接受 PM 传入任意 `worktree_path` 跨 session 删除。
+5. 删除前基于 `WorktreeLease.base_sha` 生成 diff/checkpoint artifact。
+6. cleanup 不自动 fetch/pull/push/merge，也不删除 remote branch。
+7. 删除成功后 lease 状态变 `removed`，`git worktree prune` 只在安全路径内执行。
 
 **测试标准:**
 
@@ -360,7 +381,7 @@ $env:PYTHONPATH='src'
 pytest tests/test_worktree_manager.py tests/test_pm_tools.py tests/test_gate.py -q
 ```
 
-测试必须覆盖 dirty 拒删、unmerged 拒删、unknown owner 拒删、clean merged 删除成功、重复 cleanup 幂等。
+测试必须覆盖 dirty 拒删、unmerged 拒删、unknown owner 拒删、跨 session cleanup 拒绝、clean merged 删除成功、重复 cleanup 幂等、remote branch 未被删除。
 
 ## T11：checkpoint / git_diff_summary / test_run
 
@@ -380,7 +401,7 @@ tests/test_p4_acceptance.py
 **验收标准:**
 
 1. dispatch coding agent 前可创建 checkpoint，记录 session/task/worktree/branch/head_sha。
-2. `git_diff_summary` 输出 changed files、风险提示、测试建议。
+2. `git_diff_summary` 默认基于 lease `base_sha` 输出 changed files、风险提示、测试建议。
 3. `test_discover` 从 `pyproject.toml/package.json` 等文件识别候选命令，并带 confidence/evidence。
 4. `test_run` 结构化返回 exit code、stdout/stderr 摘要、失败行、log artifact。
 5. `run_command` 的 Gate/Auditor 治理不能被 test tools 绕过；高风险命令仍需 approval。
@@ -442,8 +463,10 @@ tests/test_pm_tools.py
 1. 默认 `mode=prepare-pr` 只输出 branch、commits、diff artifact、handoff summary。
 2. push/merge/deploy/delete branch 必须是 explicit approval gate，且默认不可自动执行。
 3. dirty 或测试失败时 handoff summary 明确风险，不生成“ready to merge”结论。
-4. commit 只在用户明确选择对应 mode 后执行；不替用户自动 stage unrelated files。
-5. PR body 包含 requirement review、code review、验证证据、剩余风险。
+4. promote 默认只作用于当前 session lease，不接受 PM 传入任意 path 跨 session promote。
+5. commit 只在用户明确选择对应 mode 后执行；不替用户自动 stage unrelated files。
+6. PR body 包含 requirement review、code review、验证证据、剩余风险。
+7. worktree tools 不自动 fetch/pull/push/merge，也不删除 remote branch；这些只能由单独 approval-gated action 处理。
 
 **测试标准:**
 
@@ -452,7 +475,7 @@ $env:PYTHONPATH='src'
 pytest tests/test_pm_tools.py tests/test_gate.py -q
 ```
 
-测试必须断言 prepare 模式不产生远端 side effect；如需要调用 `gh`，必须 mock，不打真实 GitHub。
+测试必须断言 prepare 模式不产生远端 side effect；如需要调用 `gh`，必须 mock，不打真实 GitHub。另测跨 session promote 拒绝和 remote branch 不删除。
 
 ## T14：repo_map / impact_analysis / event_query
 

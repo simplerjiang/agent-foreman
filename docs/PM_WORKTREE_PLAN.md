@@ -34,6 +34,18 @@ Foreman 当前定位本来就是一个本地 PM 层：负责规划、任务分�
 4. **所有 mutation 进 timeline。**
    现有 tool loop 已经会把 tool call/result 作为事件记录，新的 worktree tool 应该沿用这套机制，而不是旁路执行。
 
+5. **mutation tool 的 session/task 只能来自服务端上下文。**
+   `worktree_create`、`worktree_bind_session`、`worktree_cleanup`、`worktree_promote` 等会改变状态的工具不接受 PM 传入 `session_id` / `task_id`，只能使用 PM tool runtime 注入的当前 session/task。PM 不能跨 session bind、cleanup 或 promote 其它 worktree。
+
+6. **worktree path 默认由 Foreman 生成。**
+   PM 默认只能给 goal/base/branch intent，不能自由指定 filesystem path。自定义 path 只有在配置显式允许时才可用，并且必须同时通过 worktree root、symlink、normalized path、registered git worktree 校验。
+
+7. **比较基准固定为 lease 的 `base_sha`。**
+   diff、review、cleanup 的默认比较基准是 `WorktreeLease.base_sha`；`base_ref` 只作为人类可读标签和创建时输入。不得默认把会移动的 `main` / `origin/main` 当成唯一判断依据。
+
+8. **worktree tools 不做远端 Git 操作。**
+   这组工具不自动 `git fetch` / `pull` / `push` / `merge`，也不删除 remote branch。涉及远端或 destructive 操作时，必须拆成单独 approval-gated 动作。
+
 ---
 
 ## MVP Tool Set
@@ -142,6 +154,7 @@ review 前、cleanup 前、继续任务前都应该调用。
   "proposed_path": "/repo/.foreman/worktrees/abc123-add-login",
   "proposed_branch": "foreman/abc123/add-login",
   "base_ref": "main",
+  "base_sha": "abc...",
   "requires_approval": false,
   "risks": []
 }
@@ -164,13 +177,12 @@ PM Agent 用法：
   "main_workspace": "/repo/app",
   "base_ref": "main",
   "branch": "foreman/abc123/add-login",
-  "path": "/repo/.foreman/worktrees/abc123-add-login",
   "bind_session": true,
-  "session_id": "abc123",
-  "task_id": "task-1",
   "dry_run": false
 }
 ```
+
+`session_id` / `task_id` 不在输入里，由 PM tool runtime 从当前请求上下文注入。`path` 默认也不在输入里，由 Foreman 根据当前 session/task 和配置生成；只有配置显式开启自定义 path 时才允许传 `custom_path`，且必须经过 worktree root、symlink、normalized path、registered git worktree 校验。
 
 输出：
 
@@ -200,7 +212,8 @@ git -C <main_workspace> worktree add -b <branch> <path> <base_ref>
 但是 tool 层需要负责校验：
 
 * `main_workspace` 必须在 allowlist 内；
-* `path` 必须在允许的 worktree root 内；
+* 生成的 `path` 必须在允许的 worktree root 内；
+* 自定义 path 默认禁用；启用后必须通过 symlink、normalized path、worktree root 和 registered git worktree 校验；
 * `branch` 必须符合 Foreman 命名策略；
 * 目标路径不能已存在，除非明确 reuse；
 * branch 已存在时只能复用 clean 且 owned 的 worktree；
@@ -217,18 +230,19 @@ git -C <main_workspace> worktree add -b <branch> <path> <base_ref>
 
 ```json
 {
-  "session_id": "abc123",
-  "worktree_path": "/repo/.foreman/worktrees/abc123-add-login",
+  "lease_id": "lease-xyz",
   "reason": "Run coding agent in isolated workspace."
 }
 ```
+
+`lease_id` 只能指向当前 runtime session 允许绑定的 lease；不能绑定其它 session 的 lease，也不能通过传 path 绕过 ownership 校验。当前 session/task 仍由服务端上下文注入，不接受 PM 输入。
 
 输出：
 
 ```json
 {
   "bound": true,
-  "session_id": "abc123",
+  "lease_id": "lease-xyz",
   "main_workspace": "/repo/app",
   "workspace": "/repo/.foreman/worktrees/abc123-add-login",
   "previous_workspace": "/repo/app"
@@ -250,8 +264,7 @@ git -C <main_workspace> worktree add -b <branch> <path> <base_ref>
 
 ```json
 {
-  "worktree_path": "/repo/.foreman/worktrees/abc123-add-login",
-  "base_ref": "main",
+  "lease_id": "lease-xyz",
   "include_patch": false
 }
 ```
@@ -261,6 +274,7 @@ git -C <main_workspace> worktree add -b <branch> <path> <base_ref>
 ```json
 {
   "base_ref": "main",
+  "base_sha": "abc...",
   "changed_files": [
     {
       "path": "src/auth/login.ts",
@@ -277,6 +291,8 @@ git -C <main_workspace> worktree add -b <branch> <path> <base_ref>
 PM Agent 用法：
 review coding agent 输出时，不能只看 agent 的自然语言总结，要看真实 diff。
 
+默认比较基准必须来自 `WorktreeLease.base_sha`；`base_ref` 只是人类可读标签。除非用户明确发起 rebase/refresh 类动作并经过单独审批，diff/review 不应因为 `main` 或 `origin/main` 前进而改变历史判断。
+
 ---
 
 ### 2.7 `worktree_cleanup`
@@ -292,11 +308,12 @@ review coding agent 输出时，不能只看 agent 的自然语言总结，要�
 
 ```json
 {
-  "worktree_path": "/repo/.foreman/worktrees/abc123-add-login",
   "mode": "remove-if-clean",
   "dry_run": true
 }
 ```
+
+cleanup 默认只作用于当前 session 的 active/released lease，不接受 PM 传入任意 `worktree_path`。如果需要清理其它 session 或 unknown owner 的 worktree，必须走单独的用户确认流程，不能通过 PM tool 跨 session 删除。
 
 输出：
 
@@ -306,6 +323,7 @@ review coding agent 输出时，不能只看 agent 的自然语言总结，要�
   "safe": true,
   "dirty": false,
   "branch_merged": true,
+  "base_sha": "abc...",
   "requires_approval": false
 }
 ```
@@ -322,8 +340,9 @@ git -C <main_workspace> worktree prune
 * dirty worktree 不自动删；
 * branch 未合并不自动删；
 * 不是 Foreman 创建 / lease 的 worktree 不自动删；
-* 删除前生成 diff/checkpoint artifact；
+* 删除前基于 `WorktreeLease.base_sha` 生成 diff/checkpoint artifact；
 * destructive cleanup 一律可走 approval gate。
+* cleanup 不自动 fetch/pull/push/merge，也不删除 remote branch。
 
 ---
 
@@ -336,9 +355,7 @@ git -C <main_workspace> worktree prune
 
 ```json
 {
-  "worktree_path": "/repo/.foreman/worktrees/abc123-add-login",
   "mode": "prepare-pr",
-  "base_ref": "main",
   "title": "Add login flow",
   "dry_run": true
 }
@@ -350,13 +367,15 @@ git -C <main_workspace> worktree prune
 {
   "mode": "prepare-pr",
   "branch": "foreman/abc123/add-login",
+  "base_ref": "main",
+  "base_sha": "abc...",
   "commits": [],
   "diff_artifact_path": ".foreman/artifacts/abc123.patch",
   "handoff_summary": "..."
 }
 ```
 
-这里要非常保守：README 也明确说 push/deploy/destructive 操作要经过 approval gate。([GitHub][1]) 所以 `worktree_promote` 的默认行为应该是 **prepare**，不是自动 push/merge。
+这里要非常保守：README 也明确说 push/deploy/destructive 操作要经过 approval gate。([GitHub][1]) 所以 `worktree_promote` 的默认行为应该是 **prepare**，不是自动 push/merge。它不接受任意 `worktree_path`，默认只准备当前 session lease 的 handoff；也不自动 `git fetch/pull/push/merge` 或删除 remote branch。
 
 ---
 
@@ -464,10 +483,10 @@ class WorktreeManager:
     def list(self, main_workspace): ...
     def status(self, worktree_path): ...
     def plan(self, goal, main_workspace, base_ref): ...
-    def create(self, main_workspace, base_ref, branch, path): ...
-    def bind_session(self, session_id, path): ...
-    def diff(self, path, base_ref): ...
-    def cleanup(self, path, mode, dry_run): ...
+    def create(self, context, main_workspace, base_ref, branch): ...
+    def bind_session(self, context, lease_id): ...
+    def diff(self, context, lease_id=None): ...
+    def cleanup(self, context, mode, dry_run): ...
 ```
 
 内部执行 Git 时不要走 PM 的通用 `run_command`。原因是：
@@ -504,6 +523,7 @@ git_worktree: bool = True
 worktree_roots: list[str] = []
 worktree_branch_prefix: str = "foreman/"
 default_base_ref: str = "HEAD"
+allow_custom_worktree_path: bool = False
 require_clean_for_branch_switch: bool = True
 require_approval_for_cleanup: bool = True
 ```
@@ -535,9 +555,12 @@ When a coding task may modify files, prefer an isolated worktree.
 Before selecting a workspace, call worktree_list or worktree_plan.
 Never use run_command to create/remove/switch worktrees unless the dedicated worktree tool is unavailable.
 Never bind a session to an arbitrary path.
+Never pass session_id or task_id to worktree mutation tools; the server runtime injects the current session/task.
+Do not invent worktree paths; use Foreman-generated paths unless custom paths are explicitly enabled and validated.
 After worktree_create(bind_session=true) or worktree_bind_session succeeds, treat the bound worktree as the session workspace for all later PM tools, submit_plan, and coding agent cwd.
+Use the lease base_sha as the default diff/review/cleanup base; treat base_ref only as a label.
 Do not remove dirty or unmerged worktrees without explicit approval.
-Do not push, merge, deploy, or delete branches unless the user explicitly approved it.
+Do not fetch, pull, push, merge, deploy, or delete local/remote branches through worktree tools; remote or destructive Git actions require separate approval-gated tools.
 Before final review, inspect worktree_status and worktree_diff.
 ```
 
