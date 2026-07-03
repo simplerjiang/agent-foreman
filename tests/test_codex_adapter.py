@@ -9,6 +9,7 @@ import json
 
 from _fakes import FakeProc, fake_adapter
 
+from foreman.client.agents import _subprocess as subproc
 from foreman.client.agents.codex import CodexAdapter
 from foreman.shared.config import AgentCfg
 
@@ -226,6 +227,84 @@ async def test_stream_reports_nonzero_exit_with_stderr(tmp_path):
     assert events[1].source == "codex"
     assert events[1].payload["returncode"] == 2
     assert "codex failed" in events[1].payload["msg"]
+
+
+async def test_stream_stop_without_returncode_wait_zero_yields_single_completed_stop(tmp_path):
+    a = fake_adapter(
+        CodexAdapter,
+        _cfg(),
+        FakeProc(stdout_lines=[b'{"type":"result","result":"ok"}\n'], returncode=0),
+    )
+    h = await a.start("x", tmp_path, "s")
+
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_start", "stop"]
+    assert events[-1].payload["status"] == "completed"
+    assert events[-1].payload["returncode"] == 0
+
+
+async def test_stream_stop_without_returncode_wait_nonzero_yields_single_failed_stop(tmp_path):
+    a = fake_adapter(
+        CodexAdapter,
+        _cfg(),
+        FakeProc(
+            stdout_lines=[b'{"type":"result","result":"partial"}\n'],
+            stderr_lines=[b"codex failed\n"],
+            returncode=2,
+        ),
+    )
+    h = await a.start("x", tmp_path, "s")
+
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_start", "stop"]
+    assert events[-1].payload["status"] == "failed"
+    assert events[-1].payload["returncode"] == 2
+    assert "codex failed" in events[-1].payload["msg"]
+
+
+async def test_stream_explicit_cancelled_stop_is_not_overwritten_by_wait_returncode(tmp_path):
+    a = fake_adapter(
+        CodexAdapter,
+        _cfg(),
+        FakeProc(
+            stdout_lines=[b'{"type":"result","status":"cancelled","result":"cancelled"}\n'],
+            returncode=130,
+        ),
+    )
+    h = await a.start("x", tmp_path, "s")
+
+    events = [e async for e in a.stream(h)]
+
+    assert [e.type for e in events] == ["agent_start", "stop"]
+    assert events[-1].payload["status"] == "cancelled"
+    assert events[-1].payload["returncode"] == 130
+
+
+async def test_send_refreshes_git_refs(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        subproc,
+        "detect_git_refs",
+        lambda _workspace: {"branch": "initial", "base_ref": "base-1", "head_sha": "head-1"},
+    )
+    proc = FakeProc(pid=999)
+    a = fake_adapter(CodexAdapter, _cfg(), proc)
+    h = await a.start("x", tmp_path, "s")
+    h.branch = "stale"
+    h.base_ref = "stale-base"
+    h.head_sha = "stale-head"
+    monkeypatch.setattr(
+        subproc,
+        "detect_git_refs",
+        lambda _workspace: {"branch": "updated", "base_ref": "base-2", "head_sha": "head-2"},
+    )
+
+    await a.send(h, "follow up")
+
+    assert h.branch == "updated"
+    assert h.base_ref == "base-2"
+    assert h.head_sha == "head-2"
 
 
 async def test_stop_terminates(tmp_path):

@@ -6,7 +6,14 @@ import pytest
 from sqlalchemy import text
 
 from foreman.client.store import Store
-from foreman.client.store.models import ContextCheckpoint, ContextFrame, Event, Session
+from foreman.client.store.models import (
+    ContextCheckpoint,
+    ContextFrame,
+    ContextSnapshot,
+    Event,
+    MemoryItem,
+    Session,
+)
 
 
 def _store(tmp_path) -> Store:
@@ -55,6 +62,30 @@ def _checkpoint(checkpoint_id: str = "cp1", *, session_id: str = "s1") -> Contex
     )
 
 
+def _snapshot(snapshot_id: str = "snap1", *, session_id: str = "s1") -> ContextSnapshot:
+    return ContextSnapshot(
+        id=snapshot_id,
+        session_id=session_id,
+        kind="rolling",
+        summary_json=json.dumps({"summary": "compat"}),
+        summary_hash=f"hash-{snapshot_id}",
+        created_at="2026-07-01T00:00:04Z",
+    )
+
+
+def _memory_item(item_id: str = "mem1", *, session_id: str = "s1", snapshot_id: str = "snap1") -> MemoryItem:
+    return MemoryItem(
+        id=item_id,
+        session_id=session_id,
+        snapshot_id=snapshot_id,
+        kind="fact",
+        text="remember this",
+        status="verified",
+        created_at="2026-07-01T00:00:04Z",
+        updated_at="2026-07-01T00:00:04Z",
+    )
+
+
 def test_fresh_db_has_context_v2_tables_and_session_pointer(tmp_path):
     store = _store(tmp_path)
 
@@ -68,10 +99,20 @@ def test_fresh_db_has_context_v2_tables_and_session_pointer(tmp_path):
         session_cols = {
             row[1] for row in conn.execute(text("PRAGMA table_info(session)")).fetchall()
         }
+        indexes = {
+            row[1]
+            for table in ("event", "context_frames", "context_checkpoints")
+            for row in conn.execute(text(f"PRAGMA index_list({table})")).fetchall()
+        }
 
     assert "context_frames" in tables
     assert "context_checkpoints" in tables
     assert "latest_context_checkpoint_id" in session_cols
+    assert "context_materialized_until_ts" in session_cols
+    assert "context_materialized_until_event_id" in session_cols
+    assert "ix_event_session_ts_id" in indexes
+    assert "ix_context_frames_session_event_order" in indexes
+    assert "ix_context_checkpoints_session_created_id" in indexes
 
 
 def test_context_frame_roundtrip_and_duplicate_replay_upserts(tmp_path):
@@ -164,6 +205,51 @@ def test_install_context_checkpoint_updates_checkpoint_session_and_event_atomica
     assert store.get_events("s1")[-1].id == "evt-compact"
 
 
+def test_install_context_checkpoint_writes_compat_records_in_same_transaction(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+
+    checkpoint, event = store.install_context_checkpoint(
+        "s1",
+        _checkpoint("cp1"),
+        "compat summary",
+        {"status": "completed", "event_id": "evt-compact"},
+        compat_snapshot=_snapshot("snap1"),
+        memory_items=[_memory_item("mem1", snapshot_id="snap1")],
+    )
+
+    assert checkpoint.id == "cp1"
+    assert event.id == "evt-compact"
+    assert [row.id for row in store.get_context_snapshots("s1")] == ["snap1"]
+    assert [row.id for row in store.get_memory_items("s1")] == ["mem1"]
+    assert store.get_memory_items("s1")[0].snapshot_id == "snap1"
+
+
+def test_install_context_checkpoint_rolls_back_compat_records_on_commit_failure(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+    store.add_context_checkpoint(_checkpoint("old"))
+    store.set_latest_context_checkpoint("s1", "old", plan_summary="old plan")
+    store.add_context_snapshot(_snapshot("snap-dupe"))
+
+    with pytest.raises(Exception):
+        store.install_context_checkpoint(
+            "s1",
+            _checkpoint("cp-new"),
+            "new summary",
+            {"status": "completed", "event_id": "evt-new"},
+            compat_snapshot=_snapshot("snap-dupe"),
+            memory_items=[_memory_item("mem-new", snapshot_id="snap-dupe")],
+        )
+
+    session = store.get_session("s1")
+    assert session.latest_context_checkpoint_id == "old"
+    assert session.plan == "old plan"
+    assert store.get_context_checkpoint("cp-new") is None
+    assert [event.id for event in store.get_events("s1") if event.type == "context_compact"] == []
+    assert [row.id for row in store.get_memory_items("s1")] == []
+
+
 def test_install_context_checkpoint_rolls_back_when_session_missing(tmp_path):
     store = _store(tmp_path)
 
@@ -192,6 +278,23 @@ def test_install_context_checkpoint_rejects_mismatched_session_id(tmp_path):
     assert store.get_context_checkpoint("cp-mismatch") is None
     assert [row for row in store.get_events("s1") if row.type == "context_compact"] == []
     assert store.get_session("s1").latest_context_checkpoint_id == ""
+
+
+def test_add_context_frames_and_cursor_update_are_atomic(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="goal"))
+
+    rows = store.add_context_frames_and_update_materialization_cursor(
+        "s1",
+        [_frame("f1")],
+        {"event_ts": "2026-07-01T00:00:00Z", "event_id": "e1"},
+    )
+
+    assert [row.id for row in rows] == ["f1"]
+    assert store.get_context_materialization_cursor("s1") == {
+        "event_ts": "2026-07-01T00:00:00Z",
+        "event_id": "e1",
+    }
 
 
 def test_set_latest_context_checkpoint_rejects_missing_or_mismatched_checkpoint(tmp_path):

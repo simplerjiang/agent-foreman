@@ -43,6 +43,8 @@ jobs:
         run: ruff check .
       - name: Types (mypy)
         run: mypy src
+      - name: Context V2 release gate smoke
+        run: python -m pytest -q tests/test_context_v2_release_gate.py
       - name: Unit tests (pytest)
         run: python -m pytest -q
       - name: Server smoke test (foreman serve -> /health)

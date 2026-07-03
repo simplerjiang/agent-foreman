@@ -246,6 +246,51 @@ async def test_compact_failure_is_atomic(tmp_path):
     assert ContextManager(store).build_active_context("s1", purpose="pm_plan").degraded is False
 
 
+async def test_compact_install_failure_does_not_leave_compat_snapshot_or_memory(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _seed(store)
+    before_plan = store.get_session("s1").plan
+    pack = {
+        "session_state": {"goal_quote": "run tests", "summary": "compact summary"},
+        "working_memory": {
+            "verified_facts": [
+                {"text": "pytest passed", "status": "verified", "source_refs": ["event:e2"]}
+            ],
+            "decisions": [],
+            "risks": [],
+            "todos": [],
+            "open_questions": [],
+        },
+        "omitted": [],
+    }
+
+    async def local_pack(_active):
+        return json.dumps(pack)
+
+    def fail_install(*_args, **_kwargs):
+        raise RuntimeError("install failed")
+
+    monkeypatch.setattr(store, "install_context_checkpoint", fail_install)
+
+    with pytest.raises(RuntimeError, match="install failed"):
+        await ContextManager(store, local_compactor=local_pack).compact_now(
+            "s1",
+            trigger="manual",
+            reason="install-failure",
+            window_tokens=1000,
+        )
+
+    session = store.get_session("s1")
+    payloads = [json.loads(event.payload_json) for event in store.get_events("s1") if event.type == "context_compact"]
+    assert session.latest_context_checkpoint_id == ""
+    assert session.plan == before_plan
+    assert store.get_context_checkpoints("s1") == []
+    assert store.get_context_snapshots("s1") == []
+    assert store.get_memory_items("s1") == []
+    assert payloads[-1]["status"] == "failed"
+    assert all(payload.get("status") != "completed" for payload in payloads)
+
+
 async def test_remote_compact_encrypted_content_not_used_as_summary(tmp_path):
     store = _store(tmp_path)
     _seed(store)

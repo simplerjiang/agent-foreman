@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.4.6",
+      en: "Context V2 follow-up hardening now makes compact install atomic, materializes sessions incrementally from a durable cursor, adds hot-path DB indexes, reconciles subprocess terminal status with OS return codes, refreshes git refs on resume, and adds temp SQLite plus browser Context panel release gates.",
+      zh: "Context V2 后续加固现在让 compact 安装保持事务原子性，基于持久 cursor 增量 materialize session，补充热路径数据库索引，按 OS return code 合并 subprocess 终态，resume 时刷新 git refs，并加入 temp SQLite 与浏览器 Context 面板 release gate。",
+    },
+    {
       version: "v1.4.5",
       en: "Context V2 M1 is accepted with structured frames/checkpoints, deterministic materialization, PM active context, compact/restore thresholds, subagent runtime state, Context UI/API, and the no-build JS split; PM Tool Surface remains tracked separately as M2.",
       zh: "Context V2 M1 已验收通过，覆盖结构化 frames/checkpoints、确定性 materializer、PM active context、compact/restore 阈值、subagent runtime state、Context UI/API 和 no-build JS 拆分；PM Tool Surface 仍作为 M2 单独跟踪。",

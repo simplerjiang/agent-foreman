@@ -15,7 +15,13 @@ from pathlib import Path
 
 from foreman.shared.events import AgentEvent, make_event
 
-from ._subprocess import SubprocessCliAdapter, _event_returncode, _handle_event_payload, _process_error_message, _read_pipe_text
+from ._subprocess import (
+    SubprocessCliAdapter,
+    _finalize_stop_event,
+    _handle_event_payload,
+    _process_error_message,
+    _read_pipe_text,
+)
 from .base import AgentHandle, detect_git_refs
 
 
@@ -153,6 +159,10 @@ class CopilotCliAdapter(SubprocessCliAdapter):
         handle.command = cmd
         handle.cwd = str(workspace)
         handle.worktree = str(workspace)
+        git_refs = detect_git_refs(workspace)
+        handle.branch = git_refs.get("branch", "")
+        handle.base_ref = git_refs.get("base_ref", "")
+        handle.head_sha = git_refs.get("head_sha", "")
         handle.status = "running"
 
     async def stream(self, handle: AgentHandle) -> AsyncIterator[AgentEvent]:
@@ -170,7 +180,7 @@ class CopilotCliAdapter(SubprocessCliAdapter):
             if getattr(proc, "stderr", None) is not None
             else None
         )
-        emitted_stop = False
+        pending_stop: AgentEvent | None = None
         if proc.stdout is not None:
             async for raw in proc.stdout:
                 line = raw.decode("utf-8", "replace").strip()
@@ -187,20 +197,15 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                         **event.payload,
                     }
                 if event.type == "stop":
-                    returncode = _event_returncode(event.payload)
-                    explicit_status = str(event.payload.get("status") or "").strip().lower()
-                    if returncode not in (None, 0) and explicit_status not in {"cancelled", "interrupted"}:
-                        event.payload["status"] = "failed"
-                    elif not event.payload.get("status") or event.payload.get("status") == "running":
-                        event.payload["status"] = "completed"
-                    handle.status = str(event.payload.get("status") or handle.status or "")
-                    event.payload.setdefault("returncode", 0)
-                if event.type == "stop":
-                    emitted_stop = True
+                    pending_stop = event
+                    continue
                 yield event
 
         returncode = await proc.wait()
         stderr_text = await stderr_task if stderr_task is not None else ""
+        if pending_stop is not None:
+            yield _finalize_stop_event(pending_stop, handle, self.name, returncode, stderr_text)
+            return
         if returncode:
             yield make_event(
                 "error",
@@ -214,13 +219,10 @@ class CopilotCliAdapter(SubprocessCliAdapter):
                 },
             )
             return
-        if not emitted_stop:
+        if pending_stop is None:
             yield make_event(
                 "stop",
                 self.name,
                 handle.session_id,
                 payload={**_handle_event_payload(handle, self.name, status="completed"), "result": "", "returncode": 0},
             )
-        else:
-            if handle.status not in {"failed", "cancelled", "interrupted"}:
-                handle.status = "completed"

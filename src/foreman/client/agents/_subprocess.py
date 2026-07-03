@@ -155,6 +155,7 @@ class SubprocessCliAdapter:
             if getattr(proc, "stderr", None) is not None
             else None
         )
+        pending_stop: AgentEvent | None = None
         try:
             if proc.stdout is not None:
                 async for raw in _iter_pipe_lines(proc.stdout):
@@ -172,19 +173,21 @@ class SubprocessCliAdapter:
                             **event.payload,
                         }
                     if event.type == "stop":
-                        returncode = _event_returncode(event.payload)
-                        explicit_status = str(event.payload.get("status") or "").strip().lower()
-                        if returncode not in (None, 0) and explicit_status not in {"cancelled", "interrupted"}:
-                            event.payload["status"] = "failed"
-                        elif not event.payload.get("status") or event.payload.get("status") == "running":
-                            event.payload["status"] = "completed"
-                        handle.status = str(event.payload.get("status") or handle.status or "")
-                        event.payload.setdefault("returncode", 0)
+                        pending_stop = event
+                        continue
                     yield event
 
             returncode = await proc.wait()
             stderr_text = await stderr_task if stderr_task is not None else ""
-            if returncode:
+            if pending_stop is not None:
+                yield _finalize_stop_event(
+                    pending_stop,
+                    handle,
+                    self.name,
+                    returncode,
+                    stderr_text,
+                )
+            elif returncode:
                 yield make_event(
                     "error",
                     self.name,
@@ -251,6 +254,10 @@ class SubprocessCliAdapter:
         handle.command = cmd
         handle.cwd = str(workspace)
         handle.worktree = str(workspace)
+        git_refs = detect_git_refs(workspace)
+        handle.branch = git_refs.get("branch", "")
+        handle.base_ref = git_refs.get("base_ref", "")
+        handle.head_sha = git_refs.get("head_sha", "")
         handle.status = "running"
 
     async def interrupt(self, handle: AgentHandle) -> None:
@@ -328,6 +335,34 @@ def _handle_event_payload(handle: AgentHandle, source: str, *, status: str = "")
         "source": source,
         "status": status or handle.status or "",
     }
+
+
+def _finalize_stop_event(
+    event: AgentEvent,
+    handle: AgentHandle,
+    source: str,
+    returncode: int,
+    stderr_text: str = "",
+) -> AgentEvent:
+    payload = dict(event.payload)
+    explicit_status = str(payload.get("status") or "").strip().lower()
+    cli_returncode = _event_returncode(payload)
+    final_returncode = cli_returncode if cli_returncode is not None else returncode
+    if explicit_status in {"cancelled", "interrupted"}:
+        payload["status"] = explicit_status
+    elif final_returncode:
+        payload["status"] = "failed"
+        payload.setdefault("msg", _process_error_message(source, final_returncode, stderr_text))
+        if stderr_text:
+            payload.setdefault("stderr", stderr_text[-4000:])
+    elif not explicit_status or explicit_status == "running":
+        payload["status"] = "completed"
+    else:
+        payload["status"] = explicit_status
+    payload["returncode"] = final_returncode
+    handle.status = str(payload.get("status") or handle.status or "")
+    event.payload = payload
+    return event
 
 
 def _event_returncode(payload: dict) -> int | None:
