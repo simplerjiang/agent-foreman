@@ -335,6 +335,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.5.3",
+      en: "PM worktree support now ships with lease-backed worktree management, guarded create/bind/diff/review/checkpoint/test/cleanup/promote tools, runtime-injected session/task context, UI/API status visibility, and the packaged exe E2E bug list.",
+      zh: "PM worktree 支持现在包含基于 lease 的 worktree 管理、受保护的 create/bind/diff/review/checkpoint/test/cleanup/promote 工具、由 runtime 注入的 session/task 上下文、UI/API 状态可见性，以及 packaged exe E2E BUG 清单。",
+    },
+    {
       version: "v1.5.2",
       en: "Desktop session force-scroll now stays armed across PM loading and first agent output after a user send, and session switches receive the same post-layout bottom correction without overriding explicit user scroll gestures.",
       zh: "PC 端会话页在用户发送后会持续保持强制贴底，覆盖 PM loading 与首个 agent 输出；切换会话也会在布局稳定后校准到底部，同时不会覆盖用户明确滚动阅读旧消息的操作。",
