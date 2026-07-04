@@ -123,8 +123,8 @@ def _v6_worktree_leases(conn) -> None:
     )
     conn.execute(
         text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_worktree_leases_active_write_path "
-            "ON worktree_leases (worktree_path) WHERE status = 'active' AND locked = 1"
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_worktree_leases_active_path "
+            "ON worktree_leases (worktree_path) WHERE status = 'active'"
         )
     )
 
@@ -137,6 +137,31 @@ def _v7_worktree_active_write_lock(conn) -> None:
         text(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_worktree_leases_active_write_path "
             "ON worktree_leases (worktree_path) WHERE status = 'active' AND locked = 1"
+        )
+    )
+
+
+def _v8_worktree_active_path_unique(conn) -> None:
+    if not table_exists(conn, "worktree_leases"):
+        return
+    conn.execute(text("DROP INDEX IF EXISTS ux_worktree_leases_active_write_path"))
+    conn.execute(text("DROP INDEX IF EXISTS ux_worktree_leases_active_path"))
+    conn.execute(
+        text(
+            "UPDATE worktree_leases "
+            "SET status = 'stale', locked = 0 "
+            "WHERE status = 'active' AND rowid NOT IN ("
+            "SELECT keep_rowid FROM ("
+            "SELECT MAX(rowid) AS keep_rowid FROM worktree_leases "
+            "WHERE status = 'active' GROUP BY worktree_path"
+            ")"
+            ")"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_worktree_leases_active_path "
+            "ON worktree_leases (worktree_path) WHERE status = 'active'"
         )
     )
 
@@ -168,5 +193,10 @@ CLIENT_MIGRATIONS: list[Migration] = [
         7,
         "worktree active write lease uniqueness",
         _v7_worktree_active_write_lock,
+    ),
+    Migration(
+        8,
+        "worktree active path uniqueness",
+        _v8_worktree_active_path_unique,
     ),
 ]

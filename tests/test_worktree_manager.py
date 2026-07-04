@@ -93,7 +93,7 @@ def _lease_context(
     }
 
 
-def test_store_allows_read_only_share_but_rejects_second_write_lock(tmp_path: Path):
+def test_store_rejects_second_active_lease_for_path(tmp_path: Path):
     store = _store(tmp_path)
     path = str(tmp_path / "worktree")
     base = {
@@ -108,16 +108,17 @@ def test_store_allows_read_only_share_but_rejects_second_write_lock(tmp_path: Pa
     }
 
     store.add_worktree_lease(WorktreeLease(id="write-1", session_id="s1", locked=True, **base))
-    store.add_worktree_lease(
-        WorktreeLease(id="read-1", session_id="s2", locked=False, task_id="t2", **{k: v for k, v in base.items() if k != "task_id"})
-    )
 
     with pytest.raises(ValueError, match="active_worktree_lease_exists"):
         store.add_worktree_lease(
-            WorktreeLease(id="write-2", session_id="s3", locked=True, task_id="t3", **{k: v for k, v in base.items() if k != "task_id"})
+            WorktreeLease(id="read-1", session_id="s2", locked=False, task_id="t2", **{k: v for k, v in base.items() if k != "task_id"})
         )
-    with pytest.raises(ValueError, match="active_worktree_lease_exists"):
-        store.update_worktree_lease("read-1", locked=True)
+
+    store.update_worktree_lease("write-1", status="released", locked=False)
+    lease = store.add_worktree_lease(
+        WorktreeLease(id="read-1", session_id="s2", locked=False, task_id="t2", **{k: v for k, v in base.items() if k != "task_id"})
+    )
+    assert lease.id == "read-1"
 
 
 def test_list_reports_main_locked_and_deleted_real_worktrees(tmp_path: Path):
@@ -959,7 +960,7 @@ def test_create_bind_session_uses_same_binding_logic(tmp_path: Path):
     assert store.get_session("s1").workspace == result["workspace"]
 
 
-def test_bind_session_allows_read_only_share_and_blocks_dirty_write_bind(tmp_path: Path):
+def test_bind_session_blocks_dirty_write_and_allows_read_only_after_release(tmp_path: Path):
     repo = _repo(tmp_path)
     base_sha = _git(repo, "rev-parse", "HEAD")
     worktree = tmp_path / "feature"
@@ -985,15 +986,6 @@ def test_bind_session_allows_read_only_share_and_blocks_dirty_write_bind(tmp_pat
             **common,
         )
     )
-    store.add_worktree_lease(
-        WorktreeLease(
-            id="reader-lease",
-            session_id="reader",
-            task_id="tr",
-            locked=False,
-            **common,
-        )
-    )
     (worktree / "file.txt").write_text("dirty\n", encoding="utf-8")
     manager = WorktreeManager()
 
@@ -1007,6 +999,18 @@ def test_bind_session_allows_read_only_share_and_blocks_dirty_write_bind(tmp_pat
         },
         lease_id="writer-lease",
     )
+    assert writer["error"] == "dirty_worktree"
+
+    store.update_worktree_lease("writer-lease", status="released", locked=False)
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="reader-lease",
+            session_id="reader",
+            task_id="tr",
+            locked=False,
+            **common,
+        )
+    )
     reader = manager.bind_session(
         {
             "store": store,
@@ -1018,7 +1022,6 @@ def test_bind_session_allows_read_only_share_and_blocks_dirty_write_bind(tmp_pat
         lease_id="reader-lease",
     )
 
-    assert writer["error"] == "dirty_worktree"
     assert reader["ok"] is True
     assert reader["read_only"] is True
     assert reader["write_lock"] is False

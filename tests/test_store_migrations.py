@@ -28,18 +28,73 @@ def _exec(engine, sql):
 
 
 # ── client ───────────────────────────────────────────────────────────────────────────────────
-def test_client_init_is_idempotent_and_at_v7(tmp_path):
+def test_client_init_is_idempotent_and_at_v8(tmp_path):
     st = Store(str(tmp_path / "c.db"))
     st.init()
     st.init()  # re-run must not duplicate ledger rows or raise
-    assert st.schema_version() == 7
+    assert st.schema_version() == 8
     with st.engine.connect() as conn:  # client ledger table is `schemaversion` (see migrations)
         rows = conn.execute(text(f"SELECT version FROM {CLIENT_VERSION_TABLE}")).fetchall()
         indexes = {
             row[1] for row in conn.execute(text("PRAGMA index_list(worktree_leases)")).fetchall()
         }
-    assert sorted(r[0] for r in rows) == [1, 2, 3, 4, 5, 6, 7]
-    assert "ux_worktree_leases_active_write_path" in indexes
+    assert sorted(r[0] for r in rows) == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert "ux_worktree_leases_active_path" in indexes
+    assert "ux_worktree_leases_active_write_path" not in indexes
+
+
+def test_client_migration_v8_stales_duplicate_active_worktree_leases(tmp_path):
+    engine = _engine(tmp_path / "legacy-v7-worktree-leases.db")
+    _exec(
+        engine,
+        "CREATE TABLE worktree_leases ("
+        "id TEXT NOT NULL PRIMARY KEY, repo_root TEXT NOT NULL DEFAULT '', "
+        "main_workspace TEXT NOT NULL DEFAULT '', worktree_path TEXT NOT NULL DEFAULT '', "
+        "branch TEXT NOT NULL DEFAULT '', base_ref TEXT NOT NULL DEFAULT '', "
+        "base_sha TEXT NOT NULL DEFAULT '', head_sha TEXT NOT NULL DEFAULT '', "
+        "session_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT '', "
+        "status TEXT NOT NULL DEFAULT 'active', dirty BOOLEAN NOT NULL DEFAULT 0, "
+        "locked BOOLEAN NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', "
+        "updated_at TEXT NOT NULL DEFAULT '', last_seen_at TEXT NOT NULL DEFAULT '', "
+        "metadata_json TEXT NOT NULL DEFAULT '{}')",
+    )
+    _exec(
+        engine,
+        "CREATE UNIQUE INDEX ux_worktree_leases_active_write_path "
+        "ON worktree_leases (worktree_path) WHERE status = 'active' AND locked = 1",
+    )
+    _exec(
+        engine,
+        "INSERT INTO worktree_leases (id, worktree_path, locked, status) "
+        "VALUES ('old-locked', '/wt', 1, 'active')",
+    )
+    _exec(
+        engine,
+        "INSERT INTO worktree_leases (id, worktree_path, locked, status) "
+        "VALUES ('old-read', '/wt', 0, 'active')",
+    )
+    _exec(engine, f"CREATE TABLE {CLIENT_VERSION_TABLE} (version INTEGER PRIMARY KEY, applied_at TEXT)")
+    for version in range(1, 8):
+        _exec(
+            engine,
+            f"INSERT INTO {CLIENT_VERSION_TABLE} (version, applied_at) "
+            f"VALUES ({version}, '2020-01-0{version}')",
+        )
+
+    applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
+
+    assert applied == [8]
+    with engine.connect() as conn:
+        statuses = dict(
+            conn.execute(text("SELECT id, status FROM worktree_leases ORDER BY id")).fetchall()
+        )
+        indexes = {
+            row[1] for row in conn.execute(text("PRAGMA index_list(worktree_leases)")).fetchall()
+        }
+        assert sorted(statuses.values()) == ["active", "stale"]
+        assert "ux_worktree_leases_active_path" in indexes
+        assert "ux_worktree_leases_active_write_path" not in indexes
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 8
 
 
 def test_client_migration_adds_diff_stat_to_legacy_decisioncard(tmp_path):
@@ -50,12 +105,12 @@ def test_client_migration_adds_diff_stat_to_legacy_decisioncard(tmp_path):
         assert not column_exists(conn, "decisioncard", "diff_stat")
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
-    assert applied == [1, 2, 3, 4, 5, 6, 7]
+    assert applied == [1, 2, 3, 4, 5, 6, 7, 8]
     with engine.connect() as conn:
         assert column_exists(conn, "decisioncard", "diff_stat")
         assert column_exists(conn, "session", "latest_context_checkpoint_id") is False
         assert table_exists(conn, "worktree_leases")
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 7
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 8
 
 
 def test_client_migration_adds_session_main_workspace_and_backfills(tmp_path):
@@ -69,7 +124,7 @@ def test_client_migration_adds_session_main_workspace_and_backfills(tmp_path):
         assert not column_exists(conn, "session", "main_workspace")
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
-    assert applied == [2, 3, 4, 5, 6, 7]
+    assert applied == [2, 3, 4, 5, 6, 7, 8]
     with engine.connect() as conn:
         assert column_exists(conn, "session", "main_workspace")
         assert column_exists(conn, "session", "latest_context_checkpoint_id")
@@ -78,7 +133,7 @@ def test_client_migration_adds_session_main_workspace_and_backfills(tmp_path):
         assert table_exists(conn, "worktree_leases")
         row = conn.execute(text("SELECT workspace, main_workspace FROM session WHERE id='s1'")).first()
         assert row == ("E:/AutoWorkAgent", "E:/AutoWorkAgent")
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 7
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 8
 
 
 def test_client_migration_main_workspace_backfill_tolerates_null_workspace(tmp_path):
@@ -90,16 +145,16 @@ def test_client_migration_main_workspace_backfill_tolerates_null_workspace(tmp_p
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
 
-    assert applied == [2, 3, 4, 5, 6, 7]
+    assert applied == [2, 3, 4, 5, 6, 7, 8]
     with engine.connect() as conn:
         row = conn.execute(text("SELECT workspace, main_workspace FROM session WHERE id='s1'")).first()
         assert row == (None, "")
         assert column_exists(conn, "session", "latest_context_checkpoint_id")
         assert table_exists(conn, "worktree_leases")
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 7
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 8
 
 
-def test_client_migration_v3_to_v7_adds_context_checkpoint_cursor_and_indexes(tmp_path):
+def test_client_migration_v3_to_v8_adds_context_checkpoint_cursor_and_indexes(tmp_path):
     engine = _engine(tmp_path / "legacy-context-v2.db")
     _exec(
         engine,
@@ -139,7 +194,7 @@ def test_client_migration_v3_to_v7_adds_context_checkpoint_cursor_and_indexes(tm
 
     applied = run_migrations(engine, CLIENT_MIGRATIONS, version_table=CLIENT_VERSION_TABLE)
 
-    assert applied == [3, 4, 5, 6, 7]
+    assert applied == [3, 4, 5, 6, 7, 8]
     with engine.connect() as conn:
         assert column_exists(conn, "session", "latest_context_checkpoint_id")
         assert column_exists(conn, "session", "context_materialized_until_ts")
@@ -157,7 +212,7 @@ def test_client_migration_v3_to_v7_adds_context_checkpoint_cursor_and_indexes(tm
         assert "ix_event_session_ts_id" in indexes
         assert "ix_context_frames_session_event_order" in indexes
         assert "ix_context_checkpoints_session_created_id" in indexes
-        assert current_version(conn, CLIENT_VERSION_TABLE) == 7
+        assert current_version(conn, CLIENT_VERSION_TABLE) == 8
 
 
 def test_client_store_upgrade_from_v5_keeps_session_and_creates_worktree_lease(tmp_path):
@@ -196,7 +251,7 @@ def test_client_store_upgrade_from_v5_keeps_session_and_creates_worktree_lease(t
     session = st.get_session("s1")
     assert session.workspace == "E:/AutoWorkAgent"
     assert session.main_workspace == "E:/AutoWorkAgent"
-    assert st.schema_version() == 7
+    assert st.schema_version() == 8
     lease = st.add_worktree_lease(
         WorktreeLease(
             id="lease-1",

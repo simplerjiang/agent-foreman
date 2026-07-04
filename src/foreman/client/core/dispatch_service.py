@@ -1695,7 +1695,8 @@ class DispatchService:
             return ""
         if data.get("error") == "no_active_worktree_lease":
             return ""
-        changed = data.get("changed_files") if isinstance(data.get("changed_files"), list) else []
+        raw_changed = data.get("changed_files")
+        changed = raw_changed if isinstance(raw_changed, list) else []
         summary = {
             "source": "worktree_diff",
             "ok": bool(data.get("ok", True)),

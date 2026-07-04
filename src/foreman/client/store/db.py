@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
@@ -41,6 +42,26 @@ from .models import (
     WorktreeLease,
     WorkflowRun,
 )
+
+
+def _parse_event_ts(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _event_ts_after(candidate: str, last_ts: str | None) -> str:
+    candidate_dt = _parse_event_ts(candidate)
+    last_dt = _parse_event_ts(last_ts)
+    if candidate_dt is None or last_dt is None or candidate_dt > last_dt:
+        return candidate
+    return (last_dt + timedelta(microseconds=1)).isoformat()
 
 
 class Store:
@@ -147,12 +168,11 @@ class Store:
         lease.updated_at = lease.updated_at or lease.created_at
         lease.last_seen_at = lease.last_seen_at or lease.updated_at
         with self.session() as s:
-            if lease.status == "active" and lease.locked:
+            if lease.status == "active":
                 existing = s.exec(
                     select(WorktreeLease).where(
                         WorktreeLease.worktree_path == lease.worktree_path,
                         WorktreeLease.status == "active",
-                        WorktreeLease.locked == True,  # noqa: E712
                         WorktreeLease.id != lease.id,
                     )
                 ).first()
@@ -229,13 +249,11 @@ class Store:
             if row is None:
                 return None
             next_status = status if status is not None else row.status
-            next_locked = locked if locked is not None else row.locked
-            if next_status == "active" and next_locked:
+            if next_status == "active":
                 existing = s.exec(
                     select(WorktreeLease).where(
                         WorktreeLease.worktree_path == row.worktree_path,
                         WorktreeLease.status == "active",
-                        WorktreeLease.locked == True,  # noqa: E712
                         WorktreeLease.id != row.id,
                     )
                 ).first()
@@ -268,16 +286,24 @@ class Store:
         """Persist an AgentEvent as an Event row (payload serialized to JSON)."""
         event_id = event.id or uuid.uuid4().hex
         ts = event.ts or utc_now_iso()
-        row = Event(
-            id=event_id,
-            session_id=event.session_id,
-            task_id=event.task_id,
-            type=event.type,
-            source=event.source,
-            payload_json=json.dumps(event.payload),
-            ts=ts,
-        )
         with self.session() as s:
+            if event.session_id:
+                last_ts = s.exec(
+                    select(Event.ts)
+                    .where(Event.session_id == event.session_id)
+                    .order_by(col(Event.ts).desc(), col(Event.id).desc())
+                    .limit(1)
+                ).first()
+                ts = _event_ts_after(ts, last_ts)
+            row = Event(
+                id=event_id,
+                session_id=event.session_id,
+                task_id=event.task_id,
+                type=event.type,
+                source=event.source,
+                payload_json=json.dumps(event.payload),
+                ts=ts,
+            )
             s.add(row)
             if event.session_id:
                 sess = s.get(Session, event.session_id)

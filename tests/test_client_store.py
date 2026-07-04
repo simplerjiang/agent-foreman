@@ -71,6 +71,22 @@ def test_event_roundtrip_serializes_payload(tmp_path):
     assert json.loads(events[0].payload_json) == {"text": "hi"}
 
 
+def test_events_with_same_timestamp_keep_insert_order(tmp_path):
+    st = _store(tmp_path)
+    ts = "2026-07-04T00:00:00+00:00"
+    first = make_event("tool_pre", "hook", "s1")
+    second = make_event("approval_req", "hook", "s1")
+    first.ts = ts
+    second.ts = ts
+
+    st.add_event(first)
+    st.add_event(second)
+
+    events = st.get_events("s1")
+    assert [event.type for event in events] == ["tool_pre", "approval_req"]
+    assert events[1].ts > events[0].ts
+
+
 def test_event_updates_session_activity_without_inferring_terminal_status(tmp_path):
     st = _store(tmp_path)
     st.add_session(Session(id="s1", goal="do X", status="running", updated_at="old"))

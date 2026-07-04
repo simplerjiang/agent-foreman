@@ -1612,9 +1612,11 @@ class PMToolRuntime:
         goal = str(args.get("goal") or "").strip()
         if not goal:
             return ToolResult(cid, "impact_analysis", False, error="missing_goal")
+        raw_changed_files = args.get("changed_files")
+        changed_items = raw_changed_files if isinstance(raw_changed_files, list) else []
         changed_files = [
             str(item).strip()
-            for item in (args.get("changed_files") if isinstance(args.get("changed_files"), list) else [])
+            for item in changed_items
             if str(item or "").strip()
         ][:50]
         max_candidates = min(_positive_int(args.get("max_candidates"), 12), 50)
@@ -1641,9 +1643,11 @@ class PMToolRuntime:
         events, error = self._current_session_events()
         if error:
             return ToolResult(cid, "event_query", False, error=error)
+        raw_types = args.get("types")
+        type_items = raw_types if isinstance(raw_types, list) else []
         requested_types = {
             str(item).strip()
-            for item in (args.get("types") if isinstance(args.get("types"), list) else [])
+            for item in type_items
             if str(item or "").strip()
         }
         contains = str(args.get("contains") or "").strip().casefold()
@@ -2473,8 +2477,10 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
         except asyncio.TimeoutError:
             pass
     else:
+        killpg = getattr(os, "killpg", None)
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
+            if callable(killpg):
+                killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
             return
         except Exception:  # noqa: BLE001 - fall back to direct process handle below
@@ -2484,7 +2490,8 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
             return
         except asyncio.TimeoutError:
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
+                if callable(killpg):
+                    killpg(proc.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
             except Exception:  # noqa: BLE001
                 pass
     try:
