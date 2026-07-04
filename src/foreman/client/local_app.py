@@ -218,8 +218,8 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
         pm_agent=PMAgent(
             _llm(),
             language=language,
-            tool_runtime_factory=lambda workspace: PMToolRuntime.from_config(
-                cfg, workspace, gate=gate, auditor=auditor, cards=cards
+            tool_runtime_factory=lambda workspace, **kwargs: PMToolRuntime.from_config(
+                cfg, workspace, gate=gate, auditor=auditor, cards=cards, **kwargs
             ),
         ),
         language_getter=_current_language,

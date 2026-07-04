@@ -1323,8 +1323,12 @@ def test_composer_shows_workspace_git_status_instead_of_success_noise():
     assert "function effectiveSessionWorkspace(row, fallback)" in js
     assert "const effectiveWorkspace = effectiveSessionWorkspace(sessionRow, workspace)" in js
     assert "row.workspace_exists !== false" in js
-    assert "workspaceNoWorktree" in js and "hasSession=${!!sessionRow}" in js
-    assert "${d.workspaceWorktree}: ${shortPath(workspace, d)}" in js
+    assert "workspaceNoWorktree" in js and "sessionRow=${sessionRow}" in js
+    assert "workspaceWorktreeMissing" in js
+    assert "workspaceFallback" in js and "workspaceLease" in js and "workspaceMain" in js
+    assert "const sessionWorktree = (sessionRow && sessionRow.worktree)" in js
+    assert "${d.workspaceWorktree}: ${shortPath(sessionWorktree, d)}" in js
+    assert "${d.workspaceWorktree}: ${shortPath(workspace, d)}" not in js
     assert "value=${effectiveWorkspace}" in js
 
 

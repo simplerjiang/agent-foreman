@@ -85,6 +85,62 @@ def _v5_context_v2_hot_path_indexes(conn) -> None:
         )
 
 
+def _v6_worktree_leases(conn) -> None:
+    conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS worktree_leases ("
+            "id TEXT NOT NULL PRIMARY KEY, "
+            "repo_root TEXT NOT NULL DEFAULT '', "
+            "main_workspace TEXT NOT NULL DEFAULT '', "
+            "worktree_path TEXT NOT NULL DEFAULT '', "
+            "branch TEXT NOT NULL DEFAULT '', "
+            "base_ref TEXT NOT NULL DEFAULT '', "
+            "base_sha TEXT NOT NULL DEFAULT '', "
+            "head_sha TEXT NOT NULL DEFAULT '', "
+            "session_id TEXT NOT NULL DEFAULT '', "
+            "task_id TEXT NOT NULL DEFAULT '', "
+            "status TEXT NOT NULL DEFAULT 'active', "
+            "dirty BOOLEAN NOT NULL DEFAULT 0, "
+            "locked BOOLEAN NOT NULL DEFAULT 0, "
+            "created_at TEXT NOT NULL DEFAULT '', "
+            "updated_at TEXT NOT NULL DEFAULT '', "
+            "last_seen_at TEXT NOT NULL DEFAULT '', "
+            "metadata_json TEXT NOT NULL DEFAULT '{}'"
+            ")"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_worktree_leases_session_status "
+            "ON worktree_leases (session_id, status)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_worktree_leases_path_status "
+            "ON worktree_leases (worktree_path, status)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_worktree_leases_active_write_path "
+            "ON worktree_leases (worktree_path) WHERE status = 'active' AND locked = 1"
+        )
+    )
+
+
+def _v7_worktree_active_write_lock(conn) -> None:
+    if not table_exists(conn, "worktree_leases"):
+        return
+    conn.execute(text("DROP INDEX IF EXISTS ux_worktree_leases_active_path"))
+    conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_worktree_leases_active_write_path "
+            "ON worktree_leases (worktree_path) WHERE status = 'active' AND locked = 1"
+        )
+    )
+
+
 CLIENT_MIGRATIONS: list[Migration] = [
     Migration(1, "decisioncard.diff_stat (📎 changes line, §6.3)", _v1_decisioncard_diff_stat),
     Migration(2, "session.main_workspace fallback for PM worktrees", _v2_session_main_workspace),
@@ -102,5 +158,15 @@ CLIENT_MIGRATIONS: list[Migration] = [
         5,
         "Context v2 session/order compound indexes",
         _v5_context_v2_hot_path_indexes,
+    ),
+    Migration(
+        6,
+        "worktree_leases ownership table",
+        _v6_worktree_leases,
+    ),
+    Migration(
+        7,
+        "worktree active write lease uniqueness",
+        _v7_worktree_active_write_lock,
     ),
 ]

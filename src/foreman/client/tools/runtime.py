@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import html
 import inspect
+import json
 import os
+import re
 import signal
 import uuid
 from html.parser import HTMLParser
@@ -15,7 +17,7 @@ from urllib.parse import quote_plus, urlparse
 
 import httpx
 
-from foreman.shared.config import Config, clamp_pm_tool_rounds
+from foreman.shared.config import Config, clamp_pm_tool_rounds, resolve_worktree_roots
 
 from .models import (
     EXTERNAL_WEB,
@@ -33,6 +35,23 @@ if TYPE_CHECKING:
     from .browser import BrowserRuntime
 
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "env", "node_modules", ".pytest_cache"}
+ENTRY_POINT_NAMES = {
+    "pyproject.toml",
+    "package.json",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "requirements.txt",
+    "setup.py",
+    "Cargo.toml",
+    "go.mod",
+    "README.md",
+    "AGENTS.md",
+    "src",
+    "app",
+    "server",
+}
+TEST_DIR_NAMES = {"tests", "test", "e2e", "__tests__", "spec"}
 ToolEventSink = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 
@@ -52,14 +71,22 @@ class PMToolRuntime:
         self.auditor = auditor
         self.cards = cards
         self.guard = PathGuard(cfg.workspace, cfg.allowed_roots)
+        self.worktree_guard = PathGuard(
+            cfg.main_workspace or cfg.workspace,
+            cfg.worktree_roots or resolve_worktree_roots(
+                cfg.main_workspace or cfg.workspace,
+                [],
+            ),
+        )
         self._http = http_client
         self._browser: BrowserRuntime | None = None
         # Per-task work-mode resolver (client.core.WorkModeResolver), duck-typed to avoid a
         # tools → core import. Backs work_mode_search / work_mode_get; None = tools return
         # "work_mode_unavailable" instead of crashing. Usually attached via set_work_mode_resolver.
         self._work_mode_resolver = work_mode_resolver
-        self._session_id = ""
-        self._task_id = ""
+        self._session_id = str(cfg.session_id or "")
+        self._task_id = str(cfg.task_id or "")
+        self._workspace_read_only = False
 
     def set_work_mode_resolver(self, resolver: Any) -> None:
         """Attach the per-task work-mode resolver (the live path builds it per dispatch and sets it
@@ -70,6 +97,8 @@ class PMToolRuntime:
         """Attach the live session context used by ask_question decision cards."""
         self._session_id = str(session_id or "")
         self._task_id = str(task_id or "")
+        self.cfg.session_id = self._session_id
+        self.cfg.task_id = self._task_id
 
     @classmethod
     def from_config(
@@ -77,23 +106,39 @@ class PMToolRuntime:
         cfg: Config,
         workspace: str | Path,
         *,
+        store: Any = None,
+        session_id: str = "",
+        task_id: str = "",
+        main_workspace: str | Path | None = None,
+        worktree_manager: Any = None,
         gate: Any = None,
         auditor: Any = None,
         work_mode_resolver: Any = None,
         cards: Any = None,
     ) -> "PMToolRuntime":
         roots = [Path(w.path) for w in cfg.workspaces] or [Path(workspace)]
+        main_root = Path(main_workspace or workspace)
         pm = cfg.pm_tools
         return cls(
             ToolRuntimeConfig(
                 workspace=Path(workspace),
                 allowed_roots=roots,
+                store=store,
+                session_id=session_id,
+                task_id=task_id,
+                main_workspace=main_root,
+                worktree_manager=worktree_manager,
                 file_read=pm.file_read,
                 file_write=pm.file_write,
                 shell=pm.shell,
                 web_fetch=pm.web_fetch,
                 web_search=pm.web_search,
                 browser=pm.browser,
+                git_worktree=pm.git_worktree,
+                worktree_roots=resolve_worktree_roots(main_root, pm.worktree_roots),
+                worktree_branch_prefix=pm.worktree_branch_prefix,
+                default_base_ref=pm.default_base_ref,
+                allow_custom_worktree_path=pm.allow_custom_worktree_path,
                 allowed_origins=list(pm.allowed_origins),
                 web_search_provider=pm.web_search_provider,
                 searxng_url=pm.searxng_url,
@@ -111,6 +156,7 @@ class PMToolRuntime:
         string = {"type": "string"}
         boolean = {"type": "boolean"}
         integer = {"type": "integer"}
+        string_array = {"type": "array", "items": string}
         return [
             ToolSpec(
                 "list_files",
@@ -140,6 +186,72 @@ class PMToolRuntime:
                     "type": "object",
                     "properties": {"query": string, "path": string, "max_results": integer},
                     "required": ["query"],
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "repo_map",
+                "Return a bounded structural map of the current workspace without reading file bodies.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "path": string,
+                        "max_files": integer,
+                        "max_depth": integer,
+                    },
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "impact_analysis",
+                "Heuristically identify candidate files, tests, and risks for a goal. "
+                "Results are non-deterministic suggestions only.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "goal": string,
+                        "changed_files": string_array,
+                        "max_candidates": integer,
+                    },
+                    "required": ["goal"],
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "event_query",
+                "Query the current session timeline with bounded, compact event payloads. "
+                "The session_id/task_id are injected by the runtime.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "types": string_array,
+                        "contains": string,
+                        "limit": integer,
+                    },
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "session_summary",
+                "Summarize current-session runtime facts, active agents, key tests, and recent events.",
+                {
+                    "type": "object",
+                    "properties": {"limit": integer},
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "artifact_read",
+                "Read a bounded text artifact from the current workspace tool-log artifacts only.",
+                {
+                    "type": "object",
+                    "properties": {"path": string, "max_chars": integer},
+                    "required": ["path"],
                     "additionalProperties": False,
                 },
                 SAFE,
@@ -252,6 +364,187 @@ class PMToolRuntime:
                 SAFE,
             ),
             ToolSpec(
+                "worktree_plan",
+                "Dry-run the create/reuse/reject decision for a PM worktree. This does not "
+                "create directories, branches, leases, or remote git state.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "goal": string,
+                        "slug": string,
+                        "base_ref": string,
+                        "reuse_policy": {
+                            "type": "string",
+                            "enum": ["reuse_clean_owned", "never"],
+                        },
+                        "custom_path": string,
+                    },
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "worktree_create",
+                "Create or dry-run creation of a server-owned PM worktree. The current "
+                "session_id/task_id are injected by the runtime, never accepted from PM input.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "goal": string,
+                        "slug": string,
+                        "base_ref": string,
+                        "reuse_policy": {
+                            "type": "string",
+                            "enum": ["reuse_clean_owned", "never"],
+                        },
+                        "custom_path": string,
+                        "dry_run": boolean,
+                        "bind_session": boolean,
+                    },
+                    "additionalProperties": False,
+                },
+                NEEDS_STRATEGY,
+            ),
+            ToolSpec(
+                "worktree_bind_session",
+                "Bind the current PM session to a server-owned worktree lease. The current "
+                "session_id/task_id are injected by the runtime, never accepted from PM input.",
+                {
+                    "type": "object",
+                    "properties": {"lease_id": string, "reason": string},
+                    "required": ["lease_id"],
+                    "additionalProperties": False,
+                },
+                NEEDS_STRATEGY,
+            ),
+            ToolSpec(
+                "worktree_list",
+                "List git worktrees for an allowed workspace and show server-recorded ownership.",
+                {
+                    "type": "object",
+                    "properties": {"main_workspace": string},
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "worktree_status",
+                "Show read-only git status for an allowed or current-session-owned worktree.",
+                {
+                    "type": "object",
+                    "properties": {"path": string, "compare_to": string},
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "worktree_diff",
+                "Show the current session worktree diff against its WorktreeLease.base_sha. "
+                "The current session_id/task_id are injected by the runtime.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "max_patch_chars": integer,
+                        "include_patch": boolean,
+                    },
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "worktree_cleanup",
+                "Cleanup the current session worktree after producing a checkpoint artifact. "
+                "The current session_id/task_id/path are injected by the runtime.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "dry_run": boolean,
+                        "reason": string,
+                    },
+                    "additionalProperties": False,
+                },
+                NEEDS_STRATEGY,
+            ),
+            ToolSpec(
+                "worktree_promote",
+                "Prepare current-session worktree handoff/PR facts without pushing, merging, "
+                "deploying, or deleting branches. The current session_id/task_id/path are injected.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": [
+                                "prepare-pr",
+                                "commit",
+                                "push",
+                                "merge",
+                                "deploy",
+                                "delete-branch",
+                            ],
+                        },
+                        "title": string,
+                        "requirement_review": string,
+                        "code_review": string,
+                        "verification": string,
+                        "remaining_risks": string,
+                        "test_status": string,
+                    },
+                    "additionalProperties": False,
+                },
+                REQUIRES_APPROVAL,
+            ),
+            ToolSpec(
+                "checkpoint_create",
+                "Create a recoverable git checkpoint for the current runtime workspace. "
+                "The current session_id/task_id are injected by the runtime.",
+                {
+                    "type": "object",
+                    "properties": {"label": string},
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "checkpoint_undo",
+                "Restore the current runtime workspace to a checkpoint owned by this session.",
+                {
+                    "type": "object",
+                    "properties": {"checkpoint_id": string},
+                    "required": ["checkpoint_id"],
+                    "additionalProperties": False,
+                },
+                NEEDS_STRATEGY,
+            ),
+            ToolSpec(
+                "git_diff_summary",
+                "Summarize the current workspace diff from a checkpoint owned by this session.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "checkpoint_id": string,
+                        "max_patch_chars": integer,
+                    },
+                    "required": ["checkpoint_id"],
+                    "additionalProperties": False,
+                },
+                SAFE,
+            ),
+            ToolSpec(
+                "test_run",
+                "Run a test command in the current workspace and write a log artifact.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "command": string,
+                        "timeout_s": integer,
+                    },
+                    "required": ["command"],
+                    "additionalProperties": False,
+                },
+                NEEDS_STRATEGY,
+            ),
+            ToolSpec(
                 "work_mode_search",
                 "Search applicable work-mode definitions (skills / code standards / QA rubrics) "
                 "for this task. Returns lightweight index entries (name + description), NOT full "
@@ -292,6 +585,10 @@ class PMToolRuntime:
         return {
             "os": os.name,
             "cwd": str(self.cfg.workspace),
+            "main_workspace": str(self.cfg.main_workspace or self.cfg.workspace),
+            "worktree_roots": [str(path) for path in self.cfg.worktree_roots],
+            "worktree_branch_prefix": self.cfg.worktree_branch_prefix,
+            "default_base_ref": self.cfg.default_base_ref,
             "path_style": "windows" if os.name == "nt" else "posix",
             "shell": "powershell" if os.name == "nt" else "sh",
         }
@@ -305,8 +602,10 @@ class PMToolRuntime:
                 "web_fetch": self.cfg.web_fetch,
                 "web_search": self.cfg.web_search,
                 "browser": self.cfg.browser,
+                "git_worktree": self.cfg.git_worktree,
             },
             "allowed_roots": [str(p) for p in self.cfg.allowed_roots],
+            "worktree_roots": [str(p) for p in self.cfg.worktree_roots],
             "allowed_origins": list(self.cfg.allowed_origins),
             "shell_rule": (
                 "run_command has no static command list gate; "
@@ -335,6 +634,16 @@ class PMToolRuntime:
                 return self._read_file(call.id, args)
             if call.name == "search_repo":
                 return self._search_repo(call.id, args)
+            if call.name == "repo_map":
+                return self._repo_map(call.id, args)
+            if call.name == "impact_analysis":
+                return self._impact_analysis(call.id, args)
+            if call.name == "event_query":
+                return self._event_query(call.id, args)
+            if call.name == "session_summary":
+                return self._session_summary(call.id, args)
+            if call.name == "artifact_read":
+                return self._artifact_read(call.id, args)
             if call.name == "write_file":
                 return self._write_file(call.id, args)
             if call.name == "replace_in_file":
@@ -352,6 +661,30 @@ class PMToolRuntime:
                 return await self._web_search(call.id, args)
             if call.name == "ask_question":
                 return await self._ask_question(call.id, args)
+            if call.name == "worktree_plan":
+                return await self._worktree_plan(call.id, args)
+            if call.name == "worktree_create":
+                return await self._worktree_create(call.id, args)
+            if call.name == "worktree_bind_session":
+                return await self._worktree_bind_session(call.id, args)
+            if call.name == "worktree_list":
+                return await self._worktree_list(call.id, args)
+            if call.name == "worktree_status":
+                return await self._worktree_status(call.id, args)
+            if call.name == "worktree_diff":
+                return await self._worktree_diff(call.id, args)
+            if call.name == "worktree_cleanup":
+                return await self._worktree_cleanup(call.id, args)
+            if call.name == "worktree_promote":
+                return await self._worktree_promote(call.id, args)
+            if call.name == "checkpoint_create":
+                return await self._checkpoint_create(call.id, args)
+            if call.name == "checkpoint_undo":
+                return await self._checkpoint_undo(call.id, args)
+            if call.name == "git_diff_summary":
+                return await self._git_diff_summary(call.id, args)
+            if call.name == "test_run":
+                return await self._test_run(call.id, args)
             if call.name.startswith("browser_"):
                 return await self._browser_call(ToolCall(call.id, call.name, args))
             if call.name == "work_mode_search":
@@ -399,6 +732,753 @@ class PMToolRuntime:
         if not res.get("ok"):
             return ToolResult(cid, "ask_question", False, data=res, error=str(res.get("error") or "failed"))
         return ToolResult(cid, "ask_question", True, res)
+
+    async def _worktree_bind_session(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(
+                cid, "worktree_bind_session", False, error="tool_disabled", risk=NEEDS_STRATEGY
+            )
+        forbidden = {"session_id", "task_id", "path", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(
+                cid, "worktree_bind_session", False, error="invalid_args", risk=NEEDS_STRATEGY
+            )
+        lease_id = str(args.get("lease_id") or "").strip()
+        if not lease_id:
+            return ToolResult(cid, "worktree_bind_session", False, error="missing_lease_id")
+        manager = self.cfg.worktree_manager
+        bind = getattr(manager, "bind_session", None)
+        if manager is None or not callable(bind):
+            return ToolResult(
+                cid,
+                "worktree_bind_session",
+                False,
+                error="worktree_manager_unavailable",
+                risk=NEEDS_STRATEGY,
+            )
+        data = await _maybe_await(
+            bind(
+                self.worktree_context(),
+                lease_id=lease_id,
+                reason=str(args.get("reason") or ""),
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(
+                cid, "worktree_bind_session", False, error="invalid_worktree_result"
+            )
+        ok = bool(data.get("ok", data.get("bound", False)))
+        if not ok:
+            return ToolResult(
+                cid,
+                "worktree_bind_session",
+                False,
+                data=data,
+                error=str(data.get("error") or "bind_failed"),
+                risk=NEEDS_STRATEGY,
+            )
+        workspace = str(data.get("workspace") or data.get("path") or "").strip()
+        if not workspace:
+            return ToolResult(
+                cid, "worktree_bind_session", False, data=data, error="missing_workspace"
+            )
+        try:
+            self.bind_workspace(workspace, main_workspace=data.get("main_workspace"))
+            self._apply_worktree_access_mode(data)
+        except ToolPolicyError as exc:
+            return ToolResult(
+                cid, "worktree_bind_session", False, data=data, error=exc.code, risk=NEEDS_STRATEGY
+            )
+        out = dict(data)
+        out["workspace"] = str(self.cfg.workspace)
+        out["cwd"] = str(self.cfg.workspace)
+        return ToolResult(cid, "worktree_bind_session", True, out, risk=NEEDS_STRATEGY)
+
+    async def _worktree_plan(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_plan", False, error="tool_disabled")
+        forbidden = {"session_id", "task_id", "path", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "worktree_plan", False, error="invalid_args")
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_plan", False, error=error)
+        plan = getattr(manager, "plan", None)
+        if not callable(plan):
+            return ToolResult(cid, "worktree_plan", False, error="worktree_manager_unavailable")
+        context = self.worktree_context()
+        context["allow_custom_worktree_path"] = self.cfg.allow_custom_worktree_path
+        data = await _maybe_await(
+            plan(
+                context,
+                goal=str(args.get("goal") or ""),
+                slug=str(args.get("slug") or ""),
+                base_ref=str(args.get("base_ref") or ""),
+                reuse_policy=str(args.get("reuse_policy") or "reuse_clean_owned"),
+                custom_path=str(args.get("custom_path") or ""),
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(cid, "worktree_plan", False, error="invalid_worktree_result")
+        if not data.get("ok", True):
+            return ToolResult(
+                cid,
+                "worktree_plan",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_plan_failed"),
+            )
+        return ToolResult(cid, "worktree_plan", True, data)
+
+    async def _worktree_create(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_create", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        if self._workspace_read_only:
+            return ToolResult(cid, "worktree_create", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "path", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "worktree_create", False, error="invalid_args", risk=NEEDS_STRATEGY)
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_create", False, error=error, risk=NEEDS_STRATEGY)
+        create = getattr(manager, "create", None)
+        if not callable(create):
+            return ToolResult(
+                cid,
+                "worktree_create",
+                False,
+                error="worktree_manager_unavailable",
+                risk=NEEDS_STRATEGY,
+            )
+        context = self.worktree_context()
+        context["allow_custom_worktree_path"] = self.cfg.allow_custom_worktree_path
+        data = await _maybe_await(
+            create(
+                context,
+                goal=str(args.get("goal") or ""),
+                slug=str(args.get("slug") or ""),
+                base_ref=str(args.get("base_ref") or ""),
+                reuse_policy=str(args.get("reuse_policy") or "reuse_clean_owned"),
+                custom_path=str(args.get("custom_path") or ""),
+                dry_run=args.get("dry_run") is True,
+                bind_session=args.get("bind_session") is True,
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(cid, "worktree_create", False, error="invalid_worktree_result", risk=NEEDS_STRATEGY)
+        if not data.get("ok", True):
+            return ToolResult(
+                cid,
+                "worktree_create",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_create_failed"),
+                risk=NEEDS_STRATEGY,
+            )
+        if data.get("session_bound") or data.get("workspace_switched"):
+            workspace = str(data.get("workspace") or data.get("path") or "").strip()
+            if not workspace:
+                return ToolResult(
+                    cid,
+                    "worktree_create",
+                    False,
+                    data=data,
+                    error="missing_workspace",
+                    risk=NEEDS_STRATEGY,
+                )
+            try:
+                self.bind_workspace(workspace, main_workspace=data.get("main_workspace"))
+                self._apply_worktree_access_mode(data)
+            except ToolPolicyError as exc:
+                return ToolResult(
+                    cid,
+                    "worktree_create",
+                    False,
+                    data=data,
+                    error=exc.code,
+                    risk=NEEDS_STRATEGY,
+                )
+            data = {**data, "workspace": str(self.cfg.workspace), "cwd": str(self.cfg.workspace)}
+        return ToolResult(cid, "worktree_create", True, data, risk=NEEDS_STRATEGY)
+
+    async def _worktree_list(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_list", False, error="tool_disabled")
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_list", False, error=error)
+        list_worktrees = getattr(manager, "list", None)
+        if not callable(list_worktrees):
+            return ToolResult(cid, "worktree_list", False, error="worktree_manager_unavailable")
+        path, path_error = self._resolve_worktree_tool_path(
+            args.get("main_workspace") or self.cfg.main_workspace or self.cfg.workspace
+        )
+        if path_error:
+            return ToolResult(cid, "worktree_list", False, error=path_error)
+        data = await _maybe_await(list_worktrees(path))
+        if not isinstance(data, dict):
+            return ToolResult(cid, "worktree_list", False, error="invalid_worktree_result")
+        if not data.get("ok"):
+            return ToolResult(
+                cid,
+                "worktree_list",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_list_failed"),
+            )
+        out = dict(data)
+        out["worktrees"] = [
+            {**item, **self._lease_fields(self._lease_for_path(item.get("resolved_path") or item.get("path")))}
+            for item in data.get("worktrees", [])
+            if isinstance(item, dict)
+        ]
+        return ToolResult(cid, "worktree_list", True, out)
+
+    async def _worktree_status(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_status", False, error="tool_disabled")
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_status", False, error=error)
+        status = getattr(manager, "status", None)
+        if not callable(status):
+            return ToolResult(cid, "worktree_status", False, error="worktree_manager_unavailable")
+        path, path_error = self._resolve_worktree_tool_path(args.get("path") or self.cfg.workspace)
+        if path_error:
+            return ToolResult(cid, "worktree_status", False, error=path_error)
+        compare_to = str(args.get("compare_to") or self.cfg.default_base_ref or "").strip()
+        data = await _maybe_await(status(path, compare_to))
+        if not isinstance(data, dict):
+            return ToolResult(cid, "worktree_status", False, error="invalid_worktree_result")
+        if not data.get("ok"):
+            return ToolResult(
+                cid,
+                "worktree_status",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_status_failed"),
+            )
+        lease = self._lease_for_path(data.get("resolved_path") or path)
+        return ToolResult(cid, "worktree_status", True, {**data, **self._lease_fields(lease)})
+
+    async def _worktree_diff(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_diff", False, error="tool_disabled")
+        forbidden = {"session_id", "task_id", "path", "worktree_path", "base_ref", "base_sha"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "worktree_diff", False, error="invalid_args")
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_diff", False, error=error)
+        diff = getattr(manager, "diff", None)
+        if not callable(diff):
+            return ToolResult(cid, "worktree_diff", False, error="worktree_manager_unavailable")
+        data = await _maybe_await(
+            diff(
+                self.worktree_context(),
+                max_patch_chars=_positive_int(args.get("max_patch_chars"), self.cfg.max_chars),
+                include_patch=args.get("include_patch", True) is not False,
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(cid, "worktree_diff", False, error="invalid_worktree_result")
+        if not data.get("ok", True):
+            return ToolResult(
+                cid,
+                "worktree_diff",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_diff_failed"),
+            )
+        artifacts = [
+            str(path)
+            for path in (data.get("artifact_paths") or [data.get("patch_artifact")])
+            if str(path or "").strip()
+        ]
+        return ToolResult(cid, "worktree_diff", True, data, artifact_paths=artifacts)
+
+    async def _worktree_cleanup(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_cleanup", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        if self._workspace_read_only:
+            return ToolResult(cid, "worktree_cleanup", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {
+            "session_id",
+            "task_id",
+            "path",
+            "worktree_path",
+            "base_ref",
+            "base_sha",
+            "branch",
+        }
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "worktree_cleanup", False, error="invalid_args", risk=NEEDS_STRATEGY)
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_cleanup", False, error=error, risk=NEEDS_STRATEGY)
+        cleanup = getattr(manager, "cleanup", None)
+        if not callable(cleanup):
+            return ToolResult(
+                cid,
+                "worktree_cleanup",
+                False,
+                error="worktree_manager_unavailable",
+                risk=NEEDS_STRATEGY,
+            )
+        data = await _maybe_await(
+            cleanup(
+                self.worktree_context(),
+                dry_run=args.get("dry_run", True) is not False,
+                reason=str(args.get("reason") or ""),
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(
+                cid, "worktree_cleanup", False, error="invalid_worktree_result", risk=NEEDS_STRATEGY
+            )
+        if not data.get("ok", True):
+            return ToolResult(
+                cid,
+                "worktree_cleanup",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_cleanup_failed"),
+                risk=NEEDS_STRATEGY,
+            )
+        if data.get("removed"):
+            self._reset_workspace_to_main_if_deleted(data)
+            data = {**data, "cwd": str(self.cfg.workspace)}
+        artifacts = [
+            str(path)
+            for path in (data.get("artifact_paths") or [data.get("cleanup_artifact")])
+            if str(path or "").strip()
+        ]
+        risk = REQUIRES_APPROVAL if data.get("requires_approval") else NEEDS_STRATEGY
+        return ToolResult(cid, "worktree_cleanup", True, data, risk=risk, artifact_paths=artifacts)
+
+    async def _worktree_promote(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.git_worktree:
+            return ToolResult(cid, "worktree_promote", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        if self._workspace_read_only:
+            return ToolResult(cid, "worktree_promote", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {
+            "session_id",
+            "task_id",
+            "path",
+            "workspace",
+            "worktree_path",
+            "lease_id",
+            "branch",
+            "base_ref",
+            "base_sha",
+        }
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "worktree_promote", False, error="invalid_args", risk=NEEDS_STRATEGY)
+        manager, error = self._worktree_manager()
+        if error:
+            return ToolResult(cid, "worktree_promote", False, error=error, risk=NEEDS_STRATEGY)
+        promote = getattr(manager, "promote", None)
+        if not callable(promote):
+            return ToolResult(
+                cid,
+                "worktree_promote",
+                False,
+                error="worktree_manager_unavailable",
+                risk=NEEDS_STRATEGY,
+            )
+        data = await _maybe_await(
+            promote(
+                self.worktree_context(),
+                mode=str(args.get("mode") or "prepare-pr"),
+                title=str(args.get("title") or ""),
+                requirement_review=str(args.get("requirement_review") or ""),
+                code_review=str(args.get("code_review") or ""),
+                verification=str(args.get("verification") or ""),
+                remaining_risks=str(args.get("remaining_risks") or ""),
+                test_status=str(args.get("test_status") or ""),
+            )
+        )
+        if not isinstance(data, dict):
+            return ToolResult(
+                cid, "worktree_promote", False, error="invalid_worktree_result", risk=NEEDS_STRATEGY
+            )
+        artifacts = [
+            str(path)
+            for path in (data.get("artifact_paths") or [data.get("diff_artifact_path")])
+            if str(path or "").strip()
+        ]
+        if not data.get("ok", True):
+            risk = REQUIRES_APPROVAL if data.get("requires_approval") else NEEDS_STRATEGY
+            return ToolResult(
+                cid,
+                "worktree_promote",
+                False,
+                data=data,
+                error=str(data.get("error") or "worktree_promote_failed"),
+                risk=risk,
+                artifact_paths=artifacts,
+            )
+        risk = REQUIRES_APPROVAL if data.get("requires_approval") else NEEDS_STRATEGY
+        return ToolResult(cid, "worktree_promote", True, data, risk=risk, artifact_paths=artifacts)
+
+    async def _checkpoint_create(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if self._workspace_read_only:
+            return ToolResult(cid, "checkpoint_create", False, error="tool_disabled")
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "checkpoint_create", False, error="invalid_args")
+        if not self._session_id:
+            return ToolResult(cid, "checkpoint_create", False, error="missing_session")
+        label = str(args.get("label") or "pm checkpoint").strip() or "pm checkpoint"
+        manager = self._checkpoint_manager()
+        step_index = manager.next_step(self._session_id)
+        sha = await _maybe_await(
+            manager.snapshot(
+                self._session_id,
+                step_index,
+                label=label,
+                task_id=self._task_id,
+            )
+        )
+        checkpoint_id = self._checkpoint_id_for_ref(str(sha), step_index)
+        return ToolResult(
+            cid,
+            "checkpoint_create",
+            True,
+            {
+                "checkpoint_id": checkpoint_id,
+                "vcs_ref": str(sha),
+                "step_index": step_index,
+                "label": label,
+                "workspace": str(self.cfg.workspace),
+            },
+        )
+
+    async def _checkpoint_undo(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if self._workspace_read_only:
+            return ToolResult(cid, "checkpoint_undo", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path", "vcs_ref"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "checkpoint_undo", False, error="invalid_args", risk=NEEDS_STRATEGY)
+        checkpoint, error = self._checkpoint_for_current_session(args.get("checkpoint_id"))
+        if error:
+            return ToolResult(cid, "checkpoint_undo", False, error=error, risk=NEEDS_STRATEGY)
+        manager = self._checkpoint_manager()
+        redo_ref = await _maybe_await(
+            manager.undo_to(
+                str(getattr(checkpoint, "vcs_ref", "") or ""),
+                session_id=self._session_id,
+                task_id=self._task_id,
+            )
+        )
+        return ToolResult(
+            cid,
+            "checkpoint_undo",
+            True,
+            {
+                "checkpoint_id": str(getattr(checkpoint, "id", "") or ""),
+                "restored_ref": str(getattr(checkpoint, "vcs_ref", "") or ""),
+                "redo_ref": str(redo_ref or ""),
+                "redo_checkpoint_id": self._checkpoint_id_for_ref(str(redo_ref or ""), -1),
+                "workspace": str(self.cfg.workspace),
+            },
+            risk=NEEDS_STRATEGY,
+        )
+
+    async def _git_diff_summary(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path", "vcs_ref"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "git_diff_summary", False, error="invalid_args")
+        checkpoint, error = self._checkpoint_for_current_session(args.get("checkpoint_id"))
+        if error:
+            return ToolResult(cid, "git_diff_summary", False, error=error)
+        manager = self._checkpoint_manager()
+        data = manager.summarize_diff(
+            str(getattr(checkpoint, "vcs_ref", "") or ""),
+            max_patch_chars=_positive_int(args.get("max_patch_chars"), self.cfg.max_chars),
+            artifact_dir=self._tool_log_dir(),
+        )
+        data = {
+            **data,
+            "checkpoint_id": str(getattr(checkpoint, "id", "") or ""),
+            "base_ref": str(getattr(checkpoint, "vcs_ref", "") or ""),
+            "workspace": str(self.cfg.workspace),
+        }
+        artifacts = [str(path) for path in data.get("artifact_paths", []) if str(path or "").strip()]
+        return ToolResult(
+            cid,
+            "git_diff_summary",
+            True,
+            data,
+            truncated=bool(data.get("patch_truncated")),
+            artifact_paths=artifacts,
+        )
+
+    async def _test_run(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.shell:
+            return ToolResult(cid, "test_run", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "test_run", False, error="invalid_args", risk=NEEDS_STRATEGY)
+        command = normalize_command(str(args.get("command") or ""))
+        if not command:
+            return ToolResult(cid, "test_run", False, error="missing_command", risk=NEEDS_STRATEGY)
+        if self.gate is not None and getattr(self.gate, "classify", None):
+            if self.gate.classify(command) == REQUIRES_APPROVAL:
+                return ToolResult(cid, "test_run", False, error="requires_approval", risk=REQUIRES_APPROVAL)
+        timeout_s = min(max(_positive_int(args.get("timeout_s"), self.cfg.timeout_s), 1), 600)
+        data = await self._run_test_process(command, timeout_s=timeout_s)
+        return ToolResult(
+            cid,
+            "test_run",
+            True,
+            data,
+            truncated=bool(data.get("truncated")),
+            risk=NEEDS_STRATEGY,
+            artifact_paths=[
+                str(path)
+                for path in [data.get("log_path"), data.get("summary_artifact")]
+                if str(path or "").strip()
+            ],
+        )
+
+    def bind_workspace(self, workspace: str | Path, *, main_workspace: object = None) -> None:
+        resolved = self.worktree_guard.resolve(str(workspace))
+        self.cfg.workspace = resolved
+        self.cfg.allowed_roots = [resolved]
+        if main_workspace:
+            self.cfg.main_workspace = Path(str(main_workspace)).expanduser()
+        self.guard = PathGuard(resolved, [resolved])
+
+    def _apply_worktree_access_mode(self, data: dict[str, Any]) -> None:
+        if data.get("read_only") is True:
+            self._workspace_read_only = True
+            self.cfg.file_write = False
+            self.cfg.shell = False
+
+    def _reset_workspace_to_main_if_deleted(self, data: dict[str, Any]) -> None:
+        try:
+            removed_path = Path(str(data.get("workspace") or data.get("path") or "")).resolve(strict=False)
+            current = self.cfg.workspace.resolve(strict=False)
+        except (OSError, ValueError):
+            return
+        if removed_path != current:
+            return
+        main_raw = data.get("main_workspace") or self.cfg.main_workspace or self.cfg.workspace
+        main = Path(str(main_raw)).expanduser().resolve(strict=False)
+        self.cfg.workspace = main
+        self.cfg.allowed_roots = [main]
+        self.guard = PathGuard(main, [main])
+
+    def _checkpoint_manager(self):
+        from foreman.client.core.checkpoint import CheckpointManager
+
+        return CheckpointManager(self.cfg.workspace, store=self.cfg.store)
+
+    def _checkpoint_for_current_session(self, raw_id: object) -> tuple[Any | None, str]:
+        checkpoint_id = str(raw_id or "").strip()
+        if not checkpoint_id:
+            return None, "missing_checkpoint_id"
+        store = self.cfg.store
+        get_checkpoint = getattr(store, "get_checkpoint", None)
+        if store is None or not callable(get_checkpoint):
+            return None, "checkpoint_store_unavailable"
+        checkpoint = get_checkpoint(checkpoint_id)
+        if checkpoint is None:
+            return None, "checkpoint_not_found"
+        if str(getattr(checkpoint, "session_id", "") or "") != self._session_id:
+            return None, "checkpoint_session_mismatch"
+        return checkpoint, ""
+
+    def _checkpoint_id_for_ref(self, vcs_ref: str, step_index: int) -> str:
+        if not vcs_ref or self.cfg.store is None:
+            return ""
+        get_many = getattr(self.cfg.store, "get_checkpoints", None)
+        if not callable(get_many):
+            return ""
+        for checkpoint in reversed(list(get_many(self._session_id) or [])):
+            if str(getattr(checkpoint, "vcs_ref", "") or "") != vcs_ref:
+                continue
+            if step_index >= 0 and int(getattr(checkpoint, "step_index", -1)) != step_index:
+                continue
+            return str(getattr(checkpoint, "id", "") or "")
+        return ""
+
+    def _tool_log_dir(self) -> Path:
+        root = Path(str(self.cfg.main_workspace or self.cfg.workspace)).expanduser().resolve(strict=False)
+        log_dir = (root / ".foreman" / "tool-logs").resolve(strict=False)
+        if not (log_dir == root or root in log_dir.parents):
+            return (self.cfg.workspace / ".foreman" / "tool-logs").resolve(strict=False)
+        return log_dir
+
+    def _artifact_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        for raw in (self.cfg.workspace, self.cfg.main_workspace or self.cfg.workspace):
+            try:
+                root = (Path(str(raw)).expanduser() / ".foreman" / "tool-logs").resolve(strict=False)
+            except (OSError, ValueError):
+                continue
+            if all(root != existing for existing in roots):
+                roots.append(root)
+        tool_log_dir = self._tool_log_dir()
+        if all(tool_log_dir != existing for existing in roots):
+            roots.append(tool_log_dir)
+        return roots
+
+    def _current_session_events(self) -> tuple[list[Any], str]:
+        if not self._session_id:
+            return [], "missing_session"
+        store = self.cfg.store
+        get_events = getattr(store, "get_events", None)
+        if store is None or not callable(get_events):
+            return [], "store_unavailable"
+        return list(get_events(self._session_id) or []), ""
+
+    async def _run_test_process(self, command: str, *, timeout_s: int) -> dict[str, Any]:
+        log_dir = self._tool_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"test-run-{uuid.uuid4().hex[:12]}.log"
+        summary_path = log_dir / f"test-run-{uuid.uuid4().hex[:12]}.json"
+        kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            kwargs["start_new_session"] = True
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(self.cfg.workspace),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **kwargs,
+        )
+        timed_out = False
+        try:
+            stdout_raw, stderr_raw = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            timed_out = True
+            await _terminate_process(proc)
+            stdout_raw, stderr_raw = await proc.communicate()
+        stdout_full = stdout_raw.decode("utf-8", "replace")
+        stderr_full = stderr_raw.decode("utf-8", "replace")
+        returncode = proc.returncode if proc.returncode is not None else -1
+        stdout, out_trunc = _truncate(stdout_full, self.cfg.max_chars)
+        stderr, err_trunc = _truncate(stderr_full, self.cfg.max_chars)
+        passed = returncode == 0 and not timed_out
+        summary = _test_run_summary(
+            command=command,
+            returncode=returncode,
+            timed_out=timed_out,
+            timeout_s=timeout_s,
+            stdout=stdout_full,
+            stderr=stderr_full,
+        )
+        log_path.write_text(
+            f"$ {command}\n"
+            f"[system] timeout_s={timeout_s} returncode={returncode} timed_out={timed_out}\n"
+            f"[stdout]\n{stdout_full}\n[stderr]\n{stderr_full}",
+            encoding="utf-8",
+            newline="",
+        )
+        payload = {
+            "command": command,
+            "passed": passed,
+            "returncode": returncode,
+            "timed_out": timed_out,
+            "timeout_s": timeout_s,
+            "summary": summary,
+            "log_path": str(log_path),
+        }
+        summary_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        return {
+            **payload,
+            "stdout": stdout,
+            "stderr": stderr,
+            "truncated": out_trunc or err_trunc,
+            "summary_artifact": str(summary_path),
+        }
+
+    def worktree_context(self) -> dict[str, Any]:
+        return {
+            "store": self.cfg.store,
+            "session_id": self._session_id,
+            "task_id": self._task_id,
+            "workspace": str(self.cfg.workspace),
+            "main_workspace": str(self.cfg.main_workspace or self.cfg.workspace),
+            "worktree_roots": [str(path) for path in self.cfg.worktree_roots],
+            "branch_prefix": self.cfg.worktree_branch_prefix,
+            "default_base_ref": self.cfg.default_base_ref,
+            "allow_custom_worktree_path": self.cfg.allow_custom_worktree_path,
+        }
+
+    def _worktree_manager(self) -> tuple[Any, str]:
+        manager = self.cfg.worktree_manager
+        if manager is None:
+            return None, "worktree_manager_unavailable"
+        return manager, ""
+
+    def _resolve_worktree_tool_path(self, value: object) -> tuple[Path | None, str]:
+        raw = str(value or "").strip()
+        try:
+            return self.guard.resolve(raw), ""
+        except ToolPolicyError:
+            pass
+        try:
+            candidate = Path(raw or ".").expanduser()
+            if not candidate.is_absolute():
+                candidate = self.cfg.workspace / candidate
+            resolved = candidate.resolve(strict=False)
+        except (OSError, ValueError):
+            return None, "invalid_path"
+        lease = self._lease_for_path(resolved)
+        if lease is not None and str(getattr(lease, "session_id", "") or "") == self._session_id:
+            return resolved, ""
+        return None, "path_outside_workspace"
+
+    def _lease_for_path(self, path: object) -> Any | None:
+        store = self.cfg.store
+        if store is None:
+            return None
+        try:
+            resolved = Path(str(path or "")).expanduser().resolve(strict=False)
+        except (OSError, ValueError):
+            return None
+        get_active = getattr(store, "get_active_worktree_lease", None)
+        if callable(get_active):
+            for candidate in {str(path or ""), str(resolved)}:
+                lease = get_active(worktree_path=candidate)
+                if lease is not None:
+                    return lease
+        get_many = getattr(store, "get_worktree_leases", None)
+        if not callable(get_many):
+            return None
+        try:
+            leases = get_many(status="active")
+        except TypeError:
+            leases = get_many()
+        for lease in leases or []:
+            try:
+                lease_path = Path(str(getattr(lease, "worktree_path", "") or "")).expanduser().resolve(
+                    strict=False
+                )
+            except (OSError, ValueError):
+                continue
+            if lease_path == resolved:
+                return lease
+        return None
+
+    @staticmethod
+    def _lease_fields(lease: Any | None) -> dict[str, str]:
+        if lease is None:
+            return {
+                "lease_id": "",
+                "owner_session_id": "",
+                "owner_task_id": "",
+                "lease_status": "",
+            }
+        return {
+            "lease_id": str(getattr(lease, "id", "") or ""),
+            "owner_session_id": str(getattr(lease, "session_id", "") or ""),
+            "owner_task_id": str(getattr(lease, "task_id", "") or ""),
+            "lease_status": str(getattr(lease, "status", "") or ""),
+        }
 
     async def _work_mode_search(self, cid: str, args: dict[str, Any]) -> ToolResult:
         """L1 discovery: return the L0 index (metadata only, never a body) of work modes applicable
@@ -509,6 +1589,159 @@ class PMToolRuntime:
             True,
             {"matches": matches},
             truncated=len(matches) >= max_results,
+        )
+
+    def _repo_map(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.file_read:
+            return ToolResult(cid, "repo_map", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "repo_map", False, error="invalid_args")
+        root = self.guard.resolve(str(args.get("path") or "."))
+        max_files = min(_positive_int(args.get("max_files"), 120), 500)
+        max_depth = min(_positive_int(args.get("max_depth"), 4), 10)
+        data = _bounded_repo_map(root, self.guard, max_files=max_files, max_depth=max_depth)
+        return ToolResult(cid, "repo_map", True, data, truncated=bool(data.get("truncated")))
+
+    def _impact_analysis(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.file_read:
+            return ToolResult(cid, "impact_analysis", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "workspace", "worktree_path", "path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "impact_analysis", False, error="invalid_args")
+        goal = str(args.get("goal") or "").strip()
+        if not goal:
+            return ToolResult(cid, "impact_analysis", False, error="missing_goal")
+        changed_files = [
+            str(item).strip()
+            for item in (args.get("changed_files") if isinstance(args.get("changed_files"), list) else [])
+            if str(item or "").strip()
+        ][:50]
+        max_candidates = min(_positive_int(args.get("max_candidates"), 12), 50)
+        root = self.guard.resolve(".")
+        data = _heuristic_impact_analysis(
+            root,
+            self.guard,
+            goal=goal,
+            changed_files=changed_files,
+            max_candidates=max_candidates,
+        )
+        return ToolResult(
+            cid,
+            "impact_analysis",
+            True,
+            data,
+            truncated=bool(data.get("scan_truncated") or data.get("candidate_truncated")),
+        )
+
+    def _event_query(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "event_query", False, error="invalid_args")
+        events, error = self._current_session_events()
+        if error:
+            return ToolResult(cid, "event_query", False, error=error)
+        requested_types = {
+            str(item).strip()
+            for item in (args.get("types") if isinstance(args.get("types"), list) else [])
+            if str(item or "").strip()
+        }
+        contains = str(args.get("contains") or "").strip().casefold()
+        limit = min(_positive_int(args.get("limit"), 20), 100)
+        filtered = []
+        for event in events:
+            payload = _event_payload(event)
+            haystack = (
+                f"{getattr(event, 'type', '')} {getattr(event, 'source', '')} "
+                f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
+            ).casefold()
+            if requested_types and str(getattr(event, "type", "")) not in requested_types:
+                continue
+            if contains and contains not in haystack:
+                continue
+            filtered.append(_event_row(event, payload))
+        truncated = len(filtered) > limit
+        return ToolResult(
+            cid,
+            "event_query",
+            True,
+            {
+                "session_id": self._session_id,
+                "events": filtered[-limit:],
+                "matched_count": len(filtered),
+                "limit": limit,
+            },
+            truncated=truncated,
+        )
+
+    def _session_summary(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        forbidden = {"session_id", "task_id", "path", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "session_summary", False, error="invalid_args")
+        events, error = self._current_session_events()
+        if error:
+            return ToolResult(cid, "session_summary", False, error=error)
+        store = self.cfg.store
+        session = store.get_session(self._session_id) if hasattr(store, "get_session") else None
+        if session is None:
+            return ToolResult(cid, "session_summary", False, error="session_not_found")
+        limit = min(_positive_int(args.get("limit"), 8), 30)
+        runtime_state = _runtime_state_for_session(store, self._session_id)
+        return ToolResult(
+            cid,
+            "session_summary",
+            True,
+            {
+                "session_id": self._session_id,
+                "task_id": self._task_id,
+                "goal": str(getattr(session, "goal", "") or ""),
+                "status": str(getattr(session, "status", "") or ""),
+                "workspace": str(getattr(session, "workspace", "") or ""),
+                "main_workspace": str(getattr(session, "main_workspace", "") or ""),
+                "runtime_state": runtime_state,
+                "recent_events": [_event_row(event, _event_payload(event)) for event in events[-limit:]],
+                "event_count": len(events),
+            },
+        )
+
+    def _artifact_read(self, cid: str, args: dict[str, Any]) -> ToolResult:
+        if not self.cfg.file_read:
+            return ToolResult(cid, "artifact_read", False, error="tool_disabled", risk=NEEDS_STRATEGY)
+        forbidden = {"session_id", "task_id", "workspace", "worktree_path"}
+        if any(key in args for key in forbidden):
+            return ToolResult(cid, "artifact_read", False, error="invalid_args")
+        raw = str(args.get("path") or "").strip()
+        if not raw:
+            return ToolResult(cid, "artifact_read", False, error="missing_path")
+        try:
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                candidate = self.cfg.workspace / candidate
+            path = candidate.resolve(strict=False)
+        except (OSError, ValueError):
+            return ToolResult(cid, "artifact_read", False, error="invalid_path")
+        roots = self._artifact_roots()
+        if not any(_is_relative_to(path, root) for root in roots):
+            return ToolResult(cid, "artifact_read", False, error="path_outside_artifacts")
+        if not path.is_file():
+            return ToolResult(cid, "artifact_read", False, error="not_file")
+        max_chars = min(_positive_int(args.get("max_chars"), self.cfg.max_chars), self.cfg.max_chars)
+        try:
+            text = _read_text(path)
+        except UnicodeDecodeError:
+            return ToolResult(cid, "artifact_read", False, error="binary_file")
+        text, truncated = _truncate(text, max_chars)
+        return ToolResult(
+            cid,
+            "artifact_read",
+            True,
+            {
+                "path": str(path),
+                "artifact_root": str(next(root for root in roots if _is_relative_to(path, root))),
+                "text": text,
+            },
+            truncated=truncated,
+            artifact_paths=[str(path)],
         )
 
     def _write_file(self, cid: str, args: dict[str, Any]) -> ToolResult:
@@ -842,6 +2075,289 @@ class PMToolRuntime:
         return parser.results
 
 
+def _bounded_repo_map(root: Path, guard: PathGuard, *, max_files: int, max_depth: int) -> dict[str, Any]:
+    root = root.resolve(strict=False)
+    entry_points: list[str] = []
+    test_dirs: list[str] = []
+    directories: list[str] = []
+    files: list[str] = []
+    file_count = 0
+    dir_count = 0
+    truncated = False
+    scan_budget = min(max(max_files * 10, max_files + 50), 2000)
+
+    if root.is_file():
+        rel = guard.relative(root)
+        return {
+            "path": rel,
+            "root": str(root),
+            "max_files": max_files,
+            "max_depth": max_depth,
+            "file_count_scanned": 1,
+            "dir_count_scanned": 0,
+            "files": [rel],
+            "directories": [],
+            "entry_points": [rel] if _is_entry_point(root.name) else [],
+            "test_dirs": [],
+            "truncated": False,
+        }
+
+    stop = False
+    for current, raw_dirs, raw_names in os.walk(root):
+        current_path = Path(current)
+        current_depth = _path_depth(current_path, root)
+        dirs = sorted([name for name in raw_dirs if name not in SKIP_DIRS])
+        if current_depth >= max_depth:
+            dirs = []
+        raw_dirs[:] = dirs
+        for dirname in dirs:
+            dir_path = current_path / dirname
+            rel = guard.relative(dir_path)
+            dir_count += 1
+            if len(directories) < 120:
+                directories.append(rel)
+            if _is_entry_point(dirname):
+                _append_unique(entry_points, rel, limit=40)
+            if dirname.casefold() in TEST_DIR_NAMES:
+                _append_unique(test_dirs, rel, limit=40)
+        for name in sorted(raw_names):
+            if current_depth + 1 > max_depth:
+                continue
+            path = current_path / name
+            rel = guard.relative(path)
+            file_count += 1
+            if _is_entry_point(name):
+                _append_unique(entry_points, rel, limit=40)
+            if len(files) < max_files:
+                files.append(rel)
+            else:
+                truncated = True
+            if file_count >= scan_budget:
+                truncated = True
+                stop = True
+                break
+        if stop:
+            raw_dirs[:] = []
+            break
+
+    return {
+        "path": guard.relative(root),
+        "root": str(root),
+        "max_files": max_files,
+        "max_depth": max_depth,
+        "file_count_scanned": file_count,
+        "dir_count_scanned": dir_count,
+        "files": files,
+        "directories": directories,
+        "entry_points": entry_points,
+        "test_dirs": test_dirs,
+        "truncated": truncated,
+    }
+
+
+def _heuristic_impact_analysis(
+    root: Path,
+    guard: PathGuard,
+    *,
+    goal: str,
+    changed_files: list[str],
+    max_candidates: int,
+) -> dict[str, Any]:
+    paths, scan_truncated = _scan_repo_file_paths(root, guard, max_files=1200)
+    tokens = _impact_tokens(goal, changed_files)
+    changed_set = {item.replace("\\", "/") for item in changed_files}
+    candidates_by_path: dict[str, dict[str, Any]] = {}
+
+    for rel in paths:
+        rel_norm = rel.replace("\\", "/")
+        text = rel_norm.casefold()
+        matched = [token for token in tokens if token in text]
+        score = len(matched)
+        reasons: list[str] = []
+        if matched:
+            reasons.append("path_matches_goal_token")
+        if rel_norm in changed_set:
+            score += 5
+            reasons.append("provided_changed_file")
+        if score <= 0:
+            continue
+        candidates_by_path[rel_norm] = {
+            "path": rel_norm,
+            "score": score,
+            "matched_tokens": matched[:8],
+            "reason": ", ".join(reasons),
+        }
+
+    for rel in changed_set:
+        candidates_by_path.setdefault(
+            rel,
+            {
+                "path": rel,
+                "score": 5,
+                "matched_tokens": [],
+                "reason": "provided_changed_file",
+            },
+        )
+
+    candidates = sorted(
+        candidates_by_path.values(),
+        key=lambda item: (-int(item.get("score", 0)), str(item.get("path", ""))),
+    )
+    candidate_truncated = len(candidates) > max_candidates
+    candidates = candidates[:max_candidates]
+    risks = ["heuristic_only"]
+    if scan_truncated or candidate_truncated:
+        risks.append("candidate_files_not_exhaustive")
+    return {
+        "goal": goal,
+        "deterministic": False,
+        "confidence": "heuristic",
+        "claim": "candidate_files_and_tests_are_suggestions_not_proof",
+        "tokens": tokens[:20],
+        "candidate_files": candidates,
+        "test_suggestions": _test_suggestions(paths, [str(item["path"]) for item in candidates]),
+        "risks": risks,
+        "scanned_files": len(paths),
+        "scan_truncated": scan_truncated,
+        "candidate_truncated": candidate_truncated,
+    }
+
+
+def _scan_repo_file_paths(root: Path, guard: PathGuard, *, max_files: int) -> tuple[list[str], bool]:
+    paths: list[str] = []
+    truncated = False
+    for current, dirs, names in os.walk(root):
+        dirs[:] = sorted([name for name in dirs if name not in SKIP_DIRS])
+        for name in sorted(names):
+            paths.append(guard.relative(Path(current) / name).replace("\\", "/"))
+            if len(paths) >= max_files:
+                truncated = True
+                dirs[:] = []
+                return paths, truncated
+    return paths, truncated
+
+
+def _impact_tokens(goal: str, changed_files: list[str]) -> list[str]:
+    stop = {
+        "the", "and", "for", "with", "from", "into", "that", "this", "should", "need",
+        "needs", "fix", "add", "update", "change", "implement", "测试", "修复", "实现",
+    }
+    raw = re.findall(r"[A-Za-z0-9_]{3,}", goal.casefold())
+    for path in changed_files:
+        raw.extend(re.findall(r"[A-Za-z0-9_]{3,}", Path(path).stem.casefold()))
+    tokens: list[str] = []
+    for token in raw:
+        if token in stop or token in tokens:
+            continue
+        tokens.append(token)
+    return tokens[:40]
+
+
+def _test_suggestions(paths: list[str], candidate_paths: list[str]) -> list[str]:
+    suggestions: list[str] = []
+    path_set = {path.replace("\\", "/") for path in paths}
+    has_pytest = any(path.startswith("tests/") or "/tests/" in path for path in path_set)
+    has_package_json = "package.json" in path_set
+
+    for candidate in candidate_paths[:8]:
+        candidate = candidate.replace("\\", "/")
+        if candidate.startswith("tests/") or "/tests/" in candidate:
+            _append_unique(suggestions, f"pytest {candidate}", limit=10)
+            continue
+        stem = Path(candidate).stem
+        for test_path in sorted(path_set):
+            test_name = Path(test_path).stem
+            if test_path.startswith("tests/") and stem and stem in test_name:
+                _append_unique(suggestions, f"pytest {test_path}", limit=10)
+    if has_pytest:
+        _append_unique(suggestions, "pytest tests", limit=10)
+    if has_package_json:
+        _append_unique(suggestions, "npm test", limit=10)
+    if not suggestions:
+        suggestions.append("run the smallest relevant test command for the candidate files")
+    return suggestions
+
+
+def _runtime_state_for_session(store: Any, session_id: str) -> dict[str, Any]:
+    try:
+        from foreman.client.core.context_v2 import extract_runtime_state, materialize_event, runtime_state_dict
+
+        session = store.get_session(session_id) if hasattr(store, "get_session") else None
+        if session is None:
+            return {}
+        events = store.get_events(session_id) if hasattr(store, "get_events") else []
+        frames = []
+        for event in events:
+            frames.extend(materialize_event(event))
+        return _compact_tool_payload(runtime_state_dict(extract_runtime_state(session, frames)))
+    except Exception:
+        return {}
+
+
+def _event_payload(event: Any) -> dict[str, Any]:
+    try:
+        raw = json.loads(str(getattr(event, "payload_json", "") or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _event_row(event: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_tool_payload(payload, max_text=600)
+    return {
+        "id": str(getattr(event, "id", "") or ""),
+        "ts": str(getattr(event, "ts", "") or ""),
+        "type": str(getattr(event, "type", "") or ""),
+        "source": str(getattr(event, "source", "") or ""),
+        "task_id": str(getattr(event, "task_id", "") or ""),
+        "payload": compact,
+        "payload_summary": json.dumps(compact, ensure_ascii=False, sort_keys=True)[:800],
+    }
+
+
+def _compact_tool_payload(value: Any, *, max_text: int = 800) -> Any:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"stdout", "stderr", "output", "aggregated_output"} and isinstance(item, str):
+                out[f"{key}_summary"] = _truncate(item, max_text)[0]
+                out[f"{key}_truncated"] = len(item) > max_text
+                continue
+            out[str(key)] = _compact_tool_payload(item, max_text=max_text)
+        return out
+    if isinstance(value, list):
+        return [_compact_tool_payload(item, max_text=max_text) for item in value[:40]]
+    if isinstance(value, str):
+        return _truncate(value, max_text)[0]
+    return value
+
+
+def _append_unique(values: list[str], value: str, *, limit: int) -> None:
+    if value and value not in values and len(values) < limit:
+        values.append(value)
+
+
+def _path_depth(path: Path, root: Path) -> int:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return 0
+    return 0 if str(rel) == "." else len(rel.parts)
+
+
+def _is_entry_point(name: str) -> bool:
+    lowered = name.casefold()
+    return any(lowered == item.casefold() for item in ENTRY_POINT_NAMES)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _walk_files(root: Path) -> list[Path]:
     out: list[Path] = []
     for current, dirs, names in os.walk(root):
@@ -878,6 +2394,28 @@ def _positive_int(value: object, default: int) -> int:
     return out if out > 0 else default
 
 
+def _test_run_summary(
+    *,
+    command: str,
+    returncode: int,
+    timed_out: bool,
+    timeout_s: int,
+    stdout: str,
+    stderr: str,
+) -> str:
+    if timed_out:
+        return f"Test command timed out after {timeout_s}s: {command}"
+    if returncode == 0:
+        return "Tests passed."
+    lines = [
+        line.strip()
+        for line in (stderr + "\n" + stdout).splitlines()
+        if line.strip()
+    ]
+    tail = " | ".join(lines[-4:])
+    return f"Tests failed with exit code {returncode}." + (f" {tail}" if tail else "")
+
+
 def _unwrap_tool_args(args: dict[str, Any]) -> dict[str, Any]:
     for key in ("arguments", "args", "input"):
         nested = args.get(key)
@@ -902,6 +2440,12 @@ async def _emit_tool_event(
             await res
     except Exception:
         return
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:

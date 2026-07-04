@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -9,6 +10,9 @@ from pathlib import Path
 from threading import Thread
 
 from foreman.client.core.gate import Gate
+from foreman.client.core.worktree_manager import WorktreeManager
+from foreman.client.store import Store
+from foreman.client.store.models import Session, WorktreeLease
 from foreman.client.tools import EXTERNAL_WEB, PMToolLoop, PMToolRuntime, ToolCall
 from foreman.client.tools.loop import (
     SUBMIT_PLAN_TOOL,
@@ -18,6 +22,7 @@ from foreman.client.tools.loop import (
 )
 from foreman.client.tools.models import ToolRuntimeConfig
 from foreman.shared.config import Config, GatesCfg
+from foreman.shared.events import make_event
 from foreman.shared.llm import LLMToolCall, LLMToolResponse, Message
 
 
@@ -41,6 +46,18 @@ def _serve_text() -> tuple[HTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_port}/x"
 
 
+def _git(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
 def _runtime(tmp_path: Path, *, cards=None, **kwargs) -> PMToolRuntime:
     cfg = ToolRuntimeConfig(workspace=tmp_path, allowed_roots=[tmp_path], **kwargs)
     return PMToolRuntime(cfg, gate=Gate(Config().gates), cards=cards)
@@ -54,6 +71,1321 @@ def test_pm_tool_schemas_allow_public_activity_note():
     assert native_props["purpose"]["type"] == "string"
     assert prompt_props["public_note"]["maxLength"] == 200
     assert spec.input_schema["additionalProperties"] is False
+
+
+def test_worktree_bind_schema_rejects_pm_owned_context_fields():
+    spec = next(item for item in PMToolRuntime.specs() if item.name == "worktree_bind_session")
+    schema = spec.to_prompt()["input_schema"]
+
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"lease_id"}
+    assert "lease_id" in schema["properties"]
+    assert "session_id" not in schema["properties"]
+    assert "task_id" not in schema["properties"]
+    assert "path" not in schema["properties"]
+    assert "worktree_path" not in schema["properties"]
+
+
+def test_worktree_readonly_tool_schemas_are_safe_and_do_not_accept_pm_context_fields():
+    by_name = {item.name: item for item in PMToolRuntime.specs()}
+
+    plan_spec = by_name["worktree_plan"]
+    create_spec = by_name["worktree_create"]
+    list_spec = by_name["worktree_list"]
+    status_spec = by_name["worktree_status"]
+    diff_spec = by_name["worktree_diff"]
+    cleanup_spec = by_name["worktree_cleanup"]
+    promote_spec = by_name["worktree_promote"]
+
+    assert plan_spec.risk == "safe"
+    assert create_spec.risk == "needs-strategy"
+    assert list_spec.risk == "safe"
+    assert status_spec.risk == "safe"
+    assert diff_spec.risk == "safe"
+    assert cleanup_spec.risk == "needs-strategy"
+    assert promote_spec.risk == "requires-approval"
+    assert plan_spec.input_schema["additionalProperties"] is False
+    assert create_spec.input_schema["additionalProperties"] is False
+    assert list_spec.input_schema["additionalProperties"] is False
+    assert status_spec.input_schema["additionalProperties"] is False
+    assert diff_spec.input_schema["additionalProperties"] is False
+    assert cleanup_spec.input_schema["additionalProperties"] is False
+    assert promote_spec.input_schema["additionalProperties"] is False
+    assert "custom_path" in plan_spec.input_schema["properties"]
+    assert "custom_path" in create_spec.input_schema["properties"]
+    assert "dry_run" in create_spec.input_schema["properties"]
+    assert "bind_session" in create_spec.input_schema["properties"]
+    assert set(cleanup_spec.input_schema["properties"]) == {"dry_run", "reason"}
+    assert "prepare-pr" in promote_spec.input_schema["properties"]["mode"]["enum"]
+    for spec in (plan_spec, create_spec, list_spec, status_spec, diff_spec, cleanup_spec, promote_spec):
+        assert "session_id" not in spec.input_schema["properties"]
+        assert "task_id" not in spec.input_schema["properties"]
+        assert "path" not in spec.input_schema["properties"] or spec.name == "worktree_status"
+        assert "worktree_path" not in spec.input_schema["properties"]
+        assert "base_sha" not in spec.input_schema["properties"]
+    assert "lease_id" not in promote_spec.input_schema["properties"]
+
+
+def test_checkpoint_diff_and_test_tool_schemas_do_not_accept_pm_context_fields():
+    by_name = {item.name: item for item in PMToolRuntime.specs()}
+    specs = [
+        by_name["checkpoint_create"],
+        by_name["checkpoint_undo"],
+        by_name["git_diff_summary"],
+        by_name["test_run"],
+    ]
+
+    assert by_name["checkpoint_create"].risk == "safe"
+    assert by_name["git_diff_summary"].risk == "safe"
+    assert by_name["checkpoint_undo"].risk == "needs-strategy"
+    assert by_name["test_run"].risk == "needs-strategy"
+    assert set(by_name["checkpoint_create"].input_schema["properties"]) == {"label"}
+    assert set(by_name["checkpoint_undo"].input_schema["required"]) == {"checkpoint_id"}
+    assert set(by_name["git_diff_summary"].input_schema["required"]) == {"checkpoint_id"}
+    assert set(by_name["test_run"].input_schema["required"]) == {"command"}
+    for spec in specs:
+        assert spec.input_schema["additionalProperties"] is False
+        assert "session_id" not in spec.input_schema["properties"]
+        assert "task_id" not in spec.input_schema["properties"]
+        assert "path" not in spec.input_schema["properties"]
+        assert "workspace" not in spec.input_schema["properties"]
+        assert "worktree_path" not in spec.input_schema["properties"]
+
+
+def test_pm_intel_tool_schemas_are_safe_and_server_scoped():
+    by_name = {item.name: item for item in PMToolRuntime.specs()}
+    specs = [
+        by_name["repo_map"],
+        by_name["impact_analysis"],
+        by_name["event_query"],
+        by_name["session_summary"],
+        by_name["artifact_read"],
+    ]
+
+    for spec in specs:
+        assert spec.risk == "safe"
+        assert spec.input_schema["additionalProperties"] is False
+        assert "session_id" not in spec.input_schema["properties"]
+        assert "task_id" not in spec.input_schema["properties"]
+        assert "workspace" not in spec.input_schema["properties"]
+        assert "worktree_path" not in spec.input_schema["properties"]
+    assert set(by_name["impact_analysis"].input_schema["required"]) == {"goal"}
+    assert set(by_name["artifact_read"].input_schema["required"]) == {"path"}
+
+
+async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
+    cases = [
+        ToolCall("plan", "worktree_plan", {"goal": "x"}),
+        ToolCall("create", "worktree_create", {"goal": "x"}),
+        ToolCall("bind", "worktree_bind_session", {"lease_id": "lease-1"}),
+        ToolCall("list", "worktree_list", {}),
+        ToolCall("status", "worktree_status", {}),
+        ToolCall("diff", "worktree_diff", {}),
+        ToolCall("cleanup", "worktree_cleanup", {}),
+        ToolCall("promote", "worktree_promote", {}),
+    ]
+
+    for call in cases:
+        result = await _runtime(tmp_path, git_worktree=False).call(call)
+        assert result.ok is False
+        assert result.error == "tool_disabled"
+
+
+async def test_repo_map_and_impact_analysis_are_bounded_heuristics(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "auth.py").write_text("def login(): pass\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_auth.py").write_text("def test_login(): pass\n", encoding="utf-8")
+    deep = tmp_path / "src" / "deep" / "nested"
+    deep.mkdir(parents=True)
+    (deep / "too_deep.py").write_text("secret body should not be mapped\n", encoding="utf-8")
+    for idx in range(12):
+        (tmp_path / "src" / f"module_{idx}.py").write_text("x = 1\n", encoding="utf-8")
+    rt = _runtime(tmp_path)
+
+    repo = await rt.call(ToolCall("map", "repo_map", {"max_files": 5, "max_depth": 2}))
+    impact = await rt.call(
+        ToolCall("impact", "impact_analysis", {"goal": "fix auth login failure", "max_candidates": 5})
+    )
+    invalid = await rt.call(ToolCall("bad", "impact_analysis", {"goal": "x", "session_id": "evil"}))
+
+    assert repo.ok is True
+    assert repo.truncated is True
+    assert len(repo.data["files"]) <= 5
+    assert "pyproject.toml" in repo.data["entry_points"]
+    assert "tests" in repo.data["test_dirs"]
+    assert "too_deep.py" not in json.dumps(repo.data, ensure_ascii=False)
+    assert "secret body" not in json.dumps(repo.data, ensure_ascii=False)
+    assert impact.ok is True
+    assert impact.data["deterministic"] is False
+    assert impact.data["confidence"] == "heuristic"
+    assert "heuristic_only" in impact.data["risks"]
+    assert any(item["path"] == "src/auth.py" for item in impact.data["candidate_files"])
+    assert any("test_auth.py" in item for item in impact.data["test_suggestions"])
+    assert invalid.ok is False and invalid.error == "invalid_args"
+
+
+async def test_event_session_and_artifact_tools_are_scoped_to_current_session(tmp_path: Path):
+    store = Store(str(tmp_path / "tools.db"))
+    store.init()
+    artifact = tmp_path / ".foreman" / "tool-logs" / "pytest.log"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("pytest passed\n", encoding="utf-8")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("do not read me\n", encoding="utf-8")
+    store.add_session(Session(id="s1", goal="run tests", workspace=str(tmp_path)))
+    store.add_session(Session(id="s2", goal="other", workspace=str(tmp_path)))
+    store.add_event(
+        make_event(
+            "tool_post",
+            "pm-agent",
+            "s1",
+            task_id="t1",
+            payload={
+                "tool": "test_run",
+                "call_id": "call-1",
+                "ok": True,
+                "result": {
+                    "id": "call-1",
+                    "name": "test_run",
+                    "ok": True,
+                    "data": {
+                        "command": "pytest tests",
+                        "returncode": 0,
+                        "passed": True,
+                        "failed": False,
+                        "summary": "Tests passed.",
+                        "log_path": str(artifact),
+                    },
+                },
+            },
+        )
+    )
+    store.add_event(
+        make_event(
+            "agent_output",
+            "codex",
+            "s2",
+            task_id="t2",
+            payload={"text": "other session secret"},
+        )
+    )
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=tmp_path,
+            allowed_roots=[tmp_path],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+            main_workspace=tmp_path,
+        )
+    )
+
+    assert store.get_context_frames("s1") == []
+    events = await rt.call(ToolCall("events", "event_query", {"contains": "pytest", "limit": 10}))
+    summary = await rt.call(ToolCall("summary", "session_summary", {}))
+    artifact_ok = await rt.call(ToolCall("artifact", "artifact_read", {"path": str(artifact), "max_chars": 20}))
+    outside_read = await rt.call(ToolCall("outside", "artifact_read", {"path": str(outside)}))
+    traversal = await rt.call(ToolCall("trav", "artifact_read", {"path": ".foreman/tool-logs/../secret.txt"}))
+    invalid = await rt.call(ToolCall("bad", "event_query", {"task_id": "t2"}))
+
+    assert events.ok is True
+    assert events.data["matched_count"] == 1
+    assert events.data["events"][0]["type"] == "tool_post"
+    assert "other session secret" not in json.dumps(events.data, ensure_ascii=False)
+    assert summary.ok is True
+    assert summary.data["runtime_state"]["last_tests"][-1]["command"] == "pytest tests"
+    assert summary.data["runtime_state"]["last_tests"][-1]["passed"] is True
+    assert store.get_context_frames("s1") == []
+    assert artifact_ok.ok is True and "pytest passed" in artifact_ok.data["text"]
+    assert artifact_ok.artifact_paths == [str(artifact.resolve(strict=False))]
+    assert outside_read.ok is False and outside_read.error == "path_outside_artifacts"
+    assert traversal.ok is False and traversal.error == "path_outside_artifacts"
+    assert invalid.ok is False and invalid.error == "invalid_args"
+
+
+def test_runtime_from_config_injects_worktree_dependencies(tmp_path: Path):
+    cfg = Config()
+    cfg.pm_tools.git_worktree = True
+    cfg.pm_tools.worktree_roots = [str(tmp_path / "worktrees")]
+    cfg.pm_tools.allow_custom_worktree_path = True
+    store = object()
+    manager = object()
+
+    rt = PMToolRuntime.from_config(
+        cfg,
+        tmp_path,
+        store=store,
+        session_id="s1",
+        task_id="t1",
+        main_workspace=tmp_path,
+        worktree_manager=manager,
+    )
+
+    assert rt.cfg.store is store
+    assert rt.cfg.session_id == "s1"
+    assert rt.cfg.task_id == "t1"
+    assert rt.cfg.main_workspace == tmp_path
+    assert rt.cfg.worktree_manager is manager
+    assert rt.cfg.git_worktree is True
+    assert rt.cfg.worktree_roots == [tmp_path / "worktrees"]
+    assert rt.cfg.allow_custom_worktree_path is True
+    assert "session_id" not in rt.runtime_context()
+    assert "task_id" not in rt.runtime_context()
+    assert rt.worktree_context()["session_id"] == "s1"
+    assert rt.worktree_context()["task_id"] == "t1"
+
+
+async def test_worktree_bind_injects_context_and_switches_runtime_guard(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    (main / "main.txt").write_text("main", encoding="utf-8")
+    (worktree / "wt.txt").write_text("worktree", encoding="utf-8")
+    store = object()
+    seen: dict[str, object] = {}
+
+    class FakeWorktreeManager:
+        def bind_session(self, context, *, lease_id: str, reason: str = ""):
+            seen["context"] = context
+            seen["lease_id"] = lease_id
+            seen["reason"] = reason
+            return {
+                "ok": True,
+                "bound": True,
+                "lease_id": lease_id,
+                "main_workspace": str(main),
+                "workspace": str(worktree),
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+        )
+    )
+
+    bound = await rt.call(
+        ToolCall(
+            "bind",
+            "worktree_bind_session",
+            {"lease_id": "lease-1", "reason": "use isolated workspace"},
+        )
+    )
+    read_worktree = await rt.call(ToolCall("read", "read_file", {"path": "wt.txt"}))
+    read_main = await rt.call(ToolCall("main", "read_file", {"path": str(main / "main.txt")}))
+
+    assert bound.ok is True
+    assert bound.data["cwd"] == str(worktree.resolve(strict=False))
+    assert rt.runtime_context()["cwd"] == str(worktree.resolve(strict=False))
+    assert read_worktree.ok is True and read_worktree.data["text"] == "worktree"
+    assert read_main.ok is False and read_main.error == "path_outside_workspace"
+    context = seen["context"]
+    assert context["store"] is store
+    assert context["session_id"] == "s1"
+    assert context["task_id"] == "t1"
+    assert context["main_workspace"] == str(main)
+    assert context["worktree_roots"] == [str(worktree_root)]
+
+
+async def test_worktree_bind_rejects_pm_supplied_session_or_path(tmp_path: Path):
+    class FakeWorktreeManager:
+        def bind_session(self, context, *, lease_id: str, reason: str = ""):
+            raise AssertionError("manager must not be called for forbidden PM context fields")
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=tmp_path,
+            allowed_roots=[tmp_path],
+            main_workspace=tmp_path,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path],
+        )
+    )
+
+    result = await rt.call(
+        ToolCall(
+            "bind",
+            "worktree_bind_session",
+            {"lease_id": "lease-1", "session_id": "other", "worktree_path": str(tmp_path)},
+        )
+    )
+
+    assert result.ok is False
+    assert result.error == "invalid_args"
+
+
+async def test_worktree_plan_injects_runtime_context_and_rejects_pm_context_fields(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    main.mkdir()
+    store = object()
+    seen: dict[str, object] = {"calls": 0}
+
+    class FakeWorktreeManager:
+        def plan(self, context, **kwargs):
+            seen["calls"] = int(seen["calls"]) + 1
+            seen["context"] = context
+            seen["kwargs"] = kwargs
+            return {
+                "ok": True,
+                "decision": "create",
+                "main_workspace": str(main),
+                "repo_root": str(main),
+                "proposed_path": str(worktree_root / "s1-task"),
+                "proposed_branch": "foreman/s1/task",
+                "base_ref": "main",
+                "base_sha": "base",
+                "head_sha": "",
+                "requires_approval": False,
+                "risks": [],
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+            worktree_branch_prefix="foreman/",
+            default_base_ref="main",
+        )
+    )
+
+    result = await rt.call(
+        ToolCall(
+            "plan",
+            "worktree_plan",
+            {
+                "goal": "Build task",
+                "slug": "task",
+                "base_ref": "main",
+                "reuse_policy": "reuse_clean_owned",
+                "custom_path": str(worktree_root / "s1-task"),
+            },
+        )
+    )
+    invalid = await rt.call(
+        ToolCall("bad", "worktree_plan", {"goal": "x", "session_id": "other"})
+    )
+
+    assert result.ok is True
+    assert result.data["decision"] == "create"
+    assert invalid.ok is False
+    assert invalid.error == "invalid_args"
+    assert seen["calls"] == 1
+    context = seen["context"]
+    assert context["store"] is store
+    assert context["session_id"] == "s1"
+    assert context["task_id"] == "t1"
+    assert context["main_workspace"] == str(main)
+    assert context["worktree_roots"] == [str(worktree_root)]
+    assert context["allow_custom_worktree_path"] is False
+    assert seen["kwargs"] == {
+        "goal": "Build task",
+        "slug": "task",
+        "base_ref": "main",
+        "reuse_policy": "reuse_clean_owned",
+        "custom_path": str(worktree_root / "s1-task"),
+    }
+
+
+async def test_worktree_create_injects_runtime_context_and_rejects_pm_context_fields(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    main.mkdir()
+    store = object()
+    seen: dict[str, object] = {"calls": 0}
+
+    class FakeWorktreeManager:
+        def create(self, context, **kwargs):
+            seen["calls"] = int(seen["calls"]) + 1
+            seen["context"] = context
+            seen["kwargs"] = kwargs
+            return {
+                "ok": True,
+                "decision": "create",
+                "created": not kwargs["dry_run"],
+                "main_workspace": str(main),
+                "repo_root": str(main),
+                "proposed_path": str(worktree_root / "s1-task"),
+                "proposed_branch": "foreman/s1/task",
+                "base_ref": "main",
+                "base_sha": "base",
+                "head_sha": "base",
+                "lease_id": "lease-1",
+                "requires_approval": False,
+                "risks": [],
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+            worktree_branch_prefix="foreman/",
+            default_base_ref="main",
+            allow_custom_worktree_path=True,
+        )
+    )
+
+    result = await rt.call(
+        ToolCall(
+            "create",
+            "worktree_create",
+            {
+                "goal": "Build task",
+                "slug": "task",
+                "base_ref": "main",
+                "reuse_policy": "reuse_clean_owned",
+                "custom_path": str(worktree_root / "s1-task"),
+                "dry_run": False,
+                "bind_session": True,
+            },
+        )
+    )
+    invalid = await rt.call(
+        ToolCall("bad", "worktree_create", {"goal": "x", "task_id": "other"})
+    )
+
+    assert result.ok is True
+    assert result.data["created"] is True
+    assert invalid.ok is False
+    assert invalid.error == "invalid_args"
+    assert seen["calls"] == 1
+    context = seen["context"]
+    assert context["store"] is store
+    assert context["session_id"] == "s1"
+    assert context["task_id"] == "t1"
+    assert context["allow_custom_worktree_path"] is True
+    assert seen["kwargs"] == {
+        "goal": "Build task",
+        "slug": "task",
+        "base_ref": "main",
+        "reuse_policy": "reuse_clean_owned",
+        "custom_path": str(worktree_root / "s1-task"),
+        "dry_run": False,
+        "bind_session": True,
+    }
+
+
+async def test_worktree_create_bind_session_switches_runtime_guard(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    (main / "main.txt").write_text("main", encoding="utf-8")
+    (worktree / "wt.txt").write_text("worktree", encoding="utf-8")
+
+    class FakeWorktreeManager:
+        def create(self, context, **kwargs):
+            assert kwargs["bind_session"] is True
+            return {
+                "ok": True,
+                "decision": "create",
+                "created": True,
+                "session_bound": True,
+                "workspace_switched": True,
+                "lease_id": "lease-1",
+                "main_workspace": str(main),
+                "workspace": str(worktree),
+                "path": str(worktree),
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+        )
+    )
+
+    created = await rt.call(
+        ToolCall("create", "worktree_create", {"goal": "x", "bind_session": True})
+    )
+    read_worktree = await rt.call(ToolCall("read", "read_file", {"path": "wt.txt"}))
+    read_main = await rt.call(ToolCall("main", "read_file", {"path": str(main / "main.txt")}))
+
+    assert created.ok is True
+    assert created.data["cwd"] == str(worktree.resolve(strict=False))
+    assert rt.runtime_context()["cwd"] == str(worktree.resolve(strict=False))
+    assert read_worktree.ok is True and read_worktree.data["text"] == "worktree"
+    assert read_main.ok is False and read_main.error == "path_outside_workspace"
+
+
+async def test_worktree_read_only_bind_disables_write_and_command_tools(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    (worktree / "wt.txt").write_text("worktree", encoding="utf-8")
+
+    class FakeWorktreeManager:
+        def bind_session(self, context, *, lease_id: str, reason: str = ""):
+            return {
+                "ok": True,
+                "bound": True,
+                "lease_id": lease_id,
+                "main_workspace": str(main),
+                "workspace": str(worktree),
+                "read_only": True,
+                "write_lock": False,
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            file_write=True,
+            shell=True,
+            worktree_roots=[worktree_root],
+        )
+    )
+
+    bound = await rt.call(ToolCall("bind", "worktree_bind_session", {"lease_id": "lease-1"}))
+    read_worktree = await rt.call(ToolCall("read", "read_file", {"path": "wt.txt"}))
+    write = await rt.call(ToolCall("write", "write_file", {"path": "x.txt", "text": "x"}))
+    command = await rt.call(ToolCall("cmd", "run_command", {"command": "python --version"}))
+    create = await rt.call(ToolCall("create", "worktree_create", {"goal": "new"}))
+    cleanup = await rt.call(ToolCall("cleanup", "worktree_cleanup", {}))
+    promote = await rt.call(ToolCall("promote", "worktree_promote", {}))
+    checkpoint = await rt.call(ToolCall("checkpoint", "checkpoint_create", {}))
+    test_run = await rt.call(ToolCall("test", "test_run", {"command": "python --version"}))
+    undo = await rt.call(ToolCall("undo", "checkpoint_undo", {"checkpoint_id": "c1"}))
+
+    assert bound.ok is True
+    assert bound.data["read_only"] is True
+    assert read_worktree.ok is True and read_worktree.data["text"] == "worktree"
+    assert write.error == "tool_disabled"
+    assert command.error == "tool_disabled"
+    assert create.error == "tool_disabled"
+    assert cleanup.error == "tool_disabled"
+    assert promote.error == "tool_disabled"
+    assert checkpoint.error == "tool_disabled"
+    assert test_run.error == "tool_disabled"
+    assert undo.error == "tool_disabled"
+
+
+async def test_worktree_list_and_status_add_lease_ownership(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    lease = SimpleNamespace(
+        id="lease-1",
+        worktree_path=str(worktree),
+        session_id="s1",
+        task_id="t1",
+        status="active",
+    )
+
+    class FakeStore:
+        def get_active_worktree_lease(self, *, worktree_path: str, session_id: str | None = None):
+            if Path(worktree_path).resolve(strict=False) == worktree.resolve(strict=False):
+                return lease
+            return None
+
+        def get_worktree_leases(self, *, status: str | None = None):
+            return [lease] if status in {None, "active"} else []
+
+    class FakeWorktreeManager:
+        def __init__(self):
+            self.status_paths: list[Path] = []
+
+        def list(self, path):
+            return {
+                "ok": True,
+                "repo_root": str(main),
+                "worktrees": [
+                    {
+                        "path": str(main),
+                        "resolved_path": str(main.resolve(strict=False)),
+                        "branch": "main",
+                        "head_sha": "base",
+                        "locked": False,
+                        "exists": True,
+                    },
+                    {
+                        "path": str(worktree),
+                        "resolved_path": str(worktree.resolve(strict=False)),
+                        "branch": "feature",
+                        "head_sha": "head",
+                        "locked": False,
+                        "exists": True,
+                    },
+                ],
+            }
+
+        def status(self, path, compare_to: str = ""):
+            self.status_paths.append(Path(path))
+            return {
+                "ok": True,
+                "resolved_path": str(Path(path).resolve(strict=False)),
+                "dirty": False,
+                "changed_files": [],
+                "ahead": 0,
+                "behind": 0,
+                "base_ref": compare_to,
+                "head_sha": "head",
+            }
+
+    manager = FakeWorktreeManager()
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=FakeStore(),
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=manager,
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+            default_base_ref="main",
+        )
+    )
+
+    listed = await rt.call(ToolCall("list", "worktree_list", {}))
+    status = await rt.call(ToolCall("status", "worktree_status", {"path": str(worktree)}))
+
+    assert listed.ok is True
+    by_path = {row["resolved_path"]: row for row in listed.data["worktrees"]}
+    assert by_path[str(main.resolve(strict=False))]["owner_session_id"] == ""
+    assert by_path[str(worktree.resolve(strict=False))]["owner_session_id"] == "s1"
+    assert by_path[str(worktree.resolve(strict=False))]["owner_task_id"] == "t1"
+    assert by_path[str(worktree.resolve(strict=False))]["lease_id"] == "lease-1"
+    assert status.ok is True
+    assert status.data["owner_session_id"] == "s1"
+    assert status.data["base_ref"] == "main"
+    assert manager.status_paths == [worktree.resolve(strict=False)]
+
+
+async def test_worktree_status_rejects_arbitrary_path_before_manager_call(tmp_path: Path):
+    main = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    main.mkdir()
+    outside.mkdir()
+
+    class FakeWorktreeManager:
+        def status(self, path, compare_to: str = ""):
+            raise AssertionError("arbitrary paths must not reach the manager")
+
+    class FakeStore:
+        def get_active_worktree_lease(self, *, worktree_path: str, session_id: str | None = None):
+            if Path(worktree_path).resolve(strict=False) == outside.resolve(strict=False):
+                return SimpleNamespace(
+                    id="lease-other",
+                    worktree_path=str(outside),
+                    session_id="other-session",
+                    task_id="t2",
+                    status="active",
+                )
+            return None
+
+        def get_worktree_leases(self, *, status: str | None = None):
+            return []
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=FakeStore(),
+            session_id="s1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+        )
+    )
+
+    result = await rt.call(ToolCall("status", "worktree_status", {"path": str(outside)}))
+
+    assert result.ok is False
+    assert result.error == "path_outside_workspace"
+
+
+async def test_worktree_diff_injects_runtime_context_and_rejects_pm_context_fields(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+    patch = main / ".foreman" / "tool-logs" / "diff.patch"
+
+    class FakeWorktreeManager:
+        def __init__(self):
+            self.contexts: list[dict] = []
+
+        def diff(self, context, *, max_patch_chars: int = 0, include_patch: bool = True):
+            self.contexts.append(context)
+            patch.parent.mkdir(parents=True, exist_ok=True)
+            patch.write_text("diff", encoding="utf-8")
+            return {
+                "ok": True,
+                "clean": False,
+                "base_sha": "base",
+                "base_ref": "main",
+                "compare_to": "base",
+                "changed_files": [{"path": "a.txt", "status": "modified"}],
+                "files_changed": 1,
+                "additions": 1,
+                "deletions": 0,
+                "patch_artifact": str(patch),
+                "artifact_paths": [str(patch)],
+                "patch_truncated": False,
+                "max_patch_chars": max_patch_chars,
+                "include_patch": include_patch,
+            }
+
+    manager = FakeWorktreeManager()
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=SimpleNamespace(),
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=manager,
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+            max_chars=123,
+        )
+    )
+
+    result = await rt.call(ToolCall("diff", "worktree_diff", {}))
+    rejected = await rt.call(ToolCall("bad", "worktree_diff", {"path": str(main)}))
+    rejected_base = await rt.call(ToolCall("bad-base", "worktree_diff", {"base_sha": "other"}))
+
+    assert result.ok is True
+    assert result.data["compare_to"] == "base"
+    assert result.artifact_paths == [str(patch)]
+    assert manager.contexts[0]["session_id"] == "s1"
+    assert manager.contexts[0]["task_id"] == "t1"
+    assert manager.contexts[0]["main_workspace"] == str(main)
+    assert rejected.ok is False and rejected.error == "invalid_args"
+    assert rejected_base.ok is False and rejected_base.error == "invalid_args"
+
+
+async def test_worktree_cleanup_injects_current_context_and_resets_deleted_cwd(tmp_path: Path):
+    main = tmp_path / "repo"
+    worktree_root = tmp_path / ".foreman-worktrees" / "repo"
+    worktree = worktree_root / "s1-task"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    artifact = main / ".foreman" / "tool-logs" / "cleanup.json"
+    seen: dict[str, object] = {}
+
+    class FakeWorktreeManager:
+        def cleanup(self, context, *, dry_run: bool = True, reason: str = ""):
+            seen["context"] = context
+            seen["dry_run"] = dry_run
+            seen["reason"] = reason
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text("{}", encoding="utf-8")
+            return {
+                "ok": True,
+                "safe": True,
+                "removed": not dry_run,
+                "requires_approval": False,
+                "workspace": str(worktree),
+                "path": str(worktree),
+                "main_workspace": str(main),
+                "cleanup_artifact": str(artifact),
+                "artifact_paths": [str(artifact)],
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=worktree,
+            allowed_roots=[worktree],
+            store=SimpleNamespace(),
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[worktree_root],
+        )
+    )
+
+    result = await rt.call(
+        ToolCall("cleanup", "worktree_cleanup", {"dry_run": False, "reason": "done"})
+    )
+    rejected = await rt.call(
+        ToolCall("bad", "worktree_cleanup", {"worktree_path": str(worktree)})
+    )
+    rejected_base = await rt.call(
+        ToolCall("bad-base", "worktree_cleanup", {"base_ref": "origin/main"})
+    )
+
+    assert result.ok is True
+    assert result.risk == "needs-strategy"
+    assert result.artifact_paths == [str(artifact)]
+    assert result.data["cwd"] == str(main.resolve(strict=False))
+    assert rt.runtime_context()["cwd"] == str(main.resolve(strict=False))
+    context = seen["context"]
+    assert context["session_id"] == "s1"
+    assert context["task_id"] == "t1"
+    assert context["workspace"] == str(worktree)
+    assert context["main_workspace"] == str(main)
+    assert context["worktree_roots"] == [str(worktree_root)]
+    assert seen["dry_run"] is False
+    assert seen["reason"] == "done"
+    assert rejected.ok is False and rejected.error == "invalid_args"
+    assert rejected_base.ok is False and rejected_base.error == "invalid_args"
+
+
+async def test_worktree_cleanup_requires_approval_risk_without_deleting(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+
+    class FakeWorktreeManager:
+        def cleanup(self, context, *, dry_run: bool = True, reason: str = ""):
+            return {
+                "ok": True,
+                "safe": False,
+                "removed": False,
+                "requires_approval": True,
+                "error": "dirty_worktree",
+                "workspace": str(main),
+                "main_workspace": str(main),
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+        )
+    )
+
+    result = await rt.call(ToolCall("cleanup", "worktree_cleanup", {"dry_run": False}))
+
+    assert result.ok is True
+    assert result.risk == "requires-approval"
+    assert result.data["requires_approval"] is True
+    assert result.data["removed"] is False
+
+
+async def test_worktree_promote_injects_current_context_and_rejects_cross_session_fields(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+    artifact = main / ".foreman" / "tool-logs" / "promote.patch"
+    seen: dict[str, object] = {}
+
+    class FakeWorktreeManager:
+        def promote(self, context, **kwargs):
+            seen["context"] = context
+            seen["kwargs"] = kwargs
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text("diff", encoding="utf-8")
+            return {
+                "ok": True,
+                "mode": "prepare-pr",
+                "branch": "foreman/s1/task",
+                "commits": [],
+                "diff_artifact_path": str(artifact),
+                "artifact_paths": [str(artifact)],
+                "handoff_summary": "Not ready to merge.\nRisks: tests_not_verified",
+                "pr_body": "## Requirement Review\nok",
+                "requires_approval": False,
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            store=SimpleNamespace(),
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+        )
+    )
+
+    result = await rt.call(
+        ToolCall(
+            "promote",
+            "worktree_promote",
+            {
+                "mode": "prepare-pr",
+                "title": "Prepare handoff",
+                "requirement_review": "covered",
+                "code_review": "minimal",
+                "verification": "pytest",
+                "remaining_risks": "needs e2e",
+                "test_status": "passed",
+            },
+        )
+    )
+    invalid = await rt.call(ToolCall("bad", "worktree_promote", {"lease_id": "other"}))
+    invalid_path = await rt.call(ToolCall("bad-path", "worktree_promote", {"path": str(main)}))
+
+    assert result.ok is True
+    assert result.artifact_paths == [str(artifact)]
+    assert result.data["branch"] == "foreman/s1/task"
+    assert seen["context"]["session_id"] == "s1"
+    assert seen["context"]["task_id"] == "t1"
+    assert seen["context"]["main_workspace"] == str(main)
+    assert seen["kwargs"]["mode"] == "prepare-pr"
+    assert seen["kwargs"]["title"] == "Prepare handoff"
+    assert invalid.ok is False and invalid.error == "invalid_args"
+    assert invalid_path.ok is False and invalid_path.error == "invalid_args"
+
+
+async def test_worktree_promote_non_prepare_modes_are_approval_gated(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+
+    class FakeWorktreeManager:
+        def promote(self, context, **kwargs):
+            return {
+                "ok": False,
+                "mode": kwargs["mode"],
+                "error": "requires_approval",
+                "requires_approval": True,
+                "side_effects_performed": [],
+                "remote_side_effects": False,
+            }
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            task_id="t1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            worktree_roots=[tmp_path / ".foreman-worktrees" / "repo"],
+        )
+    )
+
+    result = await rt.call(ToolCall("push", "worktree_promote", {"mode": "push"}))
+
+    assert result.ok is False
+    assert result.error == "requires_approval"
+    assert result.risk == "requires-approval"
+    assert result.data["side_effects_performed"] == []
+    assert result.data["remote_side_effects"] is False
+
+
+def test_worktree_promote_prepare_pr_generates_handoff_without_git_side_effects(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "foreman@example.test")
+    _git(repo, "config", "user.name", "Foreman Test")
+    (repo / "app.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "app.txt")
+    _git(repo, "commit", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), base_sha)
+    store = Store(str(tmp_path / "foreman.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="g", workspace=str(worktree), main_workspace=str(repo)))
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="lease-1",
+            repo_root=str(repo),
+            main_workspace=str(repo),
+            worktree_path=str(worktree),
+            branch="feature",
+            base_ref="HEAD",
+            base_sha=base_sha,
+            head_sha=base_sha,
+            session_id="s1",
+            task_id="t1",
+            locked=True,
+        )
+    )
+    (worktree / "app.txt").write_text("changed\n", encoding="utf-8")
+
+    class RecordingManager(WorktreeManager):
+        def __init__(self):
+            super().__init__()
+            self.commands: list[tuple[str, ...]] = []
+
+        def _git(self, cwd: Path, *args: str) -> dict[str, object]:
+            self.commands.append(args)
+            return super()._git(cwd, *args)
+
+    manager = RecordingManager()
+    result = manager.promote(
+        {
+            "store": store,
+            "session_id": "s1",
+            "task_id": "t1",
+            "workspace": str(worktree),
+            "main_workspace": str(repo),
+            "worktree_roots": [str(tmp_path)],
+        },
+        title="Prepare feature",
+        requirement_review="covered",
+        code_review="minimal",
+        verification="pytest failed",
+        remaining_risks="needs fix",
+        test_status="failed",
+    )
+    commit_mode = manager.promote(
+        {"store": store, "session_id": "s1", "task_id": "t1"},
+        mode="commit",
+    )
+
+    assert result["ok"] is True
+    assert result["mode"] == "prepare-pr"
+    assert result["branch"] == "feature"
+    assert result["commits"] == []
+    assert Path(result["diff_artifact_path"]).is_file()
+    assert result["ready_to_merge"] is False
+    assert "Not ready to merge." in result["handoff_summary"]
+    assert "dirty_worktree" in result["handoff_summary"]
+    assert "tests_not_passed" in result["handoff_summary"]
+    assert "## Requirement Review" in result["pr_body"]
+    assert "## Code Review" in result["pr_body"]
+    assert "## Verification" in result["pr_body"]
+    assert "## Remaining Risk" in result["pr_body"]
+    assert result["side_effects_performed"] == []
+    assert result["remote_side_effects"] is False
+    assert commit_mode["error"] == "requires_approval"
+    forbidden = {"add", "commit", "fetch", "pull", "push", "merge"}
+    assert not any(args and args[0] in forbidden for args in manager.commands)
+
+
+async def test_checkpoint_diff_and_undo_tools_use_current_session_worktree(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "foreman@example.test")
+    _git(repo, "config", "user.name", "Foreman Test")
+    (repo / "app.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "app.txt")
+    _git(repo, "commit", "-m", "base")
+    worktree = tmp_path / "feature"
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), "HEAD")
+    store = Store(str(tmp_path / "foreman.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="g", workspace=str(worktree), main_workspace=str(repo)))
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=worktree,
+            allowed_roots=[worktree],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+            main_workspace=repo,
+            shell=True,
+        ),
+        gate=Gate(Config().gates),
+    )
+
+    checkpoint = await rt.call(
+        ToolCall("checkpoint", "checkpoint_create", {"label": "before change"})
+    )
+    (worktree / "app.txt").write_text("changed\n", encoding="utf-8")
+    (worktree / "new.txt").write_text("new\n", encoding="utf-8")
+    diff = await rt.call(
+        ToolCall(
+            "diff",
+            "git_diff_summary",
+            {"checkpoint_id": checkpoint.data["checkpoint_id"], "max_patch_chars": 80},
+        )
+    )
+    bad_diff = await rt.call(
+        ToolCall(
+            "bad-diff",
+            "git_diff_summary",
+            {"checkpoint_id": checkpoint.data["checkpoint_id"], "session_id": "other"},
+        )
+    )
+    undo = await rt.call(
+        ToolCall("undo", "checkpoint_undo", {"checkpoint_id": checkpoint.data["checkpoint_id"]})
+    )
+
+    assert checkpoint.ok is True
+    assert checkpoint.data["checkpoint_id"]
+    assert store.get_checkpoint(checkpoint.data["checkpoint_id"]).session_id == "s1"
+    assert diff.ok is True
+    assert diff.data["summary"]["files"] == 2
+    assert diff.data["patch_truncated"] is True
+    assert diff.artifact_paths
+    assert all(repo.resolve(strict=False) in Path(path).resolve(strict=False).parents for path in diff.artifact_paths)
+    assert bad_diff.ok is False and bad_diff.error == "invalid_args"
+    assert undo.ok is True
+    assert undo.data["redo_ref"]
+    assert (worktree / "app.txt").read_text(encoding="utf-8") == "base\n"
+    assert not (worktree / "new.txt").exists()
+    assert all(Path(path).is_file() for path in diff.artifact_paths)
+
+
+async def test_checkpoint_undo_rejects_cross_session_checkpoint(tmp_path: Path):
+    store = Store(str(tmp_path / "foreman.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="g", workspace=str(tmp_path)))
+    store.add_session(Session(id="other", goal="g", workspace=str(tmp_path)))
+    rt_other = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=tmp_path,
+            allowed_roots=[tmp_path],
+            store=store,
+            session_id="other",
+            task_id="t2",
+        )
+    )
+    checkpoint = await rt_other.call(ToolCall("checkpoint", "checkpoint_create", {}))
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=tmp_path,
+            allowed_roots=[tmp_path],
+            store=store,
+            session_id="s1",
+            task_id="t1",
+        )
+    )
+
+    result = await rt.call(
+        ToolCall("undo", "checkpoint_undo", {"checkpoint_id": checkpoint.data["checkpoint_id"]})
+    )
+
+    assert result.ok is False
+    assert result.error == "checkpoint_session_mismatch"
+
+
+async def test_test_run_reports_failures_timeout_and_artifacts(tmp_path: Path):
+    command = f'"{sys.executable}" -c "import sys; print(\'bad test\'); sys.exit(2)"'
+    timeout_command = f'"{sys.executable}" -c "import time; time.sleep(3)"'
+    rt = _runtime(tmp_path, shell=True, timeout_s=5)
+
+    failed = await rt.call(ToolCall("test", "test_run", {"command": command}))
+    timed_out = await rt.call(
+        ToolCall("timeout", "test_run", {"command": timeout_command, "timeout_s": 1})
+    )
+
+    assert failed.ok is True
+    assert failed.data["passed"] is False
+    assert failed.data["returncode"] == 2
+    assert "Tests failed with exit code 2" in failed.data["summary"]
+    assert "bad test" in failed.data["summary"]
+    assert all(Path(path).is_file() for path in failed.artifact_paths)
+    assert timed_out.ok is True
+    assert timed_out.data["passed"] is False
+    assert timed_out.data["timed_out"] is True
+    assert "timed out" in timed_out.data["summary"]
+    assert all(Path(path).is_file() for path in timed_out.artifact_paths)
+
+
+async def test_test_run_rejects_requires_approval_command(tmp_path: Path):
+    rt = _runtime(tmp_path, shell=True)
+
+    result = await rt.call(ToolCall("test", "test_run", {"command": "git push origin main"}))
+
+    assert result.ok is False
+    assert result.error == "requires_approval"
+
+
+async def test_worktree_status_uses_existing_tool_events(tmp_path: Path):
+    main = tmp_path / "repo"
+    main.mkdir()
+    events: list[tuple[str, dict]] = []
+
+    class FakeWorktreeManager:
+        def status(self, path, compare_to: str = ""):
+            return {
+                "ok": True,
+                "resolved_path": str(Path(path).resolve(strict=False)),
+                "dirty": False,
+                "changed_files": [],
+                "ahead": 0,
+                "behind": 0,
+                "base_ref": compare_to,
+                "head_sha": "head",
+            }
+
+    class FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def tool_complete(self, messages, *, tools, model="", json_mode=False, tool_choice=None):
+            self.calls += 1
+            if self.calls == 1:
+                return LLMToolResponse(
+                    text="",
+                    tool_calls=[
+                        LLMToolCall(
+                            id="status-1",
+                            name="worktree_status",
+                            arguments={"path": str(main), "compare_to": "HEAD"},
+                        )
+                    ],
+                )
+            return LLMToolResponse(text="", tool_calls=[_submit_call(summary="done")])
+
+    rt = PMToolRuntime(
+        ToolRuntimeConfig(
+            workspace=main,
+            allowed_roots=[main],
+            session_id="s1",
+            main_workspace=main,
+            worktree_manager=FakeWorktreeManager(),
+            git_worktree=True,
+            default_base_ref="HEAD",
+        )
+    )
+
+    outcome = await PMToolLoop(
+        FakeLLM(),
+        rt,
+        max_rounds=3,
+        on_tool_event=lambda event_type, payload: events.append((event_type, payload)),
+    ).run(
+        [Message("user", "inspect worktree")],
+        fallback_plan={"agent": "codex", "model": "", "effort": "high", "instruction": "fallback"},
+        enabled_agents=["codex"],
+    )
+
+    assert outcome.final_plan["summary"] == "done"
+    tool_events = [(event_type, payload["tool"]) for event_type, payload in events]
+    assert tool_events == [("tool_pre", "worktree_status"), ("tool_post", "worktree_status")]
 
 
 async def test_pm_tool_loop_forwards_llm_stream_chunks(tmp_path: Path):
@@ -124,6 +1456,10 @@ async def test_disabled_write_run_command_gate_and_web_taint(tmp_path: Path):
         ToolCall("w", "write_file", {"path": "x.txt", "text": "x"})
     )
     assert disabled.error == "tool_disabled"
+    disabled_test = await _runtime(tmp_path).call(
+        ToolCall("test", "test_run", {"command": "python --version"})
+    )
+    assert disabled_test.error == "tool_disabled"
 
     rt = _runtime(tmp_path, shell=True)
     cmd = await rt.call(ToolCall("cmd", "run_command", {"command": "python --version"}))

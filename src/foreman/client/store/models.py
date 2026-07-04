@@ -6,6 +6,8 @@ from typing import ClassVar
 
 from sqlmodel import Field, SQLModel
 
+WORKTREE_LEASE_STATUSES = {"active", "released", "stale", "removed"}
+
 
 class Session(SQLModel, table=True):
     id: str = Field(primary_key=True)
@@ -31,6 +33,30 @@ class Task(SQLModel, table=True):
     agent_handle: str = ""
     created_at: str = ""
     updated_at: str = ""
+
+
+class WorktreeLease(SQLModel, table=True):
+    """Server-owned record for a PM-created git worktree."""
+
+    __tablename__: ClassVar[str] = "worktree_leases"
+
+    id: str = Field(primary_key=True)
+    repo_root: str = Field(index=True)
+    main_workspace: str = Field(index=True)
+    worktree_path: str = Field(index=True)
+    branch: str = Field(index=True)
+    base_ref: str = ""
+    base_sha: str = ""
+    head_sha: str = ""
+    session_id: str = Field(index=True)
+    task_id: str = Field(index=True)
+    status: str = Field(default="active", index=True)
+    dirty: bool = False
+    locked: bool = False
+    created_at: str = ""
+    updated_at: str = ""
+    last_seen_at: str = ""
+    metadata_json: str = "{}"
 
 
 class Event(SQLModel, table=True):

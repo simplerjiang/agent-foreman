@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from pathlib import Path
 
 from foreman.client.core.checkpoint import CKPT_REF_PREFIX, CheckpointManager, ensure_repo
 from foreman.client.store import Store
@@ -232,3 +233,24 @@ async def test_resolve_step_returns_shadow_ref_sha(tmp_path):
     c0 = await mgr.snapshot("s1", 0)
 
     assert mgr.resolve_step("s1", 0) == c0
+
+
+async def test_summarize_diff_writes_patch_and_summary_artifacts(tmp_path):
+    ws, mgr = await _mgr_at(tmp_path)
+    artifact_dir = tmp_path / "artifacts"
+    _write(ws, "f.txt", "v1\n")
+    c0 = await mgr.snapshot("s1", 0)
+    _write(ws, "f.txt", "v2\n")
+    _write(ws, "new.txt", "added\n")
+
+    result = mgr.summarize_diff(c0, max_patch_chars=40, artifact_dir=artifact_dir)
+
+    assert result["ok"] is True
+    assert result["summary"]["files"] == 2
+    assert result["summary"]["additions"] == 2
+    assert result["summary"]["deletions"] == 1
+    assert result["patch_truncated"] is True
+    assert {row["path"] for row in result["files"]} == {"f.txt", "new.txt"}
+    assert (artifact_dir in Path(result["patch_artifact"]).parents)
+    assert Path(result["patch_artifact"]).is_file()
+    assert Path(result["summary_artifact"]).is_file()

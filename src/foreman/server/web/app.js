@@ -111,7 +111,7 @@
       missingDescription: "请填写描述（说明做什么 + 何时用），否则不会进入自动选择。",
       descriptionTooLong: "描述太长了，请控制在 1024 字以内。",
       imported: "已导入", importFailed: "导入失败", exportFailed: "导出失败",
-      workspaces: "工作区", workspaceLabel: "工作区", workspaceWorktree: "worktree", workspaceNoWorktree: "worktree: 无", workspaceBranch: "branch",
+      workspaces: "工作区", workspaceLabel: "工作区", workspaceWorktree: "worktree", workspaceNoWorktree: "worktree: 无", workspaceWorktreeMissing: "worktree: 缺失", workspaceBranch: "branch", workspaceMain: "main", workspaceLease: "lease", workspaceFallback: "fallback",
       workspaceDetached: "detached", initGitRepo: "新建 git 仓库", initGitRepoBusy: "新建中…", gitInitFailed: "新建 git 仓库失败",
       branchSwitchFailed: "切换分支失败", workspaceDirty: "工作区有未提交改动，请先处理后再切换分支。", badBranch: "分支不可用",
       projectPath: "项目路径", displayName: "显示名称", pathHint: "例如 E:\\AutoWorkAgent",
@@ -251,7 +251,7 @@
       missingDescription: "Please add a description (what it does + when to use), or it won't be auto-selected.",
       descriptionTooLong: "Description is too long — keep it under 1024 characters.",
       imported: "Imported", importFailed: "Import failed", exportFailed: "Export failed",
-      workspaces: "Workspaces", workspaceLabel: "Workspace", workspaceWorktree: "worktree", workspaceNoWorktree: "worktree: none", workspaceBranch: "branch",
+      workspaces: "Workspaces", workspaceLabel: "Workspace", workspaceWorktree: "worktree", workspaceNoWorktree: "worktree: none", workspaceWorktreeMissing: "worktree: missing", workspaceBranch: "branch", workspaceMain: "main", workspaceLease: "lease", workspaceFallback: "fallback",
       workspaceDetached: "detached", initGitRepo: "Initialize git repo", initGitRepoBusy: "Initializing…", gitInitFailed: "Could not initialize git repo",
       branchSwitchFailed: "Could not switch branch", workspaceDirty: "This workspace has uncommitted changes. Resolve them before switching branches.", badBranch: "Branch is not available",
       projectPath: "Project path", displayName: "Name", pathHint: "e.g. E:\\AutoWorkAgent",
@@ -1948,11 +1948,17 @@
     </div>`;
   }
 
-  function WorkspaceGitStatus({ d, workspace, hasSession }) {
+  function WorkspaceGitStatus({ d, workspace, sessionRow }) {
     const [info, setInfo] = useState(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [refresh, setRefresh] = useState(0);
+    const hasSession = !!sessionRow;
+    const sessionWorktree = (sessionRow && sessionRow.worktree) || "";
+    const sessionBranch = (sessionRow && sessionRow.branch) || "";
+    const leaseStatus = (sessionRow && sessionRow.lease_status) || "none";
+    const fallbackReason = (sessionRow && sessionRow.fallback_reason) || "";
+    const mainWorkspace = (sessionRow && sessionRow.main_workspace) || "";
     useEffect(() => {
       let cancelled = false;
       setError("");
@@ -1995,21 +2001,43 @@
         <span className="workspace-status-chip mono">${d.workspaceNoWorktree}</span>
       </div>`;
     }
-    if (!info || !info.git_available) return null;
+    const worktreeChip = sessionWorktree
+      ? (fallbackReason === "worktree_missing" ? d.workspaceWorktreeMissing : `${d.workspaceWorktree}: ${shortPath(sessionWorktree, d)}`)
+      : d.workspaceNoWorktree;
+    const mainChip = mainWorkspace && (sessionWorktree || mainWorkspace !== workspace) ? `${d.workspaceMain}: ${shortPath(mainWorkspace, d)}` : "";
+    const branchChip = sessionBranch ? `${d.workspaceBranch}: ${sessionBranch}` : "";
+    const leaseChip = leaseStatus && leaseStatus !== "none" ? `${d.workspaceLease}: ${leaseStatus}` : "";
+    const fallbackChip = fallbackReason ? `${d.workspaceFallback}: ${fallbackReason}` : "";
+    if (!info || !info.git_available) {
+      return html`<div className="workspace-status">
+        <span className="workspace-status-label">${d.workspaceLabel}</span>
+        <span className="workspace-status-path mono" title=${workspace}>${shortPath(workspace, d)}</span>
+        <span className="workspace-status-chip mono" title=${sessionWorktree || ""}>${worktreeChip}</span>
+        ${mainChip ? html`<span className="workspace-status-chip mono" title=${mainWorkspace}>${mainChip}</span>` : null}
+        ${branchChip ? html`<span className="workspace-status-chip mono">${branchChip}</span>` : null}
+        ${leaseChip ? html`<span className="workspace-status-chip mono">${leaseChip}</span>` : null}
+        ${fallbackChip ? html`<span className="workspace-status-error">${fallbackChip}</span>` : null}
+      </div>`;
+    }
     const branch = info.branch ? `${d.workspaceBranch}: ${info.detached ? `${d.workspaceDetached} ${info.branch}` : info.branch}` : "";
     const branches = Array.isArray(info.branches) ? info.branches : [];
     const selectedBranch = !info.detached && branches.includes(info.branch) ? info.branch : "";
+    const allowBranchSwitch = !fallbackReason;
     return html`<div className="workspace-status">
       <span className="workspace-status-label">${d.workspaceLabel}</span>
       <span className="workspace-status-path mono" title=${workspace}>${shortPath(workspace, d)}</span>
-      ${info.is_git_repo ? html`<span className="workspace-status-chip mono" title=${workspace}>${d.workspaceWorktree}: ${shortPath(workspace, d)}</span>` : null}
-      ${info.is_git_repo && branches.length ? html`<label className="workspace-branch-select mono">
+      <span className="workspace-status-chip mono" title=${sessionWorktree || ""}>${worktreeChip}</span>
+      ${mainChip ? html`<span className="workspace-status-chip mono" title=${mainWorkspace}>${mainChip}</span>` : null}
+      ${branchChip && (!info.is_git_repo || !branches.length || fallbackReason) ? html`<span className="workspace-status-chip mono">${branchChip}</span>` : null}
+      ${leaseChip ? html`<span className="workspace-status-chip mono">${leaseChip}</span>` : null}
+      ${fallbackChip ? html`<span className="workspace-status-error">${fallbackChip}</span>` : null}
+      ${info.is_git_repo && branches.length && allowBranchSwitch ? html`<label className="workspace-branch-select mono">
         <span>${d.workspaceBranch}</span>
         <select value=${selectedBranch} onChange=${switchBranch} disabled=${busy}>
           ${selectedBranch ? null : html`<option value="">${info.detached && info.branch ? `${d.workspaceDetached} ${info.branch}` : "-"}</option>`}
           ${branches.map((name) => html`<option key=${name} value=${name}>${name}</option>`)}
         </select>
-      </label>` : info.is_git_repo && branch ? html`<span className="workspace-status-chip mono">${branch}</span>` : null}
+      </label>` : info.is_git_repo && branch && allowBranchSwitch ? html`<span className="workspace-status-chip mono">${branch}</span>` : null}
       ${!info.is_git_repo && info.can_init ? html`<button type="button" className="btn ghost sm" onClick=${initRepo} disabled=${busy}>${busy ? d.initGitRepoBusy : d.initGitRepo}</button>` : null}
       ${error ? html`<span className="workspace-status-error">${error}</span>` : null}
     </div>`;
@@ -2072,7 +2100,7 @@
         </div>` : null}
         ${compactStatus ? html`<div className=${`alert ${compactStatus.includes(d.compactFailed) ? "error" : "info"}`} style=${{ marginBottom: 9 }}>${compactStatus}</div>` : null}
         ${dispatchStatus ? html`<div className=${`alert ${dispatchStatus.includes(d.dispatchFailed) ? "error" : "ok"}`} style=${{ marginBottom: 9 }}>${dispatchStatus}</div>` : null}
-        <${WorkspaceGitStatus} d=${d} workspace=${effectiveWorkspace} hasSession=${!!sessionRow} />
+        <${WorkspaceGitStatus} d=${d} workspace=${effectiveWorkspace} sessionRow=${sessionRow} />
         <div className="composer-box">
           ${attachments.length ? html`<div className="composer-attach">${attachments.map((a) => html`<div className="attach-chip" key=${a.id}><span className=${`ic ${a.isImage ? "img" : "file"}`}>${a.isImage ? "🖼" : "📄"}</span><span className="nm">${a.name}</span><span className="rm" onClick=${() => removeAttach(a.id)}>×</span></div>`)}</div>` : null}
           <textarea className="composer-input" data-testid="message-composer" rows="2" value=${task} onChange=${(e) => setTask(e.target.value)} onKeyDown=${onKey} onPaste=${onPaste} placeholder=${d.composerPlaceholder}></textarea>

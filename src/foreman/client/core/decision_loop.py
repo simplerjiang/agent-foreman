@@ -233,6 +233,7 @@ class DecisionLoop:
 
         result = await self._run(action)
         ran = bool(result.get("ok"))
+        diff = self._diff_summary_for_checkpoint(action, ckpt_id)
         self.store.update_action(
             action_id,
             status="executed" if ran else "audited",
@@ -248,6 +249,7 @@ class DecisionLoop:
                 "ok": ran,
                 "backend": result.get("backend", ""),
                 "execution_deferred": result.get("execution_deferred", False),
+                "diff_summary": diff.get("summary", {}),
             },
         )
         return {
@@ -255,6 +257,8 @@ class DecisionLoop:
             "action_id": action_id,
             "checkpoint_id": ckpt_id,
             "result": result,
+            "diff_summary": diff.get("summary", {}),
+            "diff": diff,
             "executed": ran,
         }
 
@@ -291,6 +295,25 @@ class DecisionLoop:
         )
         self.store.add_checkpoint(ckpt)
         return ckpt.id
+
+    def _diff_summary_for_checkpoint(self, action, checkpoint_id: str | None) -> dict:
+        empty = {"ok": True, "summary": {"files": 0, "additions": 0, "deletions": 0}, "files": []}
+        if not checkpoint_id or not hasattr(self.store, "get_checkpoint"):
+            return empty
+        checkpoint = self.store.get_checkpoint(checkpoint_id)
+        session = self.store.get_session(action.session_id) if hasattr(
+            self.store, "get_session"
+        ) else None
+        workspace = getattr(session, "workspace", "") if session else ""
+        if checkpoint is None or not getattr(checkpoint, "vcs_ref", "") or not workspace:
+            return empty
+        try:
+            return self._ckpt_factory(workspace).summarize_diff(
+                checkpoint.vcs_ref,
+                max_patch_chars=0,
+            )
+        except Exception as exc:  # noqa: BLE001 - diff evidence should not mask execution result
+            return {**empty, "ok": False, "error": _emsg(exc)}
 
     async def _run(self, action) -> dict:
         """Dispatch an action to its execution backend (Runner / Toolbelt). Injected → testable.

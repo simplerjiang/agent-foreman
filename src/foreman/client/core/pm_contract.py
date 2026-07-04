@@ -19,6 +19,9 @@ class PlanContract:
     MAX_REPLY = 2000
     MAX_TODO_ITEM = 200
     MAX_DELIBERATION_ITEM = 300
+    WORKSPACE_POLICY = (
+        "empty_or_current_workspace_or_runtime_verified_bound_worktree_only"
+    )
 
     COMMON_REQUIRED = (
         "summary",
@@ -87,8 +90,10 @@ class PlanContract:
                     "type": "string",
                     "maxLength": self.MAX_WORKSPACE,
                     "description": (
-                        "Optional existing workspace/worktree path where the coding agent must "
-                        "launch. Leave empty unless verified from runtime tool output."
+                        "Optional workspace/worktree path where the coding agent must launch. "
+                        "Leave empty unless it is the current workspace or a runtime verified/"
+                        "bound worktree from worktree_status, worktree_create, or "
+                        "worktree_bind_session. Arbitrary paths are not allowed."
                     ),
                 },
                 "kind": {"type": "string", "enum": list(self.ALLOWED_KINDS)},
@@ -122,6 +127,7 @@ class PlanContract:
             or "reply" in self.NON_EMPTY_BY_KIND["blocked"],
             "error_summary_or_reply_required": "summary" in self.NON_EMPTY_BY_KIND["error"]
             or "reply" in self.NON_EMPTY_BY_KIND["error"],
+            "workspace_policy": self.WORKSPACE_POLICY,
         }
 
     def validator_rules(self) -> dict[str, Any]:
@@ -135,6 +141,7 @@ class PlanContract:
                 "agent": list(self.allowed_agents),
                 "effort": list(self.ALLOWED_EFFORTS),
             },
+            "workspace_policy": self.WORKSPACE_POLICY,
             "error_codes": list(self.ERROR_CODES),
         }
 

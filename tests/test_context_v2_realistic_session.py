@@ -131,6 +131,55 @@ async def test_runtime_anchors_survive_compact_restore(tmp_path):
     assert json.loads(checkpoint.replacement_history_json)["items"] == restored.replacement_history
 
 
+async def test_test_run_tool_result_survives_compact_restore(tmp_path):
+    store = _store(tmp_path)
+    store.add_session(Session(id="s1", goal="verify worktree change", workspace="E:/repo"))
+    _add_event(
+        store,
+        "e1",
+        "dispatch",
+        {"goal": "verify worktree change", "workspace": "E:/repo", "worktree": "E:/repo-wt", "branch": "pm/t14"},
+        ts="2026-07-01T00:00:00Z",
+        source="user",
+    )
+    _add_event(
+        store,
+        "e2",
+        "tool_post",
+        {
+            "tool": "test_run",
+            "call_id": "call-test",
+            "ok": True,
+            "result": {
+                "id": "call-test",
+                "name": "test_run",
+                "ok": True,
+                "data": {
+                    "command": "pytest tests/test_pm_tools.py",
+                    "returncode": 0,
+                    "passed": True,
+                    "failed": False,
+                    "summary": "Tests passed.",
+                    "summary_artifact": "E:/repo/.foreman/tool-logs/test-run.json",
+                },
+            },
+        },
+        ts="2026-07-01T00:00:01Z",
+        source="pm-agent",
+    )
+
+    manager = ContextManager(store)
+    checkpoint = await manager.compact_now("s1", trigger="manual", reason="test-run", window_tokens=1200)
+    restored = manager.build_active_context("s1", purpose="pm_plan")
+
+    assert restored.runtime_state["worktree"] == "E:/repo-wt"
+    assert restored.runtime_state["branch"] == "pm/t14"
+    assert restored.runtime_state["last_tests"][-1]["command"] == "pytest tests/test_pm_tools.py"
+    assert restored.runtime_state["last_tests"][-1]["passed"] is True
+    assert "pytest tests/test_pm_tools.py" in restored.rendered_text
+    assert "last_tests" in json.dumps(json.loads(checkpoint.replacement_history_json), ensure_ascii=False)
+
+
 async def test_command_tool_pair_survives_compact_or_is_paired_in_replacement_history(tmp_path):
     store = _store(tmp_path)
     store.add_session(Session(id="s1", goal="run command", workspace="E:/repo"))

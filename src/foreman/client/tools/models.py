@@ -116,12 +116,22 @@ class ToolResult:
 class ToolRuntimeConfig:
     workspace: Path
     allowed_roots: list[Path]
+    store: Any = None
+    session_id: str = ""
+    task_id: str = ""
+    main_workspace: Path | None = None
+    worktree_manager: Any = None
     file_read: bool = True
     file_write: bool = False
     shell: bool = False
     web_fetch: bool = False
     web_search: bool = False
     browser: bool = False
+    git_worktree: bool = False
+    worktree_roots: list[Path] = field(default_factory=list)
+    worktree_branch_prefix: str = "foreman/"
+    default_base_ref: str = "HEAD"
+    allow_custom_worktree_path: bool = False
     allowed_origins: list[str] = field(default_factory=list)
     web_search_provider: str = "duckduckgo"
     searxng_url: str = ""
