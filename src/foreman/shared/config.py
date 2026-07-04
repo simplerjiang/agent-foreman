@@ -206,6 +206,11 @@ class PMToolsCfg(BaseModel):
     web_fetch: bool = False
     web_search: bool = False
     browser: bool = False
+    git_worktree: bool = False
+    worktree_roots: list[str] = Field(default_factory=list)
+    worktree_branch_prefix: str = "foreman/"
+    default_base_ref: str = "HEAD"
+    allow_custom_worktree_path: bool = False
     allowed_origins: list[str] = Field(default_factory=list)
     web_search_provider: str = "duckduckgo"  # duckduckgo | searxng
     searxng_url: str = ""
@@ -216,6 +221,25 @@ class PMToolsCfg(BaseModel):
     @classmethod
     def _clamp_max_rounds(cls, value: int) -> int:
         return clamp_pm_tool_rounds(value)
+
+
+def default_worktree_root(main_workspace: str | Path) -> Path:
+    """Repo-external default root for PM-created worktrees."""
+    main = Path(main_workspace).expanduser()
+    name = main.name or "workspace"
+    return main.parent / ".foreman-worktrees" / name
+
+
+def resolve_worktree_roots(
+    main_workspace: str | Path,
+    configured_roots: list[str] | tuple[str, ...] | None,
+) -> list[Path]:
+    roots = [Path(root).expanduser() for root in configured_roots or [] if str(root).strip()]
+    if roots:
+        return roots
+    if not str(main_workspace or "").strip():
+        return []
+    return [default_worktree_root(main_workspace)]
 
 
 # Notification channels (DESIGN §776, T6.3). Structure (enabled flags / addresses / hosts) lives

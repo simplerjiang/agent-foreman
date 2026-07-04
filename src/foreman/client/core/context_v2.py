@@ -1911,7 +1911,7 @@ def _command_result_from_tool(
     data: dict[str, Any],
 ) -> dict[str, Any] | None:
     tool_name = _text(payload.get("tool") or result.get("name"))
-    if tool_name != "run_command" and not data.get("command") and not data.get("returncode"):
+    if tool_name not in {"run_command", "test_run"} and not data.get("command") and not data.get("returncode"):
         return None
     stdout = _text(data.get("stdout") or data.get("stdout_summary"))
     stderr = _text(data.get("stderr") or data.get("stderr_summary"))
@@ -1921,11 +1921,16 @@ def _command_result_from_tool(
         "cwd": _text(data.get("cwd")),
         "exit_code": _int_or_none(data.get("exit_code") if "exit_code" in data else data.get("returncode")),
         "ok": _boolish(payload.get("ok", result.get("ok"))),
+        "status": _text(data.get("status")),
+        "passed": data.get("passed"),
+        "failed": data.get("failed"),
+        "summary": _summarize_text(_text(data.get("summary"))),
         "stdout_summary": _summarize_text(stdout),
         "stderr_summary": _summarize_text(stderr),
         "important_lines": _important_lines("\n".join([stdout, stderr])),
         "truncated": bool(data.get("truncated")) or len(stdout) > MAX_TEXT_CHARS or len(stderr) > MAX_TEXT_CHARS,
         "log_path": _text(data.get("log_path")),
+        "summary_artifact": _text(data.get("summary_artifact")),
     }
 
 

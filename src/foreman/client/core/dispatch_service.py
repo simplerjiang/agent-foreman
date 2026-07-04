@@ -21,7 +21,6 @@ import hashlib
 import inspect
 import json
 import re
-import subprocess
 import uuid
 from collections.abc import Awaitable
 from pathlib import Path
@@ -125,6 +124,7 @@ class DispatchService:
         embedder=None,
         workflow_engine=None,
         context_manager=None,
+        worktree_manager=None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -142,6 +142,7 @@ class DispatchService:
         # Optional WorkflowEngine (P5 §10) for lightweight per-step dispatch (set after construction
         # in local_app since the two are built together). None → no workflow step dispatch.
         self.workflow_engine = workflow_engine
+        self.worktree_manager = worktree_manager
         self.language_getter = language_getter
         self._clock = clock or utc_now_iso
         self.context_manager = context_manager
@@ -158,6 +159,8 @@ class DispatchService:
         self._session_queue_tails: dict[str, asyncio.Future[None]] = {}
         self._session_queue_locks: dict[str, asyncio.Lock] = {}
         self._stop_after_reply_counts: dict[str, int] = {}
+        self._event_id_prefix = uuid.uuid4().hex[:8]
+        self._event_seq = 0
 
     # ── create a session (下发任务, §5.1) ─────────────────────────────────────────────────────
     async def create(
@@ -457,6 +460,7 @@ class DispatchService:
             return {"ok": False, "error": "session_not_found"}
         if _is_live_session_status(session.status) or self._session_has_live_task(session_id):
             return {"ok": False, "error": "session_busy"}
+        self._release_session_worktree_leases(session_id)
         if not self.store.delete_session(session_id):
             return {"ok": False, "error": "session_not_found"}
         return {"ok": True, "session_id": session_id}
@@ -652,8 +656,16 @@ class DispatchService:
             return workspace
         return (getattr(session, "main_workspace", "") or workspace).strip()
 
-    def _resolve_plan_workspace(self, requested: str, current: str) -> tuple[str, str]:
-        """Accept a PM-selected workspace only when it is an allowed root or git worktree."""
+    def _refresh_workspace_from_session(self, session_id: str, current: str) -> str:
+        if self.store is None or not hasattr(self.store, "get_session"):
+            return current
+        session = self.store.get_session(session_id)
+        return self._effective_session_workspace(session) or current
+
+    def _resolve_plan_workspace(
+        self, requested: str, current: str, *, session_id: str = ""
+    ) -> tuple[str, str]:
+        """Accept a PM-selected workspace only when it is allowed or already bound."""
         candidate = str(requested or "").strip()
         if not candidate:
             return current, ""
@@ -668,39 +680,18 @@ class DispatchService:
             return current, "PM selected workspace is not a valid path."
         if candidate_resolved == current_resolved:
             return current, ""
+        session = self.store.get_session(session_id) if (
+            session_id and self.store is not None and hasattr(self.store, "get_session")
+        ) else None
+        if self._is_recorded_session_workspace(str(candidate_resolved), session):
+            return str(candidate_path), ""
         roots = [w.path for w in self.cfg.workspaces]
         if roots and _within_any(str(candidate_resolved), roots):
             return str(candidate_path), ""
-        if self._is_git_worktree_of(str(candidate_resolved), str(current_resolved)):
-            return str(candidate_path), ""
-        return current, "PM selected workspace is outside the configured workspace roots."
-
-    def _is_git_worktree_of(self, candidate: str, main_workspace: str) -> bool:
-        try:
-            result = subprocess.run(
-                ["git", "-C", main_workspace, "worktree", "list", "--porcelain"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        if result.returncode != 0:
-            return False
-        try:
-            candidate_path = Path(candidate).resolve(strict=False)
-            for line in result.stdout.splitlines():
-                if not line.startswith("worktree "):
-                    continue
-                worktree = Path(line[len("worktree "):].strip()).expanduser()
-                if worktree.resolve(strict=False) == candidate_path:
-                    return True
-        except (OSError, ValueError):
-            return False
-        return False
+        return current, (
+            "PM selected workspace is outside the configured workspace roots. "
+            "Use worktree_bind_session before switching to a worktree."
+        )
 
     async def _emit_dispatch(
         self,
@@ -976,6 +967,7 @@ class DispatchService:
             session_memory_tokens=_ctx_approx_tokens(context),
         )
         plan = self._sanitize_pm_plan(plan, pm_model)
+        workspace = self._refresh_workspace_from_session(session_id, workspace)
         if plan.kind == "direct_reply":
             if not (plan.reply or "").strip():
                 await self._emit_pm_error(
@@ -988,7 +980,11 @@ class DispatchService:
         if plan.kind in {"blocked", "error"}:
             await self._emit_pm_error(session_id, task_id, _terminal_plan_text(plan, language))
             return
-        plan_workspace, workspace_error = self._resolve_plan_workspace(plan.workspace, workspace)
+        plan_workspace, workspace_error = self._resolve_plan_workspace(
+            plan.workspace,
+            workspace,
+            session_id=session_id,
+        )
         if workspace_error:
             await self._emit_pm_error(session_id, task_id, workspace_error)
             return
@@ -1000,6 +996,7 @@ class DispatchService:
                     workspace=workspace,
                     updated_at=self._clock(),
                 )
+        plan.workspace = workspace
         todo_status = _initial_todo_status(plan.todo)
         await self._emit_pm_plan(session_id, task_id, plan, todo_status=todo_status)
         await self._emit_pm_status(
@@ -1014,7 +1011,7 @@ class DispatchService:
         # ZERO injection / ZERO residue (P2 §4 back-compat; the plan instruction already goes to the
         # CLI directly). Best-effort: an injection failure must never abort the dispatch.
         self._inject_work_modes_for_plan(workspace, task_id, plan, wm_index)
-        agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+        agent_run_seen_ids = _event_ids(self.store.get_events(session_id)) if self.store else set()
         handle = await _launch_runner(
             self.runner, plan.agent, plan.instruction, Path(workspace), session_id,
             model=plan.model, effort=plan.effort, task_id=task_id,
@@ -1031,7 +1028,7 @@ class DispatchService:
             return
         while True:
             fatal_rows = (
-                _events_after(self.store.get_events(session_id), agent_run_cursor)
+                _events_not_in(self.store.get_events(session_id), agent_run_seen_ids)
                 if self.store else []
             )
             fatal_msg = _fatal_agent_exit_text(fatal_rows, language=language, agent=plan.agent)
@@ -1056,7 +1053,7 @@ class DispatchService:
             )
             if recovered is None:
                 return
-            handle, plan, agent_run_cursor, todo_status = recovered
+            handle, plan, agent_run_seen_ids, todo_status = recovered
             await self.runner.wait(handle)
             if self._consume_stop_after_reply(session_id):
                 self._mark_session_unless_terminal(session_id, "running")
@@ -1087,6 +1084,9 @@ class DispatchService:
                 rows,
                 reviewed_event_id,
             )
+            diff_evidence = self._worktree_diff_review_evidence(session_id, task_id, workspace)
+            if diff_evidence:
+                timeline = f"{timeline}\n\n{diff_evidence}" if timeline else diff_evidence
             review_cutoff_id = _last_event_id(rows)
             review_kwargs = {
                 "run_count": run_count,
@@ -1157,7 +1157,7 @@ class DispatchService:
                     _empty_followup_text(language),
                 )
                 return
-            agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+            agent_run_seen_ids = _event_ids(self.store.get_events(session_id)) if self.store else set()
             attempt_id = _prepare_runner_attempt(self.runner, handle)
             await self._emit_agent_input(session_id, task_id, handle, review.follow_up, plan)
             await _send_runner(self.runner, handle, review.follow_up, attempt_id=attempt_id)
@@ -1169,7 +1169,7 @@ class DispatchService:
                 return
             while True:
                 fatal_rows = (
-                    _events_after(self.store.get_events(session_id), agent_run_cursor)
+                    _events_not_in(self.store.get_events(session_id), agent_run_seen_ids)
                     if self.store else []
                 )
                 fatal_msg = _fatal_agent_exit_text(
@@ -1196,7 +1196,7 @@ class DispatchService:
                 )
                 if recovered is None:
                     return
-                handle, plan, agent_run_cursor, todo_status = recovered
+                handle, plan, agent_run_seen_ids, todo_status = recovered
                 await self.runner.wait(handle)
                 if self._consume_stop_after_reply(session_id):
                     self._mark_session_unless_terminal(session_id, "running")
@@ -1242,7 +1242,7 @@ class DispatchService:
         wm_index: list[dict[str, Any]],
         work_mode_resolver: Any,
         todo_status: list[dict[str, str]],
-    ) -> tuple[Any, PMPlan, str, list[dict[str, str]]] | None:
+    ) -> tuple[Any, PMPlan, set[str], list[dict[str, str]]] | None:
         failed_agents.add(plan.agent)
         candidates = [
             row for row in enabled_agents
@@ -1312,7 +1312,7 @@ class DispatchService:
             _pm_status_text(language, "recover", recovery_plan.agent),
         )
         self._inject_work_modes_for_plan(workspace, task_id, recovery_plan, wm_index)
-        agent_run_cursor = _last_event_id(self.store.get_events(session_id)) if self.store else ""
+        agent_run_seen_ids = _event_ids(self.store.get_events(session_id)) if self.store else set()
         handle = await _launch_runner(
             self.runner,
             recovery_plan.agent,
@@ -1327,7 +1327,7 @@ class DispatchService:
             session_id, task_id, handle, recovery_plan.instruction, recovery_plan
         )
         self._mark_session_unless_terminal(session_id, "running")
-        return handle, recovery_plan, agent_run_cursor, todo_status
+        return handle, recovery_plan, agent_run_seen_ids, todo_status
 
     def _inject_work_modes_for_plan(
         self, workspace: str, task_id: str, plan: PMPlan, wm_index: list[dict[str, Any]]
@@ -1623,15 +1623,14 @@ class DispatchService:
         async def emit(event_type: str, payload: dict[str, Any]) -> None:
             if event_type not in {"tool_pre", "tool_post", "tool_stream", "pm_validation_error"}:
                 return
-            await self._persist_then_publish(
-                make_event(
-                    event_type,
-                    "pm-agent",
-                    session_id,
-                    task_id=task_id,
-                    payload=payload,
-                )
+            event = make_event(
+                event_type,
+                "pm-agent",
+                session_id,
+                task_id=task_id,
+                payload=payload,
             )
+            await self._persist_then_publish(event)
 
         return emit
 
@@ -1658,7 +1657,74 @@ class DispatchService:
             kwargs["session_id"] = session_id
         if _accepts_keyword(method, "task_id"):
             kwargs["task_id"] = task_id
+        if _accepts_keyword(method, "store"):
+            kwargs["store"] = self.store
+        if _accepts_keyword(method, "main_workspace"):
+            kwargs["main_workspace"] = self._main_workspace_for_session(session_id, workspace)
+        if _accepts_keyword(method, "worktree_manager"):
+            kwargs["worktree_manager"] = self.worktree_manager
         return kwargs
+
+    def _worktree_diff_review_evidence(
+        self,
+        session_id: str,
+        task_id: str,
+        workspace: str,
+    ) -> str:
+        manager = self.worktree_manager
+        diff = getattr(manager, "diff", None)
+        if not callable(diff):
+            return ""
+        pm_tools = getattr(self.cfg, "pm_tools", None)
+        try:
+            data = diff(
+                {
+                    "store": self.store,
+                    "session_id": session_id,
+                    "task_id": task_id,
+                    "workspace": workspace,
+                    "main_workspace": self._main_workspace_for_session(session_id, workspace),
+                    "worktree_roots": list(getattr(pm_tools, "worktree_roots", []) or []),
+                },
+                max_patch_chars=0,
+                include_patch=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - PM review should receive the evidence failure
+            data = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        if not isinstance(data, dict):
+            return ""
+        if data.get("error") == "no_active_worktree_lease":
+            return ""
+        raw_changed = data.get("changed_files")
+        changed = raw_changed if isinstance(raw_changed, list) else []
+        summary = {
+            "source": "worktree_diff",
+            "ok": bool(data.get("ok", True)),
+            "clean": bool(data.get("clean", False)),
+            "error": str(data.get("error") or ""),
+            "base_ref": str(data.get("base_ref") or ""),
+            "base_sha": str(data.get("base_sha") or ""),
+            "compare_to": str(data.get("compare_to") or data.get("base_sha") or ""),
+            "head_sha": str(data.get("head_sha") or ""),
+            "branch": str(data.get("branch") or ""),
+            "lease_id": str(data.get("lease_id") or ""),
+            "lease_status": str(data.get("lease_status") or ""),
+            "files_changed": int(data.get("files_changed") or len(changed)),
+            "additions": int(data.get("additions") or 0),
+            "deletions": int(data.get("deletions") or 0),
+            "patch_truncated": bool(data.get("patch_truncated", False)),
+            "patch_artifact": str(data.get("patch_artifact") or ""),
+            "changed_files": changed[:80],
+        }
+        return "# Worktree diff evidence\n" + json.dumps(summary, ensure_ascii=False)
+
+    def _main_workspace_for_session(self, session_id: str, fallback: str) -> str:
+        if self.store is not None and hasattr(self.store, "get_session"):
+            session = self.store.get_session(session_id)
+            main_workspace = (getattr(session, "main_workspace", "") or "").strip() if session else ""
+            if main_workspace:
+                return main_workspace
+        return fallback
 
     async def _safe_launch(
         self, session_id: str, goal: str, workspace: str, agent: str, model: str, effort: str
@@ -1794,6 +1860,8 @@ class DispatchService:
         return _fallback_compact(active_context.rendered_text, existing)
 
     def _mark_session(self, session_id: str, status: str) -> None:
+        if status in {"done", *TERMINAL_SESSION_STATUSES}:
+            self._release_session_worktree_leases(session_id)
         if self.store is not None and hasattr(self.store, "update_session"):
             self.store.update_session(session_id, status=status, updated_at=self._clock())
 
@@ -1803,6 +1871,34 @@ class DispatchService:
             if session is not None and (session.status or "").strip().lower() in TERMINAL_SESSION_STATUSES:
                 return
         self._mark_session(session_id, status)
+
+    def _release_session_worktree_leases(self, session_id: str) -> None:
+        if self.store is None or not session_id:
+            return
+        get_many = getattr(self.store, "get_worktree_leases", None)
+        update = getattr(self.store, "update_worktree_lease", None)
+        if not callable(get_many) or not callable(update):
+            return
+        try:
+            leases = get_many(session_id=session_id, status="active")
+        except TypeError:
+            try:
+                leases = get_many(status="active")
+            except TypeError:
+                leases = get_many()
+        for lease in leases or []:
+            if str(getattr(lease, "session_id", "") or "") != session_id:
+                continue
+            lease_id = str(getattr(lease, "id", "") or "")
+            if not lease_id:
+                continue
+            try:
+                update(lease_id, status="released", locked=False, last_seen_at=self._clock())
+            except TypeError:
+                try:
+                    update(lease_id, status="released", locked=False)
+                except TypeError:
+                    update(lease_id, status="released")
 
     def _track_launch_task(self, session_id: str, task: asyncio.Task) -> None:
         self._tasks.add(task)
@@ -1893,6 +1989,9 @@ class DispatchService:
 
     async def _persist_then_publish(self, event) -> None:
         """Persist-first (so a late UI can backfill) then publish — mirrors Runner/Gate."""
+        if not getattr(event, "id", ""):
+            self._event_seq += 1
+            event.id = f"dispatch-{self._event_id_prefix}-{self._event_seq:09d}"
         if self.store is not None and hasattr(self.store, "add_event"):
             self.store.add_event(event)
         if self.bus is not None:
@@ -2327,6 +2426,16 @@ def _events_after(rows: list[Any], event_id: str) -> list[Any]:
         if _event_id(row) == marker:
             return rows[idx + 1:]
     return rows
+
+
+def _event_ids(rows: list[Any]) -> set[str]:
+    return {event_id for event_id in (_event_id(row) for row in rows) if event_id}
+
+
+def _events_not_in(rows: list[Any], seen_ids: set[str]) -> list[Any]:
+    if not seen_ids:
+        return rows
+    return [row for row in rows if _event_id(row) not in seen_ids]
 
 
 _REVIEW_TIMELINE_FRAME_TYPES = {

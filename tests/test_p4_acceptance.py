@@ -174,6 +174,7 @@ def test_one_step_walks_the_whole_pipeline_phone_operable(tmp_path):
     r = client.post(f"/api/cards/{card_id}/choose", json={"option": "approve"})
     assert r.status_code == 200 and r.json()["chosen"] == "approve"
     assert r.json()["execution"]["executed"] is True
+    assert r.json()["execution"]["diff_summary"]["files"] == 1
 
     # the command really ran (worktree changed) AFTER a checkpoint was taken (so it's reversible).
     assert (ws / "feature.py").read_text(encoding="utf-8") == "# black .\n"

@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from foreman.client.core.dispatch_service import DispatchService
 from foreman.client.store import Store
-from foreman.client.store.models import Session
+from foreman.client.store.models import Session, WorktreeLease
 from foreman.shared.config import AgentCfg, Config, WorkspaceCfg, load_config
 from foreman.shared.events import EventBus, make_event
 from foreman.server.app import _subprocess_no_window_kwargs, create_app
@@ -42,7 +42,12 @@ def test_subprocess_no_window_kwargs_hides_windows_console():
 def test_api_sessions(tmp_path):
     c = TestClient(_app_with_store(tmp_path))
     sessions = c.get("/api/sessions").json()
-    assert any(s["id"] == "s1" and s["goal"] == "g1" for s in sessions)
+    row = next(s for s in sessions if s["id"] == "s1")
+    assert row["goal"] == "g1"
+    assert row["worktree"] == ""
+    assert row["branch"] == ""
+    assert row["lease_status"] == "none"
+    assert row["fallback_reason"] == ""
 
 
 def test_api_sessions_expose_main_workspace_and_workspace_exists(tmp_path):
@@ -60,6 +65,83 @@ def test_api_sessions_expose_main_workspace_and_workspace_exists(tmp_path):
     assert row["workspace"] == str(missing)
     assert row["main_workspace"] == str(main)
     assert row["workspace_exists"] is False
+    assert row["worktree"] == ""
+    assert row["branch"] == ""
+    assert row["lease_status"] == "none"
+    assert row["fallback_reason"] == "workspace_missing"
+
+
+def test_api_sessions_expose_bound_worktree_lease_state(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    main = tmp_path / "main"
+    worktree = tmp_path / "worktrees" / "s1"
+    main.mkdir()
+    worktree.mkdir(parents=True)
+    store.add_session(
+        Session(id="s1", goal="g1", workspace=str(worktree), main_workspace=str(main))
+    )
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="lease-1",
+            repo_root=str(main),
+            main_workspace=str(main),
+            worktree_path=str(worktree),
+            branch="foreman/s1/t8",
+            base_ref="main",
+            base_sha="abc123",
+            head_sha="def456",
+            session_id="s1",
+            task_id="t1",
+            status="active",
+        )
+    )
+    c = TestClient(create_app(load_config(), store, EventBus()))
+
+    row = c.get("/api/sessions").json()[0]
+    assert row["workspace"] == str(worktree)
+    assert row["main_workspace"] == str(main)
+    assert row["worktree"] == str(worktree)
+    assert row["worktree_exists"] is True
+    assert row["branch"] == "foreman/s1/t8"
+    assert row["lease_status"] == "active"
+    assert row["fallback_reason"] == ""
+
+
+def test_api_sessions_expose_missing_bound_worktree_fallback(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init()
+    main = tmp_path / "main"
+    missing = tmp_path / "worktrees" / "missing"
+    main.mkdir()
+    store.add_session(
+        Session(id="s1", goal="g1", workspace=str(missing), main_workspace=str(main))
+    )
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="lease-1",
+            repo_root=str(main),
+            main_workspace=str(main),
+            worktree_path=str(missing),
+            branch="foreman/s1/missing",
+            base_ref="main",
+            base_sha="abc123",
+            head_sha="def456",
+            session_id="s1",
+            task_id="t1",
+            status="active",
+        )
+    )
+    c = TestClient(create_app(load_config(), store, EventBus()))
+
+    row = c.get("/api/sessions").json()[0]
+    assert row["workspace"] == str(missing)
+    assert row["main_workspace"] == str(main)
+    assert row["worktree"] == str(missing)
+    assert row["worktree_exists"] is False
+    assert row["branch"] == "foreman/s1/missing"
+    assert row["lease_status"] == "active"
+    assert row["fallback_reason"] == "worktree_missing"
 
 
 def test_api_events(tmp_path):

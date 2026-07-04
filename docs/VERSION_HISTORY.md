@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.5.3
+
+English:
+
+- PM worktree support now includes lease-backed worktree metadata, guarded creation/binding, diff/review evidence, checkpoint and test helpers, cleanup preparation, promote preparation, and read-only PM intelligence tools.
+- Runtime context now injects the current session/task identity instead of accepting those values from PM tool inputs, and worktree operations validate roots, registered git worktrees, normalized paths, and base SHA comparisons.
+- The web UI and local API now expose worktree status, while the packaged exe E2E bug list records the stale local `v1.2.7` exe and no-workspace composer regression for release follow-up.
+
+中文：
+
+- PM worktree 支持现在包含基于 lease 的 worktree 元数据、受保护的创建/绑定、diff/review 证据、checkpoint 与测试辅助、cleanup prepare、promote prepare，以及只读 PM intelligence 工具。
+- Runtime 上下文现在由服务端注入当前 session/task 身份，不再从 PM tool 输入接收这些值；worktree 操作会校验 root、已注册 git worktree、normalized path，并默认基于 base SHA 比较。
+- Web UI 与本地 API 现在可展示 worktree 状态；packaged exe E2E BUG 清单记录了本机 `v1.2.7` exe 过旧和无工作区 composer 草稿丢失的回归待办。
+
 ## v1.5.2
 
 English:

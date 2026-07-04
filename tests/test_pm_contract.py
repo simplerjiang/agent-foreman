@@ -45,6 +45,10 @@ def test_submit_plan_schema_comes_from_plan_contract():
     assert schema["properties"]["todo"]["maxItems"] == 17
     assert "instruction is still required" in spec["description"]
     assert "user-visible answer" in schema["properties"]["reply"]["description"]
+    workspace_description = schema["properties"]["workspace"]["description"]
+    assert "current workspace" in workspace_description
+    assert "runtime verified/bound worktree" in workspace_description
+    assert "Arbitrary paths are not allowed" in workspace_description
 
 
 def test_plan_contract_exposes_output_contract_and_validator_rules():
@@ -55,10 +59,12 @@ def test_plan_contract_exposes_output_contract_and_validator_rules():
     assert output_contract["allowed_kinds"] == list(PlanContract.ALLOWED_KINDS)
     assert output_contract["direct_reply_instruction_required"] is True
     assert output_contract["direct_reply_reply_required"] is True
+    assert output_contract["workspace_policy"] == PlanContract.WORKSPACE_POLICY
     assert validator_rules["non_empty_by_kind"] == {
         kind: list(fields) for kind, fields in PlanContract.NON_EMPTY_BY_KIND.items()
     }
     assert validator_rules["allowed_values"]["agent"] == ["codex"]
+    assert validator_rules["workspace_policy"] == PlanContract.WORKSPACE_POLICY
     assert "final_plan_missing_reply" in validator_rules["error_codes"]
 
 

@@ -22,6 +22,7 @@ from foreman.client.store.models import (
     SchemaVersion,
     Session,
     Task,
+    WorktreeLease,
     WorkflowRun,
 )
 from foreman.shared.events import make_event
@@ -36,7 +37,7 @@ def _store(tmp_path) -> Store:
 def test_schema_version_recorded(tmp_path):
     st = _store(tmp_path)
     with st.session() as s:
-        sv = s.get(SchemaVersion, 3)
+        sv = s.get(SchemaVersion, 6)
     assert sv is not None and sv.applied_at
 
 
@@ -68,6 +69,22 @@ def test_event_roundtrip_serializes_payload(tmp_path):
     assert len(events) == 1
     assert events[0].type == "agent_output" and events[0].source == "claude-code"
     assert json.loads(events[0].payload_json) == {"text": "hi"}
+
+
+def test_events_with_same_timestamp_keep_insert_order(tmp_path):
+    st = _store(tmp_path)
+    ts = "2026-07-04T00:00:00+00:00"
+    first = make_event("tool_pre", "hook", "s1")
+    second = make_event("approval_req", "hook", "s1")
+    first.ts = ts
+    second.ts = ts
+
+    st.add_event(first)
+    st.add_event(second)
+
+    events = st.get_events("s1")
+    assert [event.type for event in events] == ["tool_pre", "approval_req"]
+    assert events[1].ts > events[0].ts
 
 
 def test_event_updates_session_activity_without_inferring_terminal_status(tmp_path):
@@ -173,3 +190,121 @@ def test_checkpoint_roundtrip_ordered_by_step(tmp_path):
     assert [r.step_index for r in rows] == [0, 1]   # ordered by step, not insert order
     assert [r.vcs_ref for r in rows] == ["cafe", "deadbeef"]
     assert len(st.get_checkpoints("s2")) == 1
+
+
+def test_worktree_lease_roundtrip_and_queries(tmp_path):
+    st = _store(tmp_path)
+    lease = st.add_worktree_lease(
+        WorktreeLease(
+            id="lease-1",
+            repo_root="/repo",
+            main_workspace="/repo",
+            worktree_path="/worktrees/s1",
+            branch="foreman/s1/task",
+            base_ref="main",
+            base_sha="base123",
+            head_sha="base123",
+            session_id="s1",
+            task_id="t1",
+            metadata_json='{"owner": "server"}',
+        )
+    )
+
+    assert lease.created_at
+    assert lease.updated_at
+    assert lease.last_seen_at
+    assert st.get_worktree_lease("lease-1").base_sha == "base123"
+    assert st.get_active_worktree_lease(session_id="s1").id == "lease-1"
+    assert st.get_active_worktree_lease(worktree_path="/worktrees/s1").id == "lease-1"
+    assert [row.id for row in st.get_worktree_leases(session_id="s1", status="active")] == [
+        "lease-1"
+    ]
+    assert [row.id for row in st.get_worktree_leases(worktree_path="/worktrees/s1")] == [
+        "lease-1"
+    ]
+
+    updated = st.update_worktree_lease(
+        "lease-1",
+        status="released",
+        head_sha="head456",
+        dirty=True,
+        locked=True,
+    )
+
+    assert updated.status == "released"
+    assert updated.base_ref == "main"
+    assert updated.base_sha == "base123"
+    assert updated.head_sha == "head456"
+    assert updated.dirty is True
+    assert updated.locked is True
+    assert st.get_active_worktree_lease(session_id="s1") is None
+    assert [row.id for row in st.get_worktree_leases(status="released")] == ["lease-1"]
+
+
+def test_worktree_lease_rejects_invalid_status(tmp_path):
+    st = _store(tmp_path)
+    lease = WorktreeLease(
+        id="lease-1",
+        repo_root="/repo",
+        main_workspace="/repo",
+        worktree_path="/worktrees/s1",
+        branch="foreman/s1/task",
+        session_id="s1",
+        task_id="t1",
+        status="unknown",
+    )
+
+    try:
+        st.add_worktree_lease(lease)
+    except ValueError as exc:
+        assert str(exc) == "invalid_worktree_lease_status"
+    else:
+        raise AssertionError("invalid status should fail")
+
+
+def test_worktree_lease_allows_only_one_active_row_per_path(tmp_path):
+    st = _store(tmp_path)
+    st.add_worktree_lease(
+        WorktreeLease(
+            id="lease-1",
+            repo_root="/repo",
+            main_workspace="/repo",
+            worktree_path="/worktrees/s1",
+            branch="foreman/s1/a",
+            session_id="s1",
+            task_id="t1",
+        )
+    )
+
+    try:
+        st.add_worktree_lease(
+            WorktreeLease(
+                id="lease-2",
+                repo_root="/repo",
+                main_workspace="/repo",
+                worktree_path="/worktrees/s1",
+                branch="foreman/s2/b",
+                session_id="s2",
+                task_id="t2",
+            )
+        )
+    except ValueError as exc:
+        assert str(exc) == "active_worktree_lease_exists"
+    else:
+        raise AssertionError("duplicate active worktree path should fail")
+
+    released = st.add_worktree_lease(
+        WorktreeLease(
+            id="lease-3",
+            repo_root="/repo",
+            main_workspace="/repo",
+            worktree_path="/worktrees/s1",
+            branch="foreman/s3/old",
+            session_id="s3",
+            task_id="t3",
+            status="released",
+        )
+    )
+
+    assert released.id == "lease-3"
+    assert st.get_active_worktree_lease(worktree_path="/worktrees/s1").id == "lease-1"
