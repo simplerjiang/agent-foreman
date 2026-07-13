@@ -432,7 +432,7 @@ def build_tool_prompt_context(
             "Tool arguments may include public_note or purpose for the visible activity log; "
             "omit it if you do not have a concise user-facing sentence."
         )
-    context = {
+    context: dict[str, Any] = {
         "runtime_context": runtime.runtime_context(),
         "policy_context": runtime.policy_context(),
         "protocol": protocol,
