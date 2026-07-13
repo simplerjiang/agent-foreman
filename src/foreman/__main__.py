@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import os
+import webbrowser
 from typing import cast
+from urllib.parse import urlparse
 
 import typer
 from rich.console import Console
@@ -189,6 +191,13 @@ def _focus_existing_window(title: str) -> bool:
 
 class _DesktopApi:
     """Small pywebview bridge used by the local settings page."""
+
+    def open_external_url(self, url: str) -> bool:
+        """Hand an explicitly clicked web link to the system default browser."""
+        parsed = urlparse(str(url or ""))
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        return bool(webbrowser.open_new_tab(url))
 
     def select_workspace_folder(self) -> str:
         try:

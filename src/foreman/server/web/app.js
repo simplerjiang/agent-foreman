@@ -85,7 +85,7 @@
       fromSession: "来自会话",
       briefings: "简报", generate: "生成简报", noReports: "暂无简报。",
       history: "历史", copy: "复制", push: "推送到手机", coversSession: "覆盖会话",
-      briefGenerating: "生成中...", briefFailed: "简报生成失败", briefNoLlm: "PM 大脑未配置。请检查 .env 和设置页。", copied: "已复制",
+      briefGenerating: "生成中...", briefFailed: "简报生成失败", briefNoLlm: "PM 大脑未配置。请检查 .env 和设置页。", copied: "已复制", copyFailed: "复制失败，请手动选择文本",
       playbook: "工作方式", kindAll: "全部", kindWorkflows: "工作流", kindSkills: "技能", kindStandards: "代码规范", kindQa: "验收标准",
       startWorkflow: "启动", workflowRun: "工作流运行", wfStep: "步骤", wfStatus: "状态", wfBegin: "执行本步", wfSubmit: "推进", wfApprove: "批准", wfReject: "拒绝", wfRefresh: "刷新", wfNeedSession: "请先在工作台选中一个会话，再启动工作流。", wfStarted: "工作流已启动",
       kindWorkflow: "工作流", kindSkill: "技能", kindStandard: "代码规范", kindQaOne: "验收标准",
@@ -225,7 +225,7 @@
       fromSession: "from session",
       briefings: "Briefings", generate: "Generate", noReports: "No briefings yet.",
       history: "History", copy: "Copy", push: "Push", coversSession: "covers session",
-      briefGenerating: "Generating...", briefFailed: "Briefing failed", briefNoLlm: "PM brain is not configured. Check .env and Settings.", copied: "Copied",
+      briefGenerating: "Generating...", briefFailed: "Briefing failed", briefNoLlm: "PM brain is not configured. Check .env and Settings.", copied: "Copied", copyFailed: "Copy failed. Select the text manually.",
       playbook: "Playbook", kindAll: "All", kindWorkflows: "Workflows", kindSkills: "Skills", kindStandards: "Standards", kindQa: "QA",
       startWorkflow: "Start", workflowRun: "Workflow run", wfStep: "Step", wfStatus: "Status", wfBegin: "Run step", wfSubmit: "Advance", wfApprove: "Approve", wfReject: "Reject", wfRefresh: "Refresh", wfNeedSession: "Pick a session in the workbench first, then start the workflow.", wfStarted: "Workflow started",
       kindWorkflow: "Workflow", kindSkill: "Skill", kindStandard: "Standard", kindQaOne: "QA rubric",
@@ -334,6 +334,11 @@
   const KIND_TAGCOLOR = { workflow: "accent", skill: "violet", code_standard: "amber", qa_rubric: "green" };
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
+    {
+      version: "v1.5.4",
+      en: "Conversation messages can now be selected directly, copy controls fall back when the Clipboard API is unavailable, and bare http(s) URLs open in the system default browser from the desktop app.",
+      zh: "会话消息现在可直接选择；复制控件在 Clipboard API 不可用时会回退复制；裸 http(s) URL 在桌面端点击后由系统默认浏览器打开。",
+    },
     {
       version: "v1.5.3",
       en: "PM worktree support now ships with lease-backed worktree management, guarded create/bind/diff/review/checkpoint/test/cleanup/promote tools, runtime-injected session/task context, UI/API status visibility, and the packaged exe E2E bug list.",
@@ -662,6 +667,24 @@
       if (file && String(file.type || "").toLowerCase().startsWith("image/")) files.push(file);
     }
     return files;
+  }
+  async function copyText(text) {
+    const value = String(text || "");
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch (e) {}
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.setAttribute("readonly", "");
+    input.style.cssText = "position:fixed;opacity:0;pointer-events:none;";
+    document.body.appendChild(input);
+    input.select();
+    try { return document.execCommand("copy"); }
+    catch (e) { return false; }
+    finally { input.remove(); }
   }
   function displayAgent(agentType, d) {
     if (!agentType || agentType === "pm-agent") return "PM";
@@ -1069,7 +1092,7 @@
   }
 
   // ---- markdown (ported, minimal-safe) ----
-  const INLINE_RE = /(\[[^\]\n]{1,200}\]\(([^)\s]+)(?:\s+"[^"]*")?\)|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*)/g;
+  const INLINE_RE = /(\[[^\]\n]{1,200}\]\(([^)\s]+)(?:\s+"[^"]*")?\)|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*|https?:\/\/[^\s<>"`]+)/gi;
   function clampMarkdown(text, maxChars) { const v = String(text || ""); return maxChars && v.length > maxChars ? `${v.slice(0, maxChars)}...` : v; }
   function safeHref(href) {
     const v = String(href || "").trim();
@@ -1077,6 +1100,21 @@
     if (v.startsWith("#")) return v;
     if (v.startsWith("/") && !v.startsWith("//")) return v;
     return "";
+  }
+  function splitBareUrlToken(token) {
+    let href = String(token || "");
+    let suffix = "";
+    while (/[.,!?:;]$/.test(href)) { suffix = href.slice(-1) + suffix; href = href.slice(0, -1); }
+    while (href.endsWith(")") && (href.match(/\(/g) || []).length < (href.match(/\)/g) || []).length) { suffix = ")" + suffix; href = href.slice(0, -1); }
+    return { href, suffix };
+  }
+  function openExternalLink(ev, href) {
+    if (!/^https?:/i.test(href)) return;
+    const bridge = window.pywebview && window.pywebview.api;
+    if (!bridge || typeof bridge.open_external_url !== "function") return;
+    ev.preventDefault();
+    const fallback = () => window.open(href, "_blank", "noopener,noreferrer");
+    Promise.resolve(bridge.open_external_url(href)).then((opened) => { if (!opened) fallback(); }).catch(fallback);
   }
   function isMobileViewport() {
     return !!(window.matchMedia && window.matchMedia("(max-width: 760px)").matches);
@@ -1099,7 +1137,7 @@
   }
   function renderInline(text, keyPrefix) {
     const value = String(text || "");
-    const re = new RegExp(INLINE_RE.source, "g");
+    const re = new RegExp(INLINE_RE.source, "gi");
     const nodes = [];
     const pushText = (v) => { String(v || "").split("\n").forEach((part, i) => { if (i > 0) nodes.push(html`<br key=${`${keyPrefix}-br-${nodes.length}`} />`); if (part) nodes.push(part); }); };
     let last = 0, m;
@@ -1120,7 +1158,11 @@
         const close = tok.indexOf("](");
         const label = tok.slice(1, close);
         const href = safeHref(tok.slice(close + 2, -1).replace(/\s+"[^"]*"$/, ""));
-        nodes.push(href ? html`<a key=${key} href=${href} target="_blank" rel="noreferrer">${renderInline(label, key)}</a>` : label);
+        nodes.push(href ? html`<a key=${key} href=${href} target="_blank" rel="noreferrer" onClick=${(ev) => openExternalLink(ev, href)}>${renderInline(label, key)}</a>` : label);
+      } else if (/^https?:\/\//i.test(tok)) {
+        const { href, suffix } = splitBareUrlToken(tok);
+        nodes.push(html`<a key=${key} href=${href} target="_blank" rel="noreferrer" onClick=${(ev) => openExternalLink(ev, href)}>${href}</a>`);
+        if (suffix) pushText(suffix);
       } else pushText(tok);
       last = m.index + tok.length;
     }
@@ -3609,7 +3651,10 @@
     const removeAttach = (id) => setAttachments((p) => p.filter((a) => a.id !== id));
     const toggleCall = (id) => setOpenCalls((s) => ({ ...s, [id]: !s[id] }));
     const toggleSub = (id) => setExpandedSub((cur) => (cur === id ? null : id));
-    const onCopy = (text) => { try { navigator.clipboard.writeText(text); toast(d.copied, "success"); } catch (e) {} };
+    const onCopy = async (text) => {
+      const copied = await copyText(text);
+      toast(copied ? d.copied : d.copyFailed, copied ? "success" : "error");
+    };
 
     const counts = { workspace: sessions.filter((s) => (s.status || "").toLowerCase().match(/run|active/)).length, decisions: openCards.length + approvals.length };
 
