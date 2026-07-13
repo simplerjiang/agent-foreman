@@ -4,6 +4,18 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.5.5
+
+English:
+
+- The Context panel now localizes its fixed labels and statuses with the selected UI language.
+- Active Context Preview keeps its compact sanitized preview by default, then fetches and displays the complete sanitized active context only after an explicit request in a scrollable native text viewer.
+
+中文：
+
+- 上下文页的固定标签和状态现在会跟随界面语言。
+- Active Context Preview 默认保持精简脱敏预览，只有用户明确请求时才读取并在可滚动原生文本框中显示完整脱敏活动上下文。
+
 ## v1.5.4
 
 English:

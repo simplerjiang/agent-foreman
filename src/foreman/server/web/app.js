@@ -365,6 +365,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.5.5",
+      en: "The Context panel now follows the selected UI language for fixed labels and statuses. Active Context Preview keeps a compact sanitized default preview, then fetches the complete sanitized active context only after an explicit request in a scrollable native text viewer.",
+      zh: "上下文页的固定标签和状态现在会跟随界面语言；Active Context Preview 默认保持精简脱敏预览，只有用户明确请求时才读取完整脱敏活动上下文，并在可滚动的原生文本框中显示。",
+    },
+    {
       version: "v1.5.4",
       en: "Conversation messages can now be selected directly, copy controls fall back when the Clipboard API is unavailable, and bare http(s) URLs open in the system default browser from the desktop app.",
       zh: "会话消息现在可直接选择；复制控件在 Clipboard API 不可用时会回退复制；裸 http(s) URL 在桌面端点击后由系统默认浏览器打开。",
