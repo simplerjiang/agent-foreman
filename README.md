@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.5.3`.
+Current documented release: `v1.5.4`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.5.4` | Conversation messages can now be selected directly, copy controls fall back when the Clipboard API is unavailable, and bare `http(s)` URLs become links that the desktop app opens in the system default browser. |
 | `v1.5.3` | PM worktree support now ships with lease-backed worktree management, guarded create/bind/diff/review/checkpoint/test/cleanup/promote tools, runtime-injected session/task context, UI/API status visibility, and the packaged exe E2E bug list. |
 | `v1.5.2` | Desktop session force-scroll now stays armed across PM loading and first agent output after a user send, and session switches receive the same post-layout bottom correction without overriding explicit user scroll gestures. |
 | `v1.5.1` | Desktop session views now force-scroll to the bottom after a user sends or queues a message, including current-session timeline reloads, while background agent streaming still respects manual scrolling away from the bottom. |
@@ -299,7 +300,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.5.3`。
+当前文档版本：`v1.5.4`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -307,6 +308,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.5.4` | 会话消息现在可直接选择；复制控件在 Clipboard API 不可用时会回退复制；裸 `http(s)` URL 会成为链接，桌面端点击后由系统默认浏览器打开。 |
 | `v1.5.3` | PM worktree 支持现在包含基于 lease 的 worktree 管理、受保护的 create/bind/diff/review/checkpoint/test/cleanup/promote 工具、由 runtime 注入的 session/task 上下文、UI/API 状态可见性，以及 packaged exe E2E BUG 清单。 |
 | `v1.5.2` | PC 端会话页在用户发送后会持续保持强制贴底，覆盖 PM loading 与首个 agent 输出；切换会话也会在布局稳定后校准到底部，同时不会覆盖用户明确滚动阅读旧消息的操作。 |
 | `v1.5.1` | PC 端会话页现在会在用户发送或排队消息后强制滚动到底部，包括当前会话 timeline 重新灌入的场景；后台 agent 持续输出仍会尊重用户手动上翻阅读旧消息。 |

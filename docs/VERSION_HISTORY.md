@@ -4,6 +4,18 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.5.4
+
+English:
+
+- Conversation messages can now be selected directly, and their copy controls fall back when the Clipboard API is unavailable.
+- Bare `http(s)` URLs now render as clickable links. The desktop app sends an explicitly clicked web URL to the system default browser and rejects other URI schemes.
+
+中文：
+
+- 会话消息现在可直接选择；复制控件在 Clipboard API 不可用时会回退复制。
+- 裸 `http(s)` URL 现在会渲染为可点击链接。桌面端仅将用户明确点击的网页 URL 交给系统默认浏览器，并拒绝其他 URI 协议。
+
 ## v1.5.3
 
 English:

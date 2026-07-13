@@ -1371,6 +1371,27 @@ def test_markdown_rendering_wired_safely(tmp_path):
     assert ".markdown-body" in css and ".markdown-table-wrap" in css
 
 
+def test_conversation_copy_and_bare_links_are_wired():
+    c = TestClient(create_app(load_config()))
+    js = c.get("/app.js").text
+    css = c.get("/app.css").text
+    assert "async function copyText" in js and 'document.execCommand("copy")' in js
+    assert "function splitBareUrlToken" in js and "function openExternalLink" in js
+    assert "bridge.open_external_url" in js and "https?:\\/\\/" in js
+    assert "user-select: text" in css and "-webkit-user-select: text" in css
+
+    start = js.index("function splitBareUrlToken")
+    end = js.index("function openExternalLink", start)
+    helpers = js[start:end]
+    script = helpers + r'''
+const must = (cond, label) => { if (!cond) { console.error(label); process.exit(1); } };
+const parsed = splitBareUrlToken("https://example.com/docs).");
+must(parsed.href === "https://example.com/docs", "bare URL keeps the URL");
+must(parsed.suffix === ").", "bare URL leaves punctuation as text");
+'''
+    subprocess.run(["node"], input=script, text=True, encoding="utf-8", check=True)
+
+
 def test_markdown_file_references_open_or_preview_from_workspace():
     c = TestClient(create_app(load_config()))
     js = c.get("/app.js").text

@@ -8,9 +8,11 @@ by running `foreman app` on a desktop.
 from __future__ import annotations
 
 import urllib.request
+import webbrowser
 
 import pytest
 
+from foreman.__main__ import _DesktopApi
 from foreman.client.local_app import PortInUseError, is_running, start_local_app
 from foreman.shared.config import Config
 
@@ -35,6 +37,17 @@ def test_start_local_app_serves_and_stops(tmp_path):
 def test_is_running_false_when_nothing_listening():
     # An unused port: no Foreman there, so the single-instance probe must say "not running".
     assert is_running(port=8795) is False
+
+
+def test_desktop_api_opens_only_web_urls(monkeypatch):
+    opened = []
+    monkeypatch.setattr(webbrowser, "open_new_tab", lambda url: opened.append(url) or True)
+
+    api = _DesktopApi()
+    assert api.open_external_url("https://example.com/path") is True
+    assert opened == ["https://example.com/path"]
+    assert api.open_external_url("file:///C:/secret.txt") is False
+    assert api.open_external_url("javascript:alert(1)") is False
 
 
 def test_second_instance_on_same_port_raises(tmp_path):
