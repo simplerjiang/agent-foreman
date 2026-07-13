@@ -115,7 +115,7 @@ foreman version
 
 ### Version Information
 
-Current documented release: `v1.5.5`.
+Current documented release: `v1.5.6`.
 
 The package version is maintained in one code source: `src/foreman/__init__.py` (`__version__`). The exe, `/health`, and the PWA derive the runtime version from that source; the README and the in-exe Version page carry the human-readable release notes.
 
@@ -123,6 +123,7 @@ Update history:
 
 | Version | Update |
 |---|---|
+| `v1.5.6` | PM tool execution and LLM traces now report non-zero commands as failures, advertise only enabled tools, finalize task lifecycle state, avoid duplicate schemas and tool results, and preserve response and protocol metadata when upstream provides it. |
 | `v1.5.5` | The Context panel now follows the selected UI language for its fixed labels and statuses. Active Context Preview keeps a compact sanitized default preview, then fetches the complete sanitized active context only after an explicit request and displays it in a scrollable native text viewer. |
 | `v1.5.4` | Conversation messages can now be selected directly, copy controls fall back when the Clipboard API is unavailable, and bare `http(s)` URLs become links that the desktop app opens in the system default browser. |
 | `v1.5.3` | PM worktree support now ships with lease-backed worktree management, guarded create/bind/diff/review/checkpoint/test/cleanup/promote tools, runtime-injected session/task context, UI/API status visibility, and the packaged exe E2E bug list. |
@@ -301,7 +302,7 @@ foreman version
 
 ### 版本信息
 
-当前文档版本：`v1.5.5`。
+当前文档版本：`v1.5.6`。
 
 包版本只在一个代码来源维护：`src/foreman/__init__.py` 的 `__version__`。exe、`/health` 和 PWA 都从这里派生运行版本；README 和 exe 内的「版本」页面负责维护给人看的更新说明。
 
@@ -309,6 +310,7 @@ foreman version
 
 | 版本 | 更新 |
 |---|---|
+| `v1.5.6` | PM 工具执行与 LLM trace 现在会把非零命令标记为失败、只向模型暴露已启用工具、正确收尾 task 生命周期、避免重复工具 schema 与结果，并在上游提供时保留响应和协议元数据。 |
 | `v1.5.5` | 上下文页的固定标签和状态现在会跟随界面语言；Active Context Preview 默认保持精简脱敏预览，只有用户明确请求时才读取完整脱敏活动上下文，并在可滚动的原生文本框中显示。 |
 | `v1.5.4` | 会话消息现在可直接选择；复制控件在 Clipboard API 不可用时会回退复制；裸 `http(s)` URL 会成为链接，桌面端点击后由系统默认浏览器打开。 |
 | `v1.5.3` | PM worktree 支持现在包含基于 lease 的 worktree 管理、受保护的 create/bind/diff/review/checkpoint/test/cleanup/promote 工具、由 runtime 注入的 session/task 上下文、UI/API 状态可见性，以及 packaged exe E2E BUG 清单。 |
