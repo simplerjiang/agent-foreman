@@ -5,6 +5,7 @@
   const html = core.html;
   const useCallback = core.useCallback;
   const useEffect = core.useEffect;
+  const useRef = core.useRef;
   const useState = core.useState;
   const api = core.api;
   const friendlyError = core.friendlyError;
@@ -62,16 +63,39 @@
     }
   }
 
-  function contextValue(value) {
-    if (value === undefined || value === null || value === "") return "unknown";
-    if (Array.isArray(value)) return value.length ? value.join(", ") : "unknown";
+  function contextValue(value, unknown) {
+    if (value === undefined || value === null || value === "") return unknown;
+    if (Array.isArray(value)) return value.length ? value.join(", ") : unknown;
     const text = contextText(value);
-    return text || "unknown";
+    return text || unknown;
   }
 
   function contextItems(value) {
     if (!Array.isArray(value)) return [];
     return value.filter((x) => x !== undefined && x !== null && String(x).trim()).slice(0, 20);
+  }
+
+  function contextStatusText(value, d) {
+    const status = String(value || "").trim().toLowerCase();
+    const labels = {
+      active: d.contextStatusActive,
+      completed: d.contextStatusCompleted,
+      failed: d.contextStatusFailed,
+      idle: d.contextStatusIdle,
+      running: d.contextStatusRunning,
+      unknown: d.contextUnknown,
+    };
+    return labels[status] || contextText(value) || d.contextUnknown;
+  }
+
+  function contextModeText(value, d) {
+    const mode = String(value || "").trim().toLowerCase();
+    const labels = {
+      checkpoint: d.contextModeCheckpoint,
+      raw_frames: d.contextModeRawFrames,
+      raw_frames_degraded: d.contextModeRawFramesDegraded,
+    };
+    return labels[mode] || contextText(value) || d.contextUnknown;
   }
 
   function ContextPanel({ sessionRow, d, lang }) {
@@ -81,11 +105,19 @@
     const [detail, setDetail] = useState(null);
     const [error, setError] = useState("");
     const [compactMsg, setCompactMsg] = useState("");
+    const [fullPreview, setFullPreview] = useState(null);
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [previewError, setPreviewError] = useState("");
+    const previewRequest = useRef(0);
     const sessionId = sessionRow && sessionRow.id;
     const loadContext = useCallback(async () => {
-      if (!sessionId) { setData(null); setCheckpoints([]); setDetail(null); return; }
+      previewRequest.current += 1;
+      if (!sessionId) { setData(null); setCheckpoints([]); setDetail(null); setFullPreview(null); setPreviewLoading(false); return; }
       setState((prev) => prev === "ready" || prev === "degraded" ? prev : "loading");
       setError("");
+      setFullPreview(null);
+      setPreviewLoading(false);
+      setPreviewError("");
       try {
         const [ctx, cps] = await Promise.all([
           api(`/api/sessions/${encodeURIComponent(sessionId)}/context`),
@@ -103,7 +135,7 @@
     async function runManualCompact() {
       if (!sessionId) return;
       setState("compacting");
-      setCompactMsg("Context compacting...");
+      setCompactMsg(d.contextCompactBusy);
       setError("");
       try {
         const res = await api(`/api/sessions/${encodeURIComponent(sessionId)}/context/compact`, {
@@ -112,15 +144,29 @@
         });
         if (!res || !res.ok) {
           const msg = res && res.error ? (res.error.message || res.error.code) : "context_compact_failed";
-          setCompactMsg(`Context compact failed. ${msg}. Latest checkpoint was not changed.`);
+          setCompactMsg(`${d.contextCompactFailed} ${msg}. ${d.contextLatestUnchanged}`);
           setState(data && data.degraded ? "degraded" : "ready");
           return;
         }
-        setCompactMsg("Context compacted.");
+        setCompactMsg(d.contextCompacted);
         await loadContext();
       } catch (e) {
-        setCompactMsg(`Context compact failed. ${friendlyError(e, d)}. Latest checkpoint was not changed.`);
+        setCompactMsg(`${d.contextCompactFailed} ${friendlyError(e, d)}. ${d.contextLatestUnchanged}`);
         setState(data && data.degraded ? "degraded" : "ready");
+      }
+    }
+    async function loadFullPreview() {
+      if (!sessionId || previewLoading) return;
+      const request = ++previewRequest.current;
+      setPreviewLoading(true);
+      setPreviewError("");
+      try {
+        const res = await api(`/api/sessions/${encodeURIComponent(sessionId)}/context/preview`);
+        if (request === previewRequest.current) setFullPreview(String((res && res.content) || ""));
+      } catch (e) {
+        if (request === previewRequest.current) setPreviewError(friendlyError(e, d));
+      } finally {
+        if (request === previewRequest.current) setPreviewLoading(false);
       }
     }
     async function openCheckpoint(row) {
@@ -154,93 +200,101 @@
     const steps = contextItems(runtime.next_steps).map((s) => contextText(s));
     const commands = contextItems(runtime.last_commands).map((c) => contextText(c));
     const degraded = !!(data && data.degraded);
+    const previewWithSuffix = String((data && data.active_context_preview) || "");
+    const previewSuffix = "\n...[preview truncated]";
+    const previewTruncated = previewWithSuffix.endsWith(previewSuffix);
+    const preview = previewTruncated ? previewWithSuffix.slice(0, -previewSuffix.length) : previewWithSuffix;
+    const contextState = state === "compacting" ? d.contextStateCompacting : degraded ? d.contextStateDegraded : d.contextStateHealthy;
     return html`<div className="context-panel" data-testid="context-panel">
-      ${state === "loading" ? html`<div className="alert info">Loading context...</div>` : null}
-      ${degraded ? html`<div className="alert error" data-testid="context-degraded-warning">Context restore degraded. Foreman fell back to raw materialized frames.</div>` : null}
+      ${state === "loading" ? html`<div className="alert info">${d.contextLoading}</div>` : null}
+      ${degraded ? html`<div className="alert error" data-testid="context-degraded-warning">${d.contextRestoreDegraded}</div>` : null}
       ${error ? html`<div className="alert error">${error}</div>` : null}
       <section className="context-card" data-testid="context-usage-card">
-        <div className="context-card-title">Context Usage <span>${state === "compacting" ? "compacting" : degraded ? "degraded" : "healthy"}</span></div>
+        <div className="context-card-title">${d.contextUsage} <span>${contextState}</span></div>
         <div className="context-meter">
           <div className="context-meter-track"><span style=${{ width: `${Math.max(0, Math.min(100, pct))}%` }}></span><i style=${{ left: "70%" }}></i><i style=${{ left: "90%" }}></i></div>
-          <div className="context-meter-labels"><span>0%</span><span>70% soft</span><span>90% hard</span><span>100%</span></div>
+          <div className="context-meter-labels"><span>0%</span><span>${d.contextSoftThreshold}</span><span>${d.contextHardThreshold}</span><span>100%</span></div>
         </div>
         <div className="context-kv">
-          <div data-testid="context-usage-used">Used: ${tokenK(usage.used_tokens)} tokens</div>
-          <div data-testid="context-usage-window">Window: ${tokenK(usage.window_tokens)} tokens</div>
-          <div data-testid="context-usage-percent">Usage: ${pct}%</div>
-          <div data-testid="context-soft-remaining">Soft compact in: ${tokenK(usage.tokens_until_soft_compact)}</div>
-          <div data-testid="context-hard-remaining">Hard compact in: ${tokenK(usage.tokens_until_hard_compact)}</div>
-          <div data-testid="context-restore-mode">Mode: ${data ? data.restore_mode : "unknown"}</div>
+          <div data-testid="context-usage-used">${d.contextUsed}: ${tokenK(usage.used_tokens)} ${d.contextTokens}</div>
+          <div data-testid="context-usage-window">${d.contextWindow}: ${tokenK(usage.window_tokens)} ${d.contextTokens}</div>
+          <div data-testid="context-usage-percent">${d.contextUsagePercent}: ${pct}%</div>
+          <div data-testid="context-soft-remaining">${d.contextSoftCompactIn}: ${tokenK(usage.tokens_until_soft_compact)}</div>
+          <div data-testid="context-hard-remaining">${d.contextHardCompactIn}: ${tokenK(usage.tokens_until_hard_compact)}</div>
+          <div data-testid="context-restore-mode">${d.contextMode}: ${contextModeText(data && data.restore_mode, d)}</div>
         </div>
       </section>
       <div className="context-actions">
-        <button className="btn primary sm" data-testid="context-compact-now" onClick=${runManualCompact} disabled=${state === "compacting" || !sessionId}>${state === "compacting" ? "Compacting..." : "Compact Now"}</button>
-        <button className="btn sm" data-testid="context-copy-summary" onClick=${copySummary} disabled=${!latest}>Copy Checkpoint Summary</button>
+        <button className="btn primary sm" data-testid="context-compact-now" onClick=${runManualCompact} disabled=${state === "compacting" || !sessionId}>${state === "compacting" ? d.contextCompactBusy : d.contextCompactNow}</button>
+        <button className="btn sm" data-testid="context-copy-summary" onClick=${copySummary} disabled=${!latest}>${d.contextCopyCheckpointSummary}</button>
         <button className="btn sm" data-testid="context-refresh" onClick=${loadContext} disabled=${state === "compacting"}>${d.refresh}</button>
-        <button className="btn sm" data-testid="context-view-raw-events" disabled=${true}>View Raw Events</button>
+        <button className="btn sm" data-testid="context-view-raw-events" disabled=${true}>${d.contextViewRawEvents}</button>
       </div>
-      ${state === "compacting" ? html`<div className="alert info" data-testid="context-compact-loading">Context compacting...</div>` : null}
-      ${compactMsg ? html`<div className=${`alert ${compactMsg.includes("failed") ? "error" : "ok"}`} data-testid="context-compact-error">${compactMsg}</div>` : null}
+      ${state === "compacting" ? html`<div className="alert info" data-testid="context-compact-loading">${d.contextCompactBusy}</div>` : null}
+      ${compactMsg ? html`<div className=${`alert ${compactMsg.startsWith(d.contextCompactFailed) ? "error" : "ok"}`} data-testid="context-compact-error">${compactMsg}</div>` : null}
       <section className="context-card" data-testid="context-runtime-state">
-        <div className="context-card-title">Runtime State</div>
+        <div className="context-card-title">${d.contextRuntimeState}</div>
         <div className="context-kv">
-          <div data-testid="context-runtime-workspace">Workspace: ${contextValue(runtime.workspace)}</div>
-          <div data-testid="context-runtime-cwd">CWD: ${contextValue(runtime.cwd)}</div>
-          <div data-testid="context-runtime-worktree">Worktree: ${contextValue(runtime.worktree)}</div>
-          <div data-testid="context-runtime-branch">Branch: ${contextValue(runtime.branch)}</div>
-          <div data-testid="context-runtime-base-ref">Base ref: ${contextValue(runtime.base_ref)}</div>
-          <div data-testid="context-runtime-head-sha">Head SHA: ${contextValue(runtime.head_sha)}</div>
+          <div data-testid="context-runtime-workspace">${d.contextWorkspace}: ${contextValue(runtime.workspace, d.contextUnknown)}</div>
+          <div data-testid="context-runtime-cwd">${d.contextCwd}: ${contextValue(runtime.cwd, d.contextUnknown)}</div>
+          <div data-testid="context-runtime-worktree">${d.contextWorktree}: ${contextValue(runtime.worktree, d.contextUnknown)}</div>
+          <div data-testid="context-runtime-branch">${d.contextBranch}: ${contextValue(runtime.branch, d.contextUnknown)}</div>
+          <div data-testid="context-runtime-base-ref">${d.contextBaseRef}: ${contextValue(runtime.base_ref, d.contextUnknown)}</div>
+          <div data-testid="context-runtime-head-sha">${d.contextHeadSha}: ${contextValue(runtime.head_sha, d.contextUnknown)}</div>
         </div>
       </section>
       <section className="context-card" data-testid="context-agents-card">
-        <div className="context-card-title">Agents <span>${agents.length}</span></div>
+        <div className="context-card-title">${d.contextAgents} <span>${agents.length}</span></div>
         ${agents.length ? html`<div className="context-agent-table">${agents.map((a) => html`<div className="context-agent-row" data-testid="context-agent-row" key=${a.agent_id || a.handle_id || JSON.stringify(a).slice(0, 40)}>
-          <b>${contextText(a.agent_id || a.handle_id || "agent", 120)}</b><span>${contextText(a.agent_role || a.agent_type || "unknown", 120)}</span>
-          <span className=${`agent-status ${String(a.status || "unknown").toLowerCase()}`} data-testid="context-agent-status">${contextText(a.status || "unknown", 80)}</span>
+          <b>${contextText(a.agent_id || a.handle_id || d.contextAgent, 120)}</b><span>${contextText(a.agent_role || a.agent_type || d.contextUnknown, 120)}</span>
+          <span className=${`agent-status ${String(a.status || "unknown").toLowerCase()}`} data-testid="context-agent-status">${contextStatusText(a.status, d)}</span>
           <span title=${contextText(a.cwd, 300)} data-testid="context-agent-cwd">${shortPath(contextText(a.cwd), d)}</span>
           <span title=${contextText(a.worktree, 300)} data-testid="context-agent-worktree">${shortPath(contextText(a.worktree), d)}</span>
-          <span data-testid="context-agent-branch">${contextText(a.branch || "unknown", 120)}</span><span data-testid="context-agent-native-session">${contextText(a.native_session_id || "-", 160)}</span>
+          <span data-testid="context-agent-branch">${contextText(a.branch || d.contextUnknown, 120)}</span><span data-testid="context-agent-native-session">${contextText(a.native_session_id || "-", 160)}</span>
           <span>${contextText(a.last_seen_at, 120)}</span><span>${contextText(a.last_meaningful_output)}</span>
-        </div>`)}</div>` : html`<div className="emptyline">No active agents captured yet.</div>`}
+        </div>`)}</div>` : html`<div className="emptyline">${d.contextNoActiveAgents}</div>`}
       </section>
       <section className="context-card" data-testid="latest-checkpoint-card">
-        <div className="context-card-title">Latest Checkpoint</div>
+        <div className="context-card-title">${d.contextLatestCheckpoint}</div>
         ${latest ? html`<div className="context-kv">
-          <div data-testid="latest-checkpoint-id">ID: ${latest.id}</div><div data-testid="latest-checkpoint-trigger">Trigger: ${latest.trigger}</div>
-          <div>Reason: ${latest.reason}</div><div data-testid="latest-checkpoint-method">Method: ${latest.method}</div>
-          <div data-testid="latest-checkpoint-before-tokens">Before: ${tokenK(latest.before_tokens)}</div><div data-testid="latest-checkpoint-after-tokens">After: ${tokenK(latest.after_tokens)}</div>
-          <div data-testid="latest-checkpoint-items-count">Replacement history items: ${latest.replacement_history_items_count}</div><div>Status: ${latest.status}</div>
-        </div>` : html`<div className="emptyline">No context checkpoint yet. Foreman is using raw materialized frames for this session.</div>`}
+          <div data-testid="latest-checkpoint-id">${d.contextId}: ${latest.id}</div><div data-testid="latest-checkpoint-trigger">${d.contextTrigger}: ${latest.trigger}</div>
+          <div>${d.contextReason}: ${latest.reason}</div><div data-testid="latest-checkpoint-method">${d.contextMethod}: ${latest.method}</div>
+          <div data-testid="latest-checkpoint-before-tokens">${d.contextBefore}: ${tokenK(latest.before_tokens)}</div><div data-testid="latest-checkpoint-after-tokens">${d.contextAfter}: ${tokenK(latest.after_tokens)}</div>
+          <div data-testid="latest-checkpoint-items-count">${d.contextReplacementItems}: ${latest.replacement_history_items_count}</div><div>${d.contextStatus}: ${contextStatusText(latest.status, d)}</div>
+        </div>` : html`<div className="emptyline">${d.contextNoCheckpoint}</div>`}
       </section>
       <section className="context-card" data-testid="context-lane-usage">
-        <div className="context-card-title">Lane Usage</div>
-        <div className="context-lanes">${[1,2,3,4,5,6,7].map((lane) => html`<div data-testid=${`context-lane-${lane}`} key=${lane}><span>Lane ${lane}</span><b>${tokenK(lanes[String(lane)] || 0)}</b></div>`)}</div>
-        ${(lanes["7"] || 0) > Math.max(2000, (usage.used_tokens || 0) * 0.2) ? html`<div className="alert info">Lane 7 noise is high; compact may be triggered before the next PM turn.</div>` : null}
+        <div className="context-card-title">${d.contextLaneUsage}</div>
+        <div className="context-lanes">${[1,2,3,4,5,6,7].map((lane) => html`<div data-testid=${`context-lane-${lane}`} key=${lane}><span>${d.contextLane} ${lane}</span><b>${tokenK(lanes[String(lane)] || 0)}</b></div>`)}</div>
+        ${(lanes["7"] || 0) > Math.max(2000, (usage.used_tokens || 0) * 0.2) ? html`<div className="alert info">${d.contextLane7High}</div>` : null}
       </section>
       <section className="context-card" data-testid="context-evidence-card">
-        <div className="context-card-title">Evidence Summary</div>
-        <div className="context-evidence"><b>Changed Files</b><ul data-testid="context-changed-files">${changed.length ? changed.map((x) => html`<li key=${x}>${x}</li>`) : html`<li>No changed files captured yet.</li>`}</ul></div>
-        <div className="context-evidence"><b>Last Tests</b><ul data-testid="context-last-tests">${tests.length ? tests.map((x) => html`<li key=${x}>${x}</li>`) : html`<li>No test results captured yet.</li>`}</ul></div>
-        <div className="context-evidence"><b>Next Steps</b><ul data-testid="context-next-steps">${steps.length ? steps.map((x) => html`<li key=${x}>${x}</li>`) : html`<li>No next steps captured yet.</li>`}</ul></div>
-        <div className="context-evidence"><b>Last Commands</b><ul data-testid="context-last-commands">${commands.length ? commands.map((x) => html`<li key=${x}>${x}</li>`) : html`<li>No commands captured yet.</li>`}</ul></div>
+        <div className="context-card-title">${d.contextEvidenceSummary}</div>
+        <div className="context-evidence"><b>${d.contextChangedFiles}</b><ul data-testid="context-changed-files">${changed.length ? changed.map((x) => html`<li key=${x}>${x}</li>`) : html`<li>${d.contextNoChangedFiles}</li>`}</ul></div>
+        <div className="context-evidence"><b>${d.contextLastTests}</b><ul data-testid="context-last-tests">${tests.length ? tests.map((x) => html`<li key=${x}>${x}</li>`) : html`<li>${d.contextNoTestResults}</li>`}</ul></div>
+        <div className="context-evidence"><b>${d.contextNextSteps}</b><ul data-testid="context-next-steps">${steps.length ? steps.map((x) => html`<li key=${x}>${x}</li>`) : html`<li>${d.contextNoNextSteps}</li>`}</ul></div>
+        <div className="context-evidence"><b>${d.contextLastCommands}</b><ul data-testid="context-last-commands">${commands.length ? commands.map((x) => html`<li key=${x}>${x}</li>`) : html`<li>${d.contextNoCommands}</li>`}</ul></div>
       </section>
       <section className="context-card" data-testid="checkpoint-list">
-        <div className="context-card-title">Checkpoint List</div>
+        <div className="context-card-title">${d.contextCheckpointList}</div>
         ${checkpoints.length ? html`<div className="checkpoint-table">${checkpoints.map((row) => html`<button className="checkpoint-row" data-testid="checkpoint-row" key=${row.id} onClick=${() => openCheckpoint(row)}>
           <span data-testid="checkpoint-row-created">${formatTime(row.created_at, lang)}</span><span data-testid="checkpoint-row-trigger">${row.trigger}</span>
           <span data-testid="checkpoint-row-reason">${row.reason}</span><span data-testid="checkpoint-row-method">${row.method}</span>
           <span data-testid="checkpoint-row-before">${tokenK(row.before_tokens)}</span><span data-testid="checkpoint-row-after">${tokenK(row.after_tokens)}</span>
           <span>${tokenK(Math.max(0, (row.before_tokens || 0) - (row.after_tokens || 0)))}</span><span>${row.replacement_history_items_count}</span>
-          <span data-testid="checkpoint-row-status">${row.status}</span>
-        </button>`)}</div>` : html`<div className="emptyline">No context checkpoint yet.</div>`}
+          <span data-testid="checkpoint-row-status">${contextStatusText(row.status, d)}</span>
+        </button>`)}</div>` : html`<div className="emptyline">${d.contextNoCheckpointShort}</div>`}
       </section>
       <section className="context-card" data-testid="checkpoint-detail">
-        <div className="context-card-title">Checkpoint Detail</div>
-        ${detail ? html`<div><div data-testid="checkpoint-summary"><b>Summary</b><pre>${JSON.stringify(detail.summary || {}, null, 2)}</pre></div><div data-testid="checkpoint-runtime"><b>Runtime</b><pre>${JSON.stringify(detail.runtime_state || {}, null, 2)}</pre></div><div data-testid="checkpoint-token-usage"><b>Token Usage</b><pre>${JSON.stringify(detail.token_usage || {}, null, 2)}</pre></div><div data-testid="checkpoint-source-cursor"><b>Source Cursor</b><pre>${JSON.stringify(detail.source_cursor || {}, null, 2)}</pre></div><div data-testid="checkpoint-warnings"><b>Warnings</b><pre>${JSON.stringify(detail.warnings || [], null, 2)}</pre></div></div>` : html`<div className="emptyline">Select a checkpoint to inspect sanitized detail.</div>`}
+        <div className="context-card-title">${d.contextCheckpointDetail}</div>
+        ${detail ? html`<div><div data-testid="checkpoint-summary"><b>${d.contextSummary}</b><pre>${JSON.stringify(detail.summary || {}, null, 2)}</pre></div><div data-testid="checkpoint-runtime"><b>${d.contextRuntime}</b><pre>${JSON.stringify(detail.runtime_state || {}, null, 2)}</pre></div><div data-testid="checkpoint-token-usage"><b>${d.contextTokenUsage}</b><pre>${JSON.stringify(detail.token_usage || {}, null, 2)}</pre></div><div data-testid="checkpoint-source-cursor"><b>${d.contextSourceCursor}</b><pre>${JSON.stringify(detail.source_cursor || {}, null, 2)}</pre></div><div data-testid="checkpoint-warnings"><b>${d.contextWarnings}</b><pre>${JSON.stringify(detail.warnings || [], null, 2)}</pre></div></div>` : html`<div className="emptyline">${d.contextSelectCheckpoint}</div>`}
       </section>
       <details className="context-card active-context-preview" data-testid="active-context-preview">
-        <summary data-testid="active-context-preview-toggle">Active Context Preview</summary>
-        <pre data-testid="active-context-preview-content">${(data && data.active_context_preview) || ""}</pre>
+        <summary data-testid="active-context-preview-toggle">${d.contextActivePreview}</summary>
+        <pre data-testid="active-context-preview-content">${preview}</pre>
+        ${previewTruncated && fullPreview === null ? html`<div className="context-preview-actions"><span className="context-preview-meta">${d.contextFullPreviewHelp}</span><button className="btn sm" data-testid="active-context-preview-load-full" onClick=${loadFullPreview} disabled=${previewLoading}>${previewLoading ? d.contextFullPreviewLoading : d.contextFullPreview}</button></div>` : null}
+        ${previewError ? html`<div className="alert error">${previewError}</div>` : null}
+        ${fullPreview !== null ? html`<div className="context-full-preview"><div className="context-preview-actions"><span className="context-preview-meta">${d.contextFullPreviewLoaded}</span><button className="btn sm" data-testid="active-context-preview-show-preview" onClick=${() => setFullPreview(null)}>${d.contextPreviewOnly}</button></div><textarea data-testid="active-context-preview-full-content" readOnly=${true} spellCheck=${false} value=${fullPreview}></textarea></div>` : null}
       </details>
     </div>`;
   }
@@ -250,5 +304,7 @@
     contextText,
     contextValue,
     contextItems,
+    contextStatusText,
+    contextModeText,
   };
 })();

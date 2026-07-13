@@ -539,6 +539,23 @@ def test_context_panel_renders_checkpoint_detail():
     assert 'data-testid="active-context-preview"' in js
 
 
+def test_context_panel_is_localized_and_loads_full_preview_on_demand():
+    c = TestClient(create_app(load_config()))
+    app_js = c.get("/app.js").text
+    context_js = c.get("/app-context.js").text
+    css = c.get("/app.css").text
+    assert 'contextUsage: "上下文用量"' in app_js and 'contextUsage: "Context Usage"' in app_js
+    assert 'contextActivePreview: "当前上下文预览"' in app_js and 'contextActivePreview: "Active Context Preview"' in app_js
+    assert 'contextFullPreview: "显示完整内容"' in app_js and 'contextFullPreview: "Show full context"' in app_js
+    assert 'data-testid="active-context-preview-load-full"' in context_js
+    assert "/context/preview" in context_js
+    assert 'data-testid="active-context-preview-full-content"' in context_js
+    assert "setFullPreview(null);" in context_js
+    assert ".active-context-preview textarea" in css
+    for text in ("Context Usage", "Runtime State", "Active Context Preview", "Compact Now"):
+        assert text not in context_js
+
+
 def test_context_panel_hides_provider_payload_by_default():
     c = TestClient(create_app(load_config()))
     js = _dashboard_bundle(c)
@@ -577,7 +594,7 @@ def test_compact_now_button_disabled_while_running():
 def test_compact_now_success_refreshes_context():
     c = TestClient(create_app(load_config()))
     js = _dashboard_bundle(c)
-    assert 'setCompactMsg("Context compacted.")' in js
+    assert "setCompactMsg(d.contextCompacted)" in js
     assert "await loadContext();" in js
 
 

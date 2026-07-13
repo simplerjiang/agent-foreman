@@ -97,9 +97,10 @@ def test_context_panel_browser_e2e_renders_runtime_checkpoint_and_redacts_sensit
                 window.__requests = [];
                 window.ForemanApp = {
                   html,
-                  useCallback: React.useCallback,
-                  useEffect: React.useEffect,
-                  useState: React.useState,
+                      useCallback: React.useCallback,
+                      useEffect: React.useEffect,
+                      useRef: React.useRef,
+                      useState: React.useState,
                   tokenK: (value) => String(value ?? 0),
                   shortPath: (value) => String(value || ""),
                   formatTime: (value) => String(value || ""),
@@ -161,8 +162,11 @@ def test_context_panel_browser_e2e_renders_runtime_checkpoint_and_redacts_sensit
                           replacement_history_items_count: 2,
                           status: "completed",
                         },
-                        active_context_preview: "safe preview with [redacted] secrets",
+                        active_context_preview: "safe preview with [redacted] secrets\\n...[preview truncated]",
                       };
+                    }
+                    if (path.endsWith("/context/preview")) {
+                      return { content: "full safe context ".repeat(1000), chars: 18000 };
                     }
                     if (path.endsWith("/context/checkpoints")) {
                       return { items: [{
@@ -197,12 +201,17 @@ def test_context_panel_browser_e2e_renders_runtime_checkpoint_and_redacts_sensit
             page.add_script_tag(path=str(context_js))
             page.evaluate(
                 """
-                const d = { refresh: "Refresh" };
+                const d = {
+                  refresh: "刷新", contextRuntimeState: "运行状态",
+                  contextActivePreview: "当前上下文预览", contextFullPreview: "显示完整内容",
+                  contextFullPreviewLoading: "正在加载完整内容…", contextFullPreviewHelp: "按需加载",
+                  contextFullPreviewLoaded: "正在显示完整内容。", contextPreviewOnly: "仅显示预览",
+                };
                 ReactDOM.createRoot(document.getElementById("root")).render(
                   html`<${window.ForemanContextUI.ContextPanel}
                     sessionRow=${{ id: "s1" }}
                     d=${d}
-                    lang="en"
+                    lang="zh"
                   />`
                 );
                 """
@@ -210,9 +219,15 @@ def test_context_panel_browser_e2e_renders_runtime_checkpoint_and_redacts_sensit
             page.get_by_test_id("context-runtime-state").wait_for()
             page.get_by_test_id("checkpoint-row").first.click()
             page.get_by_test_id("checkpoint-summary").wait_for()
+            assert not page.evaluate("window.__requests.some((request) => request.path.endsWith('/context/preview'))")
+            page.get_by_test_id("active-context-preview-toggle").click()
+            page.get_by_test_id("active-context-preview-load-full").click()
+            full_preview = page.get_by_test_id("active-context-preview-full-content")
+            full_preview.wait_for()
+            assert len(full_preview.input_value()) == 18000
 
             text = page.locator("body").inner_text()
-            assert "Runtime State" in text
+            assert "运行状态" in text
             assert "context-v2" in text
             assert "safe compact summary" in text
             assert "visible output" in text
