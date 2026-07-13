@@ -767,15 +767,17 @@ def _usage_from_active_context(active_context: Any, window_tokens: int) -> dict[
     }
 
 
-def _context_preview(text: str, limit: int = 6000) -> str:
+def _context_preview(text: str, limit: int | None = 6000) -> str:
     redacted_lines: list[str] = []
     for line in str(text or "").splitlines():
         lowered = line.lower()
         if any(key in lowered for key in _CONTEXT_REDACT_KEYS):
             continue
         redacted_lines.append(line)
-    cleaned = str(_sanitize_context_value("\n".join(redacted_lines)) or "")
-    return cleaned if len(cleaned) <= limit else cleaned[:limit] + "\n...[preview truncated]"
+    cleaned = "\n".join(redacted_lines)
+    if limit is None or len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit] + "\n...[preview truncated]"
 
 
 def _bearer_token(request: Request) -> str:
@@ -2029,6 +2031,23 @@ def create_app(
                 },
             )()
         return _context_response(session_id, active, window_tokens=window_tokens, checkpoint=checkpoint)
+
+    @app.get("/api/sessions/{session_id}/context/preview")
+    async def get_session_context_preview(session_id: str) -> dict:
+        """Return the fully sanitized active context only after an explicit UI request."""
+        _require_session(session_id)
+        window_tokens = await _context_window_tokens()
+        manager = _context_manager()
+        try:
+            active = manager.build_active_context(
+                session_id,
+                purpose="ui_context",
+                window_tokens=window_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the compact dashboard usable.
+            raise HTTPException(status_code=503, detail="context_preview_unavailable") from exc
+        content = _context_preview(getattr(active, "rendered_text", "") or "", limit=None)
+        return {"content": content, "chars": len(content)}
 
     @app.get("/api/sessions/{session_id}/context/checkpoints")
     async def list_context_checkpoints(session_id: str) -> dict:

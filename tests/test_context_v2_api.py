@@ -254,13 +254,21 @@ def test_context_api_preview_remains_capped_even_when_usage_uncapped(tmp_path):
         envelope={"context": {"restore_mode": "raw_frames"}},
     )
 
-    data = _client(store, _cfg(tmp_path), manager=_StaticContextManager(active)).get("/api/sessions/s1/context").json()
+    client = _client(store, _cfg(tmp_path), manager=_StaticContextManager(active))
+    data = client.get("/api/sessions/s1/context").json()
+    full = client.get("/api/sessions/s1/context/preview")
 
     assert data["usage"]["used_tokens"] > 10000
     assert len(data["active_context_preview"]) <= 6030
     assert "provider_payload" not in data["active_context_preview"]
     assert "encrypted_content" not in data["active_context_preview"]
     assert "SECRET" not in data["active_context_preview"]
+    assert full.status_code == 200
+    assert len(full.json()["content"]) > 6000
+    assert full.json()["chars"] == len(full.json()["content"])
+    assert "provider_payload" not in full.json()["content"]
+    assert "encrypted_content" not in full.json()["content"]
+    assert "SECRET" not in full.json()["content"]
 
 
 @pytest.mark.asyncio
