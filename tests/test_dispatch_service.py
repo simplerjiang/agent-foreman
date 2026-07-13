@@ -146,6 +146,8 @@ async def test_cancelled_session_is_not_overwritten_by_background_completion(tmp
     await asyncio.gather(*tasks, return_exceptions=True)
     assert all(t.cancelled() for t in tasks)
     assert store.get_session(res["session_id"]).status == "cancelled"
+    with store.session() as db:
+        assert db.get(Task, res["task_id"]).status == "cancelled"
     assert (await svc.delete(res["session_id"]))["ok"] is True
     assert store.get_session(res["session_id"]) is None
 
@@ -1246,6 +1248,8 @@ async def test_pm_agent_plans_before_launch_and_reviews_until_done(tmp_path):
     assert [x["status"] for x in reviews[0]["todo_status"]] == ["done", "in_progress"]
     assert [x["status"] for x in reviews[1]["todo_status"]] == ["done", "done"]
     assert store.get_session(res["session_id"]).status == "done"
+    with store.session() as db:
+        assert db.get(Task, res["task_id"]).status == "done"
 
 
 async def test_pm_review_and_recover_share_pm_tools_with_decision_context(tmp_path):
@@ -1392,6 +1396,8 @@ async def test_pm_direct_reply_does_not_launch_agent(tmp_path):
     reply = json.loads(next(e.payload_json for e in rows if e.type == "pm_reply"))
     assert reply["text"] == "早上好，需要我帮你处理什么？"
     assert store.get_session(res["session_id"]).status == "done"
+    with store.session() as db:
+        assert db.get(Task, res["task_id"]).status == "done"
     live_types = [event.type for event in list(live._queue)]
     assert "pm_reply" in live_types
 

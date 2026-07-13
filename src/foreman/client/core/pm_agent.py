@@ -757,7 +757,9 @@ class PMAgent:
                 "ask_question with short options and wait for the returned choice before "
                 "submitting the final plan."
             )
-            tool_context = build_tool_prompt_context(runtime)
+            tool_context = build_tool_prompt_context(
+                runtime, include_tool_schema=not hasattr(self.llm, "tool_complete")
+            )
         else:
             guidance = (
                 "Use tools when they can verify the PM decision or clarify a blocker. "
@@ -789,7 +791,11 @@ class PMAgent:
                         {"title": "verify", "status": "in_progress"},
                     ],
                 }
-            tool_context = build_tool_prompt_context(runtime, final_json=final_json)
+            tool_context = build_tool_prompt_context(
+                runtime,
+                final_json=final_json,
+                include_tool_schema=not hasattr(self.llm, "tool_complete"),
+            )
         text = "\n\n# PM tool runtime\n" + tool_context + "\n\n" + guidance
         if work_mode_index:
             text += "\n\n" + work_mode_prompt_block(work_mode_index)

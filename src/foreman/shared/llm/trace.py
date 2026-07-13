@@ -117,6 +117,7 @@ class LLMTracer:
         tool_calls: Any,
         latency_ms: float,
         error: str | None,
+        response_meta: Any = None,
     ) -> None:
         """Write one trace line. Never raises into the caller (DESIGN §8C: a broken trace must not
         break the real LLM call)."""
@@ -140,7 +141,11 @@ class LLMTracer:
                 "transport": transport,
                 "json_mode": json_mode,
                 "request": {"messages": msgs, "tools": list(tools or [])},
-                "response": {"text": response_text or "", "tool_calls": list(tool_calls or [])},
+                "response": {
+                    "text": response_text or "",
+                    "tool_calls": list(tool_calls or []),
+                    "metadata": dict(response_meta or {}),
+                },
                 "metrics": {
                     "req_chars": req_chars,
                     "resp_chars": resp_chars,

@@ -579,7 +579,35 @@ class PMToolRuntime:
         ]
 
     def tool_schema(self) -> list[dict[str, Any]]:
-        return [spec.to_prompt() for spec in self.specs()]
+        return [spec.to_prompt() for spec in self.available_specs()]
+
+    def available_specs(self) -> list[ToolSpec]:
+        specs = self.specs()
+        disabled: set[str] = set()
+        if not self.cfg.file_read:
+            disabled.update(
+                {
+                    "list_files",
+                    "read_file",
+                    "search_repo",
+                    "repo_map",
+                    "impact_analysis",
+                    "artifact_read",
+                }
+            )
+        if not self.cfg.file_write:
+            disabled.update({"write_file", "replace_in_file"})
+        if not self.cfg.shell:
+            disabled.update({"run_command", "test_run"})
+        if not self.cfg.web_fetch:
+            disabled.add("fetch_url")
+        if not self.cfg.web_search:
+            disabled.add("web_search")
+        if not self.cfg.browser:
+            disabled.update(spec.name for spec in specs if spec.name.startswith("browser_"))
+        if not self.cfg.git_worktree:
+            disabled.update(spec.name for spec in specs if spec.name.startswith("worktree_"))
+        return [spec for spec in specs if spec.name not in disabled]
 
     def runtime_context(self) -> dict[str, Any]:
         return {
@@ -1938,7 +1966,7 @@ class PMToolRuntime:
         return ToolResult(
             cid,
             "run_command",
-            True,
+            returncode == 0,
             {
                 "command": command,
                 "returncode": returncode,
@@ -1948,6 +1976,7 @@ class PMToolRuntime:
                 "log_path": str(log_path),
             },
             truncated=out_trunc or err_trunc,
+            error="" if returncode == 0 else "command_failed",
             risk=NEEDS_STRATEGY,
             artifact_paths=[str(log_path)],
         )

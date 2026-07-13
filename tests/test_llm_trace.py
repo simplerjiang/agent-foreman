@@ -82,7 +82,11 @@ async def test_ws_tool_complete_records_once(tmp_path, monkeypatch):
     # The ws transport now serves tool calls via the native _responses_ws_tool path (submit_plan /
     # native function calls). Stub it so the traced public tool_complete records exactly once.
     async def fake_ws_tool(messages, base_url, model, **kw):
-        return LLMToolResponse(text="ws-text", tool_calls=[])
+        return LLMToolResponse(
+            text="ws-text",
+            tool_calls=[],
+            metadata={"response_id": "resp_1", "usage": {"total_tokens": 12}},
+        )
 
     monkeypatch.setattr(client, "_responses_ws_tool", fake_ws_tool)
     with trace_context(session_id="ws1", phase="tool-round-1"):
@@ -90,6 +94,10 @@ async def test_ws_tool_complete_records_once(tmp_path, monkeypatch):
     assert resp.text == "ws-text"
     lines = _read_lines(tmp_path, "ws1")
     assert len(lines) == 1 and lines[0]["kind"] == "tool_complete"
+    assert lines[0]["response"]["metadata"] == {
+        "response_id": "resp_1",
+        "usage": {"total_tokens": 12},
+    }
 
 
 # ── U-4: api key never lands in the trace ─────────────────────────────────────────────────────────

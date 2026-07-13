@@ -423,6 +423,7 @@ class DispatchService:
         # Mark terminal first so the task, as it unwinds from CancelledError, can't flip the status
         # back via `_mark_session_unless_terminal` (cancelled ∈ TERMINAL_SESSION_STATUSES).
         self._mark_session(session_id, "cancelled")
+        self._mark_running_tasks(session_id, "cancelled")
         interrupted_agent = await self._interrupt_runner_handle(session_id)
         aborted = self._cancel_session_tasks(session_id)
         msg = (
@@ -755,6 +756,7 @@ class DispatchService:
             status = "stalled" if isinstance(exc, LLMStalledError) else "failed"
             reason = getattr(exc, "reason", "") if isinstance(exc, LLMStalledError) else ""
             self._mark_session_unless_terminal(session_id, status)
+            self._mark_task(task_id, "failed")
             event = make_event(
                 "error",
                 "pm-agent",
@@ -793,6 +795,7 @@ class DispatchService:
             )
         except Exception as exc:  # noqa: BLE001 - visible background failure, not a server crash
             self._mark_session_unless_terminal(session_id, "failed")
+            self._mark_task(task_id, "failed")
             event = make_event(
                 "error",
                 "pm-agent",
@@ -837,6 +840,7 @@ class DispatchService:
             handles.append(handle)
         await asyncio.gather(*(self.runner.wait(handle) for handle in handles))
         self._mark_session_unless_terminal(session_id, "done")
+        self._mark_task(task_id, "done")
 
     async def launch_workflow_step(
         self, run_id: str, *, agent: str = "", model: str = "", effort: str = ""
@@ -976,6 +980,7 @@ class DispatchService:
                 return
             await self._emit_pm_reply(session_id, task_id, plan)
             self._mark_session_unless_terminal(session_id, "done")
+            self._mark_task(task_id, "done")
             return
         if plan.kind in {"blocked", "error"}:
             await self._emit_pm_error(session_id, task_id, _terminal_plan_text(plan, language))
@@ -1142,6 +1147,7 @@ class DispatchService:
                 return
             if review.done:
                 self._mark_session_unless_terminal(session_id, "done")
+                self._mark_task(task_id, "done")
                 return
             if run_count >= self.pm_agent.max_runs:
                 await self._emit_pm_error(
@@ -1584,6 +1590,7 @@ class DispatchService:
 
     async def _emit_pm_error(self, session_id: str, task_id: str, msg: str) -> None:
         self._mark_session_unless_terminal(session_id, "failed")
+        self._mark_task(task_id, "failed")
         event = make_event(
             "error", "pm-agent", session_id, task_id=task_id, payload={"msg": msg}
         )
@@ -1864,6 +1871,16 @@ class DispatchService:
             self._release_session_worktree_leases(session_id)
         if self.store is not None and hasattr(self.store, "update_session"):
             self.store.update_session(session_id, status=status, updated_at=self._clock())
+
+    def _mark_task(self, task_id: str, status: str) -> None:
+        update = getattr(self.store, "update_task", None) if self.store is not None else None
+        if callable(update) and task_id:
+            update(task_id, status=status, updated_at=self._clock())
+
+    def _mark_running_tasks(self, session_id: str, status: str) -> None:
+        update = getattr(self.store, "update_running_tasks", None) if self.store is not None else None
+        if callable(update) and session_id:
+            update(session_id, status=status, updated_at=self._clock())
 
     def _mark_session_unless_terminal(self, session_id: str, status: str) -> None:
         if self.store is not None and hasattr(self.store, "get_session"):

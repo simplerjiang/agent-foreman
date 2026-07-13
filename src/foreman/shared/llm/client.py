@@ -20,7 +20,7 @@ import inspect
 import json
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -48,6 +48,7 @@ class LLMToolCall:
 class LLMToolResponse:
     text: str
     tool_calls: list[LLMToolCall]
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class LLMConfigError(RuntimeError):
@@ -323,6 +324,7 @@ class LLMClient:
                 tools=tools, response_text=resp.text,
                 tool_calls=[{"id": c.id, "name": c.name, "arguments": c.arguments}
                             for c in resp.tool_calls],
+                response_meta=resp.metadata,
                 latency_ms=(time.perf_counter() - t0) * 1000, error=err,
             )
 
@@ -506,7 +508,9 @@ class LLMClient:
             timeout=self._request_timeout(),
         )
         r.raise_for_status()
-        msg = r.json()["choices"][0]["message"]
+        body = r.json()
+        choice = body["choices"][0]
+        msg = choice["message"]
         calls: list[LLMToolCall] = []
         for item in msg.get("tool_calls") or []:
             if not isinstance(item, dict):
@@ -523,7 +527,15 @@ class LLMClient:
                     arguments=_json_args(fn.get("arguments")),
                 )
             )
-        return LLMToolResponse(text=msg.get("content") or "", tool_calls=calls)
+        return LLMToolResponse(
+            text=msg.get("content") or "",
+            tool_calls=calls,
+            metadata=_response_metadata(
+                response_id=body.get("id"),
+                usage=body.get("usage"),
+                finish_reason=choice.get("finish_reason"),
+            ),
+        )
 
     async def _openai_tools_stream(
         self, payload: dict, base_url: str, on_stream: StreamCallback
@@ -661,7 +673,8 @@ class LLMClient:
         r.raise_for_status()
         text_parts: list[str] = []
         calls: list[LLMToolCall] = []
-        for block in r.json().get("content", []):
+        body = r.json()
+        for block in body.get("content", []):
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "text":
@@ -676,7 +689,15 @@ class LLMClient:
                         arguments=arguments,
                     )
                 )
-        return LLMToolResponse(text="".join(text_parts), tool_calls=calls)
+        return LLMToolResponse(
+            text="".join(text_parts),
+            tool_calls=calls,
+            metadata=_response_metadata(
+                response_id=body.get("id"),
+                usage=body.get("usage"),
+                finish_reason=body.get("stop_reason"),
+            ),
+        )
 
     async def _responses_ws(
         self,
@@ -780,6 +801,7 @@ class LLMClient:
         last_tool_key = ""
         reasoning_streamed = False
         response_id = ""
+        response_meta: dict[str, Any] = {}
         wall_timeout = max(self._request_timeout(), 0.001)
         stall_timeout = min(30.0, max(15.0, wall_timeout / 2))
         loop = asyncio.get_running_loop()
@@ -845,6 +867,17 @@ class LLMClient:
                         if tools and _ws_tool_calls_ready(tool_items):
                             break
                     elif etype == "response.completed":
+                        response = obj.get("response")
+                        response_data = response if isinstance(response, dict) else {}
+                        response_meta = _response_metadata(
+                            response_id=response_id,
+                            previous_response_id=previous_response_id,
+                            usage=response_data.get("usage") or obj.get("usage"),
+                            status=response_data.get("status") or obj.get("status"),
+                            finish_reason=(
+                                response_data.get("finish_reason") or obj.get("finish_reason")
+                            ),
+                        )
                         if on_stream is not None and not reasoning_streamed:
                             for text in _completed_reasoning_summaries(obj):
                                 await _call_stream(
@@ -883,7 +916,16 @@ class LLMClient:
                 raise
         if state_key and response_id:
             self._response_state[state_key] = response_id
-        return LLMToolResponse(text="".join(buf), tool_calls=_ws_tool_calls(tool_items))
+        if not response_meta:
+            response_meta = _response_metadata(
+                response_id=response_id,
+                previous_response_id=previous_response_id,
+            )
+        return LLMToolResponse(
+            text="".join(buf),
+            tool_calls=_ws_tool_calls(tool_items),
+            metadata=response_meta,
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -920,6 +962,29 @@ def _response_id(obj: dict) -> str:
     if etype in {"response.created", "response.in_progress", "response.completed"}:
         return str(obj.get("id") or "").strip()
     return ""
+
+
+def _response_metadata(
+    *,
+    response_id: Any = None,
+    previous_response_id: Any = None,
+    usage: Any = None,
+    status: Any = None,
+    finish_reason: Any = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key, value in (
+        ("response_id", response_id),
+        ("previous_response_id", previous_response_id),
+        ("status", status),
+        ("finish_reason", finish_reason),
+    ):
+        text = str(value or "").strip()
+        if text:
+            metadata[key] = text
+    if isinstance(usage, dict) and usage:
+        metadata["usage"] = usage
+    return metadata
 
 
 def _recv_timeout(

@@ -17,6 +17,7 @@ from foreman.client.tools import EXTERNAL_WEB, PMToolLoop, PMToolRuntime, ToolCa
 from foreman.client.tools.loop import (
     SUBMIT_PLAN_TOOL,
     _calls_from_json,
+    build_tool_prompt_context,
     submit_plan_tool_spec,
     validate_final_plan,
 )
@@ -189,6 +190,37 @@ async def test_worktree_tool_disabled_returns_tool_disabled(tmp_path: Path):
         result = await _runtime(tmp_path, git_worktree=False).call(call)
         assert result.ok is False
         assert result.error == "tool_disabled"
+
+
+def test_available_specs_hide_disabled_runtime_capabilities(tmp_path: Path):
+    runtime = _runtime(
+        tmp_path,
+        file_read=False,
+        file_write=False,
+        shell=False,
+        web_fetch=False,
+        web_search=False,
+        browser=False,
+        git_worktree=False,
+    )
+    names = {spec.name for spec in runtime.available_specs()}
+    assert "read_file" not in names
+    assert "write_file" not in names
+    assert "run_command" not in names
+    assert "fetch_url" not in names
+    assert "web_search" not in names
+    assert "browser_open" not in names
+    assert "worktree_list" not in names
+    assert "event_query" in names
+
+
+def test_native_tool_prompt_does_not_duplicate_tool_schema(tmp_path: Path):
+    context = json.loads(
+        build_tool_prompt_context(_runtime(tmp_path), include_tool_schema=False)
+    )
+    assert "tool_schema" not in context
+    assert "runtime_context" in context
+    assert "policy_context" in context
 
 
 async def test_repo_map_and_impact_analysis_are_bounded_heuristics(tmp_path: Path):
@@ -1499,6 +1531,17 @@ async def test_run_command_streams_to_events_and_ignores_shell_timeout(tmp_path:
     assert all(p["log_path"] == result.data["log_path"] for p in stream)
 
 
+async def test_run_command_nonzero_exit_is_failure_with_output(tmp_path: Path):
+    command = f'"{sys.executable}" -c "import sys; print(123); sys.exit(7)"'
+    result = await _runtime(tmp_path, shell=True).call(
+        ToolCall("cmd", "run_command", {"command": command})
+    )
+    assert result.ok is False
+    assert result.error == "command_failed"
+    assert result.data["returncode"] == 7
+    assert "123" in result.data["stdout"]
+
+
 async def test_run_command_requires_approval_can_continue_after_question(tmp_path: Path):
     class FakeCards:
         def __init__(self) -> None:
@@ -1674,7 +1717,7 @@ async def test_pm_loop_propagates_external_web_taint_to_next_tool(tmp_path: Path
     finally:
         server.shutdown()
 
-    post_outputs = [json.loads(p["output"]) for t, p in events if t == "tool_post"]
+    post_outputs = [p["result"] for t, p in events if t == "tool_post"]
     assert outcome.final_plan["summary"] == "taint verified"
     assert post_outputs[0]["taint"] == [EXTERNAL_WEB]
     assert post_outputs[1]["error"] == "shell_after_web_requires_approval"
@@ -1827,8 +1870,14 @@ async def test_invalid_tool_args_max_rounds_and_final_validator(tmp_path: Path):
         enabled_agents=["codex"],
     )
     assert outcome.final_plan["instruction"] == "run after evidence"
-    post_outputs = [json.loads(p["output"]) for t, p in events if t == "tool_post"]
+    post_outputs = [p["result"] for t, p in events if t == "tool_post"]
     assert {item["error"] for item in post_outputs} == {"invalid_args", "unknown_tool"}
+    assert all("output" not in payload for event_type, payload in events if event_type == "tool_post")
+    assert all(
+        payload["protocol_source"] == "text_fallback"
+        for event_type, payload in events
+        if event_type == "tool_pre"
+    )
 
     class NeverFinal:
         async def complete(self, messages, *, json_mode=False, model="", on_stream=None):
@@ -1987,7 +2036,13 @@ async def test_pm_loop_native_path_ignores_text_final_plan(tmp_path: Path):
         }
     )
     llm = _ScriptedToolLLM([LLMToolResponse(text=text_plan, tool_calls=[])])
-    outcome = await PMToolLoop(llm, _runtime(tmp_path), max_rounds=1).run(
+    events: list[tuple[str, dict]] = []
+    outcome = await PMToolLoop(
+        llm,
+        _runtime(tmp_path),
+        max_rounds=1,
+        on_tool_event=lambda event_type, payload: events.append((event_type, payload)),
+    ).run(
         [Message("user", "plan")],
         fallback_plan={"agent": "codex", "model": "", "effort": "high", "instruction": "fallback"},
         enabled_agents=["codex"],
@@ -1995,6 +2050,12 @@ async def test_pm_loop_native_path_ignores_text_final_plan(tmp_path: Path):
     assert outcome.incomplete is True
     assert outcome.final_plan["instruction"] == "fallback"
     assert outcome.final_plan["summary"] != "should be ignored"
+    assert ("pm_protocol", {
+        "round": 1,
+        "source": "native_text",
+        "result": "rejected",
+        "reason": "submit_plan_required",
+    }) in events
 
 
 async def test_pm_loop_submit_plan_tool_terminates_on_auto_round(tmp_path: Path):
@@ -2080,7 +2141,7 @@ async def test_pm_loop_can_ask_question_before_submit_plan(tmp_path: Path):
     assert cards.calls[0]["session_id"] == "s1"
     assert cards.calls[0]["question"] == "Pick a path"
     post = [p for t, p in events if t == "tool_post" and p["tool"] == "ask_question"][0]
-    result = json.loads(post["output"])["data"]
+    result = post["result"]["data"]
     assert result["choice"] == "B"
 
 

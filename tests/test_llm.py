@@ -771,6 +771,31 @@ async def test_ws_tool_complete_ignores_empty_or_invalid_arguments_for_early_bre
     assert out.tool_calls[0].arguments == {}
 
 
+async def test_ws_tool_complete_returns_provider_metadata_when_available():
+    sent: list = []
+    frames = [
+        json.dumps({"type": "response.created", "response": {"id": "resp_7"}}),
+        json.dumps(
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_7",
+                    "status": "completed",
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                },
+            }
+        ),
+    ]
+    c, _ = _ws_client(frames, sent)
+    out = await c.tool_complete([Message("user", "x")], tools=[{"name": "inspect"}])
+    await c.aclose()
+    assert out.metadata == {
+        "response_id": "resp_7",
+        "status": "completed",
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+    }
+
+
 async def test_ws_json_mode_repetition_watchdog_closes_stream():
     ws = _FakeWS(
         [
