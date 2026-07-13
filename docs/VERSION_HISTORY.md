@@ -4,6 +4,20 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.5.6
+
+English:
+
+- Non-zero `run_command` exits now return `command_failed` while preserving stdout, stderr, the exit code, and the durable log path for PM recovery.
+- Native LLM tool requests now avoid duplicate text schemas, advertise only currently enabled tools, and record whether calls came from the native protocol or text fallback.
+- PM root tasks now reach `done`, `failed`, or `cancelled` with their sessions; `tool_post` keeps one structured result; LLM traces preserve available response IDs, usage, status, and finish metadata without inventing missing values.
+
+中文：
+
+- `run_command` 非零退出现在返回 `command_failed`，同时保留 stdout、stderr、退出码和持久日志路径，供 PM 判断与恢复。
+- 原生 LLM 工具请求不再重复注入文本 schema，只暴露当前已启用工具，并记录调用来自原生协议还是文本 fallback。
+- PM 根 task 现在会随会话进入 `done`、`failed` 或 `cancelled`；`tool_post` 只保留一份结构化结果；LLM trace 会保留上游实际提供的响应 ID、usage、status 和 finish 元数据，不伪造缺失值。
+
 ## v1.5.5
 
 English:

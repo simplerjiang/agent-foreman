@@ -113,6 +113,7 @@ class PMToolLoop:
             raw = response["text"]
             native = bool(response.get("native"))
             obj = _extract_json_object(raw)
+            protocol_source = "native" if calls else "text_fallback"
             if not calls:
                 calls = _calls_from_json(obj)
             # Terminal plan: a native submit_plan tool call — args ARE the plan, no regex (A1).
@@ -168,6 +169,16 @@ class PMToolLoop:
                     rounds.append({"round": round_no, "error": reason})
                     continue
                 return ToolLoopOutcome(plan, rounds=rounds)
+            if native and obj and str(obj.get("type") or "").strip() == "final_plan":
+                await self._emit(
+                    "pm_protocol",
+                    {
+                        "round": round_no,
+                        "source": "native_text",
+                        "result": "rejected",
+                        "reason": "submit_plan_required",
+                    },
+                )
             # Otherwise run the requested evidence tools (submit_plan, if any, was terminal above).
             evidence_calls = [call for call in calls if call.name != SUBMIT_PLAN_TOOL]
             if not evidence_calls:
@@ -184,7 +195,7 @@ class PMToolLoop:
             for idx, call in enumerate(evidence_calls, start=1):
                 if not call.id:
                     call.id = f"call-{round_no}-{idx}"
-                await self._emit("tool_pre", _call_payload(call, taint))
+                await self._emit("tool_pre", _call_payload(call, taint, protocol_source))
                 result = await self.runtime.call(
                     call,
                     context_taint=taint,
@@ -201,7 +212,9 @@ class PMToolLoop:
             rounds.append(
                 {
                     "round": round_no,
-                    "tool_calls": [_call_payload(call, taint) for call in evidence_calls],
+                    "tool_calls": [
+                        _call_payload(call, taint, protocol_source) for call in evidence_calls
+                    ],
                     "tool_results": [result.to_dict() for result in results],
                 }
             )
@@ -265,6 +278,7 @@ class PMToolLoop:
             calls = response["tool_calls"]
             raw = response["text"]
             obj = _extract_json_object(raw)
+            protocol_source = "native" if calls else "text_fallback"
             if not calls:
                 calls = _calls_from_json(obj)
             if not calls:
@@ -283,7 +297,7 @@ class PMToolLoop:
             for idx, call in enumerate(calls, start=1):
                 if not call.id:
                     call.id = f"call-{round_no}-{idx}"
-                await self._emit("tool_pre", _call_payload(call, taint))
+                await self._emit("tool_pre", _call_payload(call, taint, protocol_source))
                 result = await self.runtime.call(
                     call,
                     context_taint=taint,
@@ -296,7 +310,7 @@ class PMToolLoop:
             rounds.append(
                 {
                     "round": round_no,
-                    "tool_calls": [_call_payload(call, taint) for call in calls],
+                    "tool_calls": [_call_payload(call, taint, protocol_source) for call in calls],
                     "tool_results": [result.to_dict() for result in results],
                 }
             )
@@ -334,7 +348,7 @@ class PMToolLoop:
         include_submit_plan: bool = True,
     ) -> dict[str, Any]:
         if hasattr(self.llm, "tool_complete"):
-            tools = [spec.to_native() for spec in self.runtime.specs()]
+            tools = [spec.to_native() for spec in self.runtime.available_specs()]
             if include_submit_plan:
                 tools.append(submit_plan_tool_spec(enabled_agents, max_plan_items=self.max_rounds))
             kwargs: dict[str, Any] = {"tools": tools, "model": model, "json_mode": True}
@@ -372,6 +386,7 @@ def build_tool_prompt_context(
     *,
     final_json: dict[str, Any] | None = None,
     final_rule: str = "",
+    include_tool_schema: bool = True,
 ) -> str:
     protocol: dict[str, Any] = {
         "tool_call": {
@@ -417,15 +432,14 @@ def build_tool_prompt_context(
             "Tool arguments may include public_note or purpose for the visible activity log; "
             "omit it if you do not have a concise user-facing sentence."
         )
-    return json.dumps(
-        {
-            "tool_schema": runtime.tool_schema(),
-            "runtime_context": runtime.runtime_context(),
-            "policy_context": runtime.policy_context(),
-            "protocol": protocol,
-        },
-        ensure_ascii=False,
-    )
+    context: dict[str, Any] = {
+        "runtime_context": runtime.runtime_context(),
+        "policy_context": runtime.policy_context(),
+        "protocol": protocol,
+    }
+    if include_tool_schema:
+        context["tool_schema"] = runtime.tool_schema()
+    return json.dumps(context, ensure_ascii=False)
 
 
 def _accepts_keyword(fn, name: str) -> bool:
@@ -481,12 +495,15 @@ def _calls_from_json(obj: dict[str, Any] | None) -> list[ToolCall]:
     return out
 
 
-def _call_payload(call: ToolCall, context_taint: list[str]) -> dict[str, Any]:
+def _call_payload(
+    call: ToolCall, context_taint: list[str], protocol_source: str = "native"
+) -> dict[str, Any]:
     return {
         "tool": call.name,
         "call_id": call.id,
         "input": call.arguments,
         "context_taint": list(context_taint),
+        "protocol_source": protocol_source,
         "source": "pm-agent",
     }
 
@@ -504,7 +521,6 @@ def _result_payload(result: ToolResult) -> dict[str, Any]:
         "tool": result.name,
         "call_id": result.id,
         "ok": result.ok,
-        "output": json.dumps(result.to_dict(), ensure_ascii=False),
         "result": result.to_dict(),
         "source": "pm-agent",
     }

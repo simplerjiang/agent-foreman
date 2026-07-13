@@ -157,6 +157,32 @@ class Store:
             s.commit()
         return task
 
+    def update_task(self, task_id: str, *, status: str, updated_at: str | None = None) -> Task | None:
+        with self.session() as s:
+            row = s.get(Task, task_id)
+            if row is None:
+                return None
+            row.status = status
+            if updated_at is not None:
+                row.updated_at = updated_at
+            s.add(row)
+            s.commit()
+        return row
+
+    def update_running_tasks(self, session_id: str, *, status: str, updated_at: str) -> int:
+        with self.session() as s:
+            rows = list(
+                s.exec(
+                    select(Task).where(Task.session_id == session_id, Task.status == "running")
+                ).all()
+            )
+            for row in rows:
+                row.status = status
+                row.updated_at = updated_at
+                s.add(row)
+            s.commit()
+        return len(rows)
+
     # ── PM worktree leases ───────────────────────────────────────────────────────────────
     def add_worktree_lease(self, lease: WorktreeLease) -> WorktreeLease:
         if lease.status not in WORKTREE_LEASE_STATUSES:

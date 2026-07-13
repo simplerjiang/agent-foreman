@@ -365,6 +365,11 @@
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
     {
+      version: "v1.5.6",
+      en: "PM tool execution and LLM traces now report non-zero commands as failures, advertise only enabled tools, finalize task lifecycle state, avoid duplicate schemas and tool results, and preserve response and protocol metadata when upstream provides it.",
+      zh: "PM 工具执行与 LLM trace 现在会把非零命令标记为失败、只向模型暴露已启用工具、正确收尾 task 生命周期、避免重复工具 schema 与结果，并在上游提供时保留响应和协议元数据。",
+    },
+    {
       version: "v1.5.5",
       en: "The Context panel now follows the selected UI language for fixed labels and statuses. Active Context Preview keeps a compact sanitized default preview, then fetches the complete sanitized active context only after an explicit request in a scrollable native text viewer.",
       zh: "上下文页的固定标签和状态现在会跟随界面语言；Active Context Preview 默认保持精简脱敏预览，只有用户明确请求时才读取完整脱敏活动上下文，并在可滚动的原生文本框中显示。",
