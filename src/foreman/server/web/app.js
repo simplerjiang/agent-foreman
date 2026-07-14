@@ -22,6 +22,7 @@
   const LANG_KEY = "foreman.lang";
   const THEME_KEY = "foreman.theme";
   const WORKSPACE_KEY = "foreman.workspace";
+  const MODEL_KEY = "foreman.model";
   const DEFAULT_CONTEXT_TOKENS = 272000;
   const PM_TOOLS_MIN_ROUNDS = 1;
   const PM_TOOLS_DEFAULT_ROUNDS = 6;
@@ -364,6 +365,11 @@
   const KIND_TAGCOLOR = { workflow: "accent", skill: "violet", code_standard: "amber", qa_rubric: "green" };
   const STREAM_TYPES = new Set(["pm_output", "pm_reasoning", "agent_output", "agent_reasoning"]);
   const VERSION_HISTORY = [
+    {
+      version: "v1.5.7",
+      en: "New sessions retain the model most recently selected in the composer on this browser, including after refresh; choosing the default option clears the saved override.",
+      zh: "新会话现在会在本浏览器中沿用任务输入框上次选择的模型，刷新页面后同样保留；选择默认模型会清除该保存的覆盖值。",
+    },
     {
       version: "v1.5.6",
       en: "PM tool execution and LLM traces now report non-zero commands as failures, advertise only enabled tools, finalize task lifecycle state, avoid duplicate schemas and tool results, and preserve response and protocol metadata when upstream provides it.",
@@ -2861,7 +2867,7 @@
     const [workspace, setWorkspace] = useState(localStorage.getItem(WORKSPACE_KEY) || "");
     const [workspaceDraft, setWorkspaceDraft] = useState({ path: "", name: "" });
     const [task, setTask] = useState("");
-    const [model, setModel] = useState("");
+    const [model, setModel] = useState(() => localStorage.getItem(MODEL_KEY) || "");
     const [effort, setEffort] = useState("medium");
     // Manually-picked work-mode definition ids (D4, UI-first). P0 sends them; the backend accepts but
     // does NOT yet consume them — resolver pass-through wiring lands in P1.
@@ -2921,6 +2927,10 @@
     useEffect(() => { document.documentElement.setAttribute("data-theme", theme); }, [theme]);
     const setTheme = (t) => { setThemeState(t); localStorage.setItem(THEME_KEY, t); };
     const setLang = (l) => setLangState(normalizeUiLang(l));
+    useEffect(() => {
+      if (model) localStorage.setItem(MODEL_KEY, model);
+      else localStorage.removeItem(MODEL_KEY);
+    }, [model]);
     const setSelectedProcessId = (id) => {
       setSelectedProcessIdState(id || "");
       if (id) localStorage.setItem(PROCESS_KEY, id);

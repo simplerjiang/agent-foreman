@@ -4,6 +4,18 @@ This file is the human-readable release history for Foreman. The runtime package
 
 Foreman 的运行版本仍然只有一个代码来源：`src/foreman/__init__.py` 的 `__version__`。本文件只维护给人看的中英文版本历史。
 
+## v1.5.7
+
+English:
+
+- New sessions retain the model most recently selected in the composer on this browser, including after refresh.
+- Choosing the default model clears the saved override and continues to use the configured default.
+
+中文：
+
+- 新会话会在本浏览器中沿用任务输入框上次选择的模型，刷新页面后同样保留。
+- 选择默认模型会清除保存的覆盖值，并继续使用已配置的默认模型。
+
 ## v1.5.6
 
 English:

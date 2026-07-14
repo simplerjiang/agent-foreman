@@ -247,7 +247,7 @@ def test_version_information_page_wired():
     assert 'api("/api/update/status")' in js and 'api("/api/update/cancel"' in js
     assert "VERSION_HISTORY" in js and "Historical update notes" in js
     assert "This release" not in js and "本次更新内容" not in js
-    assert "v1.3.6" in js and "v1.3.5" in js and "v1.3.0" in js and "v1.2.9" in js and "v1.2.8" in js and "v1.2.7" in js
+    assert "v1.5.7" in js and "v1.3.6" in js and "v1.3.5" in js and "v1.3.0" in js and "v1.2.9" in js and "v1.2.8" in js and "v1.2.7" in js
     assert "onCheckUpdate: () => checkAppUpdate(true)" in js
     assert 'api("/api/update/check")' in js
     assert '["briefings", "rules", "settings", "version"].includes(viewName)' in js
@@ -262,7 +262,7 @@ def test_readme_and_agents_require_version_notes():
     history = (ROOT / "docs" / "VERSION_HISTORY.md").read_text(encoding="utf-8")
 
     assert "### Version Information" in readme and "### 版本信息" in readme
-    assert "v1.3.6" in readme and "v1.3.5" in readme and "v1.3.0" in readme and "v1.2.9" in readme and "v1.2.8" in readme
+    assert "v1.5.7" in readme and "v1.3.6" in readme and "v1.3.5" in readme and "v1.3.0" in readme and "v1.2.9" in readme and "v1.2.8" in readme
     assert "Update history:" in readme and "更新历史：" in readme
     assert "This release adds" not in readme and "本次更新" not in readme
     assert "docs/VERSION_HISTORY.md" in readme
@@ -270,7 +270,7 @@ def test_readme_and_agents_require_version_notes():
     assert "v1.2.1" in readme and "v1.2.0" in readme
     assert "最终领取版本号时同步更新 README" in agents
     assert "README.md" in agents and "Version / 版本" in agents and "docs/VERSION_HISTORY.md" in agents
-    assert "## v1.3.6" in history and "## v1.3.5" in history and "## v1.3.0" in history and "## v1.2.9" in history and "## v1.2.8" in history
+    assert "## v1.5.7" in history and "## v1.3.6" in history and "## v1.3.5" in history and "## v1.3.0" in history and "## v1.2.9" in history and "## v1.2.8" in history
     assert "## v1.2.6" in history and "## v1.2.5" in history and "## v1.2.4" in history
     assert "## v1.2.3" in history and "## v1.2.2" in history and "## v1.2.1" in history and "## v1.2.0" in history
     assert "历史更新记录" in agents and "不能只显示最新版本" in agents
@@ -815,6 +815,10 @@ def test_dispatch_model_picker_and_no_explicit_agent():
     js = c.get("/app.js").text
     assert 'api("/api/models")' in js
     assert "body.model = model.trim()" in js
+    assert 'const MODEL_KEY = "foreman.model"' in js
+    assert 'useState(() => localStorage.getItem(MODEL_KEY) || "")' in js
+    assert "localStorage.setItem(MODEL_KEY, model)" in js
+    assert "localStorage.removeItem(MODEL_KEY)" in js
     # per-dispatch model override is wired as a select from /api/models — not a dead path
     assert "modelChoices.map" in js and "model-pick" in js and "setModel(e.target.value)" in js
     assert 'list="composer-models"' not in js
