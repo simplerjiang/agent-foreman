@@ -223,6 +223,11 @@ class PMToolsCfg(BaseModel):
         return clamp_pm_tool_rounds(value)
 
 
+class AgentGuidelinesCfg(BaseModel):
+    enabled: bool = True
+    filenames: list[str] = Field(default_factory=lambda: ["AGENT.md", "AGENTS.md"])
+
+
 def default_worktree_root(main_workspace: str | Path) -> Path:
     """Repo-external default root for PM-created worktrees."""
     main = Path(main_workspace).expanduser()
@@ -330,6 +335,7 @@ class Config(BaseModel):
     ui: UICfg = UICfg()
     autonomy: AutonomyCfg = AutonomyCfg()
     pm_tools: PMToolsCfg = PMToolsCfg()
+    agent_guidelines: AgentGuidelinesCfg = AgentGuidelinesCfg()
     notify: NotifyCfg = NotifyCfg()
     debug: DebugCfg = DebugCfg()
     work_mode: WorkModeCfg = WorkModeCfg()

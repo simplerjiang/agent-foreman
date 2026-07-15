@@ -191,6 +191,12 @@ def _pm_tools(store: Any, cfg: Any) -> dict:
     return dict(data) if isinstance(data, dict) else fallback
 
 
+def _agent_guidelines(store: Any, cfg: Any) -> dict:
+    fallback = _model_dump(getattr(cfg, "agent_guidelines", None) if cfg is not None else None)
+    data = _json_setting(store, "agent_guidelines.json", fallback)
+    return dict(data) if isinstance(data, dict) else fallback
+
+
 def _llm_settings(store: Any, cfg: Any) -> dict:
     llm = getattr(cfg, "llm", None) if cfg is not None else None
     secrets = getattr(cfg, "secrets", None) if cfg is not None else None
@@ -253,6 +259,7 @@ def local_state_summary(store: Any = None, cfg: Any = None) -> dict:
         "workspaces": _workspace_rows(store, cfg),
         "agent_settings": _agent_rows(store, cfg),
         "pm_tools": _pm_tools(store, cfg),
+        "agent_guidelines": _agent_guidelines(store, cfg),
         "llm": _llm_settings(store, cfg),
         "debug": _debug_settings(store, cfg),
         "cloud": _cloud_settings(store, cfg),

@@ -386,6 +386,7 @@ def build_plan_prompt(
     requested_effort: str,
     main_workspace: str = "",
     context: str = "",
+    agent_guidelines: str = "",
     planning_rounds: list[dict[str, Any]] | None = None,
     round_no: int = 1,
     min_rounds: int = 1,
@@ -432,6 +433,8 @@ def build_plan_prompt(
     ]
     if context:
         parts.append(f"# Existing session context\n{context}")
+    if agent_guidelines:
+        parts.append(agent_guidelines)
     if planning_rounds:
         parts.append(
             "# Prior PM planning rounds\n"
@@ -700,6 +703,7 @@ class PMAgent:
         min_plan_rounds: int = 1,
         max_plan_rounds: int = 3,
         tool_runtime_factory=None,
+        guideline_context_resolver=None,
     ) -> None:
         self.llm = llm
         self.language = language
@@ -707,6 +711,15 @@ class PMAgent:
         self.min_plan_rounds = max(1, int(min_plan_rounds))
         self.max_plan_rounds = max(self.min_plan_rounds, int(max_plan_rounds))
         self.tool_runtime_factory = tool_runtime_factory
+        self.guideline_context_resolver = guideline_context_resolver
+
+    def _agent_guidelines(self, workspace: str) -> str:
+        if self.guideline_context_resolver is None:
+            return ""
+        try:
+            return _as_str(self.guideline_context_resolver(workspace))
+        except Exception:  # noqa: BLE001 - discovery must not block dispatch.
+            return ""
 
     def _make_tool_runtime(
         self,
@@ -834,6 +847,7 @@ class PMAgent:
         )
         if simple_plan is not None:
             return simple_plan
+        agent_guidelines = self._agent_guidelines(workspace)
         runtime = self._make_tool_runtime(
             workspace,
             session_id=session_id,
@@ -861,6 +875,7 @@ class PMAgent:
                     pm_model=pm_model,
                     requested_effort=requested_effort,
                     context=context,
+                    agent_guidelines=agent_guidelines,
                     round_no=1,
                     min_rounds=1,
                     max_rounds=plan_item_limit,
@@ -926,6 +941,7 @@ class PMAgent:
                 pm_model=pm_model,
                 requested_effort=requested_effort,
                 context=context,
+                agent_guidelines=agent_guidelines,
                 planning_rounds=rounds,
                 round_no=round_no,
                 min_rounds=self.min_plan_rounds,

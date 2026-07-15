@@ -183,6 +183,11 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     def _current_language() -> str:
         return normalize_lang(store.get_setting("ui.language") or cfg.ui.language)
 
+    from .core.agent_guidelines import guideline_context_for_workspace
+
+    def _agent_guideline_context(workspace: str) -> str:
+        return guideline_context_for_workspace(workspace, cfg.agent_guidelines)
+
     # Coding-agent channel (P2 §7): writes selected work modes into the workspace before launch and
     # clears them after. allowed_roots mirrors the dispatch workspace allowlist (defense in depth).
     from .core.injector import WorkspaceInjector
@@ -221,6 +226,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
             tool_runtime_factory=lambda workspace, **kwargs: PMToolRuntime.from_config(
                 cfg, workspace, gate=gate, auditor=auditor, cards=cards, **kwargs
             ),
+            guideline_context_resolver=_agent_guideline_context,
         ),
         language_getter=_current_language,
     )

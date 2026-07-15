@@ -30,6 +30,7 @@ from foreman.shared.autonomy import level_label, normalize_level
 from foreman.shared.config import (
     REMOTE_EXEC_SETTING,
     AgentCfg,
+    AgentGuidelinesCfg,
     Config,
     PMToolsCfg,
     WorkspaceCfg,
@@ -52,6 +53,7 @@ _AUTH_RL_WINDOW_SECONDS = 300
 _WORKSPACES_SETTING = "workspaces.json"
 _AGENTS_SETTING = "agents.json"
 _PM_TOOLS_SETTING = "pm_tools.json"
+_AGENT_GUIDELINES_SETTING = "agent_guidelines.json"
 _LLM_KEY_ENV = "FOREMAN_LLM_API_KEY"
 _CLOUD_KEY_ENV = "FOREMAN_CLOUD_ACCESS_KEY"
 _VALID_AGENT_EFFORTS = frozenset({"", "low", "medium", "high"})
@@ -172,6 +174,11 @@ class _PMToolsSettingsBody(BaseModel):
     searxng_url: str | None = None
     browser_headless: bool | None = None
     max_rounds: int | None = None
+
+
+class _AgentGuidelinesSettingsBody(BaseModel):
+    enabled: bool | None = None
+    filenames: list[str] | None = None
 
 
 class _PushKeys(BaseModel):
@@ -1297,6 +1304,38 @@ def create_app(
         store.set_setting(_PM_TOOLS_SETTING, json.dumps(data, ensure_ascii=False))
         return data
 
+    def _clean_agent_guidelines(raw: dict[str, Any] | None = None) -> AgentGuidelinesCfg:
+        raw = raw or {}
+        current = cfg.agent_guidelines
+        return AgentGuidelinesCfg(
+            enabled=_bool_setting(raw.get("enabled"), current.enabled),
+            filenames=_clean_string_list(raw.get("filenames", current.filenames)),
+        )
+
+    def _effective_agent_guidelines() -> AgentGuidelinesCfg:
+        next_cfg: AgentGuidelinesCfg | None = None
+        if store is not None and hasattr(store, "get_setting"):
+            raw = store.get_setting(_AGENT_GUIDELINES_SETTING)
+            if raw is not None:
+                try:
+                    data = json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    data = None
+                if isinstance(data, dict):
+                    next_cfg = _clean_agent_guidelines(data)
+        if next_cfg is None:
+            next_cfg = _clean_agent_guidelines(cfg.agent_guidelines.model_dump())
+        cfg.agent_guidelines = next_cfg
+        return next_cfg
+
+    def _save_agent_guidelines(body: _AgentGuidelinesSettingsBody) -> dict:
+        if store is None or not hasattr(store, "set_setting"):
+            raise HTTPException(status_code=503, detail="no local store")
+        cfg.agent_guidelines = _clean_agent_guidelines(body.model_dump(exclude_none=True))
+        data = cfg.agent_guidelines.model_dump()
+        store.set_setting(_AGENT_GUIDELINES_SETTING, json.dumps(data, ensure_ascii=False))
+        return data
+
     def _which_spawnable(command: str) -> str:
         name = (command or "").strip()
         if not name:
@@ -1521,6 +1560,7 @@ def create_app(
     _effective_workspaces()
     _effective_agents()
     _effective_pm_tools()
+    _effective_agent_guidelines()
     _sync_runner_agents()
 
     def _auth_bucket(request: Request, scope: str) -> str:
@@ -1773,6 +1813,14 @@ def create_app(
     async def set_pm_tool_settings(body: _PMToolsSettingsBody) -> dict:
         """Persist PM tool runtime switches and browser origin rules."""
         return _save_pm_tools(body)
+
+    @app.get("/api/settings/agent-guidelines")
+    async def get_agent_guideline_settings() -> dict:
+        return _effective_agent_guidelines().model_dump()
+
+    @app.post("/api/settings/agent-guidelines")
+    async def set_agent_guideline_settings(body: _AgentGuidelinesSettingsBody) -> dict:
+        return _save_agent_guidelines(body)
 
     @app.get("/api/models")
     async def list_models(agent: str | None = None) -> dict:

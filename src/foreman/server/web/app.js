@@ -143,6 +143,10 @@
       allowedOrigins: "允许的浏览器来源", searxngUrl: "SearXNG 地址", browserHeadless: "无头浏览器", maxRounds: "PM 取证工具轮次",
       pmReviewDiag: "PM 复查诊断",
       pmToolsSaved: "PM 工具设置已保存",
+      agentGuidelines: "Agent 准则", agentGuidelinesSub: "PM 规划时读取项目准则文件，作为执行 agent 的参考上下文。",
+      agentGuidelinesEnabled: "开启准则读取", guidelineFiles: "准则文件列表",
+      guidelineFilesHelp: "每行一个文件名。先查项目根目录；没有命中时，再逐层向内查找第一层命中的文件。",
+      agentGuidelinesSaved: "Agent 准则设置已保存",
       debug: "调试", debugSub: "排错用的高级开关。默认全关。",
       llmTrace: "LLM 对话明文落盘",
       llmTraceWarn: "开启后会把与大模型的完整对话（含源码与解密后的工作方式）明文写入本机 .foreman/debug/，仅本地保存、不上传、不进 git。改动在下次启动生效。",
@@ -298,6 +302,10 @@
       allowedOrigins: "Allowed browser origins", searxngUrl: "SearXNG URL", browserHeadless: "Headless browser", maxRounds: "PM evidence rounds",
       pmReviewDiag: "PM review diagnostics",
       pmToolsSaved: "PM tool settings saved",
+      agentGuidelines: "Agent guidelines", agentGuidelinesSub: "During PM planning, read project guideline files as reference context for the execution agent.",
+      agentGuidelinesEnabled: "Enable guideline lookup", guidelineFiles: "Guideline file list",
+      guidelineFilesHelp: "One filename per line. Check the project root first, then search inward and use the first matching depth.",
+      agentGuidelinesSaved: "Agent guideline settings saved",
       debug: "Debug", debugSub: "Advanced switches for troubleshooting. All off by default.",
       llmTrace: "Trace LLM conversations to disk",
       llmTraceWarn: "Writes the FULL model conversation (incl. your source + decrypted work modes) in plaintext to .foreman/debug/ on this machine — local only, never uploaded, not committed. Takes effect on next launch.",
@@ -2359,6 +2367,7 @@
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
       pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
+      agentGuidelines, setAgentGuidelines, saveAgentGuidelines, agentGuidelinesStatus, loadAgentGuidelines,
       debugSettings, debugStatus, saveDebug,
       cloud, setCloud, saveCloud, saveRemoteExec, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2, setLang } = props;
@@ -2370,6 +2379,7 @@
       }
       return next;
     });
+    const updateAgentGuidelines = (patch) => setAgentGuidelines((cur) => ({ ...(cur || {}), ...patch }));
     const lines = (value) => Array.isArray(value) ? value.join("\n") : "";
     const splitLines = (value) => String(value || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
     const pmModelChoices = [];
@@ -2505,6 +2515,19 @@
         </div>
         ${pmToolsStatus ? html`<div className=${`alert ${pmToolsStatus === d.pmToolsSaved ? "ok" : "error"}`} style=${{ marginBottom: 14 }}>${pmToolsStatus}</div>` : null}
         <button className="btn primary" onClick=${savePmTools}>${d.save}</button>
+      </div>
+
+      <!-- agent guidelines -->
+      <div className="card">
+        <div className="card-title">${d.agentGuidelines}<span className="spacer"></span><button className="btn sm" onClick=${loadAgentGuidelines}>⟳ ${d.refresh}</button></div>
+        <div className="card-sub">${d.agentGuidelinesSub}</div>
+        <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, marginBottom: 13 }}>${d.agentGuidelinesEnabled} <${Switch} on=${agentGuidelines.enabled !== false} onChange=${(v) => updateAgentGuidelines({ enabled: v })} /></label>
+        <div className="field" style=${{ marginBottom: 13 }}>
+          <span className="field-label">${d.guidelineFiles}<span title=${d.guidelineFilesHelp} style=${{ marginLeft: 6, cursor: "help" }}>?</span></span>
+          <textarea className="input mono" style=${{ minHeight: 92 }} value=${lines(agentGuidelines.filenames)} onChange=${(e) => updateAgentGuidelines({ filenames: splitLines(e.target.value) })}></textarea>
+        </div>
+        ${agentGuidelinesStatus ? html`<div className=${`alert ${agentGuidelinesStatus === d.agentGuidelinesSaved ? "ok" : "error"}`} style=${{ marginBottom: 14 }}>${agentGuidelinesStatus}</div>` : null}
+        <button className="btn primary" onClick=${saveAgentGuidelines}>${d.save}</button>
       </div>
 
       <!-- debug -->
@@ -2882,6 +2905,8 @@
     const [agentStatus, setAgentStatus] = useState("");
     const [pmTools, setPmTools] = useState({ file_read: true, file_write: false, shell: false, web_fetch: false, web_search: false, browser: false, allowed_origins: [], web_search_provider: "duckduckgo", searxng_url: "", browser_headless: false, max_rounds: 6 });
     const [pmToolsStatus, setPmToolsStatus] = useState("");
+    const [agentGuidelines, setAgentGuidelines] = useState({ enabled: true, filenames: ["AGENT.md", "AGENTS.md"] });
+    const [agentGuidelinesStatus, setAgentGuidelinesStatus] = useState("");
     const [debugSettings, setDebugSettings] = useState({ llm_trace: false });
     const [debugStatus, setDebugStatus] = useState("");
     const [cloud, setCloud] = useState({ url: "", access_key: "", access_key_set: false, connected: false, remote_execution_enabled: false });
@@ -2949,6 +2974,7 @@
     }, []);
     const loadAgentSettings = useCallback(async () => { try { setAgentSettings(await api("/api/settings/agents") || []); } catch (e) { setAgentSettings([]); } finally { setAgentsLoaded(true); } }, []);
     const loadPmTools = useCallback(async () => { try { setPmTools(await api("/api/settings/pm-tools") || {}); } catch (e) { /* server mode */ } }, []);
+    const loadAgentGuidelines = useCallback(async () => { try { setAgentGuidelines(await api("/api/settings/agent-guidelines") || { enabled: true, filenames: ["AGENT.md", "AGENTS.md"] }); } catch (e) { /* server mode */ } }, []);
     const loadDebug = useCallback(async () => { try { setDebugSettings(await api("/api/settings/debug") || { llm_trace: false }); } catch (e) { /* server mode */ } }, []);
     const saveDebug = useCallback(async (on) => { try { const r = await api("/api/settings/debug", { method: "POST", body: { llm_trace: !!on } }); setDebugSettings({ llm_trace: !!(r && r.llm_trace) }); setDebugStatus(d.debugSaved); } catch (e) { notifyError(e); } }, [d]);
     const loadModels = useCallback(async () => { try { const data = await api("/api/models"); setModelOptions((data && data.models || []).map((m) => ({ value: m.id, id: m.id, context_length: m.context_length, source: m.source }))); } catch (e) { setModelOptions([]); } }, []);
@@ -3001,6 +3027,7 @@
       if (snap && snap.autonomy && typeof snap.autonomy.level === "number") setAutonomyState(snap.autonomy.level);
       if (snap && snap.agent_settings) { setAgentSettings(snap.agent_settings || []); setAgentsLoaded(true); }
       if (snap && snap.pm_tools) setPmTools(snap.pm_tools || {});
+      if (snap && snap.agent_guidelines) setAgentGuidelines(snap.agent_guidelines || {});
       if (snap && snap.llm) setLlm({ ...snap.llm, api_key: "" });
       if (snap && snap.debug) setDebugSettings({ llm_trace: !!snap.debug.llm_trace });
       if (snap && snap.cloud) {
@@ -3085,6 +3112,7 @@
             loadDefinitions(),
             loadAgentSettings(),
             loadPmTools(),
+            loadAgentGuidelines(),
             loadDebug(),
             loadLlm(),
             loadAutonomy(),
@@ -3615,6 +3643,13 @@
         setPmToolsStatus(d.pmToolsSaved);
       } catch (e) { setPmToolsStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
     }
+    async function saveAgentGuidelines() {
+      try {
+        const data = await api("/api/settings/agent-guidelines", { method: "POST", body: agentGuidelines });
+        setAgentGuidelines(data || {});
+        setAgentGuidelinesStatus(d.agentGuidelinesSaved);
+      } catch (e) { setAgentGuidelinesStatus(`${d.saveFailed}: ${friendlyError(e, d)}`); }
+    }
     async function saveAutonomy(value) {
       setAutonomyState(value);
       try {
@@ -3720,6 +3755,7 @@
       agentSettings, setAgentSettings, saveAgentSettings, agentStatus, loadAgentSettings,
       llm, setLlm, pmModelOptions, saveLlm, clearLlmKey, llmStatus,
       pmTools, setPmTools, savePmTools, pmToolsStatus, loadPmTools,
+      agentGuidelines, setAgentGuidelines, saveAgentGuidelines, agentGuidelinesStatus, loadAgentGuidelines,
       debugSettings, debugStatus, saveDebug,
       cloud, setCloud, saveCloud, saveRemoteExec, connectCloud, disconnectCloud, clearCloudKey, cloudStatus, cloudAvailable,
       autonomy, saveAutonomy, theme, setTheme, lang2: lang, setLang, onPush: enablePush,
