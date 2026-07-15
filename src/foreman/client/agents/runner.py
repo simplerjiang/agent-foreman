@@ -147,8 +147,8 @@ class Runner:
 
     async def interrupt(self, handle: AgentHandle) -> None:
         """Pause/interrupt a running agent (e.g. while awaiting approval). DESIGN §4.2 / §5.6."""
-        await self._adapter_of(handle).interrupt(handle)
         self._cancel_pump(handle.id)
+        await self._adapter_of(handle).interrupt(handle)
 
     def _cancel_pump(self, handle_id: str) -> None:
         """Cancel a handle's background pump task if it is still running."""

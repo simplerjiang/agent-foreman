@@ -298,10 +298,7 @@ class SubprocessCliAdapter:
         proc = self._procs.get(handle.id)
         if proc is None or proc.returncode is not None:
             return
-        try:
-            proc.terminate()
-        except ProcessLookupError:
-            pass  # already gone
+        await _terminate_process(proc)
 
     async def stop(self, handle: AgentHandle) -> None:
         """Terminate the agent process (graceful → kill) and deregister it."""
@@ -309,13 +306,38 @@ class SubprocessCliAdapter:
         self._workspaces.pop(handle.id, None)
         if proc is None or proc.returncode is not None:
             return
+        await _terminate_process(proc)
+
+
+async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+    """Stop the CLI and, on Windows, its npm-shim child process tree."""
+    if proc.returncode is not None:
+        return
+    if _is_windows():
         try:
-            proc.terminate()
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            proc.kill()
-        except ProcessLookupError:
-            pass  # already gone
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(proc.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            if await asyncio.wait_for(killer.wait(), timeout=5) != 0:
+                raise OSError("taskkill failed")
+            await asyncio.wait_for(proc.wait(), timeout=3)
+            return
+        except (asyncio.TimeoutError, OSError):
+            pass
+    try:
+        proc.terminate()
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+    except ProcessLookupError:
+        pass
 
 
 def _which_spawnable(name: str) -> str | None:

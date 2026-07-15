@@ -382,3 +382,23 @@ async def test_stop_terminates(tmp_path):
     await a.stop(h)
     assert proc.terminated is True
     assert h.id not in a._procs
+
+
+async def test_interrupt_terminates_windows_process_tree(tmp_path, monkeypatch):
+    proc = FakeProc(pid=9876)
+    killer = FakeProc(pid=9877, returncode=0)
+    calls = []
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls.append((args, kwargs))
+        return killer
+
+    monkeypatch.setattr(subproc, "_is_windows", lambda: True)
+    monkeypatch.setattr(subproc.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    a = fake_adapter(CodexAdapter, _cfg(), proc)
+    h = await a.start("x", tmp_path, "s")
+
+    await a.interrupt(h)
+
+    assert calls[0][0] == ("taskkill", "/PID", "9876", "/T", "/F")
+    assert proc.terminated is False

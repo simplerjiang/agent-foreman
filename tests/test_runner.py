@@ -264,6 +264,23 @@ async def test_interrupt_terminates_the_process(tmp_path):
     assert proc.terminated is True
 
 
+async def test_interrupt_cancels_stream_before_waiting_for_process(tmp_path):
+    runner = Runner(Config(), EventBus(), _store(tmp_path))
+    adapter = _BlockingStreamAdapter()
+    runner.adapters["codex"] = adapter
+    handle = await runner.launch("codex", "do x", tmp_path, "s1")
+    pump = runner._pumps[handle.id]
+    observed = []
+
+    async def interrupt(_handle):
+        observed.append(pump.cancelling())
+
+    adapter.interrupt = interrupt
+    await runner.interrupt(handle)
+
+    assert observed == [1]
+
+
 class _FailingStreamAdapter:
     name = "codex"
 
