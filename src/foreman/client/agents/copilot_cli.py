@@ -21,6 +21,7 @@ from ._subprocess import (
     _annotate_protocol_phase,
     _finalize_stop_event,
     _handle_event_payload,
+    _is_windows,
     _process_error_message,
     _protocol_completion_event_type,
     _read_pipe_text,
@@ -30,6 +31,14 @@ from .base import AgentHandle, detect_git_refs
 
 class CopilotCliAdapter(SubprocessCliAdapter):
     name = "copilot-cli"
+
+    @staticmethod
+    def _prompt_arg(instruction: str) -> str:
+        if not _is_windows():
+            return instruction
+        # npm's Windows .cmd shim treats embedded CR/LF as command separators. U+2028 keeps the
+        # prompt's line boundaries for the model while ensuring the prompt remains one argv line.
+        return instruction.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\u2028")
 
     def _env_overrides(self, model: str = "", effort: str = "") -> dict[str, str]:
         if model.strip().lower().startswith("gpt-5"):
@@ -82,7 +91,7 @@ class CopilotCliAdapter(SubprocessCliAdapter):
     ) -> list[str]:
         return [
             self.cfg.command,
-            "-p", instruction,
+            "-p", self._prompt_arg(instruction),
             "--no-auto-update",
             "--no-color",
             "--stream", "off",
