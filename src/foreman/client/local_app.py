@@ -86,6 +86,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
     from .core.gate import Gate
     from .core.operator import Operator
     from .core.pm_agent import PMAgent
+    from .core.worktree_manager import WorktreeManager
     from .tools import PMToolRuntime
     from .monitor.hooks import HookReceiver
 
@@ -223,6 +224,7 @@ def start_local_app(cfg: Config, host: str = "127.0.0.1", port: int = 8788) -> L
             ),
         ),
         language_getter=_current_language,
+        worktree_manager=WorktreeManager(),
     )
     # BriefingService summarizes a session's activity with YOUR LLM → reports table + Web Push
     # (§5.5). Output language follows the runtime ui.language setting (§15, resolved above).

@@ -13,6 +13,7 @@ import webbrowser
 import pytest
 
 from foreman.__main__ import _DesktopApi
+from foreman.client.core.worktree_manager import WorktreeManager
 from foreman.client.local_app import PortInUseError, is_running, start_local_app
 from foreman.shared.config import Config
 
@@ -29,6 +30,7 @@ def test_start_local_app_serves_and_stops(tmp_path):
             assert r.status == 200
         # engine wired
         assert local.store is not None and local.runner is not None
+        assert isinstance(local._server.config.app.state.dispatcher.worktree_manager, WorktreeManager)
     finally:
         local.stop()
     assert not local._thread.is_alive()  # stop() actually shut the server thread down
