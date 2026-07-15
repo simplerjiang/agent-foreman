@@ -14,6 +14,10 @@ def test_pm_tool_settings_defaults_and_save(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.init()
     cfg = Config()
+    cfg.pm_tools.git_worktree = True
+    cfg.pm_tools.worktree_roots = [str(tmp_path / "worktrees")]
+    cfg.pm_tools.worktree_branch_prefix = "foreman/e2e-"
+    cfg.pm_tools.default_base_ref = "main"
     c = TestClient(create_app(cfg, store, EventBus()))
 
     defaults = c.get("/api/settings/pm-tools").json()
@@ -23,6 +27,8 @@ def test_pm_tool_settings_defaults_and_save(tmp_path):
     assert defaults["web_fetch"] is False
     assert defaults["web_search"] is False
     assert defaults["browser"] is False
+    assert defaults["git_worktree"] is True
+    assert defaults["worktree_roots"] == [str(tmp_path / "worktrees")]
 
     saved = c.post(
         "/api/settings/pm-tools",
@@ -45,6 +51,10 @@ def test_pm_tool_settings_defaults_and_save(tmp_path):
     assert saved["allowed_origins"] == ["http://example.test"]
     assert saved["web_search_provider"] == "searxng"
     assert saved["max_rounds"] == 99
+    assert saved["git_worktree"] is True
+    assert saved["worktree_roots"] == [str(tmp_path / "worktrees")]
+    assert saved["worktree_branch_prefix"] == "foreman/e2e-"
+    assert saved["default_base_ref"] == "main"
     assert cfg.pm_tools.shell is True
 
 

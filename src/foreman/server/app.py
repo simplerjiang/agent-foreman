@@ -1251,6 +1251,19 @@ def create_app(
             web_fetch=flag("web_fetch", current.web_fetch),
             web_search=flag("web_search", current.web_search),
             browser=flag("browser", current.browser),
+            git_worktree=flag("git_worktree", current.git_worktree),
+            worktree_roots=_clean_string_list(
+                raw.get("worktree_roots", current.worktree_roots)
+            ),
+            worktree_branch_prefix=str(
+                raw.get("worktree_branch_prefix", current.worktree_branch_prefix) or ""
+            ).strip(),
+            default_base_ref=str(
+                raw.get("default_base_ref", current.default_base_ref) or ""
+            ).strip(),
+            allow_custom_worktree_path=flag(
+                "allow_custom_worktree_path", current.allow_custom_worktree_path
+            ),
             allowed_origins=_clean_string_list(origins),
             web_search_provider=provider,
             searxng_url=str(raw.get("searxng_url", current.searxng_url) or "").strip(),
