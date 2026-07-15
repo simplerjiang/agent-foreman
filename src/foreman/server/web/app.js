@@ -716,21 +716,22 @@
   }
   async function copyText(text) {
     const value = String(text || "");
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(value);
-        return true;
-      }
-    } catch (e) {}
     const input = document.createElement("textarea");
     input.value = value;
     input.setAttribute("readonly", "");
     input.style.cssText = "position:fixed;opacity:0;pointer-events:none;";
     document.body.appendChild(input);
     input.select();
-    try { return document.execCommand("copy"); }
-    catch (e) { return false; }
+    try { if (document.execCommand("copy")) return true; }
+    catch (e) {}
     finally { input.remove(); }
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch (e) {}
+    return false;
   }
   function displayAgent(agentType, d) {
     if (!agentType || agentType === "pm-agent") return "PM";

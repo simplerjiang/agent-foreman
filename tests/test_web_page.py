@@ -1400,6 +1400,10 @@ def test_conversation_copy_and_bare_links_are_wired():
     assert "function splitBareUrlToken" in js and "function openExternalLink" in js
     assert "bridge.open_external_url" in js and "https?:\\/\\/" in js
     assert "user-select: text" in css and "-webkit-user-select: text" in css
+    copy_helper = js[js.index("async function copyText") : js.index("function displayAgent")]
+    assert copy_helper.index('document.execCommand("copy")') < copy_helper.index(
+        "await navigator.clipboard.writeText(value)"
+    )
 
     start = js.index("function splitBareUrlToken")
     end = js.index("function openExternalLink", start)
