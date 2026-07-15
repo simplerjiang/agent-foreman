@@ -119,6 +119,17 @@ class PMToolRuntime:
         roots = [Path(w.path) for w in cfg.workspaces] or [Path(workspace)]
         main_root = Path(main_workspace or workspace)
         pm = cfg.pm_tools
+        worktree_roots = resolve_worktree_roots(main_root, pm.worktree_roots)
+        owned_worktree = _owned_session_worktree(
+            workspace,
+            main_workspace=main_root,
+            worktree_roots=worktree_roots,
+            store=store,
+            session_id=session_id,
+            manager=worktree_manager,
+        )
+        if owned_worktree is not None:
+            roots = [owned_worktree]
         return cls(
             ToolRuntimeConfig(
                 workspace=Path(workspace),
@@ -135,7 +146,7 @@ class PMToolRuntime:
                 web_search=pm.web_search,
                 browser=pm.browser,
                 git_worktree=pm.git_worktree,
-                worktree_roots=resolve_worktree_roots(main_root, pm.worktree_roots),
+                worktree_roots=worktree_roots,
                 worktree_branch_prefix=pm.worktree_branch_prefix,
                 default_base_ref=pm.default_base_ref,
                 allow_custom_worktree_path=pm.allow_custom_worktree_path,
@@ -2106,6 +2117,64 @@ class PMToolRuntime:
         parser = _DDGParser(max_results)
         parser.feed(response.text)
         return parser.results
+
+
+def _owned_session_worktree(
+    workspace: str | Path,
+    *,
+    main_workspace: Path,
+    worktree_roots: list[Path],
+    store: Any,
+    session_id: str,
+    manager: Any,
+) -> Path | None:
+    """Validate a recorded external worktree before adding it to a fresh runtime guard."""
+    get_leases = getattr(store, "get_worktree_leases", None)
+    list_worktrees = getattr(manager, "list", None)
+    if not session_id or not callable(get_leases) or not callable(list_worktrees):
+        return None
+    try:
+        raw = Path(workspace).expanduser()
+        normalized = Path(os.path.abspath(raw))
+        resolved = raw.resolve(strict=True)
+    except (OSError, ValueError):
+        return None
+    if normalized != resolved or not resolved.is_dir():
+        return None
+    allowed_roots = [root.expanduser().resolve(strict=False) for root in worktree_roots]
+    if not any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots):
+        return None
+    leases = get_leases(session_id=session_id)
+    lease = next(
+        (
+            item
+            for item in leases or []
+            if str(getattr(item, "status", "") or "") in {"active", "released"}
+            and Path(str(getattr(item, "worktree_path", "") or "")).expanduser().resolve(
+                strict=False
+            )
+            == resolved
+        ),
+        None,
+    )
+    if lease is None:
+        return None
+    listed = list_worktrees(main_workspace)
+    if not isinstance(listed, dict) or not listed.get("ok"):
+        return None
+    branch = str(getattr(lease, "branch", "") or "")
+    for row in listed.get("worktrees", []):
+        if not isinstance(row, dict) or str(row.get("branch") or "") != branch:
+            continue
+        try:
+            registered = Path(str(row.get("resolved_path") or row.get("path") or "")).resolve(
+                strict=False
+            )
+        except (OSError, ValueError):
+            continue
+        if registered == resolved:
+            return resolved
+    return None
 
 
 def _bounded_repo_map(root: Path, guard: PathGuard, *, max_files: int, max_depth: int) -> dict[str, Any]:

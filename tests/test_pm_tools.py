@@ -22,7 +22,7 @@ from foreman.client.tools.loop import (
     validate_final_plan,
 )
 from foreman.client.tools.models import ToolRuntimeConfig
-from foreman.shared.config import Config, GatesCfg
+from foreman.shared.config import Config, GatesCfg, WorkspaceCfg
 from foreman.shared.events import make_event
 from foreman.shared.llm import LLMToolCall, LLMToolResponse, Message
 
@@ -367,6 +367,74 @@ def test_runtime_from_config_injects_worktree_dependencies(tmp_path: Path):
     assert "task_id" not in rt.runtime_context()
     assert rt.worktree_context()["session_id"] == "s1"
     assert rt.worktree_context()["task_id"] == "t1"
+
+
+async def test_runtime_from_config_allows_only_recorded_session_worktree(tmp_path: Path):
+    repo = tmp_path / "repo"
+    worktree_root = tmp_path / "worktrees"
+    worktree = worktree_root / "feature"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "foreman@example.test")
+    _git(repo, "config", "user.name", "Foreman Test")
+    (repo / "main.txt").write_text("main", encoding="utf-8")
+    _git(repo, "add", "main.txt")
+    _git(repo, "commit", "-m", "base")
+    worktree_root.mkdir()
+    _git(repo, "worktree", "add", "-b", "feature", str(worktree), "HEAD")
+    (worktree / "owned.txt").write_text("owned", encoding="utf-8")
+    store = Store(str(tmp_path / "foreman.db"))
+    store.init()
+    store.add_session(Session(id="s1", goal="g", workspace=str(worktree), main_workspace=str(repo)))
+    store.add_worktree_lease(
+        WorktreeLease(
+            id="lease-1",
+            repo_root=str(repo),
+            main_workspace=str(repo),
+            worktree_path=str(worktree),
+            branch="feature",
+            base_ref="HEAD",
+            base_sha=_git(repo, "rev-parse", "HEAD"),
+            session_id="s1",
+            task_id="t1",
+            status="released",
+            locked=False,
+        )
+    )
+    cfg = Config(workspaces=[WorkspaceCfg(path=str(repo))])
+    cfg.pm_tools.git_worktree = True
+    cfg.pm_tools.worktree_roots = [str(worktree_root)]
+    cfg.pm_tools.file_read = True
+    manager = WorktreeManager()
+
+    owned = PMToolRuntime.from_config(
+        cfg,
+        worktree,
+        store=store,
+        session_id="s1",
+        task_id="t2",
+        main_workspace=repo,
+        worktree_manager=manager,
+    )
+    other = PMToolRuntime.from_config(
+        cfg,
+        worktree,
+        store=store,
+        session_id="other",
+        task_id="t3",
+        main_workspace=repo,
+        worktree_manager=manager,
+    )
+
+    read_owned = await owned.call(ToolCall("owned", "read_file", {"path": "owned.txt"}))
+    read_main = await owned.call(
+        ToolCall("main", "read_file", {"path": str(repo / "main.txt")})
+    )
+    read_other = await other.call(ToolCall("other", "read_file", {"path": "owned.txt"}))
+
+    assert read_owned.ok is True and read_owned.data["text"] == "owned"
+    assert read_main.ok is False and read_main.error == "path_outside_workspace"
+    assert read_other.ok is False and read_other.error == "path_outside_workspace"
 
 
 async def test_worktree_bind_injects_context_and_switches_runtime_guard(tmp_path: Path):
