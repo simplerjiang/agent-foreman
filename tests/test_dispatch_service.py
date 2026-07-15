@@ -10,10 +10,15 @@ import asyncio
 import json
 import subprocess
 
+import httpx
 import pytest
 
 from foreman.client.core.context_v2 import ContextManager
-from foreman.client.core.dispatch_service import DispatchService, _explicit_agent_targets
+from foreman.client.core.dispatch_service import (
+    DispatchService,
+    _explicit_agent_targets,
+    _pm_failure_text,
+)
 from foreman.client.core.pm_agent import (
     PMAgent,
     PMPlan,
@@ -2324,6 +2329,30 @@ async def test_pm_watchdog_failure_marks_session_stalled_with_reason(tmp_path):
     assert errors[-1]["status"] == "stalled"
     assert errors[-1]["reason"] == "wall_clock_timeout"
     assert "LLMStalledError" in errors[-1]["msg"]
+
+
+def test_pm_provider_failures_are_localized_without_losing_safe_detail():
+    request = httpx.Request("POST", "https://provider.example/v1/chat/completions")
+    auth = httpx.HTTPStatusError(
+        "401 Unauthorized",
+        request=request,
+        response=httpx.Response(401, request=request),
+    )
+    upstream = httpx.HTTPStatusError(
+        "502 Bad Gateway",
+        request=request,
+        response=httpx.Response(502, request=request),
+    )
+
+    zh_msg, zh_detail = _pm_failure_text(auth, "zh")
+    en_msg, en_detail = _pm_failure_text(upstream, "en")
+
+    assert zh_msg == "Provider 认证失败，请检查 API Key 和认证配置。 (HTTP 401)"
+    assert en_msg.startswith("The provider or upstream model is unavailable.")
+    assert en_msg.endswith("(HTTP 502)")
+    assert zh_detail == "HTTPStatusError: 401 Unauthorized"
+    assert en_detail == "HTTPStatusError: 502 Bad Gateway"
+    assert "API Key" not in zh_detail
 
 
 async def test_default_agent_when_no_agents_configured(tmp_path):

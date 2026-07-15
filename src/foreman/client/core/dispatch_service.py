@@ -755,6 +755,7 @@ class DispatchService:
         except Exception as exc:  # noqa: BLE001 — PM failure must be visible, not crash the server
             status = "stalled" if isinstance(exc, LLMStalledError) else "failed"
             reason = getattr(exc, "reason", "") if isinstance(exc, LLMStalledError) else ""
+            msg, detail = _pm_failure_text(exc, self._sync_pm_language())
             self._mark_session_unless_terminal(session_id, status)
             self._mark_task(task_id, "failed")
             event = make_event(
@@ -763,7 +764,8 @@ class DispatchService:
                 session_id,
                 task_id=task_id,
                 payload={
-                    "msg": f"{type(exc).__name__}: {str(exc)[:200]}",
+                    "msg": msg,
+                    "detail": detail,
                     "status": status,
                     "reason": reason,
                 },
@@ -2107,6 +2109,55 @@ class DispatchService:
 
 
 __all__ = ["DispatchService"]
+
+
+def _pm_failure_text(exc: Exception, language: str) -> tuple[str, str]:
+    detail = f"{type(exc).__name__}: {str(exc)[:200]}"
+    if isinstance(exc, LLMStalledError):
+        return detail, detail
+    response = getattr(exc, "response", None)
+    status = int(getattr(response, "status_code", 0) or 0)
+    name = type(exc).__name__.lower()
+    zh = normalize_lang(language) == "zh"
+    if status in {401, 403}:
+        msg = (
+            "Provider 认证失败，请检查 API Key 和认证配置。"
+            if zh
+            else "Provider authentication failed. Check the API key and authentication settings."
+        )
+    elif status in {400, 404, 422}:
+        msg = (
+            "Provider 拒绝了模型或请求参数，请检查模型名称和 Provider 兼容性。"
+            if zh
+            else "The provider rejected the model or request. Check the model name and provider compatibility."
+        )
+    elif status >= 500:
+        msg = (
+            "Provider 或上游模型暂不可用；若仅该模型失败，请确认 Provider 是否支持它。"
+            if zh
+            else "The provider or upstream model is unavailable. If only this model fails, confirm that the provider supports it."
+        )
+    elif "timeout" in name:
+        msg = (
+            "Provider 请求超时，请检查网络、Base URL 或稍后重试。"
+            if zh
+            else "The provider request timed out. Check the network or base URL, or retry later."
+        )
+    elif "connect" in name or "network" in name:
+        msg = (
+            "无法连接 Provider，请检查网络和 Base URL。"
+            if zh
+            else "Could not connect to the provider. Check the network and base URL."
+        )
+    else:
+        msg = (
+            "PM 请求失败，请检查 Provider 设置后重试。"
+            if zh
+            else "The PM request failed. Check the provider settings and try again."
+        )
+    if status:
+        msg = f"{msg} (HTTP {status})"
+    return msg, detail
 
 
 def _accepts_keyword(fn, name: str) -> bool:
